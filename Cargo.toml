@@ -26,7 +26,7 @@ description = "LLM-optimized Obsidian vault MCP server with advanced editing, se
 publish = true
 
 [workspace.dependencies]
-tokio = { version = "1.47", features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.47", features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "fs"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 async-trait = "0.1"
