@@ -1,0 +1,321 @@
+# ==============================================================================
+# turbovault Configuration Example
+# ==============================================================================
+#
+# This is a comprehensive example configuration for the turbovault server.
+# Copy this file to config.yaml and customize for your setup.
+#
+# Usage:
+#   turbovault --config config.yaml --init
+#
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# VAULTS
+# ------------------------------------------------------------------------------
+# Define one or more Obsidian vaults to manage
+# The first vault is the default if no vault is explicitly set as default
+
+vaults:
+  # ------------------------------------------------------------------------------
+  # Single Vault Setup (Most Common)
+  # ------------------------------------------------------------------------------
+  # For most users with one Obsidian vault
+
+  - name: personal
+    path: /Users/yourname/Documents/ObsidianVault
+    is_default: true
+
+    # File watching - Monitor vault for external changes
+    watch_for_changes: true
+
+    # File size limit (in bytes) - Prevent loading huge files
+    # Default: 5MB (5 * 1024 * 1024 = 5242880)
+    max_file_size: 5242880
+
+    # Allowed file extensions (only process these)
+    allowed_extensions:
+      - .md
+      - .markdown
+
+    # Excluded paths - Skip these during scanning
+    # (relative to vault root)
+    excluded_paths:
+      - .obsidian      # Obsidian config folder
+      - .trash         # Trash folder
+      - .git           # Git folder (if using version control)
+
+    # Caching configuration
+    enable_caching: true
+    cache_ttl: 300           # Cache time-to-live in seconds (5 minutes)
+
+    # Template directories (additional to vault root)
+    template_dirs:
+      - templates
+      - .templates
+
+    # Allowed operations (restrict what can be done)
+    # Options: read, write, delete, move, all
+    # Default: all (if not specified)
+    allowed_operations: all
+
+  # ------------------------------------------------------------------------------
+  # Multi-Vault Setup (Power Users)
+  # ------------------------------------------------------------------------------
+  # Uncomment and configure additional vaults as needed
+
+  # - name: work
+  #   path: /Users/yourname/Documents/WorkVault
+  #   is_default: false
+  #   watch_for_changes: true
+  #   max_file_size: 10485760  # 10MB for work vault
+  #   excluded_paths:
+  #     - .obsidian
+  #     - .trash
+  #     - confidential/  # Exclude sensitive folders
+  #   enable_caching: true
+  #   cache_ttl: 3600        # 1 hour cache for work vault
+
+  # - name: research
+  #   path: /Users/yourname/Documents/ResearchVault
+  #   is_default: false
+  #   watch_for_changes: false  # Disable watching for large research vault
+  #   max_file_size: 20971520   # 20MB for research papers
+  #   allowed_extensions:
+  #     - .md
+  #     - .tex  # LaTeX support
+  #   excluded_paths:
+  #     - .obsidian
+  #     - drafts/
+  #   enable_caching: true
+  #   cache_ttl: 7200  # 2 hours cache
+
+  # - name: public-readonly
+  #   path: /Users/yourname/Documents/PublicVault
+  #   is_default: false
+  #   watch_for_changes: true
+  #   allowed_operations: read  # Read-only vault
+  #   enable_caching: true
+  #   cache_ttl: 1800  # 30 minutes
+
+# ------------------------------------------------------------------------------
+# OBSERVABILITY
+# ------------------------------------------------------------------------------
+# Logging, metrics, and tracing configuration
+
+observability:
+  # Log level: trace, debug, info, warn, error
+  # Can also use RUST_LOG environment variable
+  log_level: info
+
+  # Enable structured JSON logging (for log aggregation)
+  json_logs: false
+
+  # Enable metrics collection
+  enable_metrics: true
+
+  # Enable distributed tracing (OpenTelemetry)
+  enable_tracing: true
+
+  # OpenTelemetry exporter endpoint (optional)
+  # Uncomment and set if using OTLP collector
+  # otlp_endpoint: http://localhost:4317
+
+  # Service name for telemetry (default: turbovault)
+  service_name: turbovault
+
+  # Service version (default: from Cargo.toml)
+  # service_version: 1.0.0
+
+  # Enable security auditing (logs all file operations)
+  security_auditing: true
+
+  # Enable performance monitoring
+  performance_monitoring: true
+
+# ------------------------------------------------------------------------------
+# PROFILES
+# ------------------------------------------------------------------------------
+# Pre-configured profiles override individual settings
+# Options: development, production, readonly, high-performance, minimal
+#
+# Note: Profiles can be set via CLI with --profile flag
+# CLI profiles take precedence over this config file
+#
+# Uncomment to set default profile:
+# default_profile: production
+
+# ------------------------------------------------------------------------------
+# SEARCH CONFIGURATION (Advanced)
+# ------------------------------------------------------------------------------
+# Tantivy search engine tuning
+
+search:
+  # Enable full-text search indexing
+  enabled: true
+
+  # Index rebuild interval (in seconds)
+  # Set to 0 to disable periodic rebuilding
+  index_rebuild_interval: 3600  # 1 hour
+
+  # Maximum search results to return
+  max_results: 50
+
+  # Snippet length for search results (characters)
+  snippet_length: 200
+
+  # Enable fuzzy search (typo tolerance)
+  fuzzy_search: false
+
+  # Fuzzy search edit distance (1-2 recommended)
+  # fuzzy_distance: 1
+
+# ------------------------------------------------------------------------------
+# LINK GRAPH CONFIGURATION (Advanced)
+# ------------------------------------------------------------------------------
+# Link graph analysis and caching
+
+link_graph:
+  # Enable link graph analysis
+  enabled: true
+
+  # Cache graph in memory (faster but uses more RAM)
+  cache_graph: true
+
+  # Persist graph to disk (faster startup)
+  # persist_graph: true
+  # graph_cache_path: .turbovault/graph.cache
+
+  # Maximum hop distance for related notes
+  max_hop_distance: 3
+
+# ------------------------------------------------------------------------------
+# BATCH OPERATIONS (Advanced)
+# ------------------------------------------------------------------------------
+# Transaction and batch operation settings
+
+batch:
+  # Maximum operations per batch transaction
+  max_batch_size: 100
+
+  # Enable transaction logging
+  log_transactions: true
+
+  # Conflict detection strategy: strict, permissive
+  # strict: Fail on any conflict
+  # permissive: Retry with delay
+  conflict_strategy: strict
+
+# ------------------------------------------------------------------------------
+# PERFORMANCE TUNING (Advanced)
+# ------------------------------------------------------------------------------
+# Fine-tune performance for your vault size
+
+performance:
+  # Thread pool size for async operations
+  # Default: number of CPU cores
+  # worker_threads: 8
+
+  # File I/O buffer size (bytes)
+  io_buffer_size: 8192
+
+  # Maximum concurrent file operations
+  max_concurrent_ops: 10
+
+  # Enable lazy file loading (load on-demand vs upfront)
+  lazy_loading: false
+
+# ------------------------------------------------------------------------------
+# PLATFORM-SPECIFIC EXAMPLES
+# ------------------------------------------------------------------------------
+
+# macOS Example:
+# vaults:
+#   - name: personal
+#     path: /Users/yourname/Documents/ObsidianVault
+#     is_default: true
+
+# Linux Example:
+# vaults:
+#   - name: personal
+#     path: /home/yourname/Documents/ObsidianVault
+#     is_default: true
+
+# Windows Example (use forward slashes or escaped backslashes):
+# vaults:
+#   - name: personal
+#     path: C:/Users/yourname/Documents/ObsidianVault
+#     is_default: true
+#     # Or with escaped backslashes:
+#     # path: C:\\Users\\yourname\\Documents\\ObsidianVault
+
+# Docker Example (volume mount):
+# vaults:
+#   - name: personal
+#     path: /var/obsidian-vault
+#     is_default: true
+
+# ------------------------------------------------------------------------------
+# QUICK START CONFIGURATIONS
+# ------------------------------------------------------------------------------
+
+# MINIMAL (Just get started):
+# vaults:
+#   - name: default
+#     path: /path/to/your/vault
+#     is_default: true
+
+# DEVELOPMENT (Verbose logging, all features enabled):
+# vaults:
+#   - name: dev
+#     path: /path/to/vault
+#     is_default: true
+#     watch_for_changes: true
+#     enable_caching: true
+#     cache_ttl: 60
+# observability:
+#   log_level: debug
+#   enable_metrics: true
+#   enable_tracing: true
+
+# PRODUCTION (Optimized for performance and security):
+# vaults:
+#   - name: prod
+#     path: /path/to/vault
+#     is_default: true
+#     watch_for_changes: true
+#     max_file_size: 5242880
+#     enable_caching: true
+#     cache_ttl: 3600
+# observability:
+#   log_level: info
+#   security_auditing: true
+#   performance_monitoring: true
+
+# HIGH-PERFORMANCE (Large vaults, 10k+ notes):
+# vaults:
+#   - name: large
+#     path: /path/to/vault
+#     is_default: true
+#     watch_for_changes: false  # Disable watching for performance
+#     enable_caching: true
+#     cache_ttl: 7200  # 2 hours
+# search:
+#   max_results: 20  # Limit results
+# performance:
+#   max_concurrent_ops: 20
+#   lazy_loading: true
+
+# READ-ONLY (Safe exploration):
+# vaults:
+#   - name: readonly
+#     path: /path/to/vault
+#     is_default: true
+#     allowed_operations: read
+# observability:
+#   log_level: info
+#   security_auditing: true
+
+# ==============================================================================
+# END OF CONFIGURATION
+# ==============================================================================
