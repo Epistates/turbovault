@@ -2,6 +2,7 @@
 
 use clap::Parser;
 use turbovault_core::VaultConfig;
+use turbovault_core::cache::VaultCache;
 use turbovault::ObsidianMcpServer;
 use turbovault_tools::OutputFormat;
 use std::path::PathBuf;
@@ -109,6 +110,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ObsidianMcpServer::new().map_err(|e| format!("Failed to create MCP server: {}", e))?;
 
     log::info!("MCP Server created (vault-agnostic mode)");
+
+    // Initialize persistent cache in the server
+    if let Err(e) = server.init_cache().await {
+        log::warn!("Failed to initialize server cache: {}. Cache persistence will be unavailable.", e);
+    }
+
+    // CACHE RECOVERY: Load previously registered vaults for this project
+    match VaultCache::init().await {
+        Ok(cache) => {
+            log::info!(
+                "Project cache initialized: {} | Cache dir: {}",
+                cache.project_id(),
+                cache.project_cache_dir().display()
+            );
+
+            // Load cached vaults
+            let cached_vaults = cache
+                .load_vaults()
+                .await
+                .unwrap_or_else(|e| {
+                    log::warn!("Failed to load cached vaults: {}", e);
+                    vec![]
+                });
+
+            if !cached_vaults.is_empty() {
+                log::info!(
+                    "Recovering {} cached vaults for project {}",
+                    cached_vaults.len(),
+                    cache.project_id()
+                );
+
+                // Add each cached vault to the multi-vault manager
+                for vault_config in cached_vaults {
+                    match server.multi_vault().add_vault(vault_config.clone()).await {
+                        Ok(_) => {
+                            log::info!(
+                                "Restored vault from cache: '{}' -> {}",
+                                vault_config.name,
+                                vault_config.path.display()
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to restore vault '{}': {}. Skipping.",
+                                vault_config.name, e
+                            );
+                        }
+                    }
+                }
+
+                // Restore active vault
+                let metadata = cache
+                    .load_metadata()
+                    .await
+                    .unwrap_or_else(|e| {
+                        log::warn!("Failed to load cache metadata: {}", e);
+                        turbovault_core::cache::CacheMetadata {
+                            active_vault: String::new(),
+                            last_updated: 0,
+                            version: 1,
+                            project_id: cache.project_id().to_string(),
+                            working_dir: cache.working_dir().to_string_lossy().to_string(),
+                        }
+                    });
+
+                if !metadata.active_vault.is_empty() {
+                    match server
+                        .multi_vault()
+                        .set_active_vault(&metadata.active_vault)
+                        .await
+                    {
+                        Ok(_) => {
+                            log::info!(
+                                "Restored active vault from cache: '{}'",
+                                metadata.active_vault
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to restore active vault '{}': {}",
+                                metadata.active_vault, e
+                            );
+                        }
+                    }
+                }
+            } else {
+                log::info!("No cached vaults found for this project");
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to initialize cache: {}. Continuing without cache recovery.", e);
+        }
+    }
 
     // Optionally add a vault at startup (for convenience)
     if let Some(vault_path) = args.vault {

@@ -150,6 +150,8 @@ pub struct ObsidianMcpServer {
     multi_vault_mgr: Arc<MultiVaultManager>,
     /// Cache of vault managers by vault name to persist state across calls
     vault_managers: Arc<RwLock<HashMap<String, Arc<VaultManager>>>>,
+    /// Cache for persisting vault state across server restarts (project-aware)
+    persistent_cache: Arc<RwLock<Option<turbovault_core::cache::VaultCache>>>,
 }
 
 impl ObsidianMcpServer {
@@ -163,12 +165,36 @@ impl ObsidianMcpServer {
         Ok(Self {
             multi_vault_mgr: Arc::new(mgr),
             vault_managers: Arc::new(RwLock::new(HashMap::new())),
+            persistent_cache: Arc::new(RwLock::new(None)),
         })
+    }
+
+    /// Initialize the persistent cache (should be called after server creation)
+    pub async fn init_cache(&self) -> Result<()> {
+        let cache = turbovault_core::cache::VaultCache::init().await?;
+        let mut cache_lock = self.persistent_cache.write().await;
+        *cache_lock = Some(cache);
+        Ok(())
     }
 
     /// Get the multi-vault manager
     pub fn multi_vault(&self) -> Arc<MultiVaultManager> {
         self.multi_vault_mgr.clone()
+    }
+
+    /// Helper to save vault state to cache
+    async fn persist_vault_state(&self) -> Result<()> {
+        if let Some(cache) = self.persistent_cache.read().await.as_ref() {
+            // Get current vaults and active vault
+            let vaults_lock = self.multi_vault_mgr.list_vaults().await?;
+            let vault_configs: Vec<_> = vaults_lock.iter().map(|v| v.config.clone()).collect();
+            let active_vault = self.multi_vault_mgr.get_active_vault().await;
+
+            // Save to cache
+            cache.save_vaults(&vault_configs, &active_vault).await?;
+            log::debug!("Vault state persisted to cache");
+        }
+        Ok(())
     }
 }
 
@@ -1179,6 +1205,12 @@ impl ObsidianMcpServer {
         .with_next_step("set_active_vault")
         .with_next_step("list_vaults");
 
+        // CACHE PERSISTENCE: Save vault state to persistent cache
+        if let Err(e) = self.persist_vault_state().await {
+            log::warn!("Failed to persist vault state to cache: {}", e);
+            // Not a fatal error - continue anyway
+        }
+
         serde_json::to_value(response)
             .map_err(|e| McpError::internal(format!("Failed to serialize response: {}", e)))
     }
@@ -1201,6 +1233,12 @@ impl ObsidianMcpServer {
             serde_json::json!({"status": "removed"}),
         )
         .with_next_step("list_vaults");
+
+        // CACHE PERSISTENCE: Save updated vault state to cache
+        if let Err(e) = self.persist_vault_state().await {
+            log::warn!("Failed to persist vault state after removal to cache: {}", e);
+            // Not a fatal error - continue anyway
+        }
 
         response.to_json()
     }
@@ -1271,6 +1309,12 @@ impl ObsidianMcpServer {
         )
         .with_next_step("get_vault_context")
         .with_next_step("quick_health_check");
+
+        // CACHE PERSISTENCE: Save active vault state to cache
+        if let Err(e) = self.persist_vault_state().await {
+            log::warn!("Failed to persist active vault state to cache: {}", e);
+            // Not a fatal error - continue anyway
+        }
 
         response.to_json()
     }
