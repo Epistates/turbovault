@@ -4132,87 +4132,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "turbovault-batch"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "turbovault-core",
- "turbovault-vault",
- "uuid",
-]
-
-[[package]]
-name = "turbovault-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "log",
- "parking_lot",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "turbovault-export"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "tempfile",
- "turbovault-core",
- "turbovault-vault",
-]
-
-[[package]]
-name = "turbovault-graph"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dashmap 5.5.3",
- "log",
- "petgraph",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "turbovault-core",
-]
-
-[[package]]
-name = "turbovault-parser"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "frontmatter-gen",
- "insta",
- "lazy_static",
- "log",
- "nom 7.1.3",
- "pulldown-cmark",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 1.0.69",
- "tokio",
- "turbovault-core",
-]
-
-[[package]]
-name = "turbovault-server"
-version = "0.1.0"
+name = "turbovault"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4238,8 +4159,87 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbovault-batch"
+version = "0.1.1"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "turbovault-core",
+ "turbovault-vault",
+ "uuid",
+]
+
+[[package]]
+name = "turbovault-core"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "log",
+ "parking_lot",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "turbovault-export"
+version = "0.1.1"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "turbovault-core",
+ "turbovault-vault",
+]
+
+[[package]]
+name = "turbovault-graph"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "dashmap 5.5.3",
+ "log",
+ "petgraph",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "turbovault-core",
+]
+
+[[package]]
+name = "turbovault-parser"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "frontmatter-gen",
+ "insta",
+ "lazy_static",
+ "log",
+ "nom 7.1.3",
+ "pulldown-cmark",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+ "tokio",
+ "turbovault-core",
+]
+
+[[package]]
 name = "turbovault-tools"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4265,7 +4265,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dashmap 5.5.3",
