@@ -1,0 +1,71 @@
+[package]
+name = "turbovault-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+description = "Turbo Vault MCP Server - World-class vault management for AI agents"
+repository = "https://github.com/epistates/turbovault"
+homepage = "https://github.com/epistates/turbovault"
+documentation = "https://docs.rs/turbovault-server"
+readme = "README.md"
+keywords = ["mcp", "vault", "agent", "server", "rust"]
+
+[features]
+# Transport support - pick what you need, a la carte style
+# ✨ OPTIMIZED: Default is stdio-only (~5-6 MB binary)
+# Optional transports let users add features as needed (~100-300 KB each)
+
+# Minimal default: STDIO transport (Claude Desktop standard)
+default = []
+
+# Individual transports - add what you need
+stdio = []                                    # Always included, no external deps
+http = ["turbomcp/http"]                     # Add HTTP server support (~200 KB)
+websocket = ["turbomcp/websocket"]           # Add WebSocket support (~200 KB)
+tcp = ["turbomcp/tcp"]                       # Add TCP server support (~100 KB)
+unix = ["turbomcp/unix"]                     # Add Unix socket support (~100 KB)
+
+# Convenience bundles
+http-full = ["http", "websocket"]            # HTTP + WebSocket
+all-transports = ["http", "websocket", "tcp", "unix"]  # Everything
+full = ["all-transports"]                    # Alias for all-transports
+
+[[bin]]
+name = "turbovault"
+path = "src/bin/main.rs"
+
+[dependencies]
+turbovault-core = { workspace = true }
+turbovault-vault = { workspace = true }
+turbovault-tools = { workspace = true }
+
+# MCP server framework (features passed through from turbovault-server)
+turbomcp = { version = "2.0" }
+turbomcp-protocol = { version = "2.0" }
+turbomcp-server = { version = "2.0" }
+turbomcp-transport = { version = "2.0" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+config = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+simple_logger = "5.0"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tempfile = { workspace = true }
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+
+[[bench]]
+name = "tool_benchmarks"
+harness = false
