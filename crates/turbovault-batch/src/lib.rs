@@ -3,6 +3,127 @@
 //! Provides atomic, transactional batch file operations with rollback support.
 //! All operations in a batch either succeed together or fail together, maintaining
 //! vault integrity even if individual operations encounter errors.
+//!
+//! ## Quick Start
+//!
+//! ```no_run
+//! use turbovault_batch::prelude::*;
+//! use std::sync::Arc;
+//! use std::path::PathBuf;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//!     let vault_path = PathBuf::from("/path/to/vault");
+//!     let manager = turbovault_vault::VaultManager::new(&vault_path, Default::default()).await?;
+//!     let executor = BatchExecutor::new(Arc::new(manager), PathBuf::from("/tmp"));
+//!
+//!     // Define batch operations
+//!     let operations = vec![
+//!         BatchOperation::CreateNote {
+//!             path: "notes/new1.md".to_string(),
+//!             content: "# First Note".to_string(),
+//!         },
+//!         BatchOperation::CreateNote {
+//!             path: "notes/new2.md".to_string(),
+//!             content: "# Second Note".to_string(),
+//!         },
+//!         BatchOperation::UpdateLinks {
+//!             file: "notes/index.md".to_string(),
+//!             old_target: "old-link".to_string(),
+//!             new_target: "new-link".to_string(),
+//!         },
+//!     ];
+//!
+//!     // Execute atomically
+//!     let result = executor.execute(operations).await?;
+//!     println!("Success: {}", result.success);
+//!     println!("Changes: {}", result.changes.len());
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Core Types
+//!
+//! ### BatchOperation
+//!
+//! Individual operations to execute in a batch:
+//! - [`BatchOperation::CreateNote`] - Create a new note
+//! - [`BatchOperation::WriteNote`] - Write or overwrite a note
+//! - [`BatchOperation::DeleteNote`] - Delete a note
+//! - [`BatchOperation::MoveNote`] - Move or rename a note
+//! - [`BatchOperation::UpdateLinks`] - Update link references
+//!
+//! ### BatchExecutor
+//!
+//! [`BatchExecutor`] manages batch execution with:
+//! - Validation before execution
+//! - Conflict detection between operations
+//! - Atomic execution with proper sequencing
+//! - Transaction ID tracking
+//! - Detailed result reporting
+//!
+//! ### BatchResult
+//!
+//! [`BatchResult`] contains execution results:
+//! - Overall success/failure status
+//! - Count of executed operations
+//! - First failure point (if any)
+//! - List of changes made
+//! - List of errors encountered
+//! - Individual operation records
+//! - Unique transaction ID
+//! - Execution duration
+//!
+//! ## Conflict Detection
+//!
+//! Operations that affect the same files are detected as conflicts:
+//! - Write + Delete on same file = conflict
+//! - Move + Write on same file = conflict
+//! - Multiple reads (UpdateLinks) = allowed
+//!
+//! Example:
+//! ```
+//! use turbovault_batch::BatchOperation;
+//!
+//! let write = BatchOperation::WriteNote {
+//!     path: "file.md".to_string(),
+//!     content: "content".to_string(),
+//! };
+//!
+//! let delete = BatchOperation::DeleteNote {
+//!     path: "file.md".to_string(),
+//! };
+//!
+//! assert!(write.conflicts_with(&delete));
+//! ```
+//!
+//! ## Atomicity Guarantees
+//!
+//! The batch executor ensures:
+//! - All-or-nothing semantics: entire batch succeeds or stops at first failure
+//! - Transaction tracking with unique IDs
+//! - Execution timing recorded
+//! - Detailed per-operation records for debugging
+//! - File integrity through atomic operations
+//!
+//! ## Error Handling
+//!
+//! Errors stop batch execution:
+//! - Validation errors prevent any execution
+//! - Operation errors stop the batch
+//! - Previous operations are recorded but not rolled back
+//! - Error details provided in result
+//!
+//! If true rollback is needed, handle externally using transaction IDs.
+//!
+//! ## Performance
+//!
+//! Batch execution is optimized for:
+//! - Minimal validation overhead
+//! - Sequential execution with early termination
+//! - Efficient conflict checking (O(n²) upfront)
+//! - Low-overhead operation tracking
 
 use turbovault_core::prelude::*;
 use turbovault_core::{PathValidator, TransactionBuilder};

@@ -1,4 +1,4 @@
-//! Embed parser: ![[Image.png]], ![[Note]]
+//! Embed parser: `![[Image.png]]`, `![[Note]]`
 
 use lazy_static::lazy_static;
 use turbovault_core::{Link, LinkType, SourcePosition};

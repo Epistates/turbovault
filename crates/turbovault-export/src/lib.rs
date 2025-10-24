@@ -2,6 +2,164 @@
 //!
 //! Provides data export functionality for vault analysis in multiple formats (JSON, CSV).
 //! Enables downstream processing and reporting of vault metrics and analysis.
+//!
+//! ## Quick Start
+//!
+//! ```no_run
+//! use turbovault_export::prelude::*;
+//!
+//! # fn example() -> Result<()> {
+//! // Create a health report
+//! let report = create_health_report(
+//!     "my-vault",
+//!     85,        // health score
+//!     100,       // total notes
+//!     150,       // total links
+//!     2,         // broken links
+//!     5,         // orphaned notes
+//! );
+//!
+//! // Export as JSON
+//! let json = HealthReportExporter::to_json(&report)?;
+//! println!("JSON:\n{}", json);
+//!
+//! // Export as CSV
+//! let csv = HealthReportExporter::to_csv(&report)?;
+//! println!("CSV:\n{}", csv);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Export Formats
+//!
+//! The system supports two formats for all exporters:
+//!
+//! ### JSON Export
+//! - Pretty-printed for readability
+//! - Full structure preserved
+//! - Suitable for API responses
+//! - Nested arrays and objects supported
+//!
+//! ### CSV Export
+//! - Flat structure (all values in one row)
+//! - Header row included
+//! - Quoted fields for safety
+//! - Suitable for spreadsheets and databases
+//!
+//! ## Core Exporters
+//!
+//! ### HealthReportExporter
+//!
+//! Exports vault health analysis:
+//! - Health score (0-100)
+//! - Connected vs orphaned notes
+//! - Broken link count
+//! - Connectivity and link density metrics
+//! - Status and recommendations
+//!
+//! ### BrokenLinksExporter
+//!
+//! Exports broken link analysis:
+//! - Source file for each broken link
+//! - Target that could not be resolved
+//! - Line number in source file
+//! - Suggested fixes
+//!
+//! ### VaultStatsExporter
+//!
+//! Exports vault statistics:
+//! - Timestamp of analysis
+//! - Total files and links
+//! - Orphaned file count
+//! - Average links per file
+//!
+//! ### AnalysisReportExporter
+//!
+//! Exports comprehensive analysis combining:
+//! - Health report
+//! - Broken links data
+//! - Recommendations
+//! - Full analysis context
+//!
+//! ## Data Models
+//!
+//! ### Health Metrics
+//!
+//! ```ignore
+//! #[derive(Serialize, Deserialize)]
+//! pub struct HealthReport {
+//!     pub timestamp: String,
+//!     pub vault_name: String,
+//!     pub health_score: u8,
+//!     pub total_notes: usize,
+//!     pub total_links: usize,
+//!     pub broken_links: usize,
+//!     pub orphaned_notes: usize,
+//!     pub connectivity_rate: f64,
+//!     pub link_density: f64,
+//!     pub status: String,
+//!     pub recommendations: Vec<String>,
+//! }
+//! ```
+//!
+//! ### Broken Links
+//!
+//! Each broken link includes:
+//! - Source file path
+//! - Target reference (failed to resolve)
+//! - Line number
+//! - Suggested alternatives
+//!
+//! ## Integration with Analysis
+//!
+//! Export data is typically generated from:
+//! - `turbovault_graph` health analysis (see <https://docs.rs/turbovault-graph>)
+//! - `turbovault_tools` analysis tools (see <https://docs.rs/turbovault-tools>)
+//! - Vault statistics computed at runtime
+//!
+//! Example integration:
+//! ```no_run
+//! use turbovault_export::prelude::*;
+//!
+//! # async fn example() -> Result<()> {
+//! // Get health from graph analysis
+//! // let health = graph.analyze_health().await?;
+//!
+//! // Create report from health data
+//! let report = create_health_report(
+//!     "vault",
+//!     80,
+//!     50,
+//!     100,
+//!     1,
+//!     2,
+//! );
+//!
+//! // Export in desired format
+//! // let json = HealthReportExporter::to_json(&report)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## File I/O Patterns
+//!
+//! Exporters return strings (JSON or CSV). To save to files:
+//!
+//! ```ignore
+//! use std::fs;
+//!
+//! let report = create_health_report(...);
+//! let json = HealthReportExporter::to_json(&report)?;
+//! fs::write("health-report.json", json)?;
+//! ```
+//!
+//! ## Performance Considerations
+//!
+//! - JSON serialization is optimized with `serde`
+//! - CSV generation uses string formatting (fast)
+//! - All exporters run in-memory
+//! - No I/O operations within exporters
+//! - Suitable for batch processing large datasets
 
 use chrono::Utc;
 use turbovault_core::prelude::*;

@@ -1,4 +1,4 @@
-//! Task parser: - [ ] Task, - [x] Completed
+//! Task parser: `- [ ] Task`, `- [x] Completed`
 
 use lazy_static::lazy_static;
 use turbovault_core::{SourcePosition, TaskItem};

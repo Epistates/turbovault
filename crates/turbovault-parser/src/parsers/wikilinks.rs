@@ -1,4 +1,4 @@
-//! Wikilink parser: [[Note]], [[folder/Note]], [[Note#Heading]], [[Note#^block]]
+//! Wikilink parser: `[[Note]]`, `[[folder/Note]]`, `[[Note#Heading]]`, `[[Note#^block]]`
 
 use lazy_static::lazy_static;
 use turbovault_core::{Link, LinkType, SourcePosition};

@@ -3,7 +3,7 @@
 //! These types are designed to be:
 //! - **Serializable**: All types derive Serialize/Deserialize
 //! - **Debuggable**: Derive Debug for easy inspection
-//! - **Cloneable**: Arc<T> friendly for shared ownership
+//! - **Cloneable**: `Arc<T>` friendly for shared ownership
 //! - **Type-Safe**: Enums replace magic strings
 //!
 //! The types roughly correspond to Python dataclasses in the reference implementation.
@@ -46,15 +46,15 @@ impl SourcePosition {
 /// Type of link in Obsidian content
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LinkType {
-    /// Wikilink: [[Note]]
+    /// Wikilink: `[[Note]]`
     WikiLink,
-    /// Embedded note: ![[Note]]
+    /// Embedded note: `![[Note]]`
     Embed,
-    /// Block reference: [[Note#^block]]
+    /// Block reference: `[[Note#^block]]`
     BlockRef,
-    /// Heading reference: [[Note#Heading]]
+    /// Heading reference: `[[Note#Heading]]`
     HeadingRef,
-    /// Markdown link: [text](url)
+    /// Markdown link: `[text](url)`
     MarkdownLink,
     /// External URL: http://...
     ExternalLink,

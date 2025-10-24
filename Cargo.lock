@@ -4133,7 +4133,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -4160,7 +4160,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-batch"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -4174,7 +4174,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4193,7 +4193,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-export"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -4205,7 +4205,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-graph"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dashmap 5.5.3",
@@ -4220,7 +4220,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-parser"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "frontmatter-gen",
@@ -4240,7 +4240,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-tools"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4266,7 +4266,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dashmap 5.5.3",

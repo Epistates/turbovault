@@ -59,7 +59,7 @@ pub struct StandardResponse<T: serde::Serialize> {
 }
 
 impl<T: serde::Serialize> StandardResponse<T> {
-    /// Create a new standard response (accepts Into<String> for flexibility)
+    /// Create a new standard response (accepts `Into<String>` for flexibility)
     pub fn new(vault: impl Into<String>, operation: impl Into<String>, data: T) -> Self {
         Self {
             vault: vault.into(),
