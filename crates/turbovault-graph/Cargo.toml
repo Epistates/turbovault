@@ -1,0 +1,23 @@
+[package]
+name = "turbovault-graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+description = "Link graph and note relationship analysis"
+documentation = "https://docs.rs/turbovault-graph"
+
+[dependencies]
+turbovault-core = { workspace = true }
+petgraph = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+dashmap = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
