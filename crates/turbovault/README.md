@@ -1,4 +1,8 @@
-# turbovault-server
+# turbovault
+
+[![Crates.io](https://img.shields.io/crates/v/turbovault.svg)](https://crates.io/crates/turbovault)
+[![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault)
+[![License](https://img.shields.io/crates/l/turbovault.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
 
 Production-grade MCP server for Obsidian vault management.
 
@@ -6,7 +10,7 @@ The main executable binary that exposes 38 MCP tools for AI agents to autonomous
 
 ## What This Is
 
-`turbovault-server` is the **main binary** that end users run to expose their Obsidian vault to AI agents via the Model Context Protocol (MCP). It provides:
+`turbovault` is the **main binary** that end users run to expose their Obsidian vault to AI agents via the Model Context Protocol (MCP). It provides:
 
 - **38 MCP Tools**: Complete vault management API (read, write, search, analyze, templates, batch operations)
 - **STDIO Transport**: Standard MCP-compliant communication over stdin/stdout
@@ -73,16 +77,16 @@ Install directly from crates.io (after publishing):
 ```bash
 # Minimal install (STDIO only, ~7.0 MB)
 # Perfect for Claude Desktop
-cargo install turbovault-server
+cargo install turbovault
 
 # With HTTP server support (~8.2 MB)
-cargo install turbovault-server --features http
+cargo install turbovault --features http
 
 # With HTTP + WebSocket (~8.5 MB)
-cargo install turbovault-server --features "http,websocket"
+cargo install turbovault --features "http,websocket"
 
 # With all transports (~8.8 MB)
-cargo install turbovault-server --features full
+cargo install turbovault --features full
 
 # Binary installed to: ~/.cargo/bin/turbovault
 turbovault --help
@@ -105,13 +109,13 @@ turbovault --help
 
 ```bash
 # HTTP + TCP (no WebSocket or Unix)
-cargo install turbovault-server --features "http,tcp"
+cargo install turbovault --features "http,tcp"
 
 # WebSocket + Unix socket
-cargo install turbovault-server --features "websocket,unix"
+cargo install turbovault --features "websocket,unix"
 
 # Just HTTP
-cargo install turbovault-server --features http
+cargo install turbovault --features http
 ```
 
 **Why Choose Minimal?**

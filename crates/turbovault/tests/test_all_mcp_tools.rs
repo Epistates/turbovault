@@ -2,7 +2,7 @@
 //! Tests the complete workflow from MCP call to response
 
 use turbovault_core::{ConfigProfile, VaultConfig};
-use turbovault_server::ObsidianMcpServer;
+use turbovault::ObsidianMcpServer;
 use tempfile::TempDir;
 use tokio::fs;
 

@@ -1,17 +1,17 @@
 [package]
-name = "turbovault-server"
+name = "turbovault"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 publish = true
-description = "Turbo Vault MCP Server - World-class vault management for AI agents"
+description = "Production-grade MCP server for Obsidian vault management - Transform your vault into an intelligent knowledge system for AI agents"
 repository = "https://github.com/epistates/turbovault"
 homepage = "https://github.com/epistates/turbovault"
-documentation = "https://docs.rs/turbovault-server"
+documentation = "https://docs.rs/turbovault"
 readme = "README.md"
-keywords = ["mcp", "vault", "agent", "server", "rust"]
+keywords = ["mcp", "obsidian", "vault", "llm", "agent"]
 include = [
   "src/",
   "resources/",
@@ -48,7 +48,7 @@ turbovault-core = { workspace = true }
 turbovault-vault = { workspace = true }
 turbovault-tools = { workspace = true }
 
-# MCP server framework (features passed through from turbovault-server)
+# MCP server framework (features passed through from turbovault)
 turbomcp = { version = "2.0" }
 turbomcp-protocol = { version = "2.0" }
 turbomcp-server = { version = "2.0" }

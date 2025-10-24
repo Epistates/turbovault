@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     use turbovault_core::{ConfigProfile, VaultConfig};
-    use turbovault_server::ObsidianMcpServer;
+    use turbovault::ObsidianMcpServer;
     use turbovault_vault::VaultManager;
     use std::path::PathBuf;
     use tempfile::TempDir;

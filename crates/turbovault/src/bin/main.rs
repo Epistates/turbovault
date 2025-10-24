@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use turbovault_core::VaultConfig;
-use turbovault_server::ObsidianMcpServer;
+use turbovault::ObsidianMcpServer;
 use turbovault_tools::OutputFormat;
 use std::path::PathBuf;
 use turbomcp_server::observability::ObservabilityConfig;
