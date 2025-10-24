@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish = true
+publish = false
 description = "Coordinated multi-file batch operations for Obsidian vaults"
 documentation = "https://docs.rs/turbovault-batch"
 

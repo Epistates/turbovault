@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish = true
+publish = false
 description = "Vault management, file operations, and watching"
 documentation = "https://docs.rs/turbovault-vault"
 
