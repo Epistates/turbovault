@@ -916,7 +916,7 @@ impl ObsidianMcpServer {
         usage = "Use for discovering content by keywords. Case-insensitive, supports phrase queries with quotes. For filtered searches, use advanced_search",
         performance = "<100ms on 10k notes, <500ms on 100k notes",
         related = ["advanced_search", "recommend_related", "query_metadata"],
-        examples = ["\"project alpha\"", "authentication", "TODO"]
+        examples = ["\"project alpha\"", "authentication", "urgent tasks"]
     )]
     async fn search(&self, query: String) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
