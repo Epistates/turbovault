@@ -1,8 +1,28 @@
 # TurboVault
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault.svg)](https://crates.io/crates/turbovault)
+[![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault)
+[![License](https://img.shields.io/crates/l/turbovault.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+[![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
+
 **A production-grade MCP server that transforms your Obsidian vault into an intelligent knowledge system powered by AI.**
 
 TurboVault provides Claude and other AI agents with **44 specialized tools** for reading, writing, searching, analyzing, and managing your notes—all with sub-100ms performance for most operations. Built in Rust for speed, safety, and reliability.
+
+## Core Crates
+
+TurboVault is a modular system composed of specialized crates. The main entry point is **[turbovault](https://crates.io/crates/turbovault)** which orchestrates all functionality:
+
+| Crate | Purpose | Docs |
+|-------|---------|------|
+| **[turbovault](crates/turbovault)** | Main MCP server binary | [![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault) |
+| **[turbovault-tools](crates/turbovault-tools)** | MCP tools implementation | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
+| **[turbovault-core](crates/turbovault-core)** | Core models & types | [![Docs.rs](https://docs.rs/turbovault-core/badge.svg)](https://docs.rs/turbovault-core) |
+| **[turbovault-vault](crates/turbovault-vault)** | Vault management & I/O | [![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault) |
+| **[turbovault-parser](crates/turbovault-parser)** | OFM parser | [![Docs.rs](https://docs.rs/turbovault-parser/badge.svg)](https://docs.rs/turbovault-parser) |
+| **[turbovault-graph](crates/turbovault-graph)** | Link graph analysis | [![Docs.rs](https://docs.rs/turbovault-graph/badge.svg)](https://docs.rs/turbovault-graph) |
+| **[turbovault-batch](crates/turbovault-batch)** | Batch operations | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
+| **[turbovault-export](crates/turbovault-export)** | Export & reporting | [![Docs.rs](https://docs.rs/turbovault-export/badge.svg)](https://docs.rs/turbovault-export) |
 
 ## Why TurboVault?
 
@@ -35,13 +55,13 @@ This means TurboVault gets battle-tested reliability and extensibility out of th
 
 ```bash
 # Minimal install (7.0 MB, STDIO only - perfect for Claude Desktop)
-cargo install turbovault-server
+cargo install turbovault
 
 # With HTTP server (~8.2 MB)
-cargo install turbovault-server --features http
+cargo install turbovault --features http
 
 # With all transports (~8.8 MB)
-cargo install turbovault-server --features full
+cargo install turbovault --features full
 
 # Binary installed to: ~/.cargo/bin/turbovault
 ```
