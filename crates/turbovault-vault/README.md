@@ -1,5 +1,9 @@
 # turbovault-vault
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault-vault.svg)](https://crates.io/crates/turbovault-vault)
+[![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault)
+[![License](https://img.shields.io/crates/l/turbovault-vault.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+
 Filesystem API for Obsidian vaults – file operations, atomic transactions, real-time watching, and caching.
 
 This crate provides the core abstraction for interacting with the Obsidian vault filesystem. It handles all file I/O with atomic operation guarantees, maintains consistency with the parser and graph layers, and provides real-time file watching for synchronization.

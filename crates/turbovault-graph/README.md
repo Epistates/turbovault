@@ -1,5 +1,9 @@
 # turbovault-graph
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault-graph.svg)](https://crates.io/crates/turbovault-graph)
+[![Docs.rs](https://docs.rs/turbovault-graph/badge.svg)](https://docs.rs/turbovault-graph)
+[![License](https://img.shields.io/crates/l/turbovault-graph.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+
 Link graph analysis and vault health diagnostics for Obsidian vaults.
 
 This crate provides comprehensive analysis of the link graph within Obsidian vaults, enabling discovery of relationships, identification of important notes, detection of broken links, and overall vault health assessment.

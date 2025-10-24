@@ -1,5 +1,9 @@
 # turbovault-export
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault-export.svg)](https://crates.io/crates/turbovault-export)
+[![Docs.rs](https://docs.rs/turbovault-export/badge.svg)](https://docs.rs/turbovault-export)
+[![License](https://img.shields.io/crates/l/turbovault-export.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+
 Data export functionality for vault analysis in multiple formats.
 
 This crate provides comprehensive export capabilities for Obsidian vault data, enabling downstream analysis, reporting, and integration with external tools. It supports multiple output formats and export types for different use cases.

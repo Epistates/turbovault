@@ -1,5 +1,9 @@
 # turbovault-tools
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault-tools.svg)](https://crates.io/crates/turbovault-tools)
+[![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools)
+[![License](https://img.shields.io/crates/l/turbovault-tools.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+
 MCP Tools Layer - The bridge between AI agents and Obsidian vault operations.
 
 This crate implements the Model Context Protocol (MCP) tools that enable AI agents to discover, query, analyze, and manage Obsidian vaults through a structured, type-safe API. It orchestrates all vault operations by integrating the parser, graph, vault, batch, and export crates into a cohesive agent-friendly interface.

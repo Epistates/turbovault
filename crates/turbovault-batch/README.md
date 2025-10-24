@@ -1,5 +1,9 @@
 # turbovault-batch
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault-batch.svg)](https://crates.io/crates/turbovault-batch)
+[![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch)
+[![License](https://img.shields.io/crates/l/turbovault-batch.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+
 Atomic, transactional batch file operations for Obsidian vaults.
 
 This crate provides ACID-like transaction support for multi-file operations, ensuring vault integrity through atomic commits and rollback capabilities. It's designed for complex operations that need to modify multiple files while maintaining consistency.
@@ -31,8 +35,7 @@ This crate provides ACID-like transaction support for multi-file operations, ens
 │  │  - All operations succeed OR all fail                  │ │
 │  │  - Rollback on any failure                              │ │
 │  │  - Temporary file management                            │ │
-│  └─────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+│  └─────────────────────────────────────────────────────────┘
 ```
 
 **Design Philosophy:**

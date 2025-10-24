@@ -1,5 +1,9 @@
 # turbovault-parser
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault-parser.svg)](https://crates.io/crates/turbovault-parser)
+[![Docs.rs](https://docs.rs/turbovault-parser/badge.svg)](https://docs.rs/turbovault-parser)
+[![License](https://img.shields.io/crates/l/turbovault-parser.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+
 Obsidian Flavored Markdown (OFM) parser for extracting structured data from Obsidian vault files.
 
 This crate provides fast, production-ready parsing of Obsidian markdown files, extracting:

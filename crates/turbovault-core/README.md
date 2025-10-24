@@ -1,5 +1,9 @@
 # turbovault-core
 
+[![Crates.io](https://img.shields.io/crates/v/turbovault-core.svg)](https://crates.io/crates/turbovault-core)
+[![Docs.rs](https://docs.rs/turbovault-core/badge.svg)](https://docs.rs/turbovault-core)
+[![License](https://img.shields.io/crates/l/turbovault-core.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
+
 Core data models, error types, and configuration for the Obsidian vault management system.
 
 This crate provides the foundational types and utilities that all other TurboVault crates depend on. It defines the canonical data structures, error handling, configuration management, and cross-cutting concerns like metrics and validation.
