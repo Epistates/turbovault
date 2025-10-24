@@ -460,9 +460,7 @@ make clean       # Clean build artifacts
 
 ## Documentation
 
-- [CAPABILITIES.md](CAPABILITIES.md) — Comprehensive tool reference and feature deep-dives
-- [RELEASE_PREP_0.1.0.md](RELEASE_PREP_0.1.0.md) — Release checklist and publication guide
-- `docs/` — Additional guides (when available)
+[Docs](./docs/README.md)
 
 ## Examples
 

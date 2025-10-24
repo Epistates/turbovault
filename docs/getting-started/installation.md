@@ -1,6 +1,6 @@
 # Installation Guide
 
-Detailed installation instructions for TurboVault v0.1.1.
+Detailed installation instructions for TurboVault v0.1.2.
 
 ## System Requirements
 
