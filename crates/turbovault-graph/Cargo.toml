@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-publish = false
+publish = true
 description = "Link graph and note relationship analysis"
 documentation = "https://docs.rs/turbovault-graph"
 
