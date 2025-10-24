@@ -1,0 +1,27 @@
+# Global ignores
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.pyc
+*.pyo
+*.pyd
+.coverage
+htmlcov/
+
+# Environment
+.env
+.env.*
+
+# Private strategy docs (keep untracked)
+docs/strategy/
+.strategy/
+**/PRIVATE_*.md
+**/*_CONFIDENTIAL.md
+**/monetization*.md
+
+/target*
+
+*.md
+!README.md
+!**/README.md
