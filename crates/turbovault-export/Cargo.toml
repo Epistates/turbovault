@@ -1,0 +1,21 @@
+[package]
+name = "turbovault-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+description = "Reporting and export utilities for TurboVault Server"
+documentation = "https://docs.rs/turbovault-export"
+
+[dependencies]
+turbovault-core = { workspace = true }
+turbovault-vault = { workspace = true }
+
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
