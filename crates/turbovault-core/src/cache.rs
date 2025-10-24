@@ -58,7 +58,7 @@ impl VaultCache {
     pub async fn init() -> Result<Self> {
         let cache_dir = Self::get_cache_dir()?;
         let working_dir = std::env::current_dir()
-            .map_err(|e| Error::io(e))?;
+            .map_err(Error::io)?;
         let project_id = Self::get_project_id(&working_dir)?;
         let project_cache_dir = cache_dir.join("projects").join(&project_id);
 
