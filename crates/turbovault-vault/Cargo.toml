@@ -1,0 +1,38 @@
+[package]
+name = "turbovault-vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+description = "Vault management, file operations, and watching"
+documentation = "https://docs.rs/turbovault-vault"
+
+[dependencies]
+turbovault-core = { workspace = true }
+turbovault-parser = { workspace = true }
+turbovault-graph = { workspace = true }
+
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+notify = { workspace = true }
+walkdir = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+uuid = { workspace = true }
+
+# File editing & diff
+similar = { workspace = true }
+strsim = { workspace = true }
+sha2 = { workspace = true }
+unicode-normalization = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
