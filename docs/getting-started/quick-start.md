@@ -24,7 +24,7 @@ cargo install turbovault --features "http,websocket"
 Verify installation:
 ```bash
 turbovault --version
-# turbovault 0.1.2
+# turbovault 0.1.3
 ```
 
 ### Build from Source

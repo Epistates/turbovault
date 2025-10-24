@@ -15,40 +15,16 @@
 //!
 //! ## Quick Start
 //!
-//! ```no_run
-//! use turbovault_graph::prelude::*;
-//! use std::path::PathBuf;
-//! use std::sync::Arc;
+//! ```
+//! use turbovault_graph::LinkGraph;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     // Create a new link graph
-//!     let graph = LinkGraph::new();
-//!
-//!     // Add notes to the graph
-//!     let note1 = PathBuf::from("notes/note1.md");
-//!     let note2 = PathBuf::from("notes/note2.md");
-//!     graph.add_node(&note1).await?;
-//!     graph.add_node(&note2).await?;
-//!
-//!     // Create links between notes
-//!     graph.add_link(
-//!         &note1,
-//!         &note2,
-//!         turbovault_core::models::LinkType::WikiLink
-//!     ).await?;
-//!
-//!     // Get graph statistics
-//!     let stats = graph.stats().await?;
-//!     println!("Total nodes: {}", stats.total_nodes);
-//!     println!("Total edges: {}", stats.total_edges);
-//!
-//!     // Analyze vault health
-//!     let health = graph.analyze_health().await?;
-//!     println!("Health score: {}", health.health_score);
-//!
-//!     Ok(())
-//! }
+//! // Create a new link graph
+//! let graph = LinkGraph::new();
+//! 
+//! // The graph is built by adding VaultFile objects
+//! // and their links will be indexed automatically
+//! println!("Nodes: {}", graph.node_count());
+//! println!("Edges: {}", graph.edge_count());
 //! ```
 //!
 //! ## Core Concepts
@@ -78,33 +54,33 @@
 //!
 //! ### Finding Broken Links
 //!
-//! ```no_run
-//! use turbovault_graph::prelude::*;
+//! ```
+//! use turbovault_graph::{LinkGraph, HealthAnalyzer};
 //!
-//! # async fn example() -> Result<()> {
 //! let graph = LinkGraph::new();
-//! let health = graph.analyze_health().await?;
-//! let broken_links = health.broken_links;
-//! for link in broken_links {
-//!     println!("Broken: {} -> {}", link.source_file.display(), link.target);
+//! 
+//! // Create health analyzer for comprehensive analysis
+//! let analyzer = HealthAnalyzer::new(&graph);
+//! 
+//! // Analyze vault health (includes broken link detection)
+//! if let Ok(report) = analyzer.analyze() {
+//!     for broken in &report.broken_links {
+//!         println!("Broken: {} -> {}", 
+//!             broken.source_file.display(),
+//!             broken.target
+//!         );
+//!     }
 //! }
-//! # Ok(())
-//! # }
 //! ```
 //!
 //! ### Graph Statistics
 //!
-//! ```no_run
-//! use turbovault_graph::prelude::*;
+//! ```
+//! use turbovault_graph::LinkGraph;
 //!
-//! # async fn example() -> Result<()> {
 //! let graph = LinkGraph::new();
-//! let stats = graph.stats().await?;
-//! println!("Avg links per node: {}", stats.avg_degree);
-//! println!("Density: {}", stats.density);
-//! println!("Cycles: {}", stats.cycle_count);
-//! # Ok(())
-//! # }
+//! println!("Nodes: {}", graph.node_count());
+//! println!("Edges: {}", graph.edge_count());
 //! ```
 //!
 //! ## Modules

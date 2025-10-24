@@ -7,14 +7,17 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use turbovault_batch::prelude::*;
+//! use turbovault_core::ServerConfig;
+//! use turbovault_vault::VaultManager;
+//! use turbovault_batch::BatchExecutor;
+//! use turbovault_batch::BatchOperation;
 //! use std::sync::Arc;
 //! use std::path::PathBuf;
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     let vault_path = PathBuf::from("/path/to/vault");
-//!     let manager = turbovault_vault::VaultManager::new(&vault_path, Default::default()).await?;
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let config = ServerConfig::default();
+//!     let manager = VaultManager::new(config)?;
 //!     let executor = BatchExecutor::new(Arc::new(manager), PathBuf::from("/tmp"));
 //!
 //!     // Define batch operations

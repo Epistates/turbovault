@@ -1,6 +1,6 @@
 # TurboVault Documentation
 
-**Version 0.1.2** - Production-Ready Release
+**Version 0.1.3** - Production-Ready Release
 
 Welcome to the TurboVault documentation. This comprehensive guide will help you install, configure, and use TurboVault with your Obsidian vault.
 
@@ -41,14 +41,14 @@ TurboVault is built as a modular Rust workspace with **8 specialized crates**:
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| **turbovault** | Main MCP server binary | ✅ v0.1.2 |
-| **turbovault-core** | Core models & types | ✅ v0.1.2 |
-| **turbovault-parser** | Obsidian Flavored Markdown parser | ✅ v0.1.2 |
-| **turbovault-graph** | Link graph analysis & health | ✅ v0.1.2 |
-| **turbovault-vault** | File I/O, caching, validation | ✅ v0.1.2 |
-| **turbovault-batch** | Atomic multi-file operations | ✅ v0.1.2 |
-| **turbovault-export** | Data export utilities | ✅ v0.1.2 |
-| **turbovault-tools** | MCP tools implementation | ✅ v0.1.2 |
+| **turbovault** | Main MCP server binary | ✅ v0.1.3 |
+| **turbovault-core** | Core models & types | ✅ v0.1.3 |
+| **turbovault-parser** | Obsidian Flavored Markdown parser | ✅ v0.1.3 |
+| **turbovault-graph** | Link graph analysis & health | ✅ v0.1.3 |
+| **turbovault-vault** | File I/O, caching, validation | ✅ v0.1.3 |
+| **turbovault-batch** | Atomic multi-file operations | ✅ v0.1.3 |
+| **turbovault-export** | Data export utilities | ✅ v0.1.3 |
+| **turbovault-tools** | MCP tools implementation | ✅ v0.1.3 |
 
 ---
 
@@ -90,7 +90,7 @@ TurboVault is built as a modular Rust workspace with **8 specialized crates**:
 
 ## 🚀 Quick Installation
 
-### Latest Release (v0.1.2)
+### Latest Release (v0.1.3)
 
 ```bash
 # Minimal install (STDIO only, 7.0 MB - perfect for Claude Desktop)
@@ -145,5 +145,5 @@ turbovault --help
 ---
 
 **Last Updated**: 2025-01-24  
-**Version**: 0.1.2  
+**Version**: 0.1.3  
 **Status**: Production Ready ✅

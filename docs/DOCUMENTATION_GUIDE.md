@@ -302,7 +302,7 @@ pub fn my_function(param1: String) -> Result<()> {
 
 ## Version Information
 
-- **TurboVault Version**: 0.1.2
+- **TurboVault Version**: 0.1.3
 - **Rust Edition**: 2021
 - **Minimum Rust Version**: 1.90.0
 - **Last Updated**: October 24, 2025

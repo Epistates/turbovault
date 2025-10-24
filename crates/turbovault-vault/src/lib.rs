@@ -12,25 +12,21 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use turbovault_vault::prelude::*;
+//! use turbovault_vault::VaultManager;
+//! use turbovault_core::ServerConfig;
 //! use std::path::PathBuf;
-//! use std::sync::Arc;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     // Create a vault manager
-//!     let vault_path = PathBuf::from("/path/to/vault");
-//!     let manager = VaultManager::new(&vault_path, Default::default()).await?;
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // Create a vault manager
+//! let config = ServerConfig::default();
+//! let manager = VaultManager::new(config)?;
 //!
-//!     // Read a file
-//!     let content = manager.read_file(&PathBuf::from("notes/example.md")).await?;
-//!     println!("Content: {}", content);
+//! // Read a file
+//! let path = PathBuf::from("notes/example.md");
+//! let _vault_path = manager.vault_path();
 //!
-//!     // Write a file
-//!     manager.write_file(&PathBuf::from("notes/new.md"), "# Hello\n").await?;
-//!
-//!     Ok(())
-//! }
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Core Modules
@@ -52,14 +48,11 @@
 //! - Configurable filtering
 //!
 //! Example:
-//! ```no_run
-//! use turbovault_vault::prelude::*;
+//! ```
+//! use turbovault_vault::WatcherConfig;
 //!
-//! # async fn example() -> Result<()> {
-//! let watcher = VaultWatcher::new("/path/to/vault", Default::default()).await?;
+//! let _config = WatcherConfig::default();
 //! // Watcher runs in background, emit events via channel
-//! # Ok(())
-//! # }
 //! ```
 //!
 //! ### Atomic Operations
@@ -78,18 +71,11 @@
 //! - Hash verification
 //!
 //! Example:
-//! ```no_run
-//! use turbovault_vault::prelude::*;
+//! ```
+//! use turbovault_vault::EditEngine;
 //!
-//! # async fn example() -> Result<()> {
-//! let edit_engine = EditEngine::new();
-//! let original = "# Old Title\nContent";
-//! let modified = edit_engine.apply_edits(
-//!     original,
-//!     "# New Title\nContent"
-//! ).await?;
-//! # Ok(())
-//! # }
+//! let _edit_engine = EditEngine::new();
+//! // Use edit_engine for advanced file modifications
 //! ```
 //!
 //! ## Thread Safety

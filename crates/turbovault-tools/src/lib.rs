@@ -141,8 +141,7 @@
 //! ## Example Usage
 //!
 //! ```no_run
-//! use turbovault_tools::prelude::*;
-//! use std::sync::Arc;
+//! use turbovault_core::Result;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {

@@ -34,15 +34,18 @@
 //! - [ ] Pending task
 //! "#;
 //!
+//! let vault_path = PathBuf::from("/vault");
+//! let parser = Parser::new(vault_path);
+//! 
 //! let path = PathBuf::from("my-note.md");
-//! let result = Parser::parse(&path, content).unwrap();
-//!
-//! // Access parsed components
-//! if let Some(frontmatter) = &result.frontmatter {
-//!     println!("Title: {}", frontmatter.title.as_ref().unwrap_or(&"Untitled".to_string()));
+//! if let Ok(result) = parser.parse_file(&path, content) {
+//!     // Access parsed components
+//!     if let Some(frontmatter) = &result.frontmatter {
+//!         println!("Frontmatter data: {:?}", frontmatter.data);
+//!     }
+//!     println!("Links: {}", result.links.len());
+//!     println!("Tasks: {}", result.tasks.len());
 //! }
-//! println!("Links: {:?}", result.links.len());
-//! println!("Tasks: {:?}", result.tasks.len());
 //! ```
 //!
 //! ## Supported OFM Features

@@ -1,6 +1,6 @@
 # MCP Tools Reference
 
-Complete reference of all 38 MCP tools available in TurboVault v0.1.2.
+Complete reference of all 38 MCP tools available in TurboVault v0.1.3.
 
 ## File Operations (6 tools)
 

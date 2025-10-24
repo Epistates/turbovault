@@ -26,18 +26,16 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use turbovault::prelude::*;
+//! use turbovault_core::ServerConfig;
+//! use turbovault_vault::VaultManager;
 //!
 //! #[tokio::main]
-//! async fn main() -> Result<()> {
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Initialize vault configuration
 //!     let config = ServerConfig::default();
 //!     
 //!     // Create vault manager
-//!     let manager = turbovault_vault::VaultManager::new(
-//!         &config.vault.path,
-//!         Default::default()
-//!     ).await?;
+//!     let _manager = VaultManager::new(config)?;
 //!     
 //!     Ok(())
 //! }

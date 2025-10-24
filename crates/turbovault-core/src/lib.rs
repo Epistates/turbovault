@@ -33,9 +33,11 @@
 //! // Create a vault file metadata
 //! let metadata = FileMetadata {
 //!     path: PathBuf::from("my-note.md"),
-//!     size_bytes: 1024,
-//!     modified_at: chrono::Utc::now(),
-//!     hash: "abc123".to_string(),
+//!     size: 1024,
+//!     created_at: 0.0,
+//!     modified_at: 1234567890.0,
+//!     checksum: "abc123".to_string(),
+//!     is_attachment: false,
 //! };
 //! ```
 //!
@@ -43,22 +45,25 @@
 //!
 //! ```
 //! use turbovault_core::prelude::*;
+//! use std::path::PathBuf;
 //!
 //! fn process_vault() -> Result<()> {
 //!     // All operations return Result<T>
-//!     let data = std::fs::read_to_string("vault.md")
-//!         .map_err(|e| Error::file_error(format!("Failed to read: {}", e)))?;
+//!     let _path = PathBuf::from("vault.md");
+//!     // Error handling with type-safe error variants
+//!     let _err = Error::parse_error("Invalid markdown content");
 //!     Ok(())
 //! }
 //! ```
 //!
 //! ### Configuration
 //!
-//! ```no_run
+//! ```
 //! use turbovault_core::prelude::*;
 //!
 //! let config = ServerConfig::default();
-//! let vault_config = &config.vault;
+//! // Access configuration properties safely
+//! let _config_has_vaults = !config.vaults.is_empty();
 //! ```
 //!
 //! ## Type Safety

@@ -6,9 +6,9 @@
 //! ## Quick Start
 //!
 //! ```no_run
-//! use turbovault_export::prelude::*;
+//! use turbovault_export::{create_health_report, HealthReportExporter};
 //!
-//! # fn example() -> Result<()> {
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create a health report
 //! let report = create_health_report(
 //!     "my-vault",
@@ -119,9 +119,9 @@
 //!
 //! Example integration:
 //! ```no_run
-//! use turbovault_export::prelude::*;
+//! use turbovault_export::{create_health_report, HealthReportExporter};
 //!
-//! # async fn example() -> Result<()> {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Get health from graph analysis
 //! // let health = graph.analyze_health().await?;
 //!
