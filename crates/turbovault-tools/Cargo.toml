@@ -1,0 +1,41 @@
+[package]
+name = "turbovault-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+description = "MCP tools implementation using turbomcp"
+documentation = "https://docs.rs/turbovault-tools"
+
+[dependencies]
+turbovault-core = { workspace = true }
+turbovault-parser = { workspace = true }
+turbovault-graph = { workspace = true }
+turbovault-vault = { workspace = true }
+turbovault-batch = { workspace = true }
+turbovault-export = { workspace = true }
+
+# MCP server framework
+turbomcp = { version = "2.0", features = ["full"] }
+turbomcp-protocol = { version = "2.0" }
+turbomcp-server = { version = "2.0" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+shellexpand = { workspace = true }
+
+# Tier 1d: Production-grade full-text search
+tantivy = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tempfile = { workspace = true }
