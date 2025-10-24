@@ -20,6 +20,7 @@ pub mod profiles;
 pub mod resilience;
 pub mod utils;
 pub mod validation;
+pub mod cache;
 
 pub use config::*;
 pub use error::{Error, Result};

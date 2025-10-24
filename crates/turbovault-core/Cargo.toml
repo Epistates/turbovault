@@ -21,6 +21,7 @@ log = { workspace = true }
 regex = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 parking_lot = "0.12"  # For efficient RwLock in metrics
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
