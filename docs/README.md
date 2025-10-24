@@ -29,6 +29,9 @@ Welcome to the TurboVault documentation. This comprehensive guide will help you 
 - [Architecture](development/architecture.md) - System design and crate structure
 - [Building from Source](development/building.md) - Build instructions
 
+### Security
+- [mcp-scanner](security/mcp-scanner.md) - MCP Scanner results
+
 ### Support
 - [Troubleshooting Guide](troubleshooting/index.md) - Common issues and solutions
 - [FAQ](troubleshooting/faq.md) - Frequently asked questions

@@ -72,10 +72,6 @@ tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 
-[[bench]]
-name = "tool_benchmarks"
-harness = false
-
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
