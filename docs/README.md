@@ -1,57 +1,149 @@
-# Documentation
+# TurboVault Documentation
 
-Welcome to the TurboVault documentation. This guide will help you get started with TurboVault and explore its full capabilities.
+**Version 0.1.1** - Production-Ready Release
 
-## Getting Started
+Welcome to the TurboVault documentation. This comprehensive guide will help you install, configure, and use TurboVault with your Obsidian vault.
 
+## 📚 Table of Contents
+
+### Getting Started
 - [Quick Start Guide](getting-started/quick-start.md) - Get up and running in minutes
+- [Installation Guide](getting-started/installation.md) - Detailed installation instructions
 
-## Configuration
+### Configuration & Setup
+- [Configuration Guide](configuration/index.md) - Configure TurboVault for your environment
+- [Multi-Vault Setup](configuration/multi-vault.md) - Managing multiple vaults
 
-- [Configuration Guide](configuration/index.md) - Configure TurboVault for your needs
+### Usage & API
+- [API Reference](api-reference/index.md) - Complete reference for all MCP tools
+- [Tool Categories](api-reference/tools.md) - Organized tool reference
+- [Obsidian Flavored Markdown](api-reference/ofm.md) - OFM syntax guide
 
-## Deployment
+### Deployment
+- [Deployment Guide](deployment/index.md) - Deploy to production
+- [Claude Desktop Integration](deployment/claude-desktop.md) - Setup with Claude
+- [Docker Deployment](deployment/docker.md) - Containerized deployment
 
-- [Deployment Guide](deployment/index.md) - Deploy in production environments
-
-## API Reference
-
-- [API Reference](api-reference/index.md) - Complete reference for all 38 MCP tools
-
-## Development
-
+### Development
 - [Development Guide](development/index.md) - Contributing to TurboVault
+- [Architecture](development/architecture.md) - System design and crate structure
+- [Building from Source](development/building.md) - Build instructions
 
-## Troubleshooting
-
+### Support
 - [Troubleshooting Guide](troubleshooting/index.md) - Common issues and solutions
+- [FAQ](troubleshooting/faq.md) - Frequently asked questions
 
-## Architecture
+---
 
-TurboVault is built as a modular Rust workspace with 8 specialized crates:
+## 🏗️ Architecture Overview
 
-- **turbovault-core** - Core types, errors, and configuration
-- **turbovault-parser** - Obsidian Flavored Markdown (OFM) parsing
-- **turbovault-graph** - Link graph analysis and health diagnostics
-- **turbovault-vault** - File I/O, caching, and validation
-- **turbovault-batch** - Atomic multi-file operations
-- **turbovault-export** - Data export in JSON/CSV formats
-- **turbovault-tools** - MCP tools implementation (38 tools)
-- **turbovault-server** - CLI and MCP server
+TurboVault is built as a modular Rust workspace with **8 specialized crates**:
 
-## Key Features
+| Crate | Purpose | Status |
+|-------|---------|--------|
+| **turbovault** | Main MCP server binary | ✅ v0.1.1 |
+| **turbovault-core** | Core models & types | ✅ v0.1.1 |
+| **turbovault-parser** | Obsidian Flavored Markdown parser | ✅ v0.1.1 |
+| **turbovault-graph** | Link graph analysis & health | ✅ v0.1.1 |
+| **turbovault-vault** | File I/O, caching, validation | ✅ v0.1.1 |
+| **turbovault-batch** | Atomic multi-file operations | ✅ v0.1.1 |
+| **turbovault-export** | Data export utilities | ✅ v0.1.1 |
+| **turbovault-tools** | MCP tools implementation | ✅ v0.1.1 |
 
-- **38 MCP Tools** - Complete vault management API
-- **Full-Text Search** - Tantivy-powered search with TF-IDF ranking
-- **Link Graph Analysis** - Health scoring, hub detection, broken link analysis
-- **Template System** - Pre-built templates with field validation
-- **Batch Operations** - Atomic multi-file transactions
-- **Export & Reporting** - JSON/CSV exports for health reports
-- **Production Ready** - OpenTelemetry, structured logging, metrics
+---
 
-## Quick Links
+## ✨ Key Features
 
-- [GitHub Repository](https://github.com/epistates/TurboVault)
-- [Issues](https://github.com/epistates/TurboVault/issues)
-- [MCP Protocol](https://modelcontextprotocol.io)
-- [Obsidian](https://obsidian.md)
+### 🛠️ Comprehensive Tooling
+- **38 specialized MCP tools** for vault management
+- Full CRUD operations on notes
+- Template generation and management
+- Batch operations with atomic transactions
+
+### 🔍 Intelligent Search
+- **Full-text search** powered by Tantivy
+- TF-IDF ranking algorithm
+- Tag and metadata filtering
+- Advanced query support
+
+### 📊 Graph Analysis
+- **Link graph visualization** and analysis
+- Backlink tracking and discovery
+- Hub/spoke pattern detection
+- Broken link identification
+- Vault health scoring
+
+### 📑 Structured Data
+- **YAML frontmatter** parsing and validation
+- **Obsidian Flavored Markdown** support
+- Block references and embeds
+- Wikilinks with aliases
+- Callouts and admonitions
+
+### 🚀 Production Ready
+- **OpenTelemetry** observability
+- Structured JSON logging
+- Performance metrics
+- Error handling and resilience
+
+---
+
+## 🚀 Quick Installation
+
+### Latest Release (v0.1.1)
+
+```bash
+# Minimal install (STDIO only, 7.0 MB - perfect for Claude Desktop)
+cargo install turbovault
+
+# With HTTP server support
+cargo install turbovault --features http
+
+# With all transports (HTTP, WebSocket, TCP, Unix sockets)
+cargo install turbovault --features full
+```
+
+### Verify Installation
+
+```bash
+turbovault --version
+turbovault --help
+```
+
+---
+
+## 🔗 Links
+
+### Official Resources
+- **GitHub**: https://github.com/epistates/turbovault
+- **Crates.io**: https://crates.io/crates/turbovault
+- **Documentation**: https://docs.rs/turbovault
+- **Issues**: https://github.com/epistates/turbovault/issues
+
+### Related
+- **MCP Protocol**: https://modelcontextprotocol.io
+- **Obsidian**: https://obsidian.md
+- **Claude Desktop**: https://claude.ai/download
+
+---
+
+## 📖 Next Steps
+
+1. **New to TurboVault?** → Start with the [Quick Start Guide](getting-started/quick-start.md)
+2. **Ready to deploy?** → See the [Deployment Guide](deployment/index.md)
+3. **Need API details?** → Check the [API Reference](api-reference/index.md)
+4. **Contributing?** → Read the [Development Guide](development/index.md)
+
+---
+
+## ❓ Need Help?
+
+- Check the [Troubleshooting Guide](troubleshooting/index.md)
+- Review the [FAQ](troubleshooting/faq.md)
+- Open an issue on [GitHub](https://github.com/epistates/turbovault/issues)
+
+---
+
+**Last Updated**: 2025-01-24  
+**Version**: 0.1.1  
+**Status**: Production Ready ✅

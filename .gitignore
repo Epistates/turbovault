@@ -15,7 +15,6 @@ htmlcov/
 !.env.example
 
 # Private strategy docs (keep untracked)
-docs/strategy/
 .strategy/
 **/PRIVATE_*.md
 **/*_CONFIDENTIAL.md
@@ -23,6 +22,12 @@ docs/strategy/
 
 /target*
 
+# Exclude markdown files EXCEPT for documentation and README files
 *.md
 !README.md
-!**/README.md
+!docs/**/*.md
+!CHANGELOG.md
+!RELEASE*.md
+!PUBLISH*.md
+!/LICENSE*
+!LICENSE
