@@ -12,6 +12,12 @@ homepage = "https://github.com/epistates/turbovault"
 documentation = "https://docs.rs/turbovault-server"
 readme = "README.md"
 keywords = ["mcp", "vault", "agent", "server", "rust"]
+include = [
+  "src/",
+  "resources/",
+  "Cargo.toml",
+  "README.md",
+]
 
 [features]
 # Transport support - pick what you need, a la carte style
