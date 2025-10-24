@@ -1,0 +1,27 @@
+[package]
+name = "turbovault-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+description = "Core data models and types for TurboVault Server"
+documentation = "https://docs.rs/turbovault-core"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+regex = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+parking_lot = "0.12"  # For efficient RwLock in metrics
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
