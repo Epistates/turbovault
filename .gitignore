@@ -12,6 +12,7 @@ htmlcov/
 # Environment
 .env
 .env.*
+!.env.example
 
 # Private strategy docs (keep untracked)
 docs/strategy/
