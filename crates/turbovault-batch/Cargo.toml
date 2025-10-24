@@ -1,0 +1,24 @@
+[package]
+name = "turbovault-batch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = true
+description = "Coordinated multi-file batch operations for Obsidian vaults"
+documentation = "https://docs.rs/turbovault-batch"
+
+[dependencies]
+turbovault-core = { workspace = true }
+turbovault-vault = { workspace = true }
+
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
