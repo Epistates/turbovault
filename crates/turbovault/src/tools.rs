@@ -1681,19 +1681,19 @@ impl ObsidianMcpServer {
     /// Complete Obsidian Flavored Markdown syntax guide
     #[resource("obsidian://syntax/complete-guide")]
     async fn ofm_complete_guide_resource(&self) -> McpResult<String> {
-        Ok(include_str!("../resources/obsidian_flavored_markdown_system_prompt.md").to_string())
+        Ok(crate::resources::OFM_SYNTAX_GUIDE.to_string())
     }
 
     /// Quick reference for Obsidian Flavored Markdown
     #[resource("obsidian://syntax/quick-ref")]
     async fn ofm_quick_reference_resource(&self) -> McpResult<String> {
-        Ok(include_str!("../resources/ofm_quick_reference.md").to_string())
+        Ok(crate::resources::OFM_QUICK_REFERENCE.to_string())
     }
 
     /// Example note demonstrating all OFM features
     #[resource("obsidian://examples/sample-note")]
     async fn ofm_example_note_resource(&self) -> McpResult<String> {
-        Ok(include_str!("../resources/ofm_example_note.md").to_string())
+        Ok(crate::resources::OFM_EXAMPLE_NOTE.to_string())
     }
 
     // ==================== OFM Documentation Tools (Resource Fallback) ====================
@@ -1707,8 +1707,7 @@ impl ObsidianMcpServer {
         examples = []
     )]
     async fn get_ofm_syntax_guide(&self) -> McpResult<serde_json::Value> {
-        let guide =
-            include_str!("../resources/obsidian_flavored_markdown_system_prompt.md").to_string();
+        let guide = crate::resources::OFM_SYNTAX_GUIDE.to_string();
 
         Ok(serde_json::json!({
             "title": "Obsidian Flavored Markdown - Complete Syntax Guide",
@@ -1739,7 +1738,7 @@ impl ObsidianMcpServer {
         examples = []
     )]
     async fn get_ofm_quick_ref(&self) -> McpResult<serde_json::Value> {
-        let quick_ref = include_str!("../resources/ofm_quick_reference.md").to_string();
+        let quick_ref = crate::resources::OFM_QUICK_REFERENCE.to_string();
 
         Ok(serde_json::json!({
             "title": "Obsidian Flavored Markdown - Quick Reference",
@@ -1769,7 +1768,7 @@ impl ObsidianMcpServer {
         examples = []
     )]
     async fn get_ofm_examples(&self) -> McpResult<serde_json::Value> {
-        let examples = include_str!("../resources/ofm_example_note.md").to_string();
+        let examples = crate::resources::OFM_EXAMPLE_NOTE.to_string();
 
         Ok(serde_json::json!({
             "title": "Obsidian Flavored Markdown - Complete Example Note",

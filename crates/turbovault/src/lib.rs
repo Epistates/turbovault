@@ -64,6 +64,7 @@
 //! - `turbovault_graph` - Graph analysis (see <https://docs.rs/turbovault-graph>)
 //! - `turbovault_batch` - Batch operations (see <https://docs.rs/turbovault-batch>)
 
+pub mod resources;
 pub mod tools;
 
 pub use tools::ObsidianMcpServer;
