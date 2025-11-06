@@ -1,9 +1,9 @@
 //! File operation tools for the Obsidian MCP server
 
-use turbovault_core::prelude::*;
-use turbovault_vault::VaultManager;
 use std::path::PathBuf;
 use std::sync::Arc;
+use turbovault_core::prelude::*;
+use turbovault_vault::VaultManager;
 
 /// File tools context
 #[derive(Clone)]

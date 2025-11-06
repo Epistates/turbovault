@@ -1,8 +1,8 @@
 //! Heading parser: # H1, ## H2, etc.
 
 use lazy_static::lazy_static;
-use turbovault_core::{Heading, SourcePosition};
 use regex::Regex;
+use turbovault_core::{Heading, SourcePosition};
 
 lazy_static! {
     /// Matches # Heading, ## Heading, etc.

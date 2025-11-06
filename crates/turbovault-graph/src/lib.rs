@@ -20,7 +20,7 @@
 //!
 //! // Create a new link graph
 //! let graph = LinkGraph::new();
-//! 
+//!
 //! // The graph is built by adding VaultFile objects
 //! // and their links will be indexed automatically
 //! println!("Nodes: {}", graph.node_count());
@@ -58,14 +58,14 @@
 //! use turbovault_graph::{LinkGraph, HealthAnalyzer};
 //!
 //! let graph = LinkGraph::new();
-//! 
+//!
 //! // Create health analyzer for comprehensive analysis
 //! let analyzer = HealthAnalyzer::new(&graph);
-//! 
+//!
 //! // Analyze vault health (includes broken link detection)
 //! if let Ok(report) = analyzer.analyze() {
 //!     for broken in &report.broken_links {
-//!         println!("Broken: {} -> {}", 
+//!         println!("Broken: {} -> {}",
 //!             broken.source_file.display(),
 //!             broken.target
 //!         );

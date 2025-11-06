@@ -1,8 +1,8 @@
 //! Callout parser: > `[!NOTE]`, > `[!TIP]`, etc.
 
 use lazy_static::lazy_static;
-use turbovault_core::{Callout, CalloutType, SourcePosition};
 use regex::Regex;
+use turbovault_core::{Callout, CalloutType, SourcePosition};
 
 lazy_static! {
     /// Matches > [!TYPE] callout start

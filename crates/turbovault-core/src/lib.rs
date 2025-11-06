@@ -74,6 +74,7 @@
 //! - [`Severity`] - Validation issue severity levels
 //! - [`models`] - Rich data models with position tracking
 
+pub mod cache;
 pub mod config;
 pub mod error;
 pub mod metrics;
@@ -83,7 +84,6 @@ pub mod profiles;
 pub mod resilience;
 pub mod utils;
 pub mod validation;
-pub mod cache;
 
 pub use config::*;
 pub use error::{Error, Result};

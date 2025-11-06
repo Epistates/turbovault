@@ -22,10 +22,10 @@
 
 use crate::config::VaultConfig;
 use crate::error::{Error, Result};
-use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use tokio::fs;
-use sha2::{Sha256, Digest};
 
 /// Cache metadata: which vault is active and when cache was last updated
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,16 +57,15 @@ impl VaultCache {
     /// Auto-detects project using markers (.git, .obsidian, Cargo.toml, package.json)
     pub async fn init() -> Result<Self> {
         let cache_dir = Self::get_cache_dir()?;
-        let working_dir = std::env::current_dir()
-            .map_err(Error::io)?;
+        let working_dir = std::env::current_dir().map_err(Error::io)?;
         let project_id = Self::get_project_id(&working_dir)?;
         let project_cache_dir = cache_dir.join("projects").join(&project_id);
 
         // Create project cache directory if it doesn't exist
         if !project_cache_dir.exists() {
-            fs::create_dir_all(&project_cache_dir).await.map_err(|e| {
-                Error::io(e)
-            })?;
+            fs::create_dir_all(&project_cache_dir)
+                .await
+                .map_err(Error::io)?;
         }
 
         Ok(Self {
@@ -87,9 +86,9 @@ impl VaultCache {
 
         // Create project cache directory if it doesn't exist
         if !project_cache_dir.exists() {
-            fs::create_dir_all(&project_cache_dir).await.map_err(|e| {
-                Error::io(e)
-            })?;
+            fs::create_dir_all(&project_cache_dir)
+                .await
+                .map_err(Error::io)?;
         }
 
         Ok(Self {
@@ -106,16 +105,21 @@ impl VaultCache {
     /// Returns a hash of the project root directory path
     fn get_project_id(start_path: &Path) -> Result<String> {
         // Look for project markers going up the directory tree
-        let markers = vec![".git", ".obsidian", "Cargo.toml", "package.json", ".project"];
-        
+        let markers = vec![
+            ".git",
+            ".obsidian",
+            "Cargo.toml",
+            "package.json",
+            ".project",
+        ];
+
         let mut current = start_path.to_path_buf();
         loop {
             for marker in &markers {
                 let marker_path = current.join(marker);
                 if marker_path.exists() {
                     // Found a project marker - use this directory as project root
-                    let canonical = current.canonicalize()
-                        .unwrap_or_else(|_| current.clone());
+                    let canonical = current.canonicalize().unwrap_or_else(|_| current.clone());
                     let project_id = Self::hash_path(&canonical);
                     log::debug!(
                         "Detected project root: {} (hash: {})",
@@ -130,7 +134,8 @@ impl VaultCache {
             if !current.pop() {
                 // Reached filesystem root without finding markers
                 // Use the original start path as project identifier
-                let canonical = start_path.canonicalize()
+                let canonical = start_path
+                    .canonicalize()
                     .unwrap_or_else(|_| start_path.to_path_buf());
                 let project_id = Self::hash_path(&canonical);
                 log::debug!(
@@ -163,7 +168,9 @@ impl VaultCache {
         #[cfg(target_os = "windows")]
         {
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                return Ok(PathBuf::from(local_app_data).join("turbovault").join("cache"));
+                return Ok(PathBuf::from(local_app_data)
+                    .join("turbovault")
+                    .join("cache"));
             }
         }
 
@@ -185,19 +192,14 @@ impl VaultCache {
     }
 
     /// Save vault configurations and metadata
-    pub async fn save_vaults(
-        &self,
-        vaults: &[VaultConfig],
-        active_vault: &str,
-    ) -> Result<()> {
+    pub async fn save_vaults(&self, vaults: &[VaultConfig], active_vault: &str) -> Result<()> {
         // Save vaults as YAML
-        let vaults_yaml = serde_yaml::to_string(vaults).map_err(|e| {
-            Error::config_error(format!("Failed to serialize vaults: {}", e))
-        })?;
+        let vaults_yaml = serde_yaml::to_string(vaults)
+            .map_err(|e| Error::config_error(format!("Failed to serialize vaults: {}", e)))?;
 
-        fs::write(&self.vaults_file, vaults_yaml).await.map_err(|e| {
-            Error::io(e)
-        })?;
+        fs::write(&self.vaults_file, vaults_yaml)
+            .await
+            .map_err(Error::io)?;
 
         // Save metadata as JSON
         let metadata = CacheMetadata {
@@ -208,13 +210,12 @@ impl VaultCache {
             working_dir: self.working_dir.to_string_lossy().to_string(),
         };
 
-        let metadata_json = serde_json::to_string_pretty(&metadata).map_err(|e| {
-            Error::config_error(format!("Failed to serialize metadata: {}", e))
-        })?;
+        let metadata_json = serde_json::to_string_pretty(&metadata)
+            .map_err(|e| Error::config_error(format!("Failed to serialize metadata: {}", e)))?;
 
-        fs::write(&self.metadata_file, metadata_json).await.map_err(|e| {
-            Error::io(e)
-        })?;
+        fs::write(&self.metadata_file, metadata_json)
+            .await
+            .map_err(Error::io)?;
 
         log::debug!(
             "Saved {} vaults to project cache {} (active: {})",
@@ -232,13 +233,12 @@ impl VaultCache {
             return Ok(Vec::new()); // No cache yet
         }
 
-        let content = fs::read_to_string(&self.vaults_file).await.map_err(|e| {
-            Error::io(e)
-        })?;
+        let content = fs::read_to_string(&self.vaults_file)
+            .await
+            .map_err(Error::io)?;
 
-        let vaults = serde_yaml::from_str(&content).map_err(|e| {
-            Error::config_error(format!("Invalid vaults cache format: {}", e))
-        })?;
+        let vaults = serde_yaml::from_str(&content)
+            .map_err(|e| Error::config_error(format!("Invalid vaults cache format: {}", e)))?;
 
         log::debug!("Loaded vaults from project cache {}", self.project_id);
 
@@ -257,13 +257,12 @@ impl VaultCache {
             });
         }
 
-        let content = fs::read_to_string(&self.metadata_file).await.map_err(|e| {
-            Error::io(e)
-        })?;
+        let content = fs::read_to_string(&self.metadata_file)
+            .await
+            .map_err(Error::io)?;
 
-        let metadata = serde_json::from_str(&content).map_err(|e| {
-            Error::config_error(format!("Invalid metadata cache format: {}", e))
-        })?;
+        let metadata = serde_json::from_str(&content)
+            .map_err(|e| Error::config_error(format!("Invalid metadata cache format: {}", e)))?;
 
         Ok(metadata)
     }
@@ -271,15 +270,15 @@ impl VaultCache {
     /// Clear all cached data for this project
     pub async fn clear(&self) -> Result<()> {
         if self.vaults_file.exists() {
-            fs::remove_file(&self.vaults_file).await.map_err(|e| {
-                Error::io(e)
-            })?;
+            fs::remove_file(&self.vaults_file)
+                .await
+                .map_err(Error::io)?;
         }
 
         if self.metadata_file.exists() {
-            fs::remove_file(&self.metadata_file).await.map_err(|e| {
-                Error::io(e)
-            })?;
+            fs::remove_file(&self.metadata_file)
+                .await
+                .map_err(Error::io)?;
         }
 
         log::info!("Cache cleared for project {}", self.project_id);

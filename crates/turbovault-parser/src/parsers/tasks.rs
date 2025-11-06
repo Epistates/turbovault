@@ -1,8 +1,8 @@
 //! Task parser: `- [ ] Task`, `- [x] Completed`
 
 use lazy_static::lazy_static;
-use turbovault_core::{SourcePosition, TaskItem};
 use regex::Regex;
+use turbovault_core::{SourcePosition, TaskItem};
 
 lazy_static! {
     /// Matches - [ ] or - [x] followed by task text

@@ -3,7 +3,6 @@
 //! Provides real-time notification of file system events (create, modify, delete)
 //! for markdown files in the vault. Built on notify crate with async event streaming.
 
-use turbovault_core::{Error, Result};
 use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher,
 };
@@ -11,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
+use turbovault_core::{Error, Result};
 
 /// File system event types relevant to vault operations
 #[derive(Debug, Clone, PartialEq, Eq)]

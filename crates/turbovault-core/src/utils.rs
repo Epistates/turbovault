@@ -13,9 +13,8 @@ use std::time::Instant;
 /// Generic JSON serialization with consistent error handling
 /// Works with any type that implements Serialize (including slices)
 pub fn to_json_string<T: serde::Serialize + ?Sized>(data: &T, context: &str) -> Result<String> {
-    serde_json::to_string_pretty(data).map_err(|e| {
-        Error::config_error(format!("Failed to serialize {} as JSON: {}", context, e))
-    })
+    serde_json::to_string_pretty(data)
+        .map_err(|e| Error::config_error(format!("Failed to serialize {} as JSON: {}", context, e)))
 }
 
 /// Generic CSV serialization builder
@@ -36,7 +35,8 @@ impl CSVBuilder {
 
     /// Add a row of data
     pub fn add_row(mut self, values: Vec<&str>) -> Self {
-        self.rows.push(values.iter().map(|s| s.to_string()).collect());
+        self.rows
+            .push(values.iter().map(|s| s.to_string()).collect());
         self
     }
 
@@ -67,7 +67,8 @@ impl PathValidator {
 
         // Canonicalize would require the path to exist. Instead, we check if
         // the normalized path is still within vault_root by comparing components.
-        let canonical_vault = vault_root.canonicalize()
+        let canonical_vault = vault_root
+            .canonicalize()
             .unwrap_or_else(|_| vault_root.to_path_buf());
 
         // For non-existent paths, at least check that it doesn't escape via ..

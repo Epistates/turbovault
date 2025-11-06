@@ -1,10 +1,10 @@
 //! Integration tests for all 38 MCP tools through the server interface
 //! Tests the complete workflow from MCP call to response
 
-use turbovault_core::{ConfigProfile, VaultConfig};
-use turbovault::ObsidianMcpServer;
 use tempfile::TempDir;
 use tokio::fs;
+use turbovault::ObsidianMcpServer;
+use turbovault_core::{ConfigProfile, VaultConfig};
 
 /// Setup test vault with sample data
 async fn setup_integration_vault() -> (TempDir, ObsidianMcpServer) {

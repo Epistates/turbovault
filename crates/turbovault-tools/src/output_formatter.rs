@@ -8,8 +8,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Output format preference for HTTP/WebSocket/TCP transports
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputFormat {
     /// JSON format (default, also required for STDIO transport)
     #[default]
@@ -96,25 +95,27 @@ impl ResponseFormatter {
 
             // Warnings
             if let Some(warnings) = obj.get("warnings").and_then(|v| v.as_array())
-                && !warnings.is_empty() {
-                    output.push_str("\n⚠️  Warnings:\n");
-                    for warning in warnings {
-                        if let Some(msg) = warning.as_str() {
-                            output.push_str(&format!("  • {}\n", msg));
-                        }
+                && !warnings.is_empty()
+            {
+                output.push_str("\n⚠️  Warnings:\n");
+                for warning in warnings {
+                    if let Some(msg) = warning.as_str() {
+                        output.push_str(&format!("  • {}\n", msg));
                     }
                 }
+            }
 
             // Next steps
             if let Some(steps) = obj.get("next_steps").and_then(|v| v.as_array())
-                && !steps.is_empty() {
-                    output.push_str("\n👉 Next Steps:\n");
-                    for (i, step) in steps.iter().enumerate() {
-                        if let Some(s) = step.as_str() {
-                            output.push_str(&format!("  {}. {}\n", i + 1, s));
-                        }
+                && !steps.is_empty()
+            {
+                output.push_str("\n👉 Next Steps:\n");
+                for (i, step) in steps.iter().enumerate() {
+                    if let Some(s) = step.as_str() {
+                        output.push_str(&format!("  {}. {}\n", i + 1, s));
                     }
                 }
+            }
 
             // Performance metric
             if let Some(took) = obj.get("took_ms").and_then(|v| v.as_u64()) {
@@ -141,7 +142,11 @@ impl ResponseFormatter {
         if let Some(obj) = response.as_object() {
             // Minimal output - just the key facts
             if let Some(success) = obj.get("success").and_then(|v| v.as_bool()) {
-                output.push_str(if success { "✓ Success\n" } else { "✗ Failed\n" });
+                output.push_str(if success {
+                    "✓ Success\n"
+                } else {
+                    "✗ Failed\n"
+                });
             }
 
             if let Some(op) = obj.get("operation").and_then(|v| v.as_str()) {
@@ -204,11 +209,18 @@ impl ResponseFormatter {
                                 result.push_str(&format!("{}  [{}] {}\n", indent_str, i, item));
                             }
                             if arr.len() > 3 {
-                                result.push_str(&format!("{}  ... and {} more\n", indent_str, arr.len() - 3));
+                                result.push_str(&format!(
+                                    "{}  ... and {} more\n",
+                                    indent_str,
+                                    arr.len() - 3
+                                ));
                             }
                         }
                         Value::Object(_) => {
-                            result.push_str(&format!("{}\n", Self::format_value_indented(val, indent + 2)));
+                            result.push_str(&format!(
+                                "{}\n",
+                                Self::format_value_indented(val, indent + 2)
+                            ));
                         }
                         Value::Null => result.push_str("null\n"),
                     }
@@ -241,7 +253,10 @@ mod tests {
     fn test_output_format_parse() {
         assert_eq!(OutputFormat::from_str("json").unwrap(), OutputFormat::Json);
         assert_eq!(OutputFormat::from_str("JSON").unwrap(), OutputFormat::Json);
-        assert_eq!(OutputFormat::from_str("human").unwrap(), OutputFormat::Human);
+        assert_eq!(
+            OutputFormat::from_str("human").unwrap(),
+            OutputFormat::Human
+        );
         assert_eq!(OutputFormat::from_str("text").unwrap(), OutputFormat::Text);
         assert!(OutputFormat::from_str("invalid").is_err());
     }

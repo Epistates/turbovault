@@ -18,9 +18,7 @@ turbovault-batch = { workspace = true }
 turbovault-export = { workspace = true }
 
 # MCP server framework
-turbomcp = { version = "2.0.5", features = ["full"] }
-turbomcp-protocol = { version = "2.0.5" }
-turbomcp-server = { version = "2.0.5" }
+turbomcp = { version = "2.2.1", features = ["full"] }
 
 tokio = { workspace = true }
 serde = { workspace = true }

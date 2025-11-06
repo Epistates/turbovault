@@ -1,10 +1,10 @@
 //! Unit tests for SearchTools
 
+use std::sync::Arc;
+use tempfile::TempDir;
 use turbovault_core::{ConfigProfile, VaultConfig};
 use turbovault_tools::SearchTools;
 use turbovault_vault::VaultManager;
-use std::sync::Arc;
-use tempfile::TempDir;
 
 async fn setup_test_vault_with_links() -> (TempDir, Arc<VaultManager>) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");

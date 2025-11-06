@@ -1,12 +1,12 @@
 //! TurboVault Server CLI
 
 use clap::Parser;
-use turbovault_core::VaultConfig;
-use turbovault_core::cache::VaultCache;
-use turbovault::ObsidianMcpServer;
-use turbovault_tools::OutputFormat;
 use std::path::PathBuf;
 use turbomcp_server::observability::ObservabilityConfig;
+use turbovault::ObsidianMcpServer;
+use turbovault_core::VaultConfig;
+use turbovault_core::cache::VaultCache;
+use turbovault_tools::OutputFormat;
 
 /// TurboVault Server - AI-powered vault management
 #[derive(Parser, Debug)]
@@ -103,7 +103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     log::info!("Turbo Vault MCP Server v{}", env!("CARGO_PKG_VERSION"));
-    log::info!("Transport: {} | Log format: {:?}", args.transport, output_format);
+    log::info!(
+        "Transport: {} | Log format: {:?}",
+        args.transport,
+        output_format
+    );
 
     // Create vault-agnostic server instance (no vault required at startup)
     let server =
@@ -113,7 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize persistent cache in the server
     if let Err(e) = server.init_cache().await {
-        log::warn!("Failed to initialize server cache: {}. Cache persistence will be unavailable.", e);
+        log::warn!(
+            "Failed to initialize server cache: {}. Cache persistence will be unavailable.",
+            e
+        );
     }
 
     // CACHE RECOVERY: Load previously registered vaults for this project
@@ -126,13 +133,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
 
             // Load cached vaults
-            let cached_vaults = cache
-                .load_vaults()
-                .await
-                .unwrap_or_else(|e| {
-                    log::warn!("Failed to load cached vaults: {}", e);
-                    vec![]
-                });
+            let cached_vaults = cache.load_vaults().await.unwrap_or_else(|e| {
+                log::warn!("Failed to load cached vaults: {}", e);
+                vec![]
+            });
 
             if !cached_vaults.is_empty() {
                 log::info!(
@@ -154,26 +158,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Err(e) => {
                             log::warn!(
                                 "Failed to restore vault '{}': {}. Skipping.",
-                                vault_config.name, e
+                                vault_config.name,
+                                e
                             );
                         }
                     }
                 }
 
                 // Restore active vault
-                let metadata = cache
-                    .load_metadata()
-                    .await
-                    .unwrap_or_else(|e| {
-                        log::warn!("Failed to load cache metadata: {}", e);
-                        turbovault_core::cache::CacheMetadata {
-                            active_vault: String::new(),
-                            last_updated: 0,
-                            version: 1,
-                            project_id: cache.project_id().to_string(),
-                            working_dir: cache.working_dir().to_string_lossy().to_string(),
-                        }
-                    });
+                let metadata = cache.load_metadata().await.unwrap_or_else(|e| {
+                    log::warn!("Failed to load cache metadata: {}", e);
+                    turbovault_core::cache::CacheMetadata {
+                        active_vault: String::new(),
+                        last_updated: 0,
+                        version: 1,
+                        project_id: cache.project_id().to_string(),
+                        working_dir: cache.working_dir().to_string_lossy().to_string(),
+                    }
+                });
 
                 if !metadata.active_vault.is_empty() {
                     match server
@@ -190,7 +192,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Err(e) => {
                             log::warn!(
                                 "Failed to restore active vault '{}': {}",
-                                metadata.active_vault, e
+                                metadata.active_vault,
+                                e
                             );
                         }
                     }
@@ -200,7 +203,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Err(e) => {
-            log::warn!("Failed to initialize cache: {}. Continuing without cache recovery.", e);
+            log::warn!(
+                "Failed to initialize cache: {}. Continuing without cache recovery.",
+                e
+            );
         }
     }
 
@@ -281,7 +287,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(not(feature = "websocket"))]
             if transport == "websocket" {
-                return Err("WebSocket transport not enabled. Rebuild with --features websocket".into());
+                return Err(
+                    "WebSocket transport not enabled. Rebuild with --features websocket".into(),
+                );
             }
             #[cfg(not(feature = "tcp"))]
             if transport == "tcp" {
@@ -289,13 +297,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(not(feature = "unix"))]
             if transport == "unix" {
-                return Err("Unix socket transport not enabled. Rebuild with --features unix".into());
+                return Err(
+                    "Unix socket transport not enabled. Rebuild with --features unix".into(),
+                );
             }
             return Err(format!(
                 "Unknown transport '{}'. Valid options: stdio{}{}{}{}",
                 transport,
                 if cfg!(feature = "http") { ", http" } else { "" },
-                if cfg!(feature = "websocket") { ", websocket" } else { "" },
+                if cfg!(feature = "websocket") {
+                    ", websocket"
+                } else {
+                    ""
+                },
                 if cfg!(feature = "tcp") { ", tcp" } else { "" },
                 if cfg!(feature = "unix") { ", unix" } else { "" },
             )

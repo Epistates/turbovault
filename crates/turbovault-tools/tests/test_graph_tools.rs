@@ -1,10 +1,10 @@
 //! Unit tests for GraphTools
 
+use std::sync::Arc;
+use tempfile::TempDir;
 use turbovault_core::{ConfigProfile, VaultConfig};
 use turbovault_tools::GraphTools;
 use turbovault_vault::VaultManager;
-use std::sync::Arc;
-use tempfile::TempDir;
 
 async fn setup_test_vault_with_graph() -> (TempDir, Arc<VaultManager>) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");

@@ -1,8 +1,8 @@
 //! Test tilde expansion in vault paths
 
+use std::path::PathBuf;
 use turbovault_core::prelude::*;
 use turbovault_tools::VaultLifecycleTools;
-use std::path::PathBuf;
 
 #[tokio::test]
 async fn test_create_vault_with_tilde_expansion() {

@@ -1,14 +1,14 @@
 //! Vault manager implementation with file watching and caching
 
-use turbovault_core::prelude::*;
-use turbovault_graph::LinkGraph;
-use turbovault_parser::Parser;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::instrument;
+use turbovault_core::prelude::*;
+use turbovault_graph::LinkGraph;
+use turbovault_parser::Parser;
 
 /// File cache entry with timestamp
 #[derive(Debug, Clone)]

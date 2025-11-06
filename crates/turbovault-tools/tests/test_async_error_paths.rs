@@ -1,11 +1,11 @@
 //! Comprehensive async error path tests
 //! Tests error handling in async Result functions across all tools
 
+use std::sync::Arc;
+use tempfile::TempDir;
 use turbovault_core::{ConfigProfile, VaultConfig};
 use turbovault_tools::*;
 use turbovault_vault::VaultManager;
-use std::sync::Arc;
-use tempfile::TempDir;
 
 async fn setup_minimal_vault() -> (TempDir, Arc<VaultManager>) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");

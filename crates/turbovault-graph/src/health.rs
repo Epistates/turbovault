@@ -4,10 +4,10 @@
 //! finding orphaned notes, and analyzing connectivity patterns.
 
 use crate::graph::LinkGraph;
-use turbovault_core::{Link, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use turbovault_core::{Link, Result};
 
 /// A broken link in the vault
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,9 +287,9 @@ impl<'a> HealthAnalyzer<'a> {
 mod tests {
     use super::*;
     use crate::graph::LinkGraph;
-    use turbovault_core::{FileMetadata, LinkType, SourcePosition, VaultFile};
     use std::collections::HashSet;
     use std::path::PathBuf;
+    use turbovault_core::{FileMetadata, LinkType, SourcePosition, VaultFile};
 
     fn create_test_file(path: &str) -> VaultFile {
         VaultFile {

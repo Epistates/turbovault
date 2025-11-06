@@ -6,11 +6,11 @@
 //! - Create consistently-formatted notes
 //! - Validate notes against templates
 
-use turbovault_vault::VaultManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use turbovault_vault::VaultManager;
 
 /// Field types for template parameters
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

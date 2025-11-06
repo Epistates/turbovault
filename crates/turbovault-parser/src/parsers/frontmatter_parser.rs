@@ -1,8 +1,8 @@
 //! Frontmatter extraction: ---\nYAML\n---
 
 use lazy_static::lazy_static;
-use turbovault_core::Result;
 use regex::Regex;
+use turbovault_core::Result;
 
 lazy_static! {
     /// Matches YAML frontmatter: --- ... ---

@@ -49,10 +49,8 @@ turbovault-vault = { workspace = true }
 turbovault-tools = { workspace = true }
 
 # MCP server framework (features passed through from turbovault)
-turbomcp = { version = "2.0.5" }
-turbomcp-protocol = { version = "2.0.5" }
-turbomcp-server = { version = "2.0.5" }
-turbomcp-transport = { version = "2.0.5" }
+turbomcp = { version = "2.2.1" }
+turbomcp-server = { version = "2.2.1" }
 
 tokio = { workspace = true }
 serde = { workspace = true }

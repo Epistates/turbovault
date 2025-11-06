@@ -1,10 +1,10 @@
 //! Integration test for search engine with the TEST vault
 
+use std::path::PathBuf;
+use std::sync::Arc;
 use turbovault_core::config::{ServerConfig, VaultConfig};
 use turbovault_tools::search_engine::SearchEngine;
 use turbovault_vault::VaultManager;
-use std::path::PathBuf;
-use std::sync::Arc;
 
 fn create_test_config(vault_path: &PathBuf) -> ServerConfig {
     let mut config = ServerConfig::new();

@@ -7,8 +7,6 @@
 //! - Fuzzy/approximate queries via regex
 //! - Fast searching even on large vaults
 
-use turbovault_core::prelude::*;
-use turbovault_vault::VaultManager;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +15,8 @@ use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::{Index, ReloadPolicy, TantivyDocument, doc};
 use tracing::instrument;
+use turbovault_core::prelude::*;
+use turbovault_vault::VaultManager;
 
 /// Search result metadata for LLM consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]

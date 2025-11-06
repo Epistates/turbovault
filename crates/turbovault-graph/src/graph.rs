@@ -1,10 +1,10 @@
 //! Link graph using petgraph for vault relationship analysis
 
-use turbovault_core::prelude::*;
 use petgraph::algo::kosaraju_scc;
 use petgraph::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use turbovault_core::prelude::*;
 
 /// Node index type for graph
 type NodeIndex = petgraph::graph::NodeIndex;

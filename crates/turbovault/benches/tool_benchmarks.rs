@@ -1,12 +1,12 @@
 //! Performance benchmarks for MCP tools
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use turbovault_core::{ConfigProfile, VaultConfig};
-use turbovault_tools::*;
-use turbovault_vault::VaultManager;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
+use turbovault_core::{ConfigProfile, VaultConfig};
+use turbovault_tools::*;
+use turbovault_vault::VaultManager;
 
 /// Setup a test vault with various files
 async fn setup_bench_vault(num_files: usize) -> (TempDir, Arc<VaultManager>) {

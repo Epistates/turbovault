@@ -1,12 +1,12 @@
 //! Export tools for vault analysis data
 
+use std::sync::Arc;
 use turbovault_core::prelude::*;
 use turbovault_export::{
     AnalysisReportExporter, BrokenLinkRecord, BrokenLinksExporter, HealthReportExporter,
     VaultStatsExporter, VaultStatsRecord, create_health_report,
 };
 use turbovault_vault::VaultManager;
-use std::sync::Arc;
 
 /// Export tools for vault analysis and reporting
 pub struct ExportTools {

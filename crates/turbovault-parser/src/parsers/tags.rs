@@ -1,8 +1,8 @@
 //! Tag parser: #tag, #parent/child
 
 use lazy_static::lazy_static;
-use turbovault_core::{SourcePosition, Tag};
 use regex::Regex;
+use turbovault_core::{SourcePosition, Tag};
 
 lazy_static! {
     /// Matches #tag or #parent/child tags

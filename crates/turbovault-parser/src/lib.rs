@@ -25,18 +25,18 @@
 //! title: My Note
 //! tags: [important, review]
 //! ---
-//! 
+//!
 //! # Heading
-//! 
+//!
 //! [[WikiLink]] and [[Other Note#Heading]].
-//! 
+//!
 //! - [x] Completed task
 //! - [ ] Pending task
 //! "#;
 //!
 //! let vault_path = PathBuf::from("/vault");
 //! let parser = Parser::new(vault_path);
-//! 
+//!
 //! let path = PathBuf::from("my-note.md");
 //! if let Ok(result) = parser.parse_file(&path, content) {
 //!     // Access parsed components

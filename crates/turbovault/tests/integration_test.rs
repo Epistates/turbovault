@@ -2,12 +2,12 @@
 
 #[cfg(test)]
 mod tests {
-    use turbovault_core::{ConfigProfile, VaultConfig};
-    use turbovault::ObsidianMcpServer;
-    use turbovault_vault::VaultManager;
     use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs;
+    use turbovault::ObsidianMcpServer;
+    use turbovault_core::{ConfigProfile, VaultConfig};
+    use turbovault_vault::VaultManager;
 
     /// Helper to create a test vault
     async fn create_test_vault() -> (TempDir, VaultManager) {
@@ -100,8 +100,8 @@ mod tests {
 
     // ==================== Export Tests ====================
 
-    use turbovault_tools::ExportTools;
     use std::sync::Arc;
+    use turbovault_tools::ExportTools;
 
     #[tokio::test]
     async fn test_export_health_report_json() {

@@ -20,9 +20,9 @@
 //!
 //! This tolerates minor LLM errors while remaining safe.
 
-use turbovault_core::{Error, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use turbovault_core::{Error, Result};
 use unicode_normalization::UnicodeNormalization;
 
 /// A single SEARCH/REPLACE block

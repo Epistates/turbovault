@@ -1,7 +1,7 @@
 //! OFM parser implementation using pulldown-cmark + custom regex layers
 
-use turbovault_core::{FileMetadata, Frontmatter, Result, SourcePosition, VaultFile};
 use std::path::{Path, PathBuf};
+use turbovault_core::{FileMetadata, Frontmatter, Result, SourcePosition, VaultFile};
 
 mod callouts;
 mod embeds;

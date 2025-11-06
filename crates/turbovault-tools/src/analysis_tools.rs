@@ -1,9 +1,9 @@
 //! Vault analysis tools for statistics and relationship analysis
 
-use turbovault_core::prelude::*;
-use turbovault_vault::VaultManager;
 use serde_json::json;
 use std::sync::Arc;
+use turbovault_core::prelude::*;
+use turbovault_vault::VaultManager;
 
 /// Analysis tools context
 pub struct AnalysisTools {

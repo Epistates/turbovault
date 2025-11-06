@@ -1,9 +1,9 @@
 //! Batch operation tools for coordinated multi-file operations
 
+use std::sync::Arc;
 use turbovault_batch::{BatchExecutor, BatchOperation, BatchResult};
 use turbovault_core::prelude::*;
 use turbovault_vault::VaultManager;
-use std::sync::Arc;
 
 /// Batch operation tools
 pub struct BatchTools {

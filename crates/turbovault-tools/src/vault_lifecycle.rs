@@ -3,9 +3,9 @@
 //! Manages vault creation, registration, and switching via MultiVaultManager.
 //! Provides MCP tools for users to create new vaults or register existing ones.
 
-use turbovault_core::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use turbovault_core::prelude::*;
 
 /// Vault lifecycle operations
 pub struct VaultLifecycleTools {

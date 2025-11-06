@@ -1,10 +1,10 @@
 //! Relationship analysis tools for link strength, suggestions, and centrality
 
-use turbovault_core::prelude::*;
-use turbovault_vault::VaultManager;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use turbovault_core::prelude::*;
+use turbovault_vault::VaultManager;
 
 /// Result of link strength calculation
 #[derive(Debug, Clone)]

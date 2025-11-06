@@ -1,10 +1,10 @@
 //! Graph operations and link analysis tools
 
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use turbovault_core::prelude::*;
 use turbovault_graph::HealthAnalyzer;
 use turbovault_vault::VaultManager;
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// Graph tools context
 pub struct GraphTools {

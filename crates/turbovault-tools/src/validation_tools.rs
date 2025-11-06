@@ -1,13 +1,13 @@
 //! Content validation tools
 
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::sync::Arc;
 use turbovault_core::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Result, Severity,
     ValidationReport, Validator,
 };
 use turbovault_vault::VaultManager;
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::Arc;
 
 /// Validation tools context
 pub struct ValidationTools {

@@ -128,12 +128,12 @@
 //! - Efficient conflict checking (O(n²) upfront)
 //! - Low-overhead operation tracking
 
-use turbovault_core::prelude::*;
-use turbovault_core::{PathValidator, TransactionBuilder};
-use turbovault_vault::VaultManager;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use turbovault_core::prelude::*;
+use turbovault_core::{PathValidator, TransactionBuilder};
+use turbovault_vault::VaultManager;
 
 /// Individual batch operation to execute
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -386,10 +386,14 @@ impl BatchExecutor {
             }
 
             BatchOperation::MoveNote { from, to } => {
-                let from_path =
-                    PathValidator::validate_path_in_vault(self.manager.vault_path(), &PathBuf::from(from))?;
-                let to_path =
-                    PathValidator::validate_path_in_vault(self.manager.vault_path(), &PathBuf::from(to))?;
+                let from_path = PathValidator::validate_path_in_vault(
+                    self.manager.vault_path(),
+                    &PathBuf::from(from),
+                )?;
+                let to_path = PathValidator::validate_path_in_vault(
+                    self.manager.vault_path(),
+                    &PathBuf::from(to),
+                )?;
 
                 // Create parent directory if needed
                 if let Some(parent) = to_path.parent() {

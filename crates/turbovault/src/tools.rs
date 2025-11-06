@@ -1,6 +1,11 @@
 //! MCP tool implementations for Obsidian vault
 
 use anyhow::Result;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use turbomcp::prelude::*;
 use turbovault_core::ServerConfig;
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
@@ -9,11 +14,6 @@ use turbovault_tools::{
     RelationshipTools, SearchEngine, SearchQuery, SearchTools, TemplateEngine, VaultLifecycleTools,
 };
 use turbovault_vault::VaultManager;
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use turbomcp::prelude::*;
 
 /// Helper to convert internal Error to McpError
 fn to_mcp_error(e: Error) -> McpError {
@@ -1236,7 +1236,10 @@ impl ObsidianMcpServer {
 
         // CACHE PERSISTENCE: Save updated vault state to cache
         if let Err(e) = self.persist_vault_state().await {
-            log::warn!("Failed to persist vault state after removal to cache: {}", e);
+            log::warn!(
+                "Failed to persist vault state after removal to cache: {}",
+                e
+            );
             // Not a fatal error - continue anyway
         }
 

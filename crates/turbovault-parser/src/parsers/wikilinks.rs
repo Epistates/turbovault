@@ -1,9 +1,9 @@
 //! Wikilink parser: `[[Note]]`, `[[folder/Note]]`, `[[Note#Heading]]`, `[[Note#^block]]`
 
 use lazy_static::lazy_static;
-use turbovault_core::{Link, LinkType, SourcePosition};
 use regex::Regex;
 use std::path::Path;
+use turbovault_core::{Link, LinkType, SourcePosition};
 
 lazy_static! {
     /// Matches [[...]] pattern

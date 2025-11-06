@@ -1,9 +1,9 @@
 //! Search and relationship discovery tools
 
-use turbovault_core::prelude::*;
-use turbovault_vault::VaultManager;
 use std::path::PathBuf;
 use std::sync::Arc;
+use turbovault_core::prelude::*;
+use turbovault_vault::VaultManager;
 
 /// Search tools context
 pub struct SearchTools {
