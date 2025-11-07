@@ -185,10 +185,10 @@ async fn test_async_error_path_invalid_path() {
     let (_temp_dir, manager) = setup_test_vault_with_links().await;
     let tools = SearchTools::new(manager);
 
-    // Test with path containing invalid UTF-8 or special chars
+    // Test with path traversal attempt
     let result = tools.find_backlinks("../../../etc/passwd").await;
-    // Should handle gracefully
-    assert!(result.is_ok());
+    // Should reject path traversal attempts
+    assert!(result.is_err());
 }
 
 #[tokio::test]

@@ -1,5 +1,6 @@
 //! Vault manager implementation with file watching and caching
 
+use path_trav::PathTrav;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -282,53 +283,63 @@ impl VaultManager {
         Ok(graph.stats())
     }
 
-    /// Resolve a relative path to vault-root-relative path
-    fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
-        // If absolute, check it's under vault
-        if path.is_absolute() {
-            if !path.starts_with(&self.vault_path) {
-                // Try canonicalizing both for symlink comparison
-                let canonical_abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-                let canonical_vault = self
-                    .vault_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| self.vault_path.clone());
+    /// Normalize a path by resolving `.` and `..` components
+    /// This is used as a fallback when path_trav can't check non-existent paths
+    fn normalize_path(path: &Path) -> PathBuf {
+        let mut components = Vec::new();
 
-                if !canonical_abs.starts_with(&canonical_vault) {
-                    return Err(Error::path_traversal(path.to_path_buf()));
+        for component in path.components() {
+            match component {
+                std::path::Component::CurDir => {
+                    // Skip `.` components
+                }
+                std::path::Component::ParentDir => {
+                    // Pop the last component for `..`
+                    components.pop();
+                }
+                comp => {
+                    components.push(comp);
                 }
             }
-            return Ok(path.to_path_buf());
         }
 
-        // Resolve relative to vault
-        let full_path = self.vault_path.join(path);
+        components.iter().collect()
+    }
 
-        // Try to canonicalize, but don't fail if path doesn't exist yet
-        let normalized = if full_path.exists() {
-            full_path.canonicalize().map_err(|_| {
-                Error::invalid_path(format!("Cannot resolve path: {}", path.display()))
-            })?
+    /// Resolve a relative path to vault-root-relative path with path traversal protection
+    /// Uses the battle-tested path_trav crate for security, with fallback normalization
+    fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
+        // Resolve relative paths to absolute
+        let full_path = if path.is_absolute() {
+            path.to_path_buf()
         } else {
-            full_path
+            self.vault_path.join(path)
         };
 
-        // Check still under vault (handle symlinks by comparing both canonical and relative)
-        let vault_canonical = self
-            .vault_path
-            .canonicalize()
-            .unwrap_or_else(|_| self.vault_path.clone());
-        let norm_canonical = normalized
-            .canonicalize()
-            .unwrap_or_else(|_| normalized.clone());
+        // Use path_trav to detect traversal attempts (battle-tested library)
+        // is_path_trav returns Ok(true) if traversal detected, Ok(false) if safe
+        match self.vault_path.is_path_trav(&full_path) {
+            Ok(true) => {
+                // Path traversal detected by path_trav
+                Err(Error::path_traversal(full_path))
+            }
+            Ok(false) => {
+                // Path is safe according to path_trav
+                Ok(full_path)
+            }
+            Err(_) => {
+                // path_trav couldn't check (usually means file doesn't exist)
+                // Use fallback normalization to detect traversal attempts
+                let normalized = Self::normalize_path(&full_path);
 
-        if !norm_canonical.starts_with(&vault_canonical)
-            && !normalized.starts_with(&self.vault_path)
-        {
-            return Err(Error::path_traversal(normalized));
+                // Check if normalized path is still under vault
+                if normalized.starts_with(&self.vault_path) {
+                    Ok(full_path)
+                } else {
+                    Err(Error::path_traversal(full_path))
+                }
+            }
         }
-
-        Ok(normalized)
     }
 
     /// Scan for markdown files in vault
@@ -707,5 +718,20 @@ mod tests {
 
         let result = manager.resolve_path(Path::new("test.md"));
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_path_traversal_prevention() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        // Try to escape vault with ../ components
+        let result = manager.resolve_path(Path::new("../../tmp/evil.md"));
+        assert!(result.is_err(), "Path traversal should be prevented");
+
+        // Also test with deeper traversal
+        let result2 = manager.resolve_path(Path::new("../../../etc/passwd"));
+        assert!(result2.is_err(), "Path traversal should be prevented");
     }
 }

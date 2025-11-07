@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Publishing turbovault v1.1.4 to crates.io"
+echo "Publishing turbovault v1.1.5 to crates.io"
 echo "=========================================="
 echo ""
 echo "⚠️  Make sure you have:"
@@ -26,7 +26,7 @@ echo "📦 [1/8] Publishing turbovault-core..."
 cargo publish -p turbovault-core
 echo "✓ turbovault-core published"
 echo "⏳ Waiting 120 seconds for crates.io to index..."
-sleep 120
+sleep 10
 
 # 2. Domain crates (parallel)
 echo ""
@@ -59,7 +59,7 @@ cargo publish -p turbovault-export
 echo "✓ turbovault-export published"
 
 echo "⏳ Waiting 120 seconds for crates.io to index domain crates..."
-sleep 120
+sleep 5
 
 # 3. Tools
 echo ""
@@ -67,7 +67,7 @@ echo "📦 [7/8] Publishing turbovault-tools..."
 cargo publish -p turbovault-tools
 echo "✓ turbovault-tools published"
 echo "⏳ Waiting 120 seconds for crates.io to index..."
-sleep 120
+sleep 10
 
 # 4. Binary
 echo ""
@@ -82,7 +82,7 @@ echo ""
 echo "🔗 Verify at: https://crates.io/crates/turbovault"
 echo ""
 echo "Next steps:"
-echo "  1. git tag v1.1.4"
-echo "  2. git push origin v1.1.4"
+echo "  1. git tag v1.1.5"
+echo "  2. git push origin v1.1.5"
 echo "  3. Create GitHub release at https://github.com/epistates/turbovault/releases/new"
 echo ""

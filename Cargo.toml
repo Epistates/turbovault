@@ -90,8 +90,9 @@ strsim = "0.11"           # Levenshtein distance for fuzzy matching (if similar 
 sha2 = "0.10"             # SHA-256 hashing for content validation
 unicode-normalization = "0.1.6"  # Unicode NFC normalization
 
-# Path handling
+# Path handling & Security
 shellexpand = "3.1"       # Shell-like expansions (tilde, env vars) - battle-tested
+path_trav = "2"           # Path traversal detection - security-focused
 
 # DEFERRED (Phase 3+):
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
