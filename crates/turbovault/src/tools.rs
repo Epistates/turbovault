@@ -206,7 +206,7 @@ impl Default for ObsidianMcpServer {
 
 #[turbomcp::server(
     name = "obsidian-vault",
-    version = "1.0.0",
+    version = "1.1.6",
     transports = ["stdio", "http", "websocket", "tcp", "unix"]
 )]
 impl ObsidianMcpServer {

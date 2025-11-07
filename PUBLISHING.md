@@ -2,19 +2,19 @@
 
 This guide explains how to publish TurboVault crates to crates.io.
 
-## Current Version: 1.1.4
+## Current Version: 1.1.6
 
 All crates are versioned together using workspace-level version management.
 
 ## Pre-Publishing Checklist
 
-- [x] Version updated to 1.1.4 in `Cargo.toml` (workspace.package.version)
+- [x] Version updated to 1.1.6 in `Cargo.toml` (workspace.package.version)
 - [x] All tests passing (`cargo test --workspace --all-features`)
 - [x] Release build successful (`cargo build --release`)
 - [x] CLAUDE.md updated with correct TurboMCP version
 - [ ] CHANGELOG.md updated (if exists)
 - [ ] All changes committed to git
-- [ ] Git tag created: `git tag v1.1.4`
+- [ ] Git tag created: `git tag v1.1.6`
 
 ## Publishing Order
 
@@ -69,7 +69,7 @@ For convenience, here's a script that publishes all crates in the correct order 
 #!/bin/bash
 set -e
 
-echo "Publishing turbovault v1.1.4 to crates.io"
+echo "Publishing turbovault v1.1.6 to crates.io"
 echo "=========================================="
 
 # 1. Core
@@ -121,14 +121,14 @@ After publishing, verify each crate at:
 
 1. **Tag the release in git:**
    ```bash
-   git tag v1.1.4
-   git push origin v1.1.4
+   git tag v1.1.6
+   git push origin v1.1.6
    ```
 
 2. **Create GitHub release:**
    - Go to https://github.com/epistates/turbovault/releases/new
-   - Select tag `v1.1.4`
-   - Title: `TurboVault v1.1.4`
+   - Select tag `v1.1.6`
+   - Title: `TurboVault v1.1.6`
    - Add release notes describing changes
 
 3. **Update documentation:**
@@ -151,13 +151,15 @@ cargo login
 
 ### Uncommitted changes
 If you have uncommitted changes, either:
-- Commit them: `git add -A && git commit -m "Bump version to 1.1.4"`
+- Commit them: `git add -A && git commit -m "Bump version to 1.1.6"`
 - Or use `--allow-dirty` flag (not recommended for production releases)
 
 ## Version History
 
-- **1.1.4** - Current version (TurboMCP 2.1.0, improved features)
-- **0.1.3** - Previous version (TurboMCP 2.0.5)
+- **1.1.6** - Current version (TurboMCP 2.2.1, version cleanup and stabilization)
+- **1.1.5** - Previous version (accidental release, skipped)
+- **1.1.4** - Prior version (TurboMCP 2.1.0, improved features)
+- **0.1.3** - Initial public release series
 - **0.1.2** - Initial public release
 - **0.1.1** - Early release
 

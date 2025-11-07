@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Publishing turbovault v1.1.5 to crates.io"
+echo "Publishing turbovault v1.1.6 to crates.io"
 echo "=========================================="
 echo ""
 echo "⚠️  Make sure you have:"
@@ -82,7 +82,7 @@ echo ""
 echo "🔗 Verify at: https://crates.io/crates/turbovault"
 echo ""
 echo "Next steps:"
-echo "  1. git tag v1.1.5"
-echo "  2. git push origin v1.1.5"
+echo "  1. git tag v1.1.6"
+echo "  2. git push origin v1.1.6"
 echo "  3. Create GitHub release at https://github.com/epistates/turbovault/releases/new"
 echo ""
