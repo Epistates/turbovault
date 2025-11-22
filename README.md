@@ -60,7 +60,8 @@ cargo install turbovault
 # With HTTP server (~8.2 MB)
 cargo install turbovault --features http
 
-# With all transports (~8.8 MB)
+# With all cross-platform transports (~8.8 MB)
+# Includes: STDIO, HTTP, WebSocket, TCP (Unix sockets only on Unix/macOS/Linux)
 cargo install turbovault --features full
 
 # Binary installed to: ~/.cargo/bin/turbovault

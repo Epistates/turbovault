@@ -18,7 +18,9 @@ turbovault-batch = { workspace = true }
 turbovault-export = { workspace = true }
 
 # MCP server framework
-turbomcp = { version = "2.2.1", features = ["full"] }
+# Note: No features needed here - tools crate only defines tool implementations
+# Transport features are handled by the main turbovault binary
+turbomcp = { version = "2.2.1" }
 
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -32,11 +32,13 @@ stdio = []                                    # Always included, no external dep
 http = ["turbomcp/http"]                     # Add HTTP server support (~200 KB)
 websocket = ["turbomcp/websocket"]           # Add WebSocket support (~200 KB)
 tcp = ["turbomcp/tcp"]                       # Add TCP server support (~100 KB)
-unix = ["turbomcp/unix"]                     # Add Unix socket support (~100 KB)
+unix = ["turbomcp/unix"]                     # Add Unix socket support (~100 KB) [Unix-only]
 
 # Convenience bundles
 http-full = ["http", "websocket"]            # HTTP + WebSocket
-all-transports = ["http", "websocket", "tcp", "unix"]  # Everything
+# Note: unix is excluded from all-transports on Windows (not supported)
+all-transports-unix = ["http", "websocket", "tcp", "unix"]  # Everything (Unix-only)
+all-transports = ["http", "websocket", "tcp"]  # Everything (cross-platform)
 full = ["all-transports"]                    # Alias for all-transports
 
 [[bin]]
