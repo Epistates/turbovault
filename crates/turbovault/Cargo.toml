@@ -14,6 +14,8 @@ readme = "README.md"
 keywords = ["mcp", "obsidian", "vault", "llm", "agent"]
 include = [
   "src/",
+  "tests/",
+  "benches/",
   "resources/",
   "Cargo.toml",
   "README.md",
