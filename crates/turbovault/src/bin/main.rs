@@ -214,19 +214,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(vault_path) = args.vault {
         log::info!("Adding vault from CLI argument: {:?}", vault_path);
 
-        // Create vault config
-        let vault_config = VaultConfig::builder("default", &vault_path)
-            .build()
-            .map_err(|e| format!("Failed to create vault config: {}", e))?;
+        // Check if a vault named "default" already exists (e.g., from cache recovery)
+        let vault_exists = server.multi_vault().vault_exists("default").await;
 
-        // Add vault to the multi-vault manager
-        server
-            .multi_vault()
-            .add_vault(vault_config)
-            .await
-            .map_err(|e| format!("Failed to add vault: {}", e))?;
+        if vault_exists {
+            // Vault already exists - check if it's the same path
+            match server.multi_vault().get_vault_config("default").await {
+                Ok(existing_config) => {
+                    // Canonicalize paths for comparison (handles symlinks, relative paths, etc.)
+                    let existing_canonical = existing_config.path.canonicalize().ok();
+                    let new_canonical = vault_path.canonicalize().ok();
 
-        log::info!("Vault registered: default -> {:?}", vault_path);
+                    if existing_canonical == new_canonical {
+                        log::info!(
+                            "Vault 'default' already registered from cache with same path. Skipping CLI vault addition."
+                        );
+                    } else {
+                        log::warn!(
+                            "Vault 'default' already exists with different path. Cached: {:?}, CLI: {:?}. Using cached vault.",
+                            existing_config.path,
+                            vault_path
+                        );
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "Could not verify existing vault config: {}. Skipping CLI vault addition.",
+                        e
+                    );
+                }
+            }
+        } else {
+            // No existing vault named "default" - add it
+            let vault_config = VaultConfig::builder("default", &vault_path)
+                .build()
+                .map_err(|e| format!("Failed to create vault config: {}", e))?;
+
+            server
+                .multi_vault()
+                .add_vault(vault_config)
+                .await
+                .map_err(|e| format!("Failed to add vault: {}", e))?;
+
+            log::info!("Vault registered: default -> {:?}", vault_path);
+        }
 
         // Initialize vault (scan files and build graph) if requested
         if args.init {
