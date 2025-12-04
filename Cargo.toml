@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.7"
+version = "1.1.8"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
@@ -98,14 +98,14 @@ path_trav = "2"           # Path traversal detection - security-focused
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "1.1.7", path = "crates/turbovault-core" }
-turbovault-parser = { version = "1.1.7", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "1.1.7", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "1.1.7", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "1.1.7", path = "crates/turbovault-batch" }
-turbovault-export = { version = "1.1.7", path = "crates/turbovault-export" }
-turbovault-tools = { version = "1.1.7", path = "crates/turbovault-tools" }
-turbovault = { version = "1.1.7", path = "crates/turbovault" }
+turbovault-core = { version = "1.1.8", path = "crates/turbovault-core" }
+turbovault-parser = { version = "1.1.8", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "1.1.8", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "1.1.8", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "1.1.8", path = "crates/turbovault-batch" }
+turbovault-export = { version = "1.1.8", path = "crates/turbovault-export" }
+turbovault-tools = { version = "1.1.8", path = "crates/turbovault-tools" }
+turbovault = { version = "1.1.8", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3
