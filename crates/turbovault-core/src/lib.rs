@@ -103,7 +103,8 @@ pub mod prelude {
     pub use crate::error::{Error, Result};
     pub use crate::metrics::{Counter, Histogram, MetricsContext};
     pub use crate::models::{
-        Block, Callout, FileMetadata, Frontmatter, Heading, Link, LinkType, SourcePosition, Tag,
+        Block, Callout, CalloutType, ContentBlock, FileMetadata, Frontmatter, Heading,
+        InlineElement, LineIndex, Link, LinkType, ListItem, SourcePosition, TableAlignment, Tag,
         TaskItem, VaultFile,
     };
     pub use crate::multi_vault::{MultiVaultManager, VaultInfo};

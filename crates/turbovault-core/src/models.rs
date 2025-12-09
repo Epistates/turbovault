@@ -41,6 +41,106 @@ impl SourcePosition {
             length: 0,
         }
     }
+
+    /// Create position from byte offset by computing line and column.
+    ///
+    /// This is O(n) where n is the offset - suitable for single-use cases.
+    /// For bulk operations, use `from_offset_indexed` with a pre-computed `LineIndex`.
+    ///
+    /// Line numbers start at 1, column numbers start at 1.
+    pub fn from_offset(content: &str, offset: usize, length: usize) -> Self {
+        let before = &content[..offset.min(content.len())];
+        let line = before.matches('\n').count() + 1;
+        let column = before
+            .rfind('\n')
+            .map(|pos| offset - pos)
+            .unwrap_or(offset + 1);
+
+        Self {
+            line,
+            column,
+            offset,
+            length,
+        }
+    }
+
+    /// Create position from byte offset using a pre-computed line index.
+    ///
+    /// This is O(log n) - use for bulk parsing operations.
+    pub fn from_offset_indexed(index: &LineIndex, offset: usize, length: usize) -> Self {
+        let (line, column) = index.line_col(offset);
+        Self {
+            line,
+            column,
+            offset,
+            length,
+        }
+    }
+}
+
+/// Pre-computed line starts for O(log n) line/column lookup.
+///
+/// Build once per document, then use for all position lookups.
+/// This is essential for efficient parsing of documents with many OFM elements.
+///
+/// # Example
+/// ```
+/// use turbovault_core::{LineIndex, SourcePosition};
+///
+/// let content = "Line 1\nLine 2\nLine 3";
+/// let index = LineIndex::new(content);
+///
+/// // O(log n) lookup instead of O(n)
+/// let pos = SourcePosition::from_offset_indexed(&index, 7, 6);
+/// assert_eq!(pos.line, 2);
+/// assert_eq!(pos.column, 1);
+/// ```
+#[derive(Debug, Clone)]
+pub struct LineIndex {
+    /// Byte offsets where each line starts (line 1 = index 0)
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    /// Build line index in O(n) - do once per document.
+    pub fn new(content: &str) -> Self {
+        let mut line_starts = vec![0];
+        for (i, ch) in content.char_indices() {
+            if ch == '\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        Self { line_starts }
+    }
+
+    /// Get (line, column) for a byte offset in O(log n) via binary search.
+    ///
+    /// Line numbers start at 1, column numbers start at 1.
+    pub fn line_col(&self, offset: usize) -> (usize, usize) {
+        // Binary search to find which line contains this offset
+        let line_idx = self.line_starts.partition_point(|&start| start <= offset);
+        let line = line_idx.max(1); // Line numbers are 1-indexed
+        let line_start = self
+            .line_starts
+            .get(line_idx.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
+        let column = offset - line_start + 1; // Column numbers are 1-indexed
+        (line, column)
+    }
+
+    /// Get the byte offset where a line starts.
+    pub fn line_start(&self, line: usize) -> Option<usize> {
+        if line == 0 {
+            return None;
+        }
+        self.line_starts.get(line - 1).copied()
+    }
+
+    /// Get total number of lines.
+    pub fn line_count(&self) -> usize {
+        self.line_starts.len()
+    }
 }
 
 /// Type of link in Obsidian content
@@ -52,11 +152,13 @@ pub enum LinkType {
     Embed,
     /// Block reference: `[[Note#^block]]`
     BlockRef,
-    /// Heading reference: `[[Note#Heading]]`
+    /// Heading reference: `[[Note#Heading]]` or `file.md#section`
     HeadingRef,
-    /// Markdown link: `[text](url)`
+    /// Same-document anchor: `#section` (no file reference)
+    Anchor,
+    /// Markdown link: `[text](url)` to relative file
     MarkdownLink,
-    /// External URL: http://...
+    /// External URL: `http://...`, `https://...`, `mailto:...`
     ExternalLink,
 }
 
@@ -146,13 +248,126 @@ pub struct Callout {
     pub is_foldable: bool,
 }
 
-/// A block in vault content
+/// A block in vault content (Obsidian block reference with ^id)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     pub content: String,
     pub block_id: Option<String>,
     pub position: SourcePosition,
     pub type_: String, // paragraph, heading, list_item, etc.
+}
+
+// ============================================================================
+// Content Block Types (for full markdown parsing)
+// ============================================================================
+
+/// A parsed content block in a markdown document.
+///
+/// These represent the block-level structure of markdown content,
+/// similar to an AST but optimized for consumption by tools like treemd.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ContentBlock {
+    /// A heading (# H1, ## H2, etc.)
+    Heading {
+        level: usize,
+        content: String,
+        inline: Vec<InlineElement>,
+        anchor: Option<String>,
+    },
+    /// A paragraph of text
+    Paragraph {
+        content: String,
+        inline: Vec<InlineElement>,
+    },
+    /// A fenced or indented code block
+    Code {
+        language: Option<String>,
+        content: String,
+        start_line: usize,
+        end_line: usize,
+    },
+    /// An ordered or unordered list
+    List { ordered: bool, items: Vec<ListItem> },
+    /// A blockquote (> text)
+    Blockquote {
+        content: String,
+        blocks: Vec<ContentBlock>,
+    },
+    /// A table with headers and rows
+    Table {
+        headers: Vec<String>,
+        alignments: Vec<TableAlignment>,
+        rows: Vec<Vec<String>>,
+    },
+    /// An image (standalone, not inline)
+    Image {
+        alt: String,
+        src: String,
+        title: Option<String>,
+    },
+    /// A horizontal rule (---, ***, ___)
+    HorizontalRule,
+    /// HTML <details><summary> block
+    Details {
+        summary: String,
+        content: String,
+        blocks: Vec<ContentBlock>,
+    },
+}
+
+/// An inline element within a block.
+///
+/// These represent inline formatting and links within text content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum InlineElement {
+    /// Plain text
+    Text { value: String },
+    /// Bold text (**text** or __text__)
+    Strong { value: String },
+    /// Italic text (*text* or _text_)
+    Emphasis { value: String },
+    /// Inline code (`code`)
+    Code { value: String },
+    /// A link [text](url)
+    Link {
+        text: String,
+        url: String,
+        title: Option<String>,
+    },
+    /// An inline image ![alt](src)
+    Image {
+        alt: String,
+        src: String,
+        title: Option<String>,
+    },
+    /// Strikethrough text (~~text~~)
+    Strikethrough { value: String },
+}
+
+/// A list item with optional checkbox and nested content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ListItem {
+    /// For task lists: Some(true) = checked, Some(false) = unchecked, None = not a task
+    pub checked: Option<bool>,
+    /// Raw text content of the item
+    pub content: String,
+    /// Parsed inline elements
+    pub inline: Vec<InlineElement>,
+    /// Nested blocks (e.g., code blocks, sub-lists inside list items)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<ContentBlock>,
+}
+
+/// Table column alignment.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TableAlignment {
+    Left,
+    Center,
+    Right,
+    None,
 }
 
 /// YAML frontmatter
@@ -309,5 +524,99 @@ mod tests {
         let tags = fm.tags();
         assert_eq!(tags.len(), 2);
         assert!(tags.contains(&"rust".to_string()));
+    }
+
+    #[test]
+    fn test_line_index_single_line() {
+        let content = "Hello, world!";
+        let index = LineIndex::new(content);
+
+        assert_eq!(index.line_count(), 1);
+        assert_eq!(index.line_col(0), (1, 1)); // 'H'
+        assert_eq!(index.line_col(7), (1, 8)); // 'w'
+    }
+
+    #[test]
+    fn test_line_index_multiline() {
+        let content = "Line 1\nLine 2\nLine 3";
+        let index = LineIndex::new(content);
+
+        assert_eq!(index.line_count(), 3);
+
+        // Line 1
+        assert_eq!(index.line_col(0), (1, 1)); // 'L' of Line 1
+        assert_eq!(index.line_col(5), (1, 6)); // '1'
+
+        // Line 2 (offset 7 = first char after newline)
+        assert_eq!(index.line_col(7), (2, 1)); // 'L' of Line 2
+        assert_eq!(index.line_col(13), (2, 7)); // '2'
+
+        // Line 3 (offset 14 = first char after second newline)
+        assert_eq!(index.line_col(14), (3, 1)); // 'L' of Line 3
+    }
+
+    #[test]
+    fn test_line_index_line_start() {
+        let content = "Line 1\nLine 2\nLine 3";
+        let index = LineIndex::new(content);
+
+        assert_eq!(index.line_start(1), Some(0));
+        assert_eq!(index.line_start(2), Some(7));
+        assert_eq!(index.line_start(3), Some(14));
+        assert_eq!(index.line_start(0), None); // Invalid line
+        assert_eq!(index.line_start(4), None); // Beyond content
+    }
+
+    #[test]
+    fn test_source_position_from_offset() {
+        let content = "Line 1\nLine 2 [[Link]] here\nLine 3";
+
+        // Position of [[Link]] starts at offset 14
+        let pos = SourcePosition::from_offset(content, 14, 8);
+        assert_eq!(pos.line, 2);
+        assert_eq!(pos.column, 8); // "Line 2 " = 7 chars, so column 8
+        assert_eq!(pos.offset, 14);
+        assert_eq!(pos.length, 8);
+    }
+
+    #[test]
+    fn test_source_position_from_offset_indexed() {
+        let content = "Line 1\nLine 2 [[Link]] here\nLine 3";
+        let index = LineIndex::new(content);
+
+        // Same test as above but using indexed lookup
+        let pos = SourcePosition::from_offset_indexed(&index, 14, 8);
+        assert_eq!(pos.line, 2);
+        assert_eq!(pos.column, 8);
+        assert_eq!(pos.offset, 14);
+        assert_eq!(pos.length, 8);
+    }
+
+    #[test]
+    fn test_source_position_first_line() {
+        let content = "[[Link]] at start";
+
+        let pos = SourcePosition::from_offset(content, 0, 8);
+        assert_eq!(pos.line, 1);
+        assert_eq!(pos.column, 1);
+    }
+
+    #[test]
+    fn test_line_index_empty_content() {
+        let content = "";
+        let index = LineIndex::new(content);
+
+        assert_eq!(index.line_count(), 1); // Even empty content has "line 1"
+        assert_eq!(index.line_col(0), (1, 1));
+    }
+
+    #[test]
+    fn test_line_index_trailing_newline() {
+        let content = "Line 1\n";
+        let index = LineIndex::new(content);
+
+        assert_eq!(index.line_count(), 2); // Line 1 + empty line 2
+        assert_eq!(index.line_col(6), (1, 7)); // The newline itself
+        assert_eq!(index.line_col(7), (2, 1)); // After newline
     }
 }

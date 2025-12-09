@@ -42,7 +42,7 @@ assert!(file.has_tag("rust"));
 
 **Types:**
 - `VaultFile` - Complete parsed markdown file with all elements
-- `Link` - Links with type (WikiLink, Embed, BlockRef, etc.)
+- `Link` - Links with type classification (see LinkType below)
 - `Heading` - Hierarchical headings with anchors
 - `Tag` - Inline and frontmatter tags
 - `TaskItem` - Checkboxes with completion status
@@ -50,6 +50,17 @@ assert!(file.has_tag("rust"));
 - `Block` - Generic content blocks with IDs
 - `Frontmatter` - YAML metadata
 - `FileMetadata` - File system metadata (size, timestamps, checksum)
+- `ContentBlock` - Block-level AST (Heading, Paragraph, Code, List, Table, etc.)
+- `InlineElement` - Inline formatting (Strong, Emphasis, Code, Link, Image)
+
+**LinkType variants:**
+- `WikiLink` - Basic wikilink: `[[Note]]`
+- `Embed` - Embedded content: `![[Note]]`
+- `BlockRef` - Block reference: `[[Note#^blockid]]` or `#^blockid`
+- `HeadingRef` - Cross-file heading: `[[Note#Heading]]` or `file.md#section`
+- `Anchor` - Same-document anchor: `[[#Heading]]` or `#section`
+- `MarkdownLink` - Markdown link to file: `[text](./file.md)`
+- `ExternalLink` - External URL: `[text](https://...)`
 
 ### Error Handling (`error.rs`)
 
