@@ -6,13 +6,13 @@
 
 Production-grade MCP server for Obsidian vault management.
 
-The main executable binary that exposes 38 MCP tools for AI agents to autonomously manage Obsidian vaults. This is the entry point for end users - it orchestrates all vault operations by integrating the core, parser, graph, vault, batch, export, and tools crates into a unified Model Context Protocol server.
+The main executable binary that exposes 44 MCP tools for AI agents to autonomously manage Obsidian vaults. This is the entry point for end users - it orchestrates all vault operations by integrating the core, parser, graph, vault, batch, export, and tools crates into a unified Model Context Protocol server.
 
 ## What This Is
 
 `turbovault` is the **main binary** that end users run to expose their Obsidian vault to AI agents via the Model Context Protocol (MCP). It provides:
 
-- **38 MCP Tools**: Complete vault management API (read, write, search, analyze, templates, batch operations)
+- **44 MCP Tools**: Complete vault management API (read, write, search, analyze, templates, batch operations)
 - **STDIO Transport**: Standard MCP-compliant communication over stdin/stdout
 - **Full-Text Search**: Tantivy-powered search with TF-IDF ranking
 - **Link Graph Analysis**: Backlinks, hubs, orphans, cycles, health scoring
@@ -530,7 +530,7 @@ turbovault --profile production --init
    - Open Claude Desktop
    - Look for the "MCP" indicator in the UI
    - Ask: "What MCP tools do you have?"
-   - Claude should list 38 Obsidian tools
+   - Claude should list 44 Obsidian tools
 
 ### Example Workflows with Claude
 
@@ -990,7 +990,7 @@ crates/turbovault-server/
 │   ├── bin/
 │   │   └── main.rs           # CLI entry point, arg parsing, server startup
 │   ├── lib.rs                # Re-exports for public API
-│   └── tools.rs              # MCP tool implementations (38 tools)
+│   └── tools.rs              # MCP tool implementations (44 tools)
 ├── tests/
 │   └── integration_test.rs   # Integration tests
 ├── Cargo.toml                # Dependencies and binary config
@@ -1095,7 +1095,7 @@ cargo check -p turbovault-server
 │  ┌────────────────────────────────────────────────┐    │
 │  │  tools.rs - MCP Tool Implementations           │    │
 │  │  - ObsidianMcpServer struct                    │    │
-│  │  - 38 #[tool] annotated methods                │    │
+│  │  - 44 #[tool] annotated methods                │    │
 │  │  - Error conversion (Error → McpError)         │    │
 │  └────────────────────────────────────────────────┘    │
 └───────────────────────────┬─────────────────────────────┘
@@ -1224,7 +1224,7 @@ For more details on specific components:
 - **Vault Operations**: See `../turbovault-vault/README.md`
 - **Batch Transactions**: See `../turbovault-batch/README.md`
 - **Export Tools**: See `../turbovault-export/README.md`
-- **MCP Tools (38 tools)**: See `../turbovault-tools/README.md`
+- **MCP Tools (44 tools)**: See `../turbovault-tools/README.md`
 - **Deployment Guide**: See `/docs/deployment/index.md` (project root)
 - **Code Quality Audit**: See `/DILIGENCE_PASS_COMPLETE.md` (project root)
 

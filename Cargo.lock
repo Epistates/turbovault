@@ -1086,28 +1086,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "frontmatter-gen"
-version = "0.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73ffa823be6d8f1edb3785ddf46d97558f51ea470874a04eb51c3bf37c7c73f5"
-dependencies = [
- "anyhow",
- "env_logger",
- "log",
- "serde",
- "serde_json",
- "serde_yml",
- "simple_logger",
- "tempfile",
- "thiserror 2.0.17",
- "time",
- "tokio",
- "toml 0.8.23",
- "uuid",
- "version_check",
-]
-
-[[package]]
 name = "fs4"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1946,16 +1924,6 @@ dependencies = [
  "bitflags 2.10.0",
  "libc",
  "redox_syscall",
-]
-
-[[package]]
-name = "libyml"
-version = "0.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3302702afa434ffa30847a83305f0a69d6abd74293b6554c18ec85c7ef30c980"
-dependencies = [
- "anyhow",
- "version_check",
 ]
 
 [[package]]
@@ -3219,21 +3187,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_yml"
-version = "0.0.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59e2dd588bf1597a252c3b920e0143eb99b0f76e4e082f4c92ce34fbc9e71ddd"
-dependencies = [
- "indexmap",
- "itoa",
- "libyml",
- "memchr",
- "ryu",
- "serde",
- "version_check",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4256,7 +4209,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4281,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-batch"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -4295,7 +4248,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-core"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4314,7 +4267,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-export"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -4326,7 +4279,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-graph"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "dashmap 5.5.3",
@@ -4341,12 +4294,10 @@ dependencies = [
 
 [[package]]
 name = "turbovault-parser"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "anyhow",
- "frontmatter-gen",
  "insta",
- "lazy_static",
  "log",
  "nom",
  "pulldown-cmark",
@@ -4361,7 +4312,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-tools"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4385,7 +4336,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "dashmap 5.5.3",

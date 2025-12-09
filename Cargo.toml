@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.8"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
@@ -36,9 +36,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value", "preserve_order"] }
 serde_yaml = "0.9"  # Note: community fork (serde_yml) available if maintenance concerns
 
-# Markdown & Frontmatter Parsing (2025 diligence: see DEPENDENCY_DILIGENCE_2025.md)
-pulldown-cmark = "0.13"      # Fast CommonMark foundation for OFM
-frontmatter-gen = "0.0.5"    # Frontmatter extraction
+# Markdown Parsing (2025 diligence: see DEPENDENCY_DILIGENCE_2025.md)
+pulldown-cmark = "0.13"      # CommonMark parser with OFM extensions (headings, tasks, frontmatter, code blocks)
 
 # Observability & Diagnostics
 tracing = "0.1"
@@ -98,14 +97,14 @@ path_trav = "2"           # Path traversal detection - security-focused
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "1.1.8", path = "crates/turbovault-core" }
-turbovault-parser = { version = "1.1.8", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "1.1.8", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "1.1.8", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "1.1.8", path = "crates/turbovault-batch" }
-turbovault-export = { version = "1.1.8", path = "crates/turbovault-export" }
-turbovault-tools = { version = "1.1.8", path = "crates/turbovault-tools" }
-turbovault = { version = "1.1.8", path = "crates/turbovault" }
+turbovault-core = { version = "1.2.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "1.2.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "1.2.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "1.2.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "1.2.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "1.2.0", path = "crates/turbovault-export" }
+turbovault-tools = { version = "1.2.0", path = "crates/turbovault-tools" }
+turbovault = { version = "1.2.0", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3
