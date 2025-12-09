@@ -1,13 +1,12 @@
 //! Frontmatter extraction: ---\nYAML\n---
 
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 use turbovault_core::Result;
 
-lazy_static! {
-    /// Matches YAML frontmatter: --- ... ---
-    static ref FRONTMATTER_PATTERN: Regex = Regex::new(r"^---\s*\n([\s\S]*?)\n---\s*\n").unwrap();
-}
+/// Matches YAML frontmatter: --- ... ---
+static FRONTMATTER_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^---\s*\n([\s\S]*?)\n---\s*\n").unwrap());
 
 /// Extract YAML frontmatter from content
 ///
