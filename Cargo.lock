@@ -4061,9 +4061,9 @@ dependencies = [
 
 [[package]]
 name = "turbomcp"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11c8b1be77c70b3f05eb23abeddf038bc843b35ddd5058cb73e5bd6fcdb82d63"
+checksum = "5e557a338330a41f5b5644d97edb688317857b070c37ab5259dd19f8f2122a16"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -4097,9 +4097,9 @@ dependencies = [
 
 [[package]]
 name = "turbomcp-macros"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "313df648e15dc46c4e24c0df120c5614a4218ff09dfca21068196de6b6bc1e09"
+checksum = "b0c1b7b0a02280353d193ee83f5da8821fa19a05a0b2a4a820d39c06af328a68"
 dependencies = [
  "axum",
  "proc-macro2",
@@ -4115,9 +4115,9 @@ dependencies = [
 
 [[package]]
 name = "turbomcp-protocol"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2276cca3864b582dbc3d50d98f6e2dd2265ed12f4ad2f554ac656263798d474"
+checksum = "b2edc25fc03935fb9aa208911c59319f080b8b9304ff231a2b8cfeb85740f8be"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -4150,9 +4150,9 @@ dependencies = [
 
 [[package]]
 name = "turbomcp-server"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b21e2a7ff63a34d61c003953ad12e9d3e67c9b0659ff41d4ac1e25154615753f"
+checksum = "46ec0f7511052ba6260da36689431ab6c4c2a27e985a3b2f6e77f68dc2e4c771"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4185,9 +4185,9 @@ dependencies = [
 
 [[package]]
 name = "turbomcp-transport"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba9bc3566bde047baf1177087288bf5026ca08572d27b54c0b4ce55015a365f3"
+checksum = "77ebf155d920ad8c15c7956907c16c49c49ed1c6f623b9810d9cc41995d87b85"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4224,7 +4224,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4249,7 +4249,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-batch"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "serde",
@@ -4263,7 +4263,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-core"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4282,7 +4282,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-export"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "chrono",
  "serde",
@@ -4294,7 +4294,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-graph"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "dashmap 5.5.3",
@@ -4309,7 +4309,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-parser"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "insta",
@@ -4327,7 +4327,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-tools"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4351,7 +4351,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "anyhow",
  "dashmap 5.5.3",
