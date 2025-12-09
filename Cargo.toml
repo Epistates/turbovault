@@ -74,7 +74,7 @@ clap = { version = "4.4", features = ["derive", "env"] }
 # Testing utilities
 tempfile = "3"
 insta = "1.34"
-criterion = "0.7"
+criterion = "0.8"
 
 # Logging
 log = "0.4"

@@ -53,8 +53,8 @@ turbovault-vault = { workspace = true }
 turbovault-tools = { workspace = true }
 
 # MCP server framework (features passed through from turbovault)
-turbomcp = { version = "2.2.1" }
-turbomcp-server = { version = "2.2.1" }
+turbomcp = { version = "2.3.0" }
+turbomcp-server = { version = "2.3.0" }
 
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -72,7 +72,7 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
-criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
+criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 
 [package.metadata.docs.rs]
 all-features = true
