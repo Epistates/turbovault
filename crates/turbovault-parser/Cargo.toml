@@ -9,21 +9,22 @@ publish = true
 description = "Obsidian Flavored Markdown (OFM) parser"
 documentation = "https://docs.rs/turbovault-parser"
 
+[features]
+default = []
+
 [dependencies]
 turbovault-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 regex = { workspace = true }
-lazy_static = { workspace = true }
 nom = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 
 # 2025 diligence: OFM parsing with best-in-class libraries
-pulldown-cmark = { workspace = true }      # CommonMark foundation
-frontmatter-gen = { workspace = true }     # Frontmatter extraction
+pulldown-cmark = { workspace = true }      # CommonMark parser with OFM extensions
 
 [dev-dependencies]
 insta = { workspace = true }

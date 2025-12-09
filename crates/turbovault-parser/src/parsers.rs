@@ -1,31 +1,44 @@
-//! OFM parser implementation using pulldown-cmark + custom regex layers
+//! OFM parser implementation using unified ParseEngine.
 
 use std::path::{Path, PathBuf};
 use turbovault_core::{FileMetadata, Frontmatter, Result, SourcePosition, VaultFile};
 
-mod callouts;
-mod embeds;
-mod frontmatter_parser;
-mod headings;
-mod tags;
-mod tasks;
-mod wikilinks;
+use crate::ParseOptions;
+use crate::engine::ParseEngine;
+
+// Individual parser modules are still available for backwards compatibility
+// and granular use cases, but the main Parser uses the unified engine.
+pub mod callouts;
+pub mod embeds;
+pub mod frontmatter_parser;
+pub mod headings;
+pub mod link_utils;
+pub mod markdown_links;
+pub mod tags;
+pub mod tasks;
+pub mod wikilinks;
 
 pub use self::frontmatter_parser::extract_frontmatter;
 
-/// Main parser for OFM files
-#[allow(dead_code)]
+/// Main parser for OFM files.
+///
+/// Uses the unified ParseEngine internally for efficient, single-source parsing.
 pub struct Parser {
     vault_root: PathBuf,
 }
 
 impl Parser {
-    /// Create a new parser for the given vault root
+    /// Create a new parser for the given vault root.
     pub fn new(vault_root: PathBuf) -> Self {
         Self { vault_root }
     }
 
-    /// Parse a file from path and content
+    /// Get the vault root path.
+    pub fn vault_root(&self) -> &Path {
+        &self.vault_root
+    }
+
+    /// Parse a file from path and content.
     pub fn parse_file(&self, path: &Path, content: &str) -> Result<VaultFile> {
         let metadata = self.extract_metadata(path, content)?;
         let mut vault_file = VaultFile::new(path.to_path_buf(), content.to_string(), metadata);
@@ -67,47 +80,42 @@ impl Parser {
         })
     }
 
-    /// Parse all content elements from file
+    /// Parse all content elements from file using unified engine.
     fn parse_content(&self, vault_file: &mut VaultFile) -> Result<()> {
         let content = &vault_file.content;
 
-        // Step 1: Extract frontmatter
-        if let Ok((fm_str, content_without_fm)) = extract_frontmatter(content) {
-            if let Some(fm_str) = fm_str {
-                vault_file.frontmatter = self.parse_frontmatter(&fm_str)?;
-            }
-            vault_file.content = content_without_fm;
+        // Use ParseEngine with source file for vault-aware parsing
+        let engine = ParseEngine::with_source_file(content, &vault_file.path);
+        let result = engine.parse(&ParseOptions::all());
+
+        // Transfer results to VaultFile
+        vault_file.frontmatter = result.frontmatter;
+
+        // Update content without frontmatter (if present)
+        // Note: The engine doesn't return stripped content, but for VaultFile
+        // we may want to keep original content. For now, preserve behavior.
+        if vault_file.frontmatter.is_some()
+            && let Ok((_, stripped)) = extract_frontmatter(content)
+        {
+            vault_file.content = stripped;
         }
 
-        let content = &vault_file.content;
+        // Links (wikilinks, embeds, markdown links)
+        vault_file.links.extend(result.wikilinks);
+        vault_file.links.extend(result.embeds);
+        vault_file.links.extend(result.markdown_links);
 
-        // Step 2: Parse wikilinks and embeds
-        vault_file
-            .links
-            .extend(wikilinks::parse_wikilinks(content, &vault_file.path));
-        vault_file
-            .links
-            .extend(embeds::parse_embeds(content, &vault_file.path));
-
-        // Step 3: Parse tags
-        vault_file.tags.extend(tags::parse_tags(content));
-
-        // Step 4: Parse tasks
-        vault_file.tasks.extend(tasks::parse_tasks(content));
-
-        // Step 5: Parse callouts
-        vault_file
-            .callouts
-            .extend(callouts::parse_callouts(content));
-
-        // Step 6: Parse headings
-        vault_file
-            .headings
-            .extend(headings::parse_headings(content));
+        // Other elements
+        vault_file.tags.extend(result.tags);
+        vault_file.tasks.extend(result.tasks);
+        vault_file.callouts.extend(result.callouts);
+        vault_file.headings.extend(result.headings);
 
         Ok(())
     }
 
+    /// Parse frontmatter from YAML string.
+    #[allow(dead_code)]
     fn parse_frontmatter(&self, fm_str: &str) -> Result<Option<Frontmatter>> {
         match serde_yaml::from_str::<serde_json::Value>(fm_str) {
             Ok(serde_json::Value::Object(map)) => {
@@ -131,5 +139,44 @@ mod tests {
     fn test_parser_creation() {
         let parser = Parser::new(PathBuf::from("/vault"));
         assert_eq!(parser.vault_root, PathBuf::from("/vault"));
+    }
+
+    #[test]
+    fn test_parse_file_complete() {
+        let parser = Parser::new(PathBuf::from("/vault"));
+        let content = r#"---
+title: Test
+---
+
+# Heading
+
+[[Link]] and [md](url) with #tag
+
+- [ ] Task
+
+> [!NOTE] Callout
+"#;
+        let result = parser
+            .parse_file(&PathBuf::from("test.md"), content)
+            .unwrap();
+
+        assert!(result.frontmatter.is_some());
+        assert_eq!(result.headings.len(), 1);
+        assert!(result.links.len() >= 2); // wikilink + markdown link
+        assert_eq!(result.tags.len(), 1);
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.callouts.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_file_non_markdown() {
+        let parser = Parser::new(PathBuf::from("/vault"));
+        let content = "[[Link]] #tag";
+        let result = parser
+            .parse_file(&PathBuf::from("test.txt"), content)
+            .unwrap();
+
+        // .txt files are not parsed for OFM elements
+        assert!(!result.is_parsed);
     }
 }

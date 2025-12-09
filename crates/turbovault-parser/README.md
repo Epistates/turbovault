@@ -79,6 +79,32 @@ let content = "See [[Note#Heading]] and [[folder/SubNote]]";
 - Differentiates from embeds (excludes `![[...]]`)
 - Captures full target path including heading/block anchors
 
+### Link Types
+
+The parser classifies links into the following types:
+
+```rust
+use turbovault_core::LinkType;
+
+// WikiLink - basic wikilink: [[Note]]
+// HeadingRef - cross-file heading: [[Note#Heading]] or file.md#section
+// BlockRef - block reference: [[Note#^blockid]] or #^blockid
+// Anchor - same-document anchor: [[#Heading]] or #section
+// Embed - embedded content: ![[Note]]
+// MarkdownLink - markdown link to file: [text](./file.md)
+// ExternalLink - external URL: [text](https://...)
+```
+
+**Detection examples:**
+- `[[Note]]` → `WikiLink`
+- `[[Note#Heading]]` → `HeadingRef`
+- `[[Note#^blockid]]` → `BlockRef`
+- `[[#Heading]]` → `Anchor` (same-document heading)
+- `[[#^blockid]]` → `BlockRef` (same-document block)
+- `[text](#section)` → `Anchor`
+- `[text](file.md#section)` → `HeadingRef`
+- `[text](note.md#^block)` → `BlockRef`
+
 ### Embed Parser (`parsers/embeds.rs`)
 
 Extracts embedded files and notes:
@@ -274,6 +300,14 @@ This crate depends on `turbovault-core` for:
 - **Error Types**: `Result<T, Error>` for consistent error handling
 - **Configuration**: `VaultConfig` for vault-specific parsing settings
 - **Type Safety**: Strong types prevent string-based API errors
+
+**Re-exported Types**: For convenience, this crate re-exports commonly used types from `turbovault-core`:
+
+```rust
+// No need to depend on turbovault-core separately
+use turbovault_parser::{ContentBlock, InlineElement, LinkType, ListItem, TableAlignment};
+use turbovault_parser::{LineIndex, SourcePosition};
+```
 
 The parser produces structured data that can be consumed by:
 - `turbovault-vault`: Vault management and indexing
