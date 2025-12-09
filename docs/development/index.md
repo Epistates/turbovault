@@ -66,7 +66,7 @@ make all
 │  └────────────────────────────────────────────────┘    │
 │                                                          │
 │  ┌────────────────────────────────────────────────┐    │
-│  │  38 MCP Tools (tools.rs)                       │    │
+│  │  44 MCP Tools (tools.rs)                       │    │
 │  │  - File ops, search, graph, batch, export      │    │
 │  │  - Error conversion (Error → McpError)         │    │
 │  │  - Observability (spans, metrics)              │    │

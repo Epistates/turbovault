@@ -29,6 +29,23 @@ TurboVault fully supports Obsidian Flavored Markdown, which extends CommonMark w
 ![[Note Name#section]]
 ```
 
+### Link Type Classification
+
+TurboVault classifies links into specific types for graph analysis:
+
+| Syntax | LinkType | Description |
+|--------|----------|-------------|
+| `[[Note]]` | `WikiLink` | Basic wikilink |
+| `[[Note#Heading]]` | `HeadingRef` | Cross-file heading reference |
+| `[[Note#^blockid]]` | `BlockRef` | Block reference |
+| `[[#Heading]]` | `Anchor` | Same-document heading anchor |
+| `[[#^blockid]]` | `BlockRef` | Same-document block reference |
+| `![[Note]]` | `Embed` | Embedded content |
+| `[text](./file.md)` | `MarkdownLink` | Standard markdown link to file |
+| `[text](file.md#section)` | `HeadingRef` | Markdown link with heading |
+| `[text](#section)` | `Anchor` | Same-document anchor (markdown) |
+| `[text](https://...)` | `ExternalLink` | External URL |
+
 ### Callouts
 
 ```markdown

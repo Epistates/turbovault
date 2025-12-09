@@ -14,7 +14,7 @@ Overview of TurboVault's modular architecture.
 │  turbovault-server (MCP Server Binary)  │
 │                                         │
 │  ┌───────────────────────────────────┐ │
-│  │   turbovault-tools (38 MCP Tools) │ │
+│  │   turbovault-tools (44 MCP Tools) │ │
 │  └────────┬───────────────────────────┘ │
 └───────────┼─────────────────────────────┘
             │
@@ -76,7 +76,7 @@ Overview of TurboVault's modular architecture.
 - Data serialization
 
 ### turbovault-tools
-- 38 MCP tools
+- 44 MCP tools
 - Tool implementation
 - Response formatting
 

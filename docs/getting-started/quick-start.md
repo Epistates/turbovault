@@ -115,7 +115,7 @@ With TurboVault connected to Claude, try:
 
 ## 📚 Available Tools (Sample)
 
-TurboVault exposes 38 tools including:
+TurboVault exposes 44 tools including:
 
 **File Operations**
 - `read_note` - Read note content

@@ -14,7 +14,7 @@ The `TurboVault` project is organized as a Rust workspace with 8 crates:
 | **turbovault-vault** | File I/O, caching, validation | ~1,800 LOC | Vault management, atomic operations |
 | **turbovault-batch** | Atomic multi-file operations | ~800 LOC | Transaction support, rollback |
 | **turbovault-export** | JSON/CSV export formats | ~600 LOC | Data export, reporting |
-| **turbovault-tools** | MCP tools implementation | ~2,500 LOC | 38 MCP tools, search engine |
+| **turbovault-tools** | MCP tools implementation | ~2,500 LOC | 44 MCP tools, search engine |
 | **turbovault-server** | CLI + MCP server | ~600 LOC | Main binary, server orchestration |
 
 **Total**: ~11,000 lines of production Rust code
@@ -152,7 +152,7 @@ This crate provides comprehensive export capabilities for Obsidian vault data, e
 This crate implements the Model Context Protocol (MCP) tools that enable AI agents to discover, query, analyze, and manage Obsidian vaults through a structured, type-safe API. It orchestrates all vault operations by integrating the parser, graph, vault, batch, and export crates into a cohesive agent-friendly interface.
 
 **Key Components:**
-- **38 MCP Tools**: Complete vault management API
+- **44 MCP Tools**: Complete vault management API
 - **Search Engine**: Tantivy-powered full-text search with TF-IDF ranking
 - **Template Engine**: Pre-built templates with field validation
 - **11 Tool Categories**: FileTools, SearchTools, SearchEngine, TemplateEngine, AnalysisTools, GraphTools, BatchTools, ExportTools, ValidationTools, MetadataTools, RelationshipTools, VaultLifecycleTools
@@ -169,12 +169,12 @@ This crate implements the Model Context Protocol (MCP) tools that enable AI agen
 
 **Production-Grade MCP Server for Obsidian Vault Management**
 
-The main executable binary that exposes 38 MCP tools for AI agents to autonomously manage Obsidian vaults. This is the entry point for end users - it orchestrates all vault operations by integrating the core, parser, graph, vault, batch, export, and tools crates into a unified Model Context Protocol server.
+The main executable binary that exposes 44 MCP tools for AI agents to autonomously manage Obsidian vaults. This is the entry point for end users - it orchestrates all vault operations by integrating the core, parser, graph, vault, batch, export, and tools crates into a unified Model Context Protocol server.
 
 **Key Components:**
 - **CLI Interface**: Command-line argument parsing and configuration
 - **MCP Server**: STDIO transport for MCP protocol communication
-- **38 MCP Tools**: Complete vault management API
+- **44 MCP Tools**: Complete vault management API
 - **Observability**: OpenTelemetry integration for production monitoring
 - **Configuration Profiles**: Pre-tuned configurations for different use cases
 - **Vault Management**: Multi-vault support with runtime configuration

@@ -1,6 +1,6 @@
 # API Reference
 
-Complete reference for all 38 MCP tools available to AI agents.
+Complete reference for all 44 MCP tools available to AI agents.
 
 ## Tool Categories
 
