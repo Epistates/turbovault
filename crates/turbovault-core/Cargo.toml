@@ -16,9 +16,7 @@ serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-anyhow = { workspace = true }
 log = { workspace = true }
-regex = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 parking_lot = "0.12"  # For efficient RwLock in metrics
 sha2 = { workspace = true }
