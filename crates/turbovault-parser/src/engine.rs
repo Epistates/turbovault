@@ -79,9 +79,27 @@ impl ExcludedRanges {
     /// Check if a byte offset falls within any excluded range.
     #[inline]
     fn contains(&self, offset: usize) -> bool {
-        // Binary search would be faster for many ranges, but typically
-        // there are few code blocks so linear scan is fine
-        self.ranges.iter().any(|r| r.contains(&offset))
+        // Optimized: Binary search for O(log N) lookup
+        if self.ranges.is_empty() {
+            return false;
+        }
+
+        // Find the first range that starts AFTER the offset.
+        // The candidate range that might contain 'offset' is the one immediately preceding that.
+        let idx = self.ranges.partition_point(|r| r.start <= offset);
+
+        if idx == 0 {
+            // All ranges start after offset, so none contain it
+            return false;
+        }
+
+        // Check the range before the partition point
+        // partition_point returns the index of the first element where the predicate is false
+        // Predicate: r.start <= offset.
+        // False means: r.start > offset.
+        // So ranges[idx-1].start <= offset.
+        let candidate = &self.ranges[idx - 1];
+        offset < candidate.end
     }
 
     /// Add a range to exclude.
