@@ -5,6 +5,27 @@ All notable changes to TurboVault will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2025-12-10
+
+### Fixed
+
+- Updated turbomcp dependency to 2.3.3 for compatibility with latest MCP server framework
+
+## [1.2.2] - 2025-12-09
+
+### Added
+
+- Dependency version bump to turbomcp 2.3.2
+
+### Changed
+
+- Updated all workspace dependencies to latest compatible versions
+
+### Fixed
+
+- Optimized binary search in excluded ranges for improved performance
+- Removed unused dependencies to reduce binary size
+
 ## [1.2.0] - 2024-12-08
 
 ### Added
@@ -51,6 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Atomic file operations with rollback support
 - Configuration profiles (development, production, readonly, high-performance)
 
+[1.2.3]: https://github.com/epistates/turbovault/compare/v1.2.2...v1.2.3
+[1.2.2]: https://github.com/epistates/turbovault/compare/v1.2.1...v1.2.2
 [1.2.0]: https://github.com/epistates/turbovault/compare/v1.1.8...v1.2.0
 [1.1.8]: https://github.com/epistates/turbovault/compare/v1.1.0...v1.1.8
 [1.1.0]: https://github.com/epistates/turbovault/releases/tag/v1.1.0
