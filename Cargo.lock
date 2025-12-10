@@ -4265,11 +4265,9 @@ dependencies = [
 name = "turbovault-core"
 version = "1.2.1"
 dependencies = [
- "anyhow",
  "chrono",
  "log",
  "parking_lot",
- "regex",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -4311,16 +4309,13 @@ dependencies = [
 name = "turbovault-parser"
 version = "1.2.1"
 dependencies = [
- "anyhow",
  "insta",
  "log",
- "nom",
  "pulldown-cmark",
  "regex",
  "serde",
  "serde_json",
  "serde_yaml",
- "thiserror 1.0.69",
  "tokio",
  "turbovault-core",
 ]
