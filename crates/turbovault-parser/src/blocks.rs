@@ -1354,7 +1354,10 @@ See [[WikiNote]] for more info."#;
         // (capital O in "Overview" + lowercase o in "#overview")
         // Plain text extraction should only show the visible part
         let o_count = plain.chars().filter(|c| *c == 'o' || *c == 'O').count();
-        assert_eq!(o_count, 1, "Should only count 'o' in visible text, not hidden anchor");
+        assert_eq!(
+            o_count, 1,
+            "Should only count 'o' in visible text, not hidden anchor"
+        );
 
         // More explicitly: the anchor URL should not be in plain text
         assert!(!plain.contains("#overview"));

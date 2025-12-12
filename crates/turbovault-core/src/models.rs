@@ -359,8 +359,7 @@ impl ContentBlock {
                 .join("\n"),
             Self::Table { headers, rows, .. } => {
                 let header_text = headers.join("\t");
-                let row_texts: Vec<String> =
-                    rows.iter().map(|row| row.join("\t")).collect();
+                let row_texts: Vec<String> = rows.iter().map(|row| row.join("\t")).collect();
                 if row_texts.is_empty() {
                     header_text
                 } else {
@@ -369,7 +368,9 @@ impl ContentBlock {
             }
             Self::Image { alt, .. } => alt.clone(),
             Self::HorizontalRule => String::new(),
-            Self::Details { summary, blocks, .. } => {
+            Self::Details {
+                summary, blocks, ..
+            } => {
                 let blocks_text: String = blocks
                     .iter()
                     .map(Self::to_plain_text)
