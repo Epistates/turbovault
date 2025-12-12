@@ -132,7 +132,7 @@ pub use standalone::{ParseOptions, ParsedContent};
 pub use parsers::frontmatter_parser::extract_frontmatter;
 
 // Block-level parsing (for treemd integration)
-pub use blocks::{parse_blocks, parse_blocks_from_line, slugify};
+pub use blocks::{parse_blocks, parse_blocks_from_line, slugify, to_plain_text};
 
 // Re-export core types for consumers (no need to depend on turbovault-core separately)
 pub use turbovault_core::{
@@ -319,6 +319,6 @@ pub mod prelude {
     pub use crate::{
         extract_frontmatter, parse_blocks, parse_blocks_from_line, parse_callouts,
         parse_callouts_full, parse_embeds, parse_headings, parse_markdown_links, parse_tags,
-        parse_tasks, parse_wikilinks, slugify,
+        parse_tasks, parse_wikilinks, slugify, to_plain_text,
     };
 }

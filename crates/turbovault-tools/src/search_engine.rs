@@ -16,6 +16,7 @@ use tantivy::schema::*;
 use tantivy::{Index, ReloadPolicy, TantivyDocument, doc};
 use tracing::instrument;
 use turbovault_core::prelude::*;
+use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
 
 /// Search result metadata for LLM consumption
@@ -25,11 +26,11 @@ pub struct SearchResultInfo {
     pub path: String,
     /// File title (from frontmatter or first heading)
     pub title: String,
-    /// Content preview (first 200 chars)
+    /// Content preview (first 200 chars of plain text)
     pub preview: String,
     /// Relevance score (0.0 to 1.0, normalized from tantivy's TF-IDF)
     pub score: f64,
-    /// Matching snippet with context
+    /// Matching snippet with context (plain text)
     pub snippet: String,
     /// Front matter tags
     pub tags: Vec<String>,
@@ -37,6 +38,10 @@ pub struct SearchResultInfo {
     pub outgoing_links: Vec<String>,
     /// Number of backlinks to this note
     pub backlink_count: usize,
+    /// Word count of readable content (excludes markdown syntax)
+    pub word_count: usize,
+    /// Character count of readable content (excludes markdown syntax)
+    pub char_count: usize,
 }
 
 /// Search filter options
@@ -170,11 +175,14 @@ impl SearchEngine {
                         .map(|fm| fm.tags().join(" "))
                         .unwrap_or_default();
 
-                    // Add document to index
+                    // Extract plain text for indexing (excludes markdown syntax, URLs, etc.)
+                    let plain_content = to_plain_text(&vault_file.content);
+
+                    // Add document to index with plain text content
                     let _ = index_writer.add_document(doc!(
                         schema.get_field("path").unwrap() => path_str.clone(),
                         schema.get_field("title").unwrap() => title,
-                        schema.get_field("content").unwrap() => vault_file.content,
+                        schema.get_field("content").unwrap() => plain_content,
                         schema.get_field("tags").unwrap() => tags_str,
                     ));
                 }
@@ -235,8 +243,9 @@ impl SearchEngine {
         // Parse the note to extract keywords
         let vault_file = self.manager.parse_file(&PathBuf::from(path)).await?;
 
-        // Extract key terms from content
-        let keywords = extract_keywords(&vault_file.content);
+        // Extract key terms from plain text content (excludes URLs, markdown syntax)
+        let plain_content = to_plain_text(&vault_file.content);
+        let keywords = extract_keywords(&plain_content);
 
         // Search for similar notes using tantivy query
         let query = keywords.join(" ");
@@ -392,8 +401,11 @@ impl SearchQuery {
             // Get full content for preview and snippet
             let file_path = PathBuf::from(&path);
             if let Ok(vault_file) = engine.manager.parse_file(&file_path).await {
-                let preview = vault_file
-                    .content
+                // Extract plain text for preview, snippet, and metrics
+                let plain_content = to_plain_text(&vault_file.content);
+
+                // Generate preview from plain text (first line, up to 200 chars)
+                let preview = plain_content
                     .lines()
                     .next()
                     .unwrap_or("")
@@ -401,8 +413,13 @@ impl SearchQuery {
                     .take(200)
                     .collect::<String>();
 
-                let snippet = extract_snippet(&vault_file.content, &query_str);
+                // Extract snippet from plain text (no markdown syntax in results)
+                let snippet = extract_snippet(&plain_content, &query_str);
                 let backlink_count = graph_read.backlinks(&file_path).unwrap_or_default().len();
+
+                // Calculate content metrics from plain text
+                let word_count = plain_content.split_whitespace().count();
+                let char_count = plain_content.chars().count();
 
                 // Get outgoing links
                 let outgoing_links: Vec<String> =
@@ -422,6 +439,8 @@ impl SearchQuery {
                     tags: file_tags,
                     outgoing_links,
                     backlink_count,
+                    word_count,
+                    char_count,
                 });
             }
 

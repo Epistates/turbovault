@@ -209,6 +209,15 @@ pub struct VaultStatsRecord {
     pub total_links: usize,
     pub orphaned_files: usize,
     pub average_links_per_file: f64,
+    /// Total word count across all notes (plain text, excludes markdown syntax)
+    #[serde(default)]
+    pub total_words: usize,
+    /// Total character count across all notes (plain text)
+    #[serde(default)]
+    pub total_readable_chars: usize,
+    /// Average words per note
+    #[serde(default)]
+    pub avg_words_per_note: f64,
 }
 
 /// Full analysis report combining multiple metrics
@@ -289,14 +298,17 @@ impl VaultStatsExporter {
     /// Export vault stats as CSV
     pub fn to_csv(stats: &VaultStatsRecord) -> Result<String> {
         let csv = format!(
-            "timestamp,vault_name,total_files,total_links,orphaned_files,average_links_per_file\n\
-             {},{},{},{},{},{:.3}",
+            "timestamp,vault_name,total_files,total_links,orphaned_files,average_links_per_file,total_words,total_readable_chars,avg_words_per_note\n\
+             {},{},{},{},{},{:.3},{},{},{:.1}",
             stats.timestamp,
             stats.vault_name,
             stats.total_files,
             stats.total_links,
             stats.orphaned_files,
-            stats.average_links_per_file
+            stats.average_links_per_file,
+            stats.total_words,
+            stats.total_readable_chars,
+            stats.avg_words_per_note
         );
 
         Ok(csv)
@@ -452,12 +464,17 @@ mod tests {
             total_links: 150,
             orphaned_files: 5,
             average_links_per_file: 1.5,
+            total_words: 25000,
+            total_readable_chars: 150000,
+            avg_words_per_note: 250.0,
         };
 
         let json = VaultStatsExporter::to_json(&stats).unwrap();
         assert!(json.contains("100"));
+        assert!(json.contains("25000"));
 
         let csv = VaultStatsExporter::to_csv(&stats).unwrap();
         assert!(csv.contains("100"));
+        assert!(csv.contains("25000"));
     }
 }

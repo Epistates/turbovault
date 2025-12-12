@@ -782,6 +782,52 @@ pub fn parse_blocks_from_line(markdown: &str, start_line: usize) -> Vec<ContentB
     final_blocks
 }
 
+/// Extract plain text from markdown content.
+///
+/// Strips all markdown syntax, returning only text that would be
+/// visible when rendered. This is useful for:
+/// - **Search indexing**: Index only searchable text
+/// - **Accessibility**: Screen reader text extraction
+/// - **Word counts**: Accurate content word counts
+/// - **Diffs**: Compare semantic content, not syntax
+///
+/// # Elements stripped
+///
+/// | Markdown | Plain Text |
+/// |----------|------------|
+/// | `[text](url)` | `text` |
+/// | `![alt](url)` | `alt` |
+/// | `[[Page]]` | `Page` |
+/// | `[[Page\|Display]]` | `Display` |
+/// | `**bold**` | `bold` |
+/// | `*italic*` | `italic` |
+/// | `` `code` `` | `code` |
+/// | `~~strike~~` | `strike` |
+/// | `# Heading` | `Heading` |
+/// | `> quote` | (quote content) |
+/// | Code fences | (content preserved) |
+///
+/// # Example
+///
+/// ```
+/// use turbovault_parser::to_plain_text;
+///
+/// let plain = to_plain_text("[Overview](#overview) and **bold**");
+/// assert_eq!(plain, "Overview and bold");
+///
+/// // Wikilinks are handled properly
+/// let plain = to_plain_text("See [[Note]] and [[Other|display]]");
+/// assert_eq!(plain, "See Note and display");
+/// ```
+pub fn to_plain_text(markdown: &str) -> String {
+    let blocks = parse_blocks(markdown);
+    blocks
+        .iter()
+        .map(ContentBlock::to_plain_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1096,5 +1142,234 @@ Inner content here.
                     .any(|e| matches!(e, InlineElement::Strikethrough { .. }))
             );
         }
+    }
+
+    #[test]
+    fn test_indented_code_blocks_in_list_items() {
+        // Bug report: indented fenced code blocks in list items should be recognized
+        // Per CommonMark spec, code blocks can be indented up to 3 spaces to be part of a list item
+        let markdown = r#"## Installation
+
+1. Install from crates.io:
+   ```bash
+   cargo install treemd
+   ```
+
+2. Or build from source:
+   ```bash
+   git clone https://github.com/example/repo
+   cd repo
+   cargo install --path .
+   ```"#;
+
+        let blocks = parse_blocks(markdown);
+
+        // Should have: Heading, List
+        assert_eq!(blocks.len(), 2, "Expected 2 blocks (heading + list)");
+        assert!(
+            matches!(blocks[0], ContentBlock::Heading { level: 2, .. }),
+            "First block should be H2"
+        );
+
+        if let ContentBlock::List { ordered, items } = &blocks[1] {
+            assert!(ordered, "Should be an ordered list");
+            assert_eq!(items.len(), 2, "Should have 2 list items");
+
+            // First item should have code block in its nested blocks
+            assert!(
+                !items[0].blocks.is_empty(),
+                "First item should have nested blocks"
+            );
+            assert!(
+                matches!(items[0].blocks[0], ContentBlock::Code { .. }),
+                "First item's nested block should be Code"
+            );
+            if let ContentBlock::Code {
+                language, content, ..
+            } = &items[0].blocks[0]
+            {
+                assert_eq!(language.as_deref(), Some("bash"));
+                assert!(content.contains("cargo install treemd"));
+            }
+
+            // Second item should also have code block in its nested blocks
+            assert!(
+                !items[1].blocks.is_empty(),
+                "Second item should have nested blocks"
+            );
+            assert!(
+                matches!(items[1].blocks[0], ContentBlock::Code { .. }),
+                "Second item's nested block should be Code"
+            );
+            if let ContentBlock::Code {
+                language, content, ..
+            } = &items[1].blocks[0]
+            {
+                assert_eq!(language.as_deref(), Some("bash"));
+                assert!(content.contains("git clone"));
+            }
+        } else {
+            panic!("Expected List block");
+        }
+    }
+
+    // ========================================================================
+    // to_plain_text tests
+    // ========================================================================
+
+    #[test]
+    fn test_to_plain_text_simple_paragraph() {
+        let markdown = "This is a simple paragraph.";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "This is a simple paragraph.");
+    }
+
+    #[test]
+    fn test_to_plain_text_with_link() {
+        let markdown = "[Overview](#overview) and more text";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "Overview and more text");
+    }
+
+    #[test]
+    fn test_to_plain_text_with_bold_and_italic() {
+        let markdown = "This has **bold** and *italic* text.";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "This has bold and italic text.");
+    }
+
+    #[test]
+    fn test_to_plain_text_with_inline_code() {
+        let markdown = "Use the `println!` macro.";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "Use the println! macro.");
+    }
+
+    #[test]
+    fn test_to_plain_text_with_strikethrough() {
+        let markdown = "This is ~~deleted~~ text.";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "This is deleted text.");
+    }
+
+    #[test]
+    fn test_to_plain_text_wikilinks() {
+        let markdown = "See [[Note]] and [[Other|display]] for info.";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "See Note and display for info.");
+    }
+
+    #[test]
+    fn test_to_plain_text_heading() {
+        let markdown = "# Hello World";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "Hello World");
+    }
+
+    #[test]
+    fn test_to_plain_text_code_block() {
+        let markdown = "```rust\nfn main() {}\n```";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "fn main() {}");
+    }
+
+    #[test]
+    fn test_to_plain_text_list() {
+        let markdown = "- Item 1\n- Item 2\n- Item 3";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "Item 1\nItem 2\nItem 3");
+    }
+
+    #[test]
+    fn test_to_plain_text_table() {
+        let markdown = "| A | B |\n|---|---|\n| 1 | 2 |";
+        let plain = to_plain_text(markdown);
+        // Table headers and rows separated by tabs
+        assert!(plain.contains("A\tB"));
+        assert!(plain.contains("1\t2"));
+    }
+
+    #[test]
+    fn test_to_plain_text_blockquote() {
+        let markdown = "> This is a quote";
+        let plain = to_plain_text(markdown);
+        assert!(plain.contains("This is a quote"));
+    }
+
+    #[test]
+    fn test_to_plain_text_image() {
+        let markdown = "![Alt text](image.png)";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "Alt text");
+    }
+
+    #[test]
+    fn test_to_plain_text_horizontal_rule() {
+        let markdown = "Before\n\n---\n\nAfter";
+        let plain = to_plain_text(markdown);
+        // Horizontal rules produce empty strings, paragraphs separated by newlines
+        assert!(plain.contains("Before"));
+        assert!(plain.contains("After"));
+    }
+
+    #[test]
+    fn test_to_plain_text_complex_document() {
+        let markdown = r#"# Document Title
+
+This is a paragraph with **bold** and *italic* text.
+
+- [Link One](#one)
+- [Link Two](#two)
+- [Link Three](#three)
+
+See [[WikiNote]] for more info."#;
+
+        let plain = to_plain_text(markdown);
+
+        // Should contain heading text
+        assert!(plain.contains("Document Title"));
+        // Should contain paragraph with formatting stripped
+        assert!(plain.contains("bold"));
+        assert!(plain.contains("italic"));
+        // Should contain link text, not URLs
+        assert!(plain.contains("Link One"));
+        assert!(plain.contains("Link Two"));
+        // Should contain wikilink display text
+        assert!(plain.contains("WikiNote"));
+        // Should NOT contain URLs
+        assert!(!plain.contains("#one"));
+        assert!(!plain.contains("#two"));
+    }
+
+    #[test]
+    fn test_to_plain_text_treemd_use_case() {
+        // This test validates the original treemd use case:
+        // searching in "[Overview](#overview)" should only match visible text "Overview"
+        // not the hidden anchor "#overview"
+        let markdown = "[Overview](#overview)";
+        let plain = to_plain_text(markdown);
+        assert_eq!(plain, "Overview");
+
+        // The visible text "Overview" has 1 'O', while raw markdown has 2 'o's total
+        // (capital O in "Overview" + lowercase o in "#overview")
+        // Plain text extraction should only show the visible part
+        let o_count = plain.chars().filter(|c| *c == 'o' || *c == 'O').count();
+        assert_eq!(o_count, 1, "Should only count 'o' in visible text, not hidden anchor");
+
+        // More explicitly: the anchor URL should not be in plain text
+        assert!(!plain.contains("#overview"));
+        assert!(!plain.contains("overview")); // lowercase version from anchor
+    }
+
+    #[test]
+    fn test_to_plain_text_nested_formatting() {
+        // Test nested structures
+        let markdown = "**[bold link](url)** and *[italic link](url2)*";
+        let plain = to_plain_text(markdown);
+        // The link text should be extracted
+        assert!(plain.contains("bold link"));
+        assert!(plain.contains("italic link"));
+        // URLs should not appear
+        assert!(!plain.contains("url"));
     }
 }

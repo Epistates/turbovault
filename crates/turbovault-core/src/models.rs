@@ -316,6 +316,75 @@ pub enum ContentBlock {
     },
 }
 
+impl ContentBlock {
+    /// Extract plain text from this content block.
+    ///
+    /// Returns only the visible text content, stripping markdown syntax.
+    /// This is useful for search indexing, accessibility, and accurate word counts.
+    ///
+    /// # Example
+    /// ```
+    /// use turbovault_core::{ContentBlock, InlineElement};
+    ///
+    /// let block = ContentBlock::Paragraph {
+    ///     content: "[Overview](#overview) and **bold**".to_string(),
+    ///     inline: vec![
+    ///         InlineElement::Link {
+    ///             text: "Overview".to_string(),
+    ///             url: "#overview".to_string(),
+    ///             title: None,
+    ///         },
+    ///         InlineElement::Text { value: " and ".to_string() },
+    ///         InlineElement::Strong { value: "bold".to_string() },
+    ///     ],
+    /// };
+    /// assert_eq!(block.to_plain_text(), "Overview and bold");
+    /// ```
+    #[must_use]
+    pub fn to_plain_text(&self) -> String {
+        match self {
+            Self::Heading { inline, .. } | Self::Paragraph { inline, .. } => {
+                inline.iter().map(InlineElement::to_plain_text).collect()
+            }
+            Self::Code { content, .. } => content.clone(),
+            Self::List { items, .. } => items
+                .iter()
+                .map(ListItem::to_plain_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::Blockquote { blocks, .. } => blocks
+                .iter()
+                .map(Self::to_plain_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Self::Table { headers, rows, .. } => {
+                let header_text = headers.join("\t");
+                let row_texts: Vec<String> =
+                    rows.iter().map(|row| row.join("\t")).collect();
+                if row_texts.is_empty() {
+                    header_text
+                } else {
+                    format!("{}\n{}", header_text, row_texts.join("\n"))
+                }
+            }
+            Self::Image { alt, .. } => alt.clone(),
+            Self::HorizontalRule => String::new(),
+            Self::Details { summary, blocks, .. } => {
+                let blocks_text: String = blocks
+                    .iter()
+                    .map(Self::to_plain_text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if blocks_text.is_empty() {
+                    summary.clone()
+                } else {
+                    format!("{}\n{}", summary, blocks_text)
+                }
+            }
+        }
+    }
+}
+
 /// An inline element within a block.
 ///
 /// These represent inline formatting and links within text content.
@@ -346,6 +415,38 @@ pub enum InlineElement {
     Strikethrough { value: String },
 }
 
+impl InlineElement {
+    /// Extract plain text from this inline element.
+    ///
+    /// Returns only the visible text content, stripping markdown syntax.
+    /// For links, returns the link text (not the URL).
+    /// For images, returns the alt text.
+    ///
+    /// # Example
+    /// ```
+    /// use turbovault_core::InlineElement;
+    ///
+    /// let link = InlineElement::Link {
+    ///     text: "Overview".to_string(),
+    ///     url: "#overview".to_string(),
+    ///     title: None,
+    /// };
+    /// assert_eq!(link.to_plain_text(), "Overview");
+    /// ```
+    #[must_use]
+    pub fn to_plain_text(&self) -> &str {
+        match self {
+            Self::Text { value }
+            | Self::Strong { value }
+            | Self::Emphasis { value }
+            | Self::Code { value }
+            | Self::Strikethrough { value } => value,
+            Self::Link { text, .. } => text,
+            Self::Image { alt, .. } => alt,
+        }
+    }
+}
+
 /// A list item with optional checkbox and nested content.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ListItem {
@@ -358,6 +459,45 @@ pub struct ListItem {
     /// Nested blocks (e.g., code blocks, sub-lists inside list items)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<ContentBlock>,
+}
+
+impl ListItem {
+    /// Extract plain text from this list item.
+    ///
+    /// Returns the visible text content by joining inline elements.
+    /// Includes nested block content recursively.
+    ///
+    /// # Example
+    /// ```
+    /// use turbovault_core::{ListItem, InlineElement};
+    ///
+    /// let item = ListItem {
+    ///     checked: Some(false),
+    ///     content: "Todo item".to_string(),
+    ///     inline: vec![InlineElement::Text { value: "Todo item".to_string() }],
+    ///     blocks: vec![],
+    /// };
+    /// assert_eq!(item.to_plain_text(), "Todo item");
+    /// ```
+    #[must_use]
+    pub fn to_plain_text(&self) -> String {
+        let mut result = String::new();
+
+        // Extract text from inline elements
+        for elem in &self.inline {
+            result.push_str(elem.to_plain_text());
+        }
+
+        // Include nested blocks
+        for block in &self.blocks {
+            if !result.is_empty() && !result.ends_with('\n') {
+                result.push('\n');
+            }
+            result.push_str(&block.to_plain_text());
+        }
+
+        result
+    }
 }
 
 /// Table column alignment.

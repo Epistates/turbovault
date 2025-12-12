@@ -5,6 +5,29 @@ All notable changes to TurboVault will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2025-12-12
+
+### Added
+
+- **Plain text extraction**: New `to_plain_text()` API for extracting visible text from markdown content, stripping all syntax. Useful for:
+  - Search indexing (index only searchable text)
+  - Accurate match counts (fixes treemd search mismatch where `[Overview](#overview)` counted URL chars)
+  - Word counts
+  - Accessibility text extraction
+- `InlineElement::to_plain_text(&self) -> &str` - Extract text from inline elements (links return link text, images return alt text)
+- `ListItem::to_plain_text(&self) -> String` - Extract text from list items including nested blocks
+- `ContentBlock::to_plain_text(&self) -> String` - Extract text from any content block recursively
+- `to_plain_text(markdown: &str) -> String` - Standalone function to parse and extract plain text in one call
+- Exported `to_plain_text` from `turbovault_parser` crate and prelude
+- **Search result metrics**: `SearchResultInfo` now includes `word_count` and `char_count` fields for content size estimation
+- **Export readability metrics**: `VaultStatsRecord` now includes `total_words`, `total_readable_chars`, and `avg_words_per_note`
+
+### Changed
+
+- **Search engine uses plain text**: Tantivy index now indexes plain text content instead of raw markdown, improving search relevance
+- **Keyword extraction uses plain text**: `find_related()` now extracts keywords from visible text only, excluding URLs and markdown syntax
+- **Search previews use plain text**: Search result previews and snippets now show human-readable text without markdown formatting
+
 ## [1.2.3] - 2025-12-10
 
 ### Fixed

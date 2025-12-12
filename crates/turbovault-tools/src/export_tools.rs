@@ -6,6 +6,7 @@ use turbovault_export::{
     AnalysisReportExporter, BrokenLinkRecord, BrokenLinksExporter, HealthReportExporter,
     VaultStatsExporter, VaultStatsRecord, create_health_report,
 };
+use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
 
 /// Export tools for vault analysis and reporting
@@ -79,6 +80,30 @@ impl ExportTools {
         let graph_read = graph.read().await;
         let stats = graph_read.stats();
 
+        // Calculate readability metrics by scanning all markdown files
+        let files = self.manager.scan_vault().await?;
+        let mut total_words = 0usize;
+        let mut total_readable_chars = 0usize;
+        let mut note_count = 0usize;
+
+        for file_path in &files {
+            if !file_path.to_string_lossy().to_lowercase().ends_with(".md") {
+                continue;
+            }
+            if let Ok(vault_file) = self.manager.parse_file(file_path).await {
+                let plain_text = to_plain_text(&vault_file.content);
+                total_words += plain_text.split_whitespace().count();
+                total_readable_chars += plain_text.chars().count();
+                note_count += 1;
+            }
+        }
+
+        let avg_words_per_note = if note_count > 0 {
+            total_words as f64 / note_count as f64
+        } else {
+            0.0
+        };
+
         let stats_record = VaultStatsRecord {
             timestamp: chrono::Utc::now().to_rfc3339(),
             vault_name: "default".to_string(),
@@ -86,6 +111,9 @@ impl ExportTools {
             total_links: stats.total_links,
             orphaned_files: stats.orphaned_files,
             average_links_per_file: stats.average_links_per_file,
+            total_words,
+            total_readable_chars,
+            avg_words_per_note,
         };
 
         match format {
