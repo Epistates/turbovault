@@ -18,6 +18,7 @@ pub mod tags;
 pub mod tasks;
 pub mod wikilinks;
 
+#[allow(deprecated)]
 pub use self::frontmatter_parser::extract_frontmatter;
 
 /// Main parser for OFM files.
@@ -91,13 +92,9 @@ impl Parser {
         // Transfer results to VaultFile
         vault_file.frontmatter = result.frontmatter;
 
-        // Update content without frontmatter (if present)
-        // Note: The engine doesn't return stripped content, but for VaultFile
-        // we may want to keep original content. For now, preserve behavior.
-        if vault_file.frontmatter.is_some()
-            && let Ok((_, stripped)) = extract_frontmatter(content)
-        {
-            vault_file.content = stripped;
+        // Strip frontmatter using pulldown-cmark's byte offset (avoids redundant regex parse)
+        if result.frontmatter_end_offset > 0 {
+            vault_file.content = content[result.frontmatter_end_offset..].to_string();
         }
 
         // Links (wikilinks, embeds, markdown links)

@@ -139,6 +139,7 @@ impl ExcludedRanges {
 #[derive(Debug, Clone, Default)]
 pub struct ParseResult {
     pub frontmatter: Option<Frontmatter>,
+    pub frontmatter_end_offset: usize, // Offset where body starts (end of frontmatter)
     pub headings: Vec<Heading>,
     pub wikilinks: Vec<Link>,
     pub embeds: Vec<Link>,
@@ -201,6 +202,9 @@ impl<'a> ParseEngine<'a> {
         // - Extract frontmatter, headings, markdown links, tasks
         // - Build excluded ranges (code blocks, inline code)
         let (excluded, body_start) = self.pulldown_pass(options, &mut result);
+
+        // Store the body start offset (which is the end of frontmatter)
+        result.frontmatter_end_offset = body_start;
 
         // Phase 2: OFM-specific regex pass (respecting excluded ranges)
         let body = if body_start > 0 {

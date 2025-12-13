@@ -128,7 +128,8 @@ mod standalone;
 pub use parsers::Parser;
 pub use standalone::{ParseOptions, ParsedContent};
 
-// Re-export frontmatter extraction
+// Re-export frontmatter extraction (deprecated but kept for backwards compatibility)
+#[allow(deprecated)]
 pub use parsers::frontmatter_parser::extract_frontmatter;
 
 // Block-level parsing (for treemd integration)
@@ -316,6 +317,7 @@ pub mod prelude {
     pub use crate::{ParseOptions, ParsedContent};
 
     // Individual parsers
+    #[allow(deprecated)]
     pub use crate::{
         extract_frontmatter, parse_blocks, parse_blocks_from_line, parse_callouts,
         parse_callouts_full, parse_embeds, parse_headings, parse_markdown_links, parse_tags,

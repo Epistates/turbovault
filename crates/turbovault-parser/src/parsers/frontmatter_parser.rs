@@ -1,4 +1,6 @@
 //! Frontmatter extraction: ---\nYAML\n---
+//!
+//! **Deprecated**: Use `ParseEngine` with `frontmatter_end_offset` instead for better performance.
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -11,6 +13,15 @@ static FRONTMATTER_PATTERN: LazyLock<Regex> =
 /// Extract YAML frontmatter from content
 ///
 /// Returns (frontmatter_string, content_without_frontmatter)
+///
+/// # Deprecated
+/// This function uses regex-based extraction which is redundant when using `ParseEngine`.
+/// Prefer using `ParseEngine::parse()` which returns `ParseResult::frontmatter_end_offset`
+/// for zero-allocation frontmatter stripping.
+#[deprecated(
+    since = "1.3.0",
+    note = "Use ParseEngine with frontmatter_end_offset instead for better performance"
+)]
 pub fn extract_frontmatter(content: &str) -> Result<(Option<String>, String)> {
     if let Some(caps) = FRONTMATTER_PATTERN.captures(content) {
         let fm_str = caps.get(1).unwrap().as_str();
@@ -25,6 +36,7 @@ pub fn extract_frontmatter(content: &str) -> Result<(Option<String>, String)> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
