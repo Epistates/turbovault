@@ -5,6 +5,18 @@ All notable changes to TurboVault will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2025-12-16
+
+### Added
+
+- **Line offset tracking for inline elements**: `Link` and `Image` variants in `InlineElement` now include optional `line_offset` field that tracks the relative line position within nested list items. This enables precise positioning of inline elements for consumers that need line-level granularity.
+- **Comprehensive nested inline element collection**: New `collect_inline_elements()` function recursively traverses nested blocks (paragraphs, lists, blockquotes, details) to gather all inline elements and populate parent list items' inline field. This ensures links and images from all nesting levels are discoverable.
+- **Enhanced list parsing for nested items**: Improved handling of nested list structures with proper line offset tracking, indentation preservation, and task checkbox support across all nesting depths.
+
+### Changed
+
+- **List item inline field now complete**: Parent list items' `inline` field now contains links and images from all nested children, enabling comprehensive inline element discovery without manual traversal.
+
 ## [1.2.5] - 2025-12-12
 
 ### Changed
@@ -102,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Atomic file operations with rollback support
 - Configuration profiles (development, production, readonly, high-performance)
 
+[1.2.6]: https://github.com/epistates/turbovault/compare/v1.2.5...v1.2.6
+[1.2.5]: https://github.com/epistates/turbovault/compare/v1.2.4...v1.2.5
+[1.2.4]: https://github.com/epistates/turbovault/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/epistates/turbovault/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/epistates/turbovault/compare/v1.2.1...v1.2.2
 [1.2.0]: https://github.com/epistates/turbovault/compare/v1.1.8...v1.2.0
