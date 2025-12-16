@@ -333,6 +333,7 @@ impl ContentBlock {
     ///             text: "Overview".to_string(),
     ///             url: "#overview".to_string(),
     ///             title: None,
+    ///             line_offset: None,
     ///         },
     ///         InlineElement::Text { value: " and ".to_string() },
     ///         InlineElement::Strong { value: "bold".to_string() },
@@ -405,12 +406,18 @@ pub enum InlineElement {
         text: String,
         url: String,
         title: Option<String>,
+        /// Relative line offset within parent block (for nested list items)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_offset: Option<usize>,
     },
     /// An inline image ![alt](src)
     Image {
         alt: String,
         src: String,
         title: Option<String>,
+        /// Relative line offset within parent block (for nested list items)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_offset: Option<usize>,
     },
     /// Strikethrough text (~~text~~)
     Strikethrough { value: String },
@@ -431,6 +438,7 @@ impl InlineElement {
     ///     text: "Overview".to_string(),
     ///     url: "#overview".to_string(),
     ///     title: None,
+    ///     line_offset: None,
     /// };
     /// assert_eq!(link.to_plain_text(), "Overview");
     /// ```

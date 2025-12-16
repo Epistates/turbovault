@@ -175,6 +175,8 @@ struct BlockParserState {
     image_in_link: bool,
     in_image: bool,
     saved_link_url: String,
+    /// Tracks relative line offset within current list item (for nested items)
+    nested_line_offset: usize,
 }
 
 impl BlockParserState {
@@ -217,6 +219,7 @@ impl BlockParserState {
             image_in_link: false,
             in_image: false,
             saved_link_url: String::new(),
+            nested_line_offset: 0,
         }
     }
 
@@ -401,6 +404,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.paragraph_buffer.clear();
                 state.inline_buffer.clear();
                 state.item_blocks.clear();
+                state.nested_line_offset = 0;
             }
         }
         Event::End(TagEnd::Item) => {
@@ -410,7 +414,8 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.task_list_marker = saved;
             }
             if state.item_depth == 1 {
-                let (content, inline, remaining_blocks) = if !state.paragraph_buffer.is_empty() {
+                let (content, mut inline, remaining_blocks) = if !state.paragraph_buffer.is_empty()
+                {
                     let all_blocks: Vec<ContentBlock> = state.item_blocks.drain(..).collect();
                     (
                         state.paragraph_buffer.clone(),
@@ -426,6 +431,9 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     let all_blocks: Vec<ContentBlock> = state.item_blocks.drain(..).collect();
                     (String::new(), Vec::new(), all_blocks)
                 };
+
+                // Collect inline elements from all nested blocks (paragraphs, lists, etc.)
+                collect_inline_elements(&remaining_blocks, &mut inline);
 
                 state.list_items.push(ListItem {
                     checked: state.task_list_marker,
@@ -507,6 +515,22 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             state.in_code_inline = false;
         }
         Event::Start(Tag::Link { dest_url, .. }) => {
+            // For nested list items, add newline and indent before the link
+            // (same logic as in Event::Text for nested items)
+            if state.in_list && state.item_depth > 1 {
+                if !state.paragraph_buffer.is_empty() && !state.paragraph_buffer.ends_with('\n') {
+                    state.paragraph_buffer.push('\n');
+                    state.nested_line_offset += 1;
+                }
+                let indent = "  ".repeat(state.item_depth - 1);
+                state.paragraph_buffer.push_str(&indent);
+
+                if let Some(checked) = state.task_list_marker {
+                    let marker = if checked { "[x] " } else { "[ ] " };
+                    state.paragraph_buffer.push_str(marker);
+                    state.task_list_marker = None;
+                }
+            }
             state.in_link = true;
             state.link_url = dest_url.to_string();
             state.link_text.clear();
@@ -514,11 +538,19 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         Event::End(TagEnd::Link) => {
             state.in_link = false;
 
+            // Capture line_offset for nested list items
+            let line_offset = if state.in_list && state.item_depth >= 1 {
+                Some(state.nested_line_offset)
+            } else {
+                None
+            };
+
             if state.image_in_link {
                 state.inline_buffer.push(InlineElement::Link {
                     text: state.link_text.clone(),
                     url: state.saved_link_url.clone(),
                     title: None,
+                    line_offset,
                 });
                 state
                     .paragraph_buffer
@@ -528,6 +560,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     text: state.link_text.clone(),
                     url: state.link_url.clone(),
                     title: None,
+                    line_offset,
                 });
                 state
                     .paragraph_buffer
@@ -562,6 +595,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     Some(state.paragraph_buffer.clone())
                 };
 
+                // Capture line_offset for inline images in list items
+                let line_offset = if state.in_list && state.item_depth >= 1 {
+                    Some(state.nested_line_offset)
+                } else {
+                    None
+                };
+
                 if state.in_paragraph {
                     // Reset paragraph_buffer for image representation
                     state.paragraph_buffer.clear();
@@ -569,6 +609,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                         alt: state.link_text.clone(),
                         src: state.link_url.clone(),
                         title,
+                        line_offset,
                     });
                     // Add image placeholder to paragraph content
                     state
@@ -705,6 +746,40 @@ pub fn slugify(text: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join("-")
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+/// Recursively collect inline elements from content blocks.
+///
+/// This traverses nested structures (paragraphs, lists, blockquotes) to gather
+/// all inline elements, enabling consumers to find links and other inline
+/// content from nested list items.
+fn collect_inline_elements(blocks: &[ContentBlock], output: &mut Vec<InlineElement>) {
+    for block in blocks {
+        match block {
+            ContentBlock::Paragraph { inline, .. } => {
+                output.extend(inline.iter().cloned());
+            }
+            ContentBlock::List { items, .. } => {
+                for item in items {
+                    output.extend(item.inline.iter().cloned());
+                    collect_inline_elements(&item.blocks, output);
+                }
+            }
+            ContentBlock::Blockquote { blocks, .. } => {
+                collect_inline_elements(blocks, output);
+            }
+            ContentBlock::Details { blocks, .. } => {
+                collect_inline_elements(blocks, output);
+            }
+            // Headings, Code, HorizontalRule, Table, Image don't have nested inline elements
+            // that we need to collect (or they store them differently)
+            _ => {}
+        }
+    }
 }
 
 // ============================================================================
@@ -1374,5 +1449,139 @@ See [[WikiNote]] for more info."#;
         assert!(plain.contains("italic link"));
         // URLs should not appear
         assert!(!plain.contains("url"));
+    }
+
+    #[test]
+    fn test_nested_list_item_inline_elements() {
+        // Test that inline elements from nested list items are collected
+        // into the parent item's inline field
+        let markdown = r#"- [Features](#features)
+  - [Interactive TUI](#interactive-tui)
+  - [CLI Mode](#cli-mode)"#;
+
+        let blocks = parse_blocks(markdown);
+        assert_eq!(blocks.len(), 1);
+
+        if let ContentBlock::List { items, .. } = &blocks[0] {
+            assert_eq!(items.len(), 1, "Should have 1 top-level item");
+
+            let item = &items[0];
+            // The inline field should contain ALL links, including from nested items
+            let links: Vec<_> = item
+                .inline
+                .iter()
+                .filter_map(|e| {
+                    if let InlineElement::Link { text, url, .. } = e {
+                        Some((text.as_str(), url.as_str()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            assert_eq!(links.len(), 3, "Should have 3 links total");
+            assert!(
+                links.iter().any(|(text, _)| *text == "Features"),
+                "Should have Features link"
+            );
+            assert!(
+                links.iter().any(|(text, _)| *text == "Interactive TUI"),
+                "Should have Interactive TUI link"
+            );
+            assert!(
+                links.iter().any(|(text, _)| *text == "CLI Mode"),
+                "Should have CLI Mode link"
+            );
+        } else {
+            panic!("Expected List block");
+        }
+    }
+
+    #[test]
+    fn test_deeply_nested_list_inline_elements() {
+        // Test deeply nested list items
+        let markdown = r#"- Level 1 [link1](url1)
+  - Level 2 [link2](url2)
+    - Level 3 [link3](url3)"#;
+
+        let blocks = parse_blocks(markdown);
+
+        if let ContentBlock::List { items, .. } = &blocks[0] {
+            let item = &items[0];
+            let links: Vec<_> = item
+                .inline
+                .iter()
+                .filter(|e| matches!(e, InlineElement::Link { .. }))
+                .collect();
+
+            assert_eq!(links.len(), 3, "Should collect all 3 nested links");
+        } else {
+            panic!("Expected List block");
+        }
+    }
+
+    #[test]
+    fn test_inline_element_line_offset() {
+        // Test that line_offset is correctly tracked for nested list items
+        let markdown = r#"- [Features](#features)
+  - [Interactive TUI](#interactive-tui)
+  - [CLI Mode](#cli-mode)"#;
+
+        let blocks = parse_blocks(markdown);
+
+        if let ContentBlock::List { items, .. } = &blocks[0] {
+            let item = &items[0];
+            let links: Vec<_> = item
+                .inline
+                .iter()
+                .filter_map(|e| {
+                    if let InlineElement::Link {
+                        text, line_offset, ..
+                    } = e
+                    {
+                        Some((text.as_str(), *line_offset))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            assert_eq!(links.len(), 3);
+
+            // Features is on line 0 (first line of the item)
+            let features = links.iter().find(|(t, _)| *t == "Features").unwrap();
+            assert_eq!(features.1, Some(0), "Features should be on line 0");
+
+            // Interactive TUI is on line 1 (after first newline)
+            let tui = links.iter().find(|(t, _)| *t == "Interactive TUI").unwrap();
+            assert_eq!(tui.1, Some(1), "Interactive TUI should be on line 1");
+
+            // CLI Mode is on line 2 (after second newline)
+            let cli = links.iter().find(|(t, _)| *t == "CLI Mode").unwrap();
+            assert_eq!(cli.1, Some(2), "CLI Mode should be on line 2");
+        } else {
+            panic!("Expected List block");
+        }
+    }
+
+    #[test]
+    fn test_line_offset_not_set_outside_lists() {
+        // line_offset should be None for links outside of list items
+        let markdown = "See [example](url) for more.";
+        let blocks = parse_blocks(markdown);
+
+        if let ContentBlock::Paragraph { inline, .. } = &blocks[0] {
+            let link = inline
+                .iter()
+                .find(|e| matches!(e, InlineElement::Link { .. }));
+            if let Some(InlineElement::Link { line_offset, .. }) = link {
+                assert_eq!(
+                    *line_offset, None,
+                    "line_offset should be None outside lists"
+                );
+            }
+        } else {
+            panic!("Expected Paragraph block");
+        }
     }
 }
