@@ -1,5 +1,7 @@
 # TurboVault
 
+[![SafeSkill 89/100](https://img.shields.io/badge/SafeSkill-89%2F100_Passes%20with%20Notes-yellow)](https://safeskill.dev/scan/epistates-turbovault)
+
 [![Crates.io](https://img.shields.io/crates/v/turbovault.svg)](https://crates.io/crates/turbovault)
 [![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault)
 [![License](https://img.shields.io/crates/l/turbovault.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
