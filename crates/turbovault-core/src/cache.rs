@@ -154,7 +154,7 @@ impl VaultCache {
         let mut hasher = Sha256::new();
         hasher.update(path_str.as_bytes());
         let result = hasher.finalize();
-        format!("{:x}", result)[..16].to_string() // Use first 16 chars of hash
+        crate::bytes_to_lower_hex(result)[..16].to_string() // Use first 16 chars of hash
     }
 
     /// Get the platform-specific cache directory
@@ -194,7 +194,7 @@ impl VaultCache {
     /// Save vault configurations and metadata
     pub async fn save_vaults(&self, vaults: &[VaultConfig], active_vault: &str) -> Result<()> {
         // Save vaults as YAML
-        let vaults_yaml = serde_yaml::to_string(vaults)
+        let vaults_yaml = yaml_serde::to_string(vaults)
             .map_err(|e| Error::config_error(format!("Failed to serialize vaults: {}", e)))?;
 
         fs::write(&self.vaults_file, vaults_yaml)
@@ -237,7 +237,7 @@ impl VaultCache {
             .await
             .map_err(Error::io)?;
 
-        let vaults = serde_yaml::from_str(&content)
+        let vaults = yaml_serde::from_str(&content)
             .map_err(|e| Error::config_error(format!("Invalid vaults cache format: {}", e)))?;
 
         log::debug!("Loaded vaults from project cache {}", self.project_id);

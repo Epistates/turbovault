@@ -6,6 +6,7 @@
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use turbovault_core::Result;
+use turbovault_core::bytes_to_lower_hex;
 use turbovault_core::error::Error;
 
 /// Content-addressed snapshot store
@@ -52,7 +53,7 @@ impl SnapshotStore {
     pub fn compute_hash(content: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
-        format!("{:x}", hasher.finalize())
+        bytes_to_lower_hex(hasher.finalize())
     }
 }
 

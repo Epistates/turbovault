@@ -10,6 +10,21 @@ use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// Encode bytes as lowercase hexadecimal.
+pub fn bytes_to_lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let bytes = bytes.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+
+    out
+}
+
 /// Generic JSON serialization with consistent error handling
 /// Works with any type that implements Serialize (including slices)
 pub fn to_json_string<T: serde::Serialize + ?Sized>(data: &T, context: &str) -> Result<String> {
@@ -179,6 +194,11 @@ mod tests {
         let json = to_json_string(&data, "test_data").unwrap();
         assert!(json.contains("test"));
         assert!(json.contains("42"));
+    }
+
+    #[test]
+    fn test_bytes_to_lower_hex() {
+        assert_eq!(bytes_to_lower_hex([0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
     }
 
     #[test]

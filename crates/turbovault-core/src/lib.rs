@@ -92,7 +92,9 @@ pub use metrics::{Counter, Histogram, HistogramStats, HistogramTimer, MetricsCon
 pub use models::*;
 pub use multi_vault::{MultiVaultManager, VaultInfo};
 pub use profiles::ConfigProfile;
-pub use utils::{CSVBuilder, PathValidator, TransactionBuilder, to_json_string};
+pub use utils::{
+    CSVBuilder, PathValidator, TransactionBuilder, bytes_to_lower_hex, to_json_string,
+};
 pub use validation::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Severity,
     ValidationIssue, ValidationReport, ValidationSummary, Validator,

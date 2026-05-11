@@ -22,6 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use turbovault_core::bytes_to_lower_hex;
 use turbovault_core::{Error, Result};
 use unicode_normalization::UnicodeNormalization;
 
@@ -551,7 +552,7 @@ impl MatchType {
 pub fn compute_hash(content: &str) -> String {
     let normalized: String = content.nfc().collect();
     let hash = Sha256::digest(normalized.as_bytes());
-    format!("{:x}", hash)
+    bytes_to_lower_hex(hash)
 }
 
 /// Normalize whitespace for comparison
