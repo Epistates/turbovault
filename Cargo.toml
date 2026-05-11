@@ -28,7 +28,7 @@ description = "LLM-optimized Obsidian vault MCP server with advanced editing, se
 publish = true
 
 [workspace.dependencies]
-tokio = { version = "1.47", features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "fs"] }
+tokio = { version = "1.52", features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "fs"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 async-trait = "0.1"
@@ -36,7 +36,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value", "preserve_order"] }
-serde_yaml = "0.9"  # Note: community fork (serde_yml) available if maintenance concerns
+yaml_serde = "0.10.4"  # Maintained serde_yaml fork from The YAML Organization
 schemars = "1.2"
 
 # Markdown Parsing (2025 diligence: see DEPENDENCY_DILIGENCE_2025.md)
@@ -63,12 +63,12 @@ anyhow = "1.0"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.6", features = ["v4", "serde"] }
+uuid = { version = "1.23", features = ["v4", "serde"] }
 dashmap = "6.1"
 
 # Configuration
 config = "0.15"
-clap = { version = "4.4", features = ["derive", "env"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 
 # Testing utilities
 tempfile = "3"
@@ -78,7 +78,7 @@ criterion = "0.8"
 log = "0.4"
 
 # MCP server framework
-turbomcp = { version = "3.1.0", default-features = false }
+turbomcp = { version = "3.1.3", default-features = false }
 
 # SQL query engine (optional, for frontmatter SQL queries)
 gluesql = { version = "0.19", default-features = false, features = ["gluesql_memory_storage"] }
@@ -89,8 +89,8 @@ tantivy = "0.26"           # Full-text search engine (Apache Lucene-inspired, pr
 # File Editing & Diff (World-class fuzzy matching for LLM-generated edits)
 similar = { version = "3.1", features = ["inline"] }  # mitsuhiko's diff lib (used by insta)
 strsim = "0.11"           # Levenshtein distance for fuzzy matching (if similar insufficient)
-sha2 = "0.10"             # SHA-256 hashing for content validation
-unicode-normalization = "0.1.6"  # Unicode NFC normalization
+sha2 = "0.11"             # SHA-256 hashing for content validation
+unicode-normalization = "0.1.25"  # Unicode NFC normalization
 
 # Path handling & Security
 shellexpand = "3.1"       # Shell-like expansions (tilde, env vars) - battle-tested
@@ -100,16 +100,16 @@ path_trav = "2"           # Path traversal detection - security-focused
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "1.4.1", path = "crates/turbovault-core" }
-turbovault-parser = { version = "1.4.1", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "1.4.1", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "1.4.1", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "1.4.1", path = "crates/turbovault-batch" }
-turbovault-export = { version = "1.4.1", path = "crates/turbovault-export" }
-turbovault-audit = { version = "1.4.1", path = "crates/turbovault-audit" }
-turbovault-sql = { version = "1.4.1", path = "crates/turbovault-sql" }
-turbovault-tools = { version = "1.4.1", path = "crates/turbovault-tools" }
-turbovault = { version = "1.4.1", path = "crates/turbovault" }
+turbovault-core = { version = "1.5.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "1.5.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "1.5.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "1.5.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "1.5.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "1.5.0", path = "crates/turbovault-export" }
+turbovault-audit = { version = "1.5.0", path = "crates/turbovault-audit" }
+turbovault-sql = { version = "1.5.0", path = "crates/turbovault-sql" }
+turbovault-tools = { version = "1.5.0", path = "crates/turbovault-tools" }
+turbovault = { version = "1.5.0", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3

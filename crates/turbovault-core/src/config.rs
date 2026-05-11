@@ -257,7 +257,7 @@ impl ServerConfig {
 
     /// Save vault configuration to file (for persistence)
     pub async fn save_vaults(&self, path: &Path) -> Result<()> {
-        let yaml = serde_yaml::to_string(&self.vaults)
+        let yaml = yaml_serde::to_string(&self.vaults)
             .map_err(|e| Error::config_error(format!("Failed to serialize vaults: {}", e)))?;
 
         tokio::fs::write(path, yaml).await.map_err(|e| {
@@ -283,7 +283,7 @@ impl ServerConfig {
             ))
         })?;
 
-        let vaults = serde_yaml::from_str(&content)
+        let vaults = yaml_serde::from_str(&content)
             .map_err(|e| Error::config_error(format!("Invalid vault configuration: {}", e)))?;
 
         Ok(vaults)

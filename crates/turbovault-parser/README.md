@@ -352,7 +352,7 @@ cargo test -- --nocapture
 - `frontmatter-gen`: Frontmatter extraction (currently using custom regex)
 - `regex`: Pattern matching for Obsidian syntax
 - `nom`: Parser combinators (available for complex parsing)
-- `serde`, `serde_yaml`, `serde_json`: Frontmatter deserialization
+- `serde`, `yaml_serde`, `serde_json`: Frontmatter deserialization
 
 ## Limitations and Future Work
 

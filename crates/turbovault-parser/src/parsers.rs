@@ -114,7 +114,7 @@ impl Parser {
     /// Parse frontmatter from YAML string.
     #[allow(dead_code)]
     fn parse_frontmatter(&self, fm_str: &str) -> Result<Option<Frontmatter>> {
-        match serde_yaml::from_str::<serde_json::Value>(fm_str) {
+        match yaml_serde::from_str::<serde_json::Value>(fm_str) {
             Ok(serde_json::Value::Object(map)) => {
                 let data = map.into_iter().collect();
                 Ok(Some(Frontmatter {

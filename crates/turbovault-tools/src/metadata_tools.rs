@@ -181,7 +181,7 @@ impl MetadataTools {
 
         // Parse existing frontmatter
         let existing_fm: serde_json::Map<String, Value> = if let Some(yaml_str) = &existing_yaml {
-            serde_yaml::from_str(yaml_str).map_err(|e| {
+            yaml_serde::from_str(yaml_str).map_err(|e| {
                 Error::config_error(format!("Failed to parse existing frontmatter YAML: {}", e))
             })?
         } else {
@@ -234,7 +234,7 @@ impl MetadataTools {
                 let (yaml_str, body) = split_frontmatter(&content);
                 let fm_tags: Vec<String> = if let Some(yaml) = &yaml_str {
                     let fm: serde_json::Map<String, Value> =
-                        serde_yaml::from_str(yaml).map_err(|e| {
+                        yaml_serde::from_str(yaml).map_err(|e| {
                             Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                         })?;
                     extract_tags_from_value(fm.get("tags"))
@@ -270,7 +270,7 @@ impl MetadataTools {
 
                 let (yaml_str, body) = split_frontmatter(&content);
                 let mut fm: serde_json::Map<String, Value> = if let Some(yaml) = &yaml_str {
-                    serde_yaml::from_str(yaml).map_err(|e| {
+                    yaml_serde::from_str(yaml).map_err(|e| {
                         Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                     })?
                 } else {
@@ -315,7 +315,7 @@ impl MetadataTools {
 
                 let (yaml_str, body) = split_frontmatter(&content);
                 let mut fm: serde_json::Map<String, Value> = if let Some(yaml) = &yaml_str {
-                    serde_yaml::from_str(yaml).map_err(|e| {
+                    yaml_serde::from_str(yaml).map_err(|e| {
                         Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                     })?
                 } else {

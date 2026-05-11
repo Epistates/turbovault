@@ -410,7 +410,7 @@ pub fn reconstruct_content(
 ) -> String {
     match frontmatter {
         Some(fm) if !fm.is_empty() => {
-            let yaml = serde_yaml::to_string(&fm).unwrap_or_default();
+            let yaml = yaml_serde::to_string(&fm).unwrap_or_default();
             format!("---\n{}---\n{}", yaml, body)
         }
         _ => body.to_string(),
@@ -706,7 +706,7 @@ mod tests {
 
         assert!(parsed_fm.is_some());
         let parsed: serde_json::Map<String, serde_json::Value> =
-            serde_yaml::from_str(&parsed_fm.unwrap()).unwrap();
+            yaml_serde::from_str(&parsed_fm.unwrap()).unwrap();
         assert_eq!(parsed["title"], "Test");
         assert_eq!(parsed_body.trim(), body.trim());
     }
@@ -725,7 +725,7 @@ mod tests {
         let (parsed_fm, _) = split_frontmatter(&result);
         assert!(parsed_fm.is_some());
         let parsed: serde_json::Map<String, serde_json::Value> =
-            serde_yaml::from_str(&parsed_fm.unwrap()).unwrap();
+            yaml_serde::from_str(&parsed_fm.unwrap()).unwrap();
         assert_eq!(parsed["url"], "http://example.com");
     }
 
