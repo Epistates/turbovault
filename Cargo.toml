@@ -125,6 +125,12 @@ lto = "thin"
 codegen-units = 16
 debug = false
 
+[profile.bench]
+inherits = "release"
+lto = "thin"
+strip = false
+# debug = true  # uncomment when profiling with cargo flamegraph or perf
+
 [profile.dev]
 opt-level = 0
 debug = true
