@@ -12,7 +12,7 @@ This crate provides fast, production-ready parsing of Obsidian markdown files, e
 - **Wikilinks**: `[[Note]]`, `[[folder/Note#Heading]]`, `[[Note#^block]]`
 - **Embeds**: `![[Image.png]]`, `![[OtherNote]]`
 - **Tags**: `#tag`, `#parent/child`
-- **Tasks**: `- [ ] Todo`, `- [x] Done`
+- **Tasks**: `- [ ] Todo`, `- [x] Done`, `- [/] In progress`, `- [-] Cancelled`
 - **Callouts**: `> [!NOTE]`, `> [!WARNING]+`, etc.
 - **Headings**: `# H1` through `###### H6` with anchor generation
 
@@ -71,7 +71,7 @@ let content = "See [[Note#Heading]] and [[folder/SubNote]]";
 // - [[folder/Note]]          - Folder paths
 // - [[Note#Heading]]         - Section links
 // - [[Note#^block-id]]       - Block references
-// - [[Note|Display Text]]    - Custom display text (not yet implemented)
+// - [[Note|Display Text]]    - Custom display text
 ```
 
 **Features:**
@@ -153,12 +153,14 @@ let content = r#"
 // - content: "Write documentation"
 // - is_completed: false
 // - position: SourcePosition
-// - due_date: None (TODO)
+// - task metadata such as due dates, recurrence, priority, tags, and block refs
 ```
 
 **Features:**
 - Uncompleted tasks: `- [ ]`
 - Completed tasks: `- [x]`
+- In-progress tasks: `- [/]`
+- Cancelled tasks: `- [-]`
 - Supports indentation (nested tasks)
 - Line number tracking
 
@@ -184,7 +186,7 @@ let content = r#"
 - Type detection (maps to `CalloutType` enum)
 - Optional title extraction
 - Foldable callouts: `[!TYPE]+` (expanded) or `[!TYPE]-` (collapsed)
-- Note: Multi-line content parsing is TODO
+- Multi-line content extraction via `parse_callouts_full`
 
 ### Heading Parser (`parsers/headings.rs`)
 
@@ -348,8 +350,7 @@ cargo test -- --nocapture
 
 ### Dependencies
 
-- `pulldown-cmark`: CommonMark parsing foundation (currently unused, reserved for future)
-- `frontmatter-gen`: Frontmatter extraction (currently using custom regex)
+- `pulldown-cmark`: CommonMark and GFM parsing foundation
 - `regex`: Pattern matching for Obsidian syntax
 - `nom`: Parser combinators (available for complex parsing)
 - `serde`, `yaml_serde`, `serde_json`: Frontmatter deserialization
@@ -358,16 +359,16 @@ cargo test -- --nocapture
 
 Current limitations:
 
-1. **Callout Content**: Only parses first line, not continuation lines
-2. **Display Text in Links**: `[[Target|Display]]` not yet parsed
-3. **Markdown Metadata**: No extraction from CommonMark elements yet
+1. **Highlights, Comments, Math, and Footnotes**: Preserved as text, not extracted as first-class parser nodes
+2. **Block Reference Definitions**: Link targets are classified, but block definitions are not first-class nodes yet
+3. **Attribute Code Blocks**: Preserved as code blocks, not parsed as typed properties
 4. **Dataview Queries**: Not parsed (Obsidian plugin-specific)
-5. **Mermaid/Code Blocks**: Not extracted as structured data
+5. **Mermaid/Code Blocks**: Code language and content are preserved, but diagrams are not interpreted
 
 Planned improvements:
 
-- Multi-line callout content parsing
-- Display text extraction for wikilinks
+- First-class highlight/comment/math nodes
+- Block reference definition nodes
 - Code block metadata (language, title)
 - Better error recovery and partial parsing
 - Performance benchmarking and optimization

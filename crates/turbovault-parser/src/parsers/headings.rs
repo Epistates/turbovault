@@ -3,19 +3,7 @@
 //! **Deprecated**: Use `turbovault_parser::parse_headings()` or `ParsedContent::parse()` instead.
 //! These functions are kept for backwards compatibility but will be removed in a future version.
 
-use regex::Regex;
-use std::sync::LazyLock;
-use turbovault_core::{Heading, LineIndex, SourcePosition};
-
-/// Matches # Heading, ## Heading, etc.
-static HEADING_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(#{1,6})\s+(.+)$").unwrap());
-
-/// Fast pre-filter: skip regex if no heading pattern exists.
-#[inline]
-fn has_heading(content: &str) -> bool {
-    content.contains('#')
-}
+use turbovault_core::{Heading, LineIndex};
 
 /// Parse all headings from content.
 ///
@@ -25,40 +13,7 @@ fn has_heading(content: &str) -> bool {
     note = "Use turbovault_parser::parse_headings() instead"
 )]
 pub fn parse_headings(content: &str) -> Vec<Heading> {
-    if !has_heading(content) {
-        return Vec::new();
-    }
-
-    let mut offset = 0;
-    content
-        .lines()
-        .enumerate()
-        .filter_map(|(idx, line)| {
-            let line_start = offset;
-            offset += line.len() + 1; // +1 for newline
-
-            HEADING_PATTERN.captures(line).map(|caps| {
-                let level = caps.get(1).unwrap().as_str().len() as u8;
-                let text = caps.get(2).unwrap().as_str();
-                let full_match = caps.get(0).unwrap();
-
-                // Generate anchor from heading text (lowercase, spaces to hyphens)
-                let anchor = text
-                    .to_lowercase()
-                    .chars()
-                    .map(|c| if c.is_whitespace() { '-' } else { c })
-                    .filter(|c| c.is_alphanumeric() || *c == '-')
-                    .collect::<String>();
-
-                Heading {
-                    text: text.to_string(),
-                    level,
-                    position: SourcePosition::new(idx + 1, 1, line_start, full_match.len()),
-                    anchor: Some(anchor),
-                }
-            })
-        })
-        .collect()
+    crate::parse_headings(content)
 }
 
 /// Parse headings with pre-computed line index (for consistency with other parsers).
@@ -70,8 +25,7 @@ pub fn parse_headings(content: &str) -> Vec<Heading> {
 )]
 #[allow(deprecated)]
 pub fn parse_headings_indexed(content: &str, _index: &LineIndex) -> Vec<Heading> {
-    // Line-based parsing doesn't benefit from LineIndex, but we accept it for API consistency
-    parse_headings(content)
+    crate::parse_headings(content)
 }
 
 #[cfg(test)]
@@ -135,12 +89,31 @@ mod tests {
     }
 
     #[test]
+    fn test_heading_crlf_position_tracking() {
+        let content = "Some text\r\n# Heading on line 2\r\nMore text";
+        let headings = parse_headings(content);
+        assert_eq!(headings.len(), 1);
+        assert_eq!(headings[0].position.line, 2);
+        assert_eq!(headings[0].position.column, 1);
+        assert_eq!(headings[0].position.offset, 11); // "Some text\r\n" = 11 bytes
+    }
+
+    #[test]
     fn test_heading_position_first_line() {
         let content = "# First heading";
         let headings = parse_headings(content);
         assert_eq!(headings[0].position.line, 1);
         assert_eq!(headings[0].position.column, 1);
         assert_eq!(headings[0].position.offset, 0);
+    }
+
+    #[test]
+    fn test_heading_in_fenced_code_block_not_matched() {
+        let content = "# Real\n\n```markdown\n# Not a heading\n```\n\n## Also real";
+        let headings = parse_headings(content);
+        assert_eq!(headings.len(), 2);
+        assert_eq!(headings[0].text, "Real");
+        assert_eq!(headings[1].text, "Also real");
     }
 
     #[test]

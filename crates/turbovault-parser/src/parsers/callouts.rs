@@ -2,50 +2,17 @@
 //!
 //! Supports Obsidian callout syntax with:
 //! - 13 standard types: note, tip, info, todo, important, success, question, warning, failure, danger, bug, example, quote
-//! - Custom callout types (any unrecognized type is preserved as Custom)
+//! - Unknown callout identifiers parsed with the legacy `CalloutType` fallback
 //! - Foldable callouts with `+` or `-` markers
 //! - Multi-line content continuation
 //!
 //! **Deprecated**: Use `turbovault_parser::parse_callouts()` or `ParsedContent::parse()` instead.
 //! These functions are kept for backwards compatibility but will be removed in a future version.
 
-use regex::Regex;
-use std::sync::LazyLock;
-use turbovault_core::{Callout, CalloutType, LineIndex, SourcePosition};
+use turbovault_core::{Callout, LineIndex};
 
-/// Matches > [!TYPE] callout start
-static CALLOUT_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*>\s*\[!(\w+)\]([+-]?)\s*(.*?)$").unwrap());
-
-/// Matches continuation lines (start with >)
-static CONTINUATION_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\s*>\s*(.*)$").unwrap());
-
-/// Fast pre-filter: skip regex if no callout pattern exists.
-#[inline]
-fn has_callout(content: &str) -> bool {
-    content.contains("[!")
-}
-
-/// Parse callout type string into CalloutType enum.
-fn parse_callout_type(type_str: &str) -> CalloutType {
-    match type_str.to_lowercase().as_str() {
-        "note" => CalloutType::Note,
-        "tip" => CalloutType::Tip,
-        "info" => CalloutType::Info,
-        "todo" => CalloutType::Todo,
-        "important" => CalloutType::Important,
-        "success" => CalloutType::Success,
-        "question" => CalloutType::Question,
-        "warning" => CalloutType::Warning,
-        "failure" | "fail" | "missing" => CalloutType::Failure,
-        "danger" | "error" => CalloutType::Danger,
-        "bug" => CalloutType::Bug,
-        "example" => CalloutType::Example,
-        "quote" | "cite" => CalloutType::Quote,
-        _ => CalloutType::Note, // Default to Note for unknown types
-    }
-}
+#[cfg(test)]
+use turbovault_core::CalloutType;
 
 /// Parse all callouts from content (simple, single-line parsing).
 ///
@@ -55,42 +22,7 @@ fn parse_callout_type(type_str: &str) -> CalloutType {
     note = "Use turbovault_parser::parse_callouts() instead"
 )]
 pub fn parse_callouts(content: &str) -> Vec<Callout> {
-    if !has_callout(content) {
-        return Vec::new();
-    }
-
-    let mut offset = 0;
-    content
-        .lines()
-        .enumerate()
-        .filter_map(|(idx, line)| {
-            let line_start = offset;
-            offset += line.len() + 1; // +1 for newline
-
-            CALLOUT_PATTERN.captures(line).map(|caps| {
-                let type_str = caps.get(1).unwrap().as_str();
-                let type_ = parse_callout_type(type_str);
-
-                let fold_marker = caps.get(2).unwrap().as_str();
-                let is_foldable = !fold_marker.is_empty();
-
-                let title = caps.get(3).unwrap().as_str();
-                let title = if title.is_empty() {
-                    None
-                } else {
-                    Some(title.to_string())
-                };
-
-                Callout {
-                    type_,
-                    title,
-                    content: String::new(),
-                    position: SourcePosition::new(idx + 1, 1, line_start, line.len()),
-                    is_foldable,
-                }
-            })
-        })
-        .collect()
+    crate::parse_callouts(content)
 }
 
 /// Parse callouts with pre-computed line index (for consistency with other parsers).
@@ -102,7 +34,7 @@ pub fn parse_callouts(content: &str) -> Vec<Callout> {
 )]
 #[allow(deprecated)]
 pub fn parse_callouts_indexed(content: &str, _index: &LineIndex) -> Vec<Callout> {
-    parse_callouts(content)
+    crate::parse_callouts(content)
 }
 
 /// Parse callouts with full multi-line content extraction.
@@ -113,75 +45,7 @@ pub fn parse_callouts_indexed(content: &str, _index: &LineIndex) -> Vec<Callout>
     note = "Use turbovault_parser::parse_callouts_full() instead"
 )]
 pub fn parse_callouts_full(content: &str) -> Vec<Callout> {
-    if !has_callout(content) {
-        return Vec::new();
-    }
-
-    let lines: Vec<&str> = content.lines().collect();
-    let mut callouts = Vec::new();
-    let mut i = 0;
-
-    // Calculate byte offsets for each line
-    let mut line_offsets: Vec<usize> = vec![0];
-    for (idx, ch) in content.char_indices() {
-        if ch == '\n' {
-            line_offsets.push(idx + 1);
-        }
-    }
-
-    while i < lines.len() {
-        if let Some(caps) = CALLOUT_PATTERN.captures(lines[i]) {
-            let start_line = i;
-            let type_str = caps.get(1).unwrap().as_str();
-            let type_ = parse_callout_type(type_str);
-
-            let fold_marker = caps.get(2).unwrap().as_str();
-            let is_foldable = !fold_marker.is_empty();
-
-            let title_text = caps.get(3).unwrap().as_str();
-            let title = if title_text.is_empty() {
-                None
-            } else {
-                Some(title_text.to_string())
-            };
-
-            // Collect continuation lines
-            let mut callout_content = String::new();
-            i += 1;
-
-            while i < lines.len() {
-                if let Some(cont_caps) = CONTINUATION_PATTERN.captures(lines[i]) {
-                    // Check if this line starts a new callout
-                    if CALLOUT_PATTERN.is_match(lines[i]) {
-                        break;
-                    }
-
-                    let line_content = cont_caps.get(1).unwrap().as_str();
-                    if !callout_content.is_empty() {
-                        callout_content.push('\n');
-                    }
-                    callout_content.push_str(line_content);
-                    i += 1;
-                } else {
-                    // Line doesn't continue the callout
-                    break;
-                }
-            }
-
-            let offset = line_offsets.get(start_line).copied().unwrap_or(0);
-            callouts.push(Callout {
-                type_,
-                title,
-                content: callout_content,
-                position: SourcePosition::new(start_line + 1, 1, offset, lines[start_line].len()),
-                is_foldable,
-            });
-        } else {
-            i += 1;
-        }
-    }
-
-    callouts
+    crate::parse_callouts_full(content)
 }
 
 #[cfg(test)]
@@ -319,6 +183,35 @@ mod tests {
         assert_eq!(callouts.len(), 1);
         assert_eq!(callouts[0].position.line, 2);
         assert_eq!(callouts[0].position.offset, 7); // "Line 1\n" = 7 chars
+    }
+
+    #[test]
+    fn test_callout_simple_crlf_position() {
+        let content = "Line 1\r\n> [!TIP] Tip here";
+        let callouts = parse_callouts(content);
+        assert_eq!(callouts.len(), 1);
+        assert_eq!(callouts[0].position.line, 2);
+        assert_eq!(callouts[0].position.offset, 8); // "Line 1\r\n" = 8 bytes
+    }
+
+    #[test]
+    fn test_callout_in_fenced_code_block_not_matched() {
+        let content =
+            "> [!NOTE] Real\n\n```markdown\n> [!WARNING] Not real\n```\n\n> [!TIP] Also real";
+        let callouts = parse_callouts(content);
+        assert_eq!(callouts.len(), 2);
+        assert_eq!(callouts[0].title, Some("Real".to_string()));
+        assert_eq!(callouts[1].title, Some("Also real".to_string()));
+    }
+
+    #[test]
+    fn test_callout_full_in_fenced_code_block_not_matched() {
+        let content =
+            "> [!NOTE] Real\n\n```markdown\n> [!WARNING] Not real\n```\n\n> [!TIP] Also real";
+        let callouts = parse_callouts_full(content);
+        assert_eq!(callouts.len(), 2);
+        assert_eq!(callouts[0].title, Some("Real".to_string()));
+        assert_eq!(callouts[1].title, Some("Also real".to_string()));
     }
 
     #[test]

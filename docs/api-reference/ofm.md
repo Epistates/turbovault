@@ -1,10 +1,10 @@
 # Obsidian Flavored Markdown Reference
 
-Complete reference for Obsidian Flavored Markdown (OFM) syntax supported by TurboVault.
+Reference for Obsidian Flavored Markdown (OFM) syntax currently parsed or classified by TurboVault.
 
 ## Overview
 
-TurboVault fully supports Obsidian Flavored Markdown, which extends CommonMark with Obsidian-specific features.
+TurboVault parses a focused OFM subset for vault analysis: links, embeds, frontmatter, headings, tags, tasks, callouts, tables, code blocks, and link type classification. Some Obsidian syntax is accepted as plain Markdown text but is not yet extracted as first-class structured data.
 
 ## Core Syntax
 
@@ -14,9 +14,10 @@ TurboVault fully supports Obsidian Flavored Markdown, which extends CommonMark w
 **bold**
 *italic*
 ~~strikethrough~~
-==highlight==
 `code`
 ```
+
+Not yet extracted as first-class parser nodes: highlights `==text==`, comments `%%hidden%%`, and math/LaTeX.
 
 ### Wikilinks
 
@@ -57,13 +58,15 @@ TurboVault classifies links into specific types for graph analysis:
 > Of content
 ```
 
-Supported types: note, abstract, info, tip, success, question, warning, failure, danger, bug, example, quote
+Recognized structured types: note, tip, info, todo, important, success, question, warning, failure, danger, bug, example, quote. Aliases include fail, missing, error, and cite. Other Obsidian callout identifiers are accepted syntactically but currently map to note.
 
 ### Task Lists
 
 ```markdown
 - [ ] Incomplete
 - [x] Complete
+- [/] In progress
+- [-] Cancelled
 ```
 
 ### Frontmatter
@@ -85,6 +88,8 @@ tags: [tag1, tag2]
 [[Note#^block-id]]  # Reference in wikilink
 ```
 
+TurboVault classifies block reference links. Block reference definitions are not yet represented as first-class content block nodes.
+
 ### Attributes
 
 ```markdown
@@ -93,6 +98,8 @@ status: evergreen
 owner: name
 ```
 ```
+
+Attribute code blocks are currently treated as code blocks, not parsed as typed attributes.
 
 ### Callout Variations
 

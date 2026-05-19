@@ -1,60 +1,16 @@
-//! Task parser: `- [ ] Task`, `- [x] Completed`
+//! Task parser: `- [ ] Task`, `- [x] Completed`, `- [/] In progress`, `- [-] Cancelled`
 //!
 //! **Deprecated**: Use `turbovault_parser::parse_tasks()` or `ParsedContent::parse()` instead.
 //! These functions are kept for backwards compatibility but will be removed in a future version.
 
-use regex::Regex;
-use std::sync::LazyLock;
-use turbovault_core::{LineIndex, SourcePosition, TaskItem, task_parser};
-
-/// Matches - [ ] or - [x] followed by task text
-static TASK_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(\s*)- \[([ xX/\-])\]\s+(.+)$").unwrap());
-
-/// Fast pre-filter: skip regex if no task pattern exists.
-#[inline]
-fn has_task(content: &str) -> bool {
-    content.contains("- [")
-}
+use turbovault_core::{LineIndex, TaskItem};
 
 /// Parse all tasks from content.
 ///
 /// **Deprecated**: Use `turbovault_parser::parse_tasks()` instead.
 #[deprecated(since = "1.2.0", note = "Use turbovault_parser::parse_tasks() instead")]
 pub fn parse_tasks(content: &str) -> Vec<TaskItem> {
-    if !has_task(content) {
-        return Vec::new();
-    }
-
-    let mut offset = 0;
-    content
-        .lines()
-        .enumerate()
-        .filter_map(|(idx, line)| {
-            let line_start = offset;
-            offset += line.len() + 1; // +1 for newline
-
-            TASK_PATTERN.captures(line).map(|caps| {
-                let indent = caps.get(1).unwrap().as_str();
-                let is_completed = matches!(caps.get(2).unwrap().as_str(), "x" | "X");
-                let task_content = caps.get(3).unwrap().as_str();
-                let full_match = caps.get(0).unwrap();
-
-                let parsed = task_parser::parse_task_content(task_content);
-
-                TaskItem::from_parsed_metadata(
-                    parsed,
-                    is_completed,
-                    SourcePosition::new(
-                        idx + 1,
-                        indent.len() + 1, // column accounts for indentation
-                        line_start + indent.len(),
-                        full_match.len() - indent.len(),
-                    ),
-                )
-            })
-        })
-        .collect()
+    crate::parse_tasks(content)
 }
 
 /// Parse tasks with pre-computed line index (for consistency with other parsers).
@@ -63,8 +19,7 @@ pub fn parse_tasks(content: &str) -> Vec<TaskItem> {
 #[deprecated(since = "1.2.0", note = "Use turbovault_parser::parse_tasks() instead")]
 #[allow(deprecated)]
 pub fn parse_tasks_indexed(content: &str, _index: &LineIndex) -> Vec<TaskItem> {
-    // Line-based parsing doesn't benefit from LineIndex, but we accept it for API consistency
-    parse_tasks(content)
+    crate::parse_tasks(content)
 }
 
 #[cfg(test)]
@@ -176,5 +131,38 @@ mod tests {
             tasks[0].metadata.get("project").map(String::as_str),
             Some("[[Team Work]]")
         );
+    }
+
+    #[test]
+    fn test_extended_task_states() {
+        let content = "- [/] In progress\n- [-] Cancelled";
+        let tasks = parse_tasks(content);
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].content, "In progress");
+        assert!(!tasks[0].is_completed);
+        assert_eq!(tasks[1].content, "Cancelled");
+        assert!(!tasks[1].is_completed);
+    }
+
+    #[test]
+    fn test_task_in_code_block_not_parsed() {
+        let content = "```md\n- [/] Not a task\n```\n\n- [-] Real task";
+        let tasks = parse_tasks(content);
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].content, "Real task");
+        assert_eq!(tasks[0].position.line, 5);
+    }
+
+    #[test]
+    fn test_task_position_with_crlf() {
+        let content = "Intro\r\n- [ ] Task after CRLF";
+        let tasks = parse_tasks(content);
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].position.line, 2);
+        assert_eq!(tasks[0].position.column, 1);
+        assert_eq!(tasks[0].position.offset, 7);
     }
 }

@@ -44,6 +44,14 @@ static CALLOUT: LazyLock<Regex> =
 /// Callout continuation: > content
 static CALLOUT_CONT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*>\s*(.*)$").unwrap());
 
+/// Non-CommonMark Obsidian task states not emitted by pulldown-cmark.
+static EXTENDED_TASK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(?P<indent>[ \t]*)(?P<bullet>[-*+])[ \t]+\[(?P<marker>[/\-])\][ \t]*(?P<content>.*)$",
+    )
+    .unwrap()
+});
+
 // ============================================================================
 // Fast pre-filters (skip regex if pattern not present)
 // ============================================================================
@@ -61,6 +69,11 @@ fn has_tag(content: &str) -> bool {
 #[inline]
 fn has_callout(content: &str) -> bool {
     content.contains("[!")
+}
+
+#[inline]
+fn has_extended_task(content: &str) -> bool {
+    content.contains("[/]") || content.contains("[-]")
 }
 
 // ============================================================================
@@ -222,6 +235,10 @@ impl<'a> ParseEngine<'a> {
             self.content
         };
 
+        if options.parse_tasks {
+            self.parse_extended_tasks(body, body_start, &excluded, &mut result);
+        }
+
         if options.parse_wikilinks {
             self.parse_wikilinks(body, body_start, &excluded, &mut result);
             self.parse_embeds(body, body_start, &excluded, &mut result);
@@ -273,6 +290,8 @@ impl<'a> ParseEngine<'a> {
         let mut current_link: Option<(String, String)> = None; // (url, title)
         let mut link_text = String::new();
         let mut link_start: usize = 0;
+        let mut markdown_link_range_start: Option<usize> = None;
+        let mut markdown_image_range_start: Option<usize> = None;
 
         for (event, range) in parser.into_offset_iter() {
             match event {
@@ -376,8 +395,8 @@ impl<'a> ParseEngine<'a> {
                     };
                     task_builder.position = SourcePosition::from_offset_indexed(
                         &self.index,
-                        range.start,
-                        range.end - range.start,
+                        task_line_start_for_marker(self.content, &self.index, range.start),
+                        task_line_length_for_marker(self.content, &self.index, range.start),
                     );
                 }
 
@@ -395,12 +414,18 @@ impl<'a> ParseEngine<'a> {
                 // === Markdown Links ===
                 Event::Start(Tag::Link {
                     dest_url, title, ..
-                }) if options.parse_markdown_links && !in_code_block => {
-                    current_link = Some((dest_url.to_string(), title.to_string()));
-                    link_text.clear();
-                    link_start = range.start;
+                }) if !in_code_block => {
+                    markdown_link_range_start = Some(range.start);
+                    if options.parse_markdown_links {
+                        current_link = Some((dest_url.to_string(), title.to_string()));
+                        link_text.clear();
+                        link_start = range.start;
+                    }
                 }
                 Event::End(TagEnd::Link) => {
+                    if let Some(start) = markdown_link_range_start.take() {
+                        excluded.add(start..range.end);
+                    }
                     if let Some((url, _title)) = current_link.take() {
                         let link_type = classify_url(&url);
 
@@ -425,6 +450,16 @@ impl<'a> ParseEngine<'a> {
                 }
                 Event::Text(text) if current_link.is_some() => {
                     link_text.push_str(&text);
+                }
+
+                // Markdown image alt text and destinations should not leak OFM tags.
+                Event::Start(Tag::Image { .. }) if !in_code_block => {
+                    markdown_image_range_start = Some(range.start);
+                }
+                Event::End(TagEnd::Image) => {
+                    if let Some(start) = markdown_image_range_start.take() {
+                        excluded.add(start..range.end);
+                    }
                 }
 
                 _ => {}
@@ -621,6 +656,10 @@ impl<'a> ParseEngine<'a> {
             return;
         }
 
+        let mut excluded = excluded.clone();
+        add_wikilink_exclusions(body, body_offset, &mut excluded);
+        excluded.optimize();
+
         for caps in TAG.captures_iter(body) {
             // The actual tag starts at the # character
             let tag_name = caps.get(1).unwrap();
@@ -646,6 +685,59 @@ impl<'a> ParseEngine<'a> {
         }
     }
 
+    /// Parse Obsidian task states that pulldown-cmark's GFM task parser ignores.
+    fn parse_extended_tasks(
+        &self,
+        body: &str,
+        body_offset: usize,
+        excluded: &ExcludedRanges,
+        result: &mut ParseResult,
+    ) {
+        if !has_extended_task(body) {
+            return;
+        }
+
+        let mut offset = 0;
+
+        for line in body.lines() {
+            let line_start = offset;
+            let global_line_start = body_offset + line_start;
+            let line_end_size = line_ending_size_at(body, line_start + line.len());
+            offset += line.len() + line_end_size;
+
+            if excluded.contains(global_line_start) {
+                continue;
+            }
+
+            let Some(caps) = EXTENDED_TASK.captures(line) else {
+                continue;
+            };
+
+            let content = caps.name("content").map(|m| m.as_str()).unwrap_or("");
+            if content.is_empty() {
+                continue;
+            }
+
+            let indent = caps.name("indent").map(|m| m.as_str()).unwrap_or("");
+            let marker = caps
+                .name("marker")
+                .and_then(|m| m.as_str().chars().next())
+                .unwrap_or(' ');
+            let task_start = global_line_start + indent.len();
+            let mut task_builder = TaskBuilder {
+                content: content.to_string(),
+                is_completed: crate::models::TaskStatus::from_marker(marker).is_completed(),
+                position: SourcePosition::from_offset_indexed(
+                    &self.index,
+                    task_start,
+                    line.len() - indent.len(),
+                ),
+            };
+
+            result.tasks.push(task_builder.build());
+        }
+    }
+
     /// Parse callouts (line-based, with excluded range awareness).
     fn parse_callouts(
         &self,
@@ -667,15 +759,7 @@ impl<'a> ParseEngine<'a> {
             let line = lines[i];
             let line_start = offset;
             let global_line_start = body_offset + line_start;
-            // Account for both \n and \r\n line endings
-            let remaining = &body[offset + line.len()..];
-            let line_end_size = if remaining.starts_with("\r\n") {
-                2
-            } else if remaining.starts_with('\n') {
-                1
-            } else {
-                0
-            };
+            let line_end_size = line_ending_size_at(body, offset + line.len());
             offset += line.len() + line_end_size;
 
             // Skip if this line is in an excluded range
@@ -688,6 +772,7 @@ impl<'a> ParseEngine<'a> {
                 let callout = if options.full_callouts {
                     self.parse_callout_full(
                         &lines,
+                        body,
                         &mut i,
                         global_line_start,
                         &caps,
@@ -735,6 +820,7 @@ impl<'a> ParseEngine<'a> {
     fn parse_callout_full(
         &self,
         lines: &[&str],
+        body: &str,
         i: &mut usize,
         global_line_start: usize,
         caps: &regex::Captures,
@@ -758,7 +844,7 @@ impl<'a> ParseEngine<'a> {
 
             // Skip excluded ranges
             if excluded.contains(line_global_start) {
-                *offset += line.len() + 1;
+                *offset += line.len() + line_ending_size_at(body, *offset + line.len());
                 *i += 1;
                 continue;
             }
@@ -775,7 +861,7 @@ impl<'a> ParseEngine<'a> {
                     callout_content.push('\n');
                 }
                 callout_content.push_str(content_part);
-                *offset += line.len() + 1;
+                *offset += line.len() + line_ending_size_at(body, *offset + line.len());
                 *i += 1;
             } else {
                 break;
@@ -813,6 +899,72 @@ fn parse_link_target(raw: &str) -> (String, Option<String>) {
     } else {
         (raw.to_string(), None)
     }
+}
+
+/// Exclude Obsidian link spans from tag parsing.
+///
+/// Same-document anchors such as `[[#Heading]]` and embedded anchors such as
+/// `![[#Preview]]` contain `#`, but they are links, not tags.
+fn add_wikilink_exclusions(body: &str, body_offset: usize, excluded: &mut ExcludedRanges) {
+    if !has_wikilink(body) {
+        return;
+    }
+
+    for mat in WIKILINK.find_iter(body) {
+        excluded.add(body_offset + mat.start()..body_offset + mat.end());
+    }
+
+    for mat in EMBED.find_iter(body) {
+        excluded.add(body_offset + mat.start()..body_offset + mat.end());
+    }
+}
+
+fn line_ending_size_at(content: &str, offset: usize) -> usize {
+    let Some(remaining) = content.get(offset..) else {
+        return 0;
+    };
+
+    if remaining.starts_with("\r\n") {
+        2
+    } else if remaining.starts_with('\n') {
+        1
+    } else {
+        0
+    }
+}
+
+fn task_line_start_for_marker(content: &str, index: &LineIndex, marker_offset: usize) -> usize {
+    let (line, _) = index.line_col(marker_offset);
+    let line_start = index.line_start(line).unwrap_or(marker_offset);
+    let line_end = line_end_without_line_ending(content, line_start);
+    let line_text = &content[line_start..line_end];
+    line_start + leading_ascii_whitespace_len(line_text)
+}
+
+fn task_line_length_for_marker(content: &str, index: &LineIndex, marker_offset: usize) -> usize {
+    let task_start = task_line_start_for_marker(content, index, marker_offset);
+    line_end_without_line_ending(content, task_start) - task_start
+}
+
+fn line_end_without_line_ending(content: &str, line_start: usize) -> usize {
+    let rest = content.get(line_start..).unwrap_or_default();
+    let mut line_end = rest
+        .find('\n')
+        .map(|idx| line_start + idx)
+        .unwrap_or(content.len());
+
+    if line_end > line_start && content.as_bytes().get(line_end - 1) == Some(&b'\r') {
+        line_end -= 1;
+    }
+
+    line_end
+}
+
+fn leading_ascii_whitespace_len(s: &str) -> usize {
+    s.as_bytes()
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count()
 }
 
 /// Parse callout type string into enum.
@@ -964,6 +1116,20 @@ mod tests {
 
         assert_eq!(result.callouts.len(), 1);
         assert_eq!(result.callouts[0].content, "Line 1\nLine 2");
+    }
+
+    #[test]
+    fn test_full_callout_crlf_offsets_next_callout() {
+        let content = "> [!NOTE] First\r\n> Line 1\r\n> [!WARNING] Second\r\n> Line 2";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all().with_full_callouts());
+
+        assert_eq!(result.callouts.len(), 2);
+        assert_eq!(result.callouts[0].content, "Line 1");
+        assert_eq!(result.callouts[1].title, Some("Second".to_string()));
+        assert_eq!(result.callouts[1].content, "Line 2");
+        assert_eq!(result.callouts[1].position.line, 3);
+        assert_eq!(result.callouts[1].position.column, 1);
     }
 
     // =========================================================================
@@ -1453,42 +1619,101 @@ Back to normal [[Valid]]
     }
 
     #[test]
+    fn test_tag_in_markdown_anchor_link_not_matched() {
+        let content = "Jump to [section](#installation) and keep #real-tag";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        assert_eq!(result.markdown_links.len(), 1);
+        let names: Vec<&str> = result.tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["real-tag"]);
+    }
+
+    #[test]
+    fn test_tag_only_parse_excludes_markdown_anchor_link() {
+        let content = "Jump to [section](#installation) and keep #real-tag";
+        let engine = ParseEngine::new(content);
+        let opts = ParseOptions {
+            parse_tags: true,
+            ..ParseOptions::none()
+        };
+        let result = engine.parse(&opts);
+
+        let names: Vec<&str> = result.tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["real-tag"]);
+    }
+
+    #[test]
+    fn test_tag_in_same_doc_wikilink_not_matched() {
+        let content = "See [[#Heading]] and ![[#Preview]] but keep #real";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        assert_eq!(result.wikilinks.len(), 1);
+        assert_eq!(result.embeds.len(), 1);
+        let names: Vec<&str> = result.tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn test_tag_only_parse_excludes_same_doc_wikilink() {
+        let content = "See [[#Heading]] and ![[#Preview]] but keep #real";
+        let engine = ParseEngine::new(content);
+        let opts = ParseOptions {
+            parse_tags: true,
+            ..ParseOptions::none()
+        };
+        let result = engine.parse(&opts);
+
+        let names: Vec<&str> = result.tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn test_parenthesized_tag_still_matches() {
+        let content = "This remains valid (#context)";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        let names: Vec<&str> = result.tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["context"]);
+    }
+
+    #[test]
     fn test_task_status_in_progress() {
-        // pulldown-cmark's ENABLE_TASKLISTS only fires TaskListMarker for [ ] and [x]/[X].
-        // Non-standard Obsidian markers like [/] are not recognised by the CommonMark
-        // task-list extension and therefore produce no TaskItem in result.tasks.
-        // The raw-marker → TaskStatus mapping (from_marker('/') == InProgress) is
-        // exercised separately in models::tests::test_from_marker_in_progress.
         let content = "- [/] In progress task";
         let engine = ParseEngine::new(content);
         let result = engine.parse(&ParseOptions::all());
 
-        // The item is a plain list bullet, not a task list item
-        assert_eq!(
-            result.tasks.len(),
-            0,
-            "pulldown-cmark does not recognise [/] as a task marker; \
-             non-standard markers are not emitted as TaskListMarker events"
-        );
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].content, "In progress task");
+        assert!(!result.tasks[0].is_completed);
+        assert_eq!(result.tasks[0].position.line, 1);
+        assert_eq!(result.tasks[0].position.column, 1);
     }
 
     #[test]
     fn test_task_status_cancelled() {
-        // Same reasoning as test_task_status_in_progress: [-] is not a standard
-        // CommonMark task-list marker, so pulldown-cmark does not fire a
-        // TaskListMarker event for it.
-        // The raw-marker → TaskStatus mapping (from_marker('-') == Cancelled) is
-        // exercised separately in models::tests::test_from_marker_cancelled.
         let content = "- [-] Cancelled task";
         let engine = ParseEngine::new(content);
         let result = engine.parse(&ParseOptions::all());
 
-        assert_eq!(
-            result.tasks.len(),
-            0,
-            "pulldown-cmark does not recognise [-] as a task marker; \
-             non-standard markers are not emitted as TaskListMarker events"
-        );
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].content, "Cancelled task");
+        assert!(!result.tasks[0].is_completed);
+        assert_eq!(result.tasks[0].position.line, 1);
+        assert_eq!(result.tasks[0].position.column, 1);
+    }
+
+    #[test]
+    fn test_extended_tasks_exclude_code_blocks() {
+        let content = "```md\n- [/] Not a task\n```\n\n- [-] Real task";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].content, "Real task");
+        assert_eq!(result.tasks[0].position.line, 5);
     }
 
     #[test]

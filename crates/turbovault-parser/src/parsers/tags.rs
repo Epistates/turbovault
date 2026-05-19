@@ -3,60 +3,22 @@
 //! **Deprecated**: Use `turbovault_parser::parse_tags()` or `ParsedContent::parse()` instead.
 //! These functions are kept for backwards compatibility but will be removed in a future version.
 
-use regex::Regex;
-use std::sync::LazyLock;
-use turbovault_core::{LineIndex, SourcePosition, Tag};
-
-/// Matches #tag or #parent/child tags
-/// Matches #tag or #parent/child tags (with word-boundary guard to avoid URL fragments)
-static TAG_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[\s\[(])#([a-zA-Z0-9_][a-zA-Z0-9_\-/]*)").unwrap());
+use turbovault_core::{LineIndex, Tag};
 
 /// Parse all tags from content.
 ///
 /// **Deprecated**: Use `turbovault_parser::parse_tags()` instead.
 #[deprecated(since = "1.2.0", note = "Use turbovault_parser::parse_tags() instead")]
 pub fn parse_tags(content: &str) -> Vec<Tag> {
-    TAG_PATTERN
-        .captures_iter(content)
-        .map(|caps| {
-            let name_match = caps.get(1).unwrap();
-            let name = name_match.as_str();
-            let is_nested = name.contains('/');
-            // Position at the `#` character (1 byte before the capture group)
-            let tag_start = name_match.start().saturating_sub(1);
-            let tag_len = name.len() + 1; // +1 for the `#`
-
-            Tag {
-                name: name.to_string(),
-                position: SourcePosition::from_offset(content, tag_start, tag_len),
-                is_nested,
-            }
-        })
-        .collect()
+    crate::parse_tags(content)
 }
 
 /// Parse tags with O(log n) position lookup using pre-computed line index.
 ///
 /// **Deprecated**: Use `turbovault_parser::parse_tags()` instead (uses LineIndex internally).
 #[deprecated(since = "1.2.0", note = "Use turbovault_parser::parse_tags() instead")]
-pub fn parse_tags_indexed(content: &str, index: &LineIndex) -> Vec<Tag> {
-    TAG_PATTERN
-        .captures_iter(content)
-        .map(|caps| {
-            let name_match = caps.get(1).unwrap();
-            let name = name_match.as_str();
-            let is_nested = name.contains('/');
-            let tag_start = name_match.start().saturating_sub(1);
-            let tag_len = name.len() + 1;
-
-            Tag {
-                name: name.to_string(),
-                position: SourcePosition::from_offset_indexed(index, tag_start, tag_len),
-                is_nested,
-            }
-        })
-        .collect()
+pub fn parse_tags_indexed(content: &str, _index: &LineIndex) -> Vec<Tag> {
+    crate::parse_tags(content)
 }
 
 #[cfg(test)]
@@ -120,5 +82,32 @@ mod tests {
             assert_eq!(r.position.line, i.position.line);
             assert_eq!(r.position.column, i.position.column);
         }
+    }
+
+    #[test]
+    fn test_markdown_anchor_link_fragment_not_tag() {
+        let content = "Jump to [section](#installation) and keep #real-tag";
+        let tags = parse_tags(content);
+
+        let names: Vec<&str> = tags.iter().map(|tag| tag.name.as_str()).collect();
+        assert_eq!(names, vec!["real-tag"]);
+    }
+
+    #[test]
+    fn test_same_doc_wikilink_anchor_not_tag() {
+        let content = "See [[#Heading]] and ![[#Preview]] but keep #real";
+        let tags = parse_tags(content);
+
+        let names: Vec<&str> = tags.iter().map(|tag| tag.name.as_str()).collect();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    #[test]
+    fn test_code_block_tag_not_matched() {
+        let content = "```md\n#not-a-tag\n```\n\n#real";
+        let tags = parse_tags(content);
+
+        let names: Vec<&str> = tags.iter().map(|tag| tag.name.as_str()).collect();
+        assert_eq!(names, vec!["real"]);
     }
 }

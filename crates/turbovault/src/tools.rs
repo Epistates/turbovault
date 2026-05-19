@@ -462,7 +462,7 @@ impl ObsidianMcpServer {
             "ready": !active_vault.is_empty(),
             "markdown_dialect": {
                 "name": "Obsidian Flavored Markdown (OFM)",
-                "base": ["CommonMark", "GitHub Flavored Markdown", "LaTeX"],
+                "base": ["CommonMark", "GitHub Flavored Markdown"],
                 "resources": {
                     "complete_guide": "obsidian://syntax/complete-guide",
                     "quick_ref": "obsidian://syntax/quick-ref",
@@ -476,14 +476,16 @@ impl ObsidianMcpServer {
                 "note": "Use MCP resources if supported by client, otherwise use tools as fallback",
                 "key_features": [
                     "Wikilinks: [[note]] and [[note|alias]]",
-                    "Embeds: ![[image.png]] and ![[noteection]]",
+                    "Embeds: ![[image.png]] and ![[note#section]]",
                     "Block refs: [[note#^block-id]] and ^block-id",
                     "Callouts: > [!note] Title",
-                    "Highlights: ==text==",
-                    "Comments: %%hidden%%"
+                    "Tags: #tag and #nested/tag",
+                    "Task lists: - [ ], - [x], - [/], and - [-]",
+                    "Tables and strikethrough"
                 ],
                 "important_notes": [
                     "Use wikilinks [[note]] for internal references, not markdown links",
+                    "Highlights, comments, and math/LaTeX are Obsidian syntax but are not yet extracted as first-class parser nodes",
                     "No markdown formatting inside HTML tags",
                     "Block IDs should be unique within a note"
                 ]
@@ -2159,9 +2161,9 @@ impl ObsidianMcpServer {
 
     // ==================== OFM Documentation Tools (Resource Fallback) ====================
 
-    /// Get complete Obsidian Flavored Markdown syntax guide (tool fallback for clients without resource support)
+    /// Get Obsidian Flavored Markdown syntax guide (tool fallback for clients without resource support)
     #[tool(
-        description = "Get complete Obsidian Flavored Markdown syntax guide covering all OFM features",
+        description = "Get Obsidian Flavored Markdown syntax guide for the OFM syntax TurboVault parses, classifies, or preserves",
         usage = "Use before writing notes to ensure correct syntax, or as reference for OFM extensions. Prefer resource obsidian://syntax/complete-guide if client supports resources",
         performance = "Instant, returns static documentation",
         related = ["get_ofm_quick_ref", "get_ofm_examples"],
@@ -2171,7 +2173,7 @@ impl ObsidianMcpServer {
         let guide = crate::resources::OFM_SYNTAX_GUIDE.to_string();
 
         Ok(serde_json::json!({
-            "title": "Obsidian Flavored Markdown - Complete Syntax Guide",
+            "title": "Obsidian Flavored Markdown - Syntax Guide",
             "content": guide,
             "format": "markdown",
             "sections": [
@@ -2244,9 +2246,7 @@ impl ObsidianMcpServer {
                 "Task Lists",
                 "Tables",
                 "Code Blocks",
-                "Math (LaTeX)",
-                "Diagrams (Mermaid)",
-                "Footnotes",
+                "Preserved Obsidian syntax",
                 "Real-World Patterns"
             ],
             "patterns_shown": [

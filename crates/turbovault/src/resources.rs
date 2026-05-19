@@ -1,27 +1,27 @@
 //! Static resource documentation embedded directly in code.
 //! These resources are served via MCP resources and tool endpoints.
 
-/// Obsidian Flavored Markdown (OFM) complete syntax guide
-pub const OFM_SYNTAX_GUIDE: &str = r#"# Obsidian Flavored Markdown (OFM) — Complete Syntax Guide
+/// Obsidian Flavored Markdown (OFM) syntax guide
+pub const OFM_SYNTAX_GUIDE: &str = r#"# Obsidian Flavored Markdown (OFM) — Syntax Guide
 
-Obsidian Flavored Markdown extends CommonMark with Obsidian conventions that power vault-centric workflows, daily notes, and Zettelkasten knowledge bases. This guide provides comprehensive OFM syntax supported by `TurboVault` so tools, agents, and humans can produce high-quality, automation-friendly notes while maintaining full compatibility with standard Markdown.
+Obsidian Flavored Markdown extends CommonMark with Obsidian conventions that power vault-centric workflows, daily notes, and Zettelkasten knowledge bases. This guide focuses on OFM syntax that `TurboVault` parses, classifies, or preserves safely so tools, agents, and humans can produce high-quality, automation-friendly notes while maintaining full compatibility with standard Markdown.
 
 ## Core Philosophy
 
 Obsidian strives for maximum capability without breaking any existing formats. As a result, it uses a combination of flavors of Markdown to provide enhanced functionality while maintaining compatibility. Within TurboVault:
 
 - Prefer small, atomic notes that capture a single idea and link liberally
-- Keep metadata explicit in YAML frontmatter or inline attribute blocks
+- Keep metadata explicit in YAML frontmatter
 - Treat backlinks, tags, and properties as first-class data that power graph analytics
 - Maintain human readability: all OFM constructs remain valid Markdown
 
 ## Supported Standards
 
-- **CommonMark** (full): The standardized version of Markdown with headings, emphasis, lists, blockquotes, code, tables
-- **GitHub Flavored Markdown (GFM)**: GitHub's extension of CommonMark including task lists, strikethrough, and enhanced tables
-- **LaTeX / MathJax**: Mathematical notation and advanced formatting support (inline `$math$` and block `$$math$$`)
+- **CommonMark**: The standardized version of Markdown with headings, emphasis, lists, blockquotes, and code blocks
+- **GitHub Flavored Markdown (GFM)**: GitHub's extension of CommonMark including task lists, strikethrough, and tables
 - **YAML Frontmatter**: Parsed into strongly-typed note properties
-- **Mermaid Diagrams**: Fenced blocks with language identifier `mermaid`
+- **Fenced Code Blocks**: Language identifiers such as `rust`, `sql`, or `mermaid` are preserved with code content
+- **Preserved Obsidian Syntax**: Highlights, comments, math, and footnotes may be present in notes but are not yet extracted as first-class parser nodes
 
 ## Important Limitation
 
@@ -47,9 +47,9 @@ OFM supports all standard Markdown formatting plus these Obsidian-specific exten
 - **Bold**: `**bold text**`
 - **Italic**: `_italic text_` or `*italic text*`
 - **Strikethrough**: `~~strikethrough text~~` — Show deprecated or completed information
-- **Highlight**: `==highlighted text==` — Emphasize key concepts with background highlighting
-- **Comments**: `%%hidden comment text%%` — Comments hidden in preview mode, useful for developer notes and TODOs
-- **Footnotes**: `[^id]` — Add footnote references and citations (define with `[^id]: Footnote content` at end of note)
+- **Highlight**: `==highlighted text==` — Preserved as text; not yet extracted as a first-class parser node
+- **Comments**: `%%hidden comment text%%` — Preserved as text; not yet extracted as a first-class parser node
+- **Footnotes**: `[^id]` — Preserved as Markdown text; not yet extracted as a first-class parser node
 - **Code span**: `` `inline code` ``
 
 ## Code and Content Blocks
@@ -70,6 +70,8 @@ Preferred languages include `rust`, `bash`, `json`, `yaml`, `toml`, `mermaid`, `
 
 - Incomplete task: `- [ ] Draft system prompt`
 - Completed task: `- [x] Publish v1.0 release notes`
+- In-progress task: `- [/] Investigate parser edge cases`
+- Cancelled task: `- [-] Deprecated task`
 - Nested tasks in lists are fully supported
 - Dataview-style inline fields (`key:: value`) remain intact for downstream tooling
 
@@ -84,7 +86,7 @@ Create highlighted information boxes with callouts:
 > - **Formatting works too**
 ```
 
-Supported callout types: `note`, `abstract`, `info`, `tip`, `success`, `question`, `warning`, `failure`, `danger`, `bug`, `example`, `quote`. Unknown identifiers render as standard blockquotes.
+Recognized structured callout types: `note`, `tip`, `info`, `todo`, `important`, `success`, `question`, `warning`, `failure`, `danger`, `bug`, `example`, `quote`. Aliases include `fail`, `missing`, `error`, and `cite`. Other Obsidian callout identifiers are accepted syntactically but mapped to `note` by the current `CalloutType` enum.
 
 ### Tables
 
@@ -124,7 +126,7 @@ updated: 2025-01-02T14:35:00Z
 
 ### Attribute Blocks
 
-Store additional properties using attribute blocks (parsed into note properties):
+Attribute-style code blocks can be preserved as fenced code blocks:
 
 ```attr
 status: evergreen
@@ -133,7 +135,7 @@ review_cycle: quarterly
 next_review: 2025-04-01
 ```
 
-Prefer lower_snake_case keys. These are equivalent to frontmatter and useful for inline property management.
+Prefer YAML frontmatter for machine-readable properties. Attribute code blocks are not currently parsed as typed properties.
 
 ## Advanced Linking Patterns
 
@@ -175,8 +177,8 @@ Build knowledge graphs that scale with your vault:
 
 - Use `<!--` HTML comments `-->` sparingly (they are ignored by parsers)
 - Never place Markdown formatting inside HTML tags
-- Use comments (`%%text%%`) for drafting notes that shouldn't appear in final output
-- Use highlights (`==text==`) to emphasize key concepts without disrupting flow
+- Use comments (`%%text%%`) for drafting notes that shouldn't appear in final output in Obsidian; TurboVault currently preserves them as text
+- Use highlights (`==text==`) to emphasize key concepts in Obsidian; TurboVault currently preserves them as text
 - Use strikethrough (`~~text~~`) only for showing deprecated or completed information
 
 ### Automation-Friendly Practices
@@ -193,7 +195,7 @@ Build knowledge graphs that scale with your vault:
 - Extensions are implemented without breaking existing Markdown parsers
 - Block references use unique identifiers for precise targeting within notes
 - Internal linking system creates a graph database of note relationships
-- Wikilinks are resolved through note IDs and aliases at parse time
+- Wikilinks are extracted at parse time and resolved by the vault/graph layers
 - The graph structure enables backlink tracking and relationship discovery
 
 ## Integration with Obsidian Features
@@ -250,7 +252,7 @@ Create hub notes that organize atomic notes by topic or project.
 
 ## Related Tools and Resources
 
-- `get_ofm_syntax_guide` — This complete guide
+- `get_ofm_syntax_guide` — This syntax guide
 - `get_ofm_quick_ref` — Quick reference cheat sheet
 - `get_ofm_examples` — Comprehensive example note with all features
 - `obsidian://syntax/complete-guide` — Resource identifier for MCP clients
@@ -260,7 +262,7 @@ Create hub notes that organize atomic notes by topic or project.
 - All OFM features are backward compatible with standard Markdown
 - Content can be exported to various formats while preserving structure
 - Internal wikilinks and block references are Obsidian-specific but degrade gracefully in other systems
-- Comments (`%%text%%`) and highlights (`==text==`) may not render in all Markdown viewers
+- Comments (`%%text%%`), highlights (`==text==`), math, and footnotes may not render in all Markdown viewers and are not yet first-class TurboVault parser nodes
 - HTML tags require careful handling (no nested Markdown formatting)
 
 Ensure your automation respects this guide before emitting OFM content in production. When in doubt, refer to the original features or use the quick reference for common patterns.
@@ -279,15 +281,17 @@ pub const OFM_QUICK_REFERENCE: &str = r#"# Obsidian Flavored Markdown (OFM) Quic
 - `**bold**` - Bold text
 - `_italic_` or `*italic*` - Italic text
 - `~~strikethrough~~` - Strikethrough text
-- `==highlight==` - Highlighted text
+- `==highlight==` - Highlighted text in Obsidian; preserved as text by TurboVault
 - `` `code` `` - Inline code
-- `%%comment%%` - Hidden comment
+- `%%comment%%` - Hidden comment in Obsidian; preserved as text by TurboVault
 
 ## Lists & Tasks
 - `- item` - Unordered list
 - `1. item` - Ordered list
 - `- [ ] task` - Incomplete task
 - `- [x] task` - Completed task
+- `- [/] task` - In-progress task
+- `- [-] task` - Cancelled task
 
 ## Code Blocks
 \`\`\`language
@@ -300,7 +304,7 @@ code here
 > Content here
 \`\`\`
 
-Supported types: `note`, `abstract`, `info`, `tip`, `success`, `question`, `warning`, `failure`, `danger`, `bug`, `example`, `quote`
+Recognized structured types: `note`, `tip`, `info`, `todo`, `important`, `success`, `question`, `warning`, `failure`, `danger`, `bug`, `example`, `quote`
 
 ## Tables
 ```
@@ -345,7 +349,7 @@ updated: 2025-01-06T14:30:00Z
 
 # Obsidian Flavored Markdown - Example Note
 
-This note demonstrates all major OFM features supported by TurboVault.
+This note demonstrates major OFM patterns that TurboVault parses, classifies, or preserves safely.
 
 ## Text Formatting
 
@@ -442,8 +446,8 @@ ORDER BY created DESC;
 | Embeds | ✅ | Files and blocks |
 | Callouts | ✅ | 12+ types |
 | Frontmatter | ✅ | YAML format |
-| Math | ✅ | LaTeX notation |
-| Tasks | ✅ | Nested support |
+| Tasks | ✅ | Standard and extended states |
+| Code Blocks | ✅ | Language metadata preserved |
 
 ## Block References
 
