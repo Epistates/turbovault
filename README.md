@@ -4,6 +4,7 @@
 [![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault)
 [![License](https://img.shields.io/crates/l/turbovault.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
 [![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Epistates/turbovault)
 
 **The ultimate Rust SDK and high-performance MCP server for Obsidian-flavored Markdown (.ofm) and standard .md vaults.**
 
