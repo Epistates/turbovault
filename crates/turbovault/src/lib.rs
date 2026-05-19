@@ -65,6 +65,7 @@
 //! - `turbovault_batch` - Batch operations (see <https://docs.rs/turbovault-batch>)
 
 pub mod resources;
+pub mod tool_visibility;
 pub mod tools;
 
 pub use tools::ObsidianMcpServer;

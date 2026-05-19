@@ -58,34 +58,31 @@ export RUST_LOG=info,TurboVault=debug
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 ```
 
-## Configuration File (Future)
+## Configuration File
 
-Configuration files are planned for future releases:
+TurboVault reads `~/.turbovault/config.yaml` automatically when present. Use `--config <PATH>` or `TURBOVAULT_CONFIG` to point at a different YAML file. The currently supported server-level section is `tool_visibility`.
 
 ```yaml
-# config.yaml (future)
-profiles:
-  default: production
+tool_visibility:
+  # If non-empty, only these exact tool names are listed and callable.
+  allowed:
+    - read_note
+    - search
 
-vaults:
-  - name: personal
-    path: /vaults/personal
-    is_default: true
-    watch_for_changes: true
-    cache_ttl: 3600
+  # Omit these tools from tools/list, but allow direct calls by exact name.
+  hidden:
+    - full_health_analysis
+    - explain_vault
 
-  - name: work
-    path: /vaults/work
-    excluded_paths:
-      - .obsidian
-      - private/
+  # Omit these tools and reject direct calls.
+  disabled:
+    - delete_note
 
-observability:
-  log_level: info
-  otlp_endpoint: http://localhost:4317
-  enable_metrics: true
-  enable_tracing: true
+  # Hide tools that TurboMCP has not annotated as read-only.
+  require_read_only: false
 ```
+
+The same rules can be supplied with comma-separated CLI/env overrides: `--allowed-tools` / `TURBOVAULT_ALLOWED_TOOLS`, `--hidden-tools` / `TURBOVAULT_HIDDEN_TOOLS`, `--disabled-tools` / `TURBOVAULT_DISABLED_TOOLS`, and `--require-read-only-tools` / `TURBOVAULT_REQUIRE_READ_ONLY_TOOLS`.
 
 ## CLI Reference
 
@@ -102,6 +99,11 @@ mcp-obsidian [OPTIONS]
 | `--vault <PATH>` | `OBSIDIAN_VAULT_PATH` | (required) | Path to Obsidian vault directory |
 | `--profile <PROFILE>` | - | `development` | Configuration profile |
 | `--transport <MODE>` | - | `stdio` | Transport mode (only `stdio` is MCP-compliant) |
+| `--config <PATH>` | `TURBOVAULT_CONFIG` | `~/.turbovault/config.yaml` if present | YAML config path |
+| `--allowed-tools <NAMES>` | `TURBOVAULT_ALLOWED_TOOLS` | - | Comma-separated exact tool allowlist |
+| `--hidden-tools <NAMES>` | `TURBOVAULT_HIDDEN_TOOLS` | - | Comma-separated tools hidden from `tools/list` but callable |
+| `--disabled-tools <NAMES>` | `TURBOVAULT_DISABLED_TOOLS` | - | Comma-separated tools hidden and rejected |
+| `--require-read-only-tools` | `TURBOVAULT_REQUIRE_READ_ONLY_TOOLS` | `false` | Hide non-read-only tools |
 | `--init` | - | `false` | Initialize vault on startup (scan files, build graph) |
 | `--help` | - | - | Show help message |
 | `--version` | - | - | Show version |

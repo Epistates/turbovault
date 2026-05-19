@@ -252,7 +252,7 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `suggest_links` — AI-powered link suggestions for a note
 - `get_link_strength` — Connection strength between notes (0.0–1.0)
 - `get_centrality_ranking` — Graph centrality metrics (betweenness, closeness, eigenvector)
-- `get_ofm_syntax_guide` — Complete Obsidian Flavored Markdown reference
+- `get_ofm_syntax_guide` — Focused Obsidian Flavored Markdown reference
 - `get_ofm_quick_ref` — Quick OFM cheat sheet
 - `get_vault_context` — Meta-tool: single call returns vault status, available tools, OFM guide
 
@@ -356,6 +356,21 @@ suggestions = client.call("suggest_links", {"path": "AI/ML.md"})
 | `production` | Production with security auditing and optimized logging |
 | `readonly` | Read-only access for safe exploration |
 | `high-performance` | Large vaults (10k+ notes) with aggressive caching |
+
+## Tool Visibility
+
+TurboVault can reduce `tools/list` context by applying TurboMCP visibility rules from `~/.turbovault/config.yaml` or `--config`:
+
+```yaml
+tool_visibility:
+  hidden:
+    - full_health_analysis
+    - explain_vault
+  disabled:
+    - delete_note
+```
+
+Use `hidden` for advanced tools that should stay callable by exact name, `disabled` for tools that should fail closed, and `allowed` when you want an explicit allowlist. Equivalent env/CLI overrides are available via `TURBOVAULT_HIDDEN_TOOLS`, `TURBOVAULT_DISABLED_TOOLS`, `TURBOVAULT_ALLOWED_TOOLS`, and `--hidden-tools`, `--disabled-tools`, `--allowed-tools`.
 
 ## SDK and Server Implementation
 

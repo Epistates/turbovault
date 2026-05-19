@@ -231,6 +231,32 @@ config.vaults.push(custom_vault);
 - `template_dirs`: Additional template directories (default: vault root)
 - `allowed_operations`: Restrict operations (default: all allowed)
 
+### Tool Visibility
+
+TurboVault reads an optional `tool_visibility` section from `~/.turbovault/config.yaml` or a path passed with `--config`. By default all tools remain visible and callable.
+
+```yaml
+tool_visibility:
+  # If non-empty, only these exact tool names are visible/callable.
+  allowed:
+    - read_note
+    - search
+
+  # Hidden tools are omitted from tools/list but still callable by exact name.
+  hidden:
+    - full_health_analysis
+    - explain_vault
+
+  # Disabled tools are omitted and rejected on direct calls.
+  disabled:
+    - delete_note
+
+  # Optional: hide tools not marked read-only by TurboMCP.
+  require_read_only: false
+```
+
+CLI/env overrides can be comma-separated: `--hidden-tools full_health_analysis,explain_vault`, `--disabled-tools delete_note`, `--allowed-tools read_note,search`, or `TURBOVAULT_HIDDEN_TOOLS`, `TURBOVAULT_DISABLED_TOOLS`, and `TURBOVAULT_ALLOWED_TOOLS`.
+
 ### Environment Variables
 
 ```bash

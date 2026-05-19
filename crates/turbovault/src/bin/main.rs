@@ -3,8 +3,11 @@
 use clap::Parser;
 use std::path::PathBuf;
 use turbomcp::telemetry::TelemetryConfig;
-use turbomcp::{McpServerExt, ProtocolConfig};
+use turbomcp::{McpServerExt, ProtocolConfig, VisibilityLayer};
 use turbovault::ObsidianMcpServer;
+use turbovault::tool_visibility::{
+    ToolVisibilityOverrides, ToolVisibilitySettings, default_config_path,
+};
 use turbovault_core::VaultConfig;
 use turbovault_core::cache::VaultCache;
 use turbovault_tools::OutputFormat;
@@ -37,12 +40,37 @@ struct Args {
     /// Initialize vault on startup (scan and build graph)
     #[arg(long, action = clap::ArgAction::SetTrue)]
     init: bool,
+
+    /// TurboVault YAML config path. Reads the `tool_visibility` section if present.
+    #[arg(long, env = "TURBOVAULT_CONFIG")]
+    config: Option<PathBuf>,
+
+    /// Comma-separated exact tool names to expose. If set, only these tools are listed/callable.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_ALLOWED_TOOLS")]
+    allowed_tools: Vec<String>,
+
+    /// Comma-separated exact tool names to hide from tools/list while keeping direct calls allowed.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_HIDDEN_TOOLS")]
+    hidden_tools: Vec<String>,
+
+    /// Comma-separated exact tool names to remove from tools/list and reject on direct calls.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_DISABLED_TOOLS")]
+    disabled_tools: Vec<String>,
+
+    /// Hide all tools not annotated as read-only by TurboMCP.
+    #[arg(
+        long,
+        env = "TURBOVAULT_REQUIRE_READ_ONLY_TOOLS",
+        action = clap::ArgAction::SetTrue
+    )]
+    require_read_only_tools: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command-line arguments
     let args = Args::parse();
+    let tool_visibility = load_tool_visibility(&args).await?;
 
     // Validate output format (unless STDIO transport, which always uses JSON)
     let output_format = if args.transport == "stdio" {
@@ -283,6 +311,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start server with multi-version protocol support.
     // Accepts both MCP 2025-06-18 and 2025-11-25 clients.
     log::info!("Starting TurboVault Server (multi-version MCP protocol)");
+    if tool_visibility.has_rules() {
+        log::info!(
+            "Tool visibility configured: allowed={} hidden={} disabled={} require_read_only={}",
+            tool_visibility.allowed.len(),
+            tool_visibility.hidden.len(),
+            tool_visibility.disabled.len(),
+            tool_visibility.require_read_only
+        );
+    }
+
+    let server = VisibilityLayer::new(server)
+        .with_visibility_config(tool_visibility.into_visibility_config());
 
     match args.transport.as_str() {
         "stdio" => {
@@ -379,4 +419,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+async fn load_tool_visibility(
+    args: &Args,
+) -> Result<ToolVisibilitySettings, Box<dyn std::error::Error>> {
+    let mut settings = match args.config.as_deref() {
+        Some(path) => ToolVisibilitySettings::from_yaml_file(path).await?,
+        None => match default_config_path().filter(|path| path.exists()) {
+            Some(path) => ToolVisibilitySettings::from_yaml_file(path).await?,
+            None => ToolVisibilitySettings::default(),
+        },
+    };
+
+    settings.merge_cli(ToolVisibilityOverrides {
+        allowed: args.allowed_tools.clone(),
+        hidden: args.hidden_tools.clone(),
+        disabled: args.disabled_tools.clone(),
+        require_read_only: args.require_read_only_tools,
+    });
+
+    Ok(settings)
 }
