@@ -717,6 +717,123 @@ impl ObsidianMcpServer {
         response.to_json()
     }
 
+    // ==================== SPIKE: TurboMCP notification API probe ====================
+    //
+    // Goal of this spike: find out whether TurboMCP 3.0.11 can deliver a
+    // custom-method notification (`notifications/vault/ping`) to a
+    // WebSocket client from inside a #[tool] handler.
+    //
+    // Findings (see commit message):
+    //   1. Tool handlers receive `turbomcp_core::RequestContext`, which has
+    //      no session field, no `notify` method, and no `server_to_client`
+    //      handle. The richer `turbomcp_server::RequestContext` (which has
+    //      a private `session: Option<Arc<dyn McpSession>>`) is stripped
+    //      by `to_core_context()` before reaching the handler. The macro
+    //      (`turbomcp_macros::server::generate_server`) invokes
+    //      `self.#fn_name(...)` with a `&turbomcp_core::context::
+    //      RequestContext`, not the server one.
+    //   2. `ServerNotification` in turbomcp-protocol is a closed enum —
+    //      only `notifications/message`, `/progress`, `/resources/*`,
+    //      `/tools/list_changed`, etc. No representation for custom
+    //      methods like `notifications/vault/event`.
+    //   3. The WebSocket transport
+    //      (`turbomcp-server-3.0.10/src/transport/websocket.rs:241`)
+    //      builds the context with `RequestContext::websocket()` and
+    //      does NOT call `.with_session(...)`. STDIO does
+    //      (`transport/line.rs:235`). Even if a handler could reach the
+    //      session, WebSocket-served tool calls have no session to reach.
+    //
+    // This spike therefore can only demonstrate the limitation, not push
+    // a custom notification through. It returns a stub response that
+    // documents the gap so the feat branch can be planned around it
+    // (return-to-caller encoding, or an upstream turbomcp patch).
+    //
+    // Manual verification procedure:
+    //   1. Build with: `cargo build -p turbovault --features websocket`
+    //   2. Run: `cargo run -p turbovault --features websocket -- \
+    //              --transport websocket --port 3001`
+    //   3. Connect: `wscat -c ws://127.0.0.1:3001/ws`
+    //   4. Initialize:
+    //        {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+    //          "protocolVersion":"2025-06-18","capabilities":{},
+    //          "clientInfo":{"name":"spike","version":"0"}}}
+    //   5. Initialized notification:
+    //        {"jsonrpc":"2.0","method":"notifications/initialized"}
+    //   6. Call the spike tool:
+    //        {"jsonrpc":"2.0","id":2,"method":"tools/call",
+    //         "params":{"name":"ping_with_notification","arguments":{}}}
+    //   7. Observe the response: it returns `gap_documented: true` and
+    //      NO `notifications/vault/ping` line arrives out-of-band —
+    //      because TurboMCP's WS transport can't deliver one.
+    /// Spike: probe TurboMCP's server-to-client notification capability
+    #[tool(
+        description = "SPIKE: attempts to push a notifications/vault/ping message to the calling WS client and returns a structured report on whether the transport supports it",
+        usage = "Diagnostic tool only. Returns the API-gap findings for the subscribe_vault_events design",
+        performance = "Fast (<5ms)",
+        related = [],
+        examples = ["ping_with_notification()"]
+    )]
+    async fn ping_with_notification(
+        &self,
+        ctx: &turbomcp::RequestContext,
+    ) -> McpResult<serde_json::Value> {
+        // Empirical probe: try to reach a session handle from the core
+        // RequestContext. There is no public API to do so — the methods
+        // below are the complete set (`request_id`, `transport`,
+        // `metadata`, `principal`). See turbomcp-core-3.0.10/src/context.rs.
+        let probe = format!(
+            "request_id={}, transport={:?}, metadata_keys={:?}",
+            ctx.request_id,
+            ctx.transport,
+            ctx.metadata.keys().collect::<Vec<_>>()
+        );
+        // The ctx handed to us is `turbomcp_core::RequestContext`; it has
+        // no `notify` / `session` / `server_to_client` accessor. We
+        // document the gap here rather than faking success.
+        let report = serde_json::json!({
+            "attempted_method": "notifications/vault/ping",
+            "payload": {
+                "ts": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                "note": "spike payload"
+            },
+            "gap_documented": true,
+            "reasons": [
+                "turbomcp_core::RequestContext (handed to #[tool] handlers) \
+                 exposes no McpSession / ServerToClientRequests handle",
+                "turbomcp-protocol::ServerNotification is a closed enum; \
+                 no variant represents a custom method name like \
+                 notifications/vault/event",
+                "turbomcp-server::transport::websocket does not attach a \
+                 SessionHandle to RequestContext (line 241: \
+                 RequestContext::websocket() with no with_session call), \
+                 so even if the plumbing existed at the handler level \
+                 the WS transport has no session to route through"
+            ],
+            "ctx_probe": probe,
+            "turbomcp_version": "3.0.11",
+            "remediation_options": [
+                "Patch turbomcp-server to install a SessionHandle in the \
+                 WS transport AND expose ServerToClientRequests via the \
+                 core RequestContext (upstream change)",
+                "Fork turbomcp and add a JsonRpcNotification escape hatch \
+                 that accepts a free-form method name",
+                "Design turbovault around synchronous response delivery: \
+                 clients poll a fetch_vault_events(handle) tool instead of \
+                 receiving push notifications"
+            ]
+        });
+
+        StandardResponse::new(
+            "spike",
+            "ping_with_notification",
+            report,
+        )
+        .to_json()
+    }
+
     // ==================== File Operations ====================
 
     /// Read the contents of a note
