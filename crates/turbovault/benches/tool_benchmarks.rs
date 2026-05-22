@@ -240,6 +240,106 @@ Content"#,
     });
 }
 
+// ── A/B benchmarks ────────────────────────────────────────────────────────────
+//
+// Each group compares the current implementation against a proposed alternative.
+// Run with: cargo bench -- "vault_scan_ab|metadata_query_ab"
+
+/// A/B: scan_files (path.is_dir + path.metadata) vs scan_files_dtype (DirEntry::file_type)
+///
+/// Hypothesis: DirEntry::file_type() reads d_type from the Linux dirent struct returned
+/// by readdir(3) — no additional statx/readlink syscall per entry. The current
+/// implementation calls path.is_dir() (statx) + path.metadata() (statx) per entry.
+fn bench_vault_scan_ab(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let mut group = c.benchmark_group("vault_scan_ab");
+
+    for size in [10, 50, 100, 500].iter() {
+        let (_temp_dir, manager) = rt.block_on(setup_bench_vault(*size));
+
+        group.bench_with_input(
+            BenchmarkId::new("current_path_is_dir", size),
+            size,
+            |b, _| {
+                b.to_async(&rt)
+                    .iter(|| async { manager.scan_vault().await.unwrap() })
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("proposed_entry_file_type", size),
+            size,
+            |b, _| {
+                b.to_async(&rt)
+                    .iter(|| async { manager.scan_vault_dtype().await.unwrap() })
+            },
+        );
+    }
+    group.finish();
+}
+
+/// A/B: query_metadata (scan_vault + parse_file per call) vs query_metadata_cached (file_cache)
+///
+/// Hypothesis: The current implementation issues a full filesystem scan and reads every
+/// file on every invocation. The cache variant reads from the in-memory HashMap populated
+/// during initialize() — zero filesystem I/O on the hot path.
+fn bench_metadata_query_ab(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    let vault_path = temp_dir.path();
+
+    rt.block_on(async {
+        for i in 0..100 {
+            let content = format!(
+                "---\ntitle: \"Note {}\"\npriority: {}\nstatus: \"active\"\n---\n# Note {}\nContent",
+                i, i % 10, i
+            );
+            tokio::fs::write(vault_path.join(format!("meta{}.md", i)), content)
+                .await
+                .unwrap();
+        }
+    });
+
+    let mut config = ConfigProfile::Development.create_config();
+    let vault_config = VaultConfig::builder("bench", vault_path).build().unwrap();
+    config.vaults.push(vault_config);
+
+    let manager = rt.block_on(async {
+        let m = VaultManager::new(config).unwrap();
+        m.initialize().await.unwrap();
+        Arc::new(m)
+    });
+
+    let tools = MetadataTools::new(manager);
+    let mut group = c.benchmark_group("metadata_query_ab");
+
+    // "before" baseline: inline the old scan-on-every-call logic so we can measure
+    // it alongside the new implementation without reverting the source change.
+    group.bench_function("before_scan_per_call", |b| {
+        b.to_async(&rt).iter(|| async {
+            let files = tools.manager.scan_vault().await.unwrap();
+            let mut out = Vec::new();
+            for path in files {
+                if let Ok(vf) = tools.manager.parse_file(&path).await {
+                    out.push(vf);
+                }
+            }
+            out
+        })
+    });
+
+    group.bench_function("after_validated_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            tools
+                .query_metadata(black_box("priority > 5"))
+                .await
+                .unwrap()
+        })
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_file_read,
@@ -250,7 +350,9 @@ criterion_group!(
     bench_batch_operations,
     bench_vault_scan,
     bench_concurrent_reads,
-    bench_metadata_queries
+    bench_metadata_queries,
+    bench_vault_scan_ab,
+    bench_metadata_query_ab,
 );
 
 criterion_main!(benches);

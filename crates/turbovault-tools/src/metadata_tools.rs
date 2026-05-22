@@ -121,37 +121,31 @@ impl MetadataTools {
     /// Query files by metadata pattern
     pub async fn query_metadata(&self, pattern: &str) -> Result<Value> {
         let filter = parse_query(pattern)?;
-
-        // Get all markdown files
-        let files = self.manager.scan_vault().await?;
+        let vault_files = self.manager.vault_files_validated().await;
         let mut matches = Vec::new();
 
-        for file_path in files {
-            if !file_path.to_string_lossy().to_lowercase().ends_with(".md") {
+        for vault_file in vault_files {
+            if !vault_file
+                .path
+                .to_string_lossy()
+                .to_lowercase()
+                .ends_with(".md")
+            {
                 continue;
             }
+            if let Some(frontmatter) = vault_file.frontmatter
+                && filter.matches(&frontmatter.data)
+            {
+                let display_path = vault_file
+                    .path
+                    .strip_prefix(self.manager.vault_path())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| vault_file.path.to_string_lossy().to_string());
 
-            // Parse file to extract frontmatter
-            match self.manager.parse_file(&file_path).await {
-                Ok(vault_file) => {
-                    if let Some(frontmatter) = vault_file.frontmatter
-                        && filter.matches(&frontmatter.data)
-                    {
-                        let display_path = file_path
-                            .strip_prefix(self.manager.vault_path())
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
-
-                        matches.push(json!({
-                            "path": display_path,
-                            "metadata": frontmatter.data
-                        }));
-                    }
-                }
-                Err(_) => {
-                    // Skip files that can't be parsed
-                    continue;
-                }
+                matches.push(json!({
+                    "path": display_path,
+                    "metadata": frontmatter.data
+                }));
             }
         }
 
@@ -668,5 +662,88 @@ mod tests {
             QueryFilter::Equals("status".to_string(), Value::String("active".to_string())),
         ]);
         assert!(!filter_no_match.matches(&metadata));
+    }
+
+    // ── query_metadata integration ───────────────────────────────────────────
+
+    fn make_manager(vault_dir: &std::path::Path) -> std::sync::Arc<turbovault_vault::VaultManager> {
+        use turbovault_core::{ServerConfig, VaultConfig};
+        let mut config = ServerConfig::new();
+        config
+            .vaults
+            .push(VaultConfig::builder("test", vault_dir).build().unwrap());
+        std::sync::Arc::new(turbovault_vault::VaultManager::new(config).unwrap())
+    }
+
+    #[tokio::test]
+    async fn test_query_metadata_returns_matching_files() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+
+        std::fs::write(
+            temp_dir.path().join("match.md"),
+            "---\nstatus: \"active\"\n---\n# Match",
+        )
+        .unwrap();
+        std::fs::write(
+            temp_dir.path().join("no_match.md"),
+            "---\nstatus: \"draft\"\n---\n# No match",
+        )
+        .unwrap();
+
+        let manager = make_manager(temp_dir.path());
+        manager.initialize().await.unwrap();
+        let tools = MetadataTools::new(manager);
+
+        let result = tools.query_metadata(r#"status: "active""#).await.unwrap();
+        assert_eq!(result["matched"], 1);
+        assert_eq!(result["files"][0]["metadata"]["status"], "active");
+    }
+
+    #[tokio::test]
+    async fn test_query_metadata_returns_empty_on_no_match() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp_dir.path().join("note.md"),
+            "---\nstatus: \"draft\"\n---\n# Note",
+        )
+        .unwrap();
+
+        let manager = make_manager(temp_dir.path());
+        manager.initialize().await.unwrap();
+        let tools = MetadataTools::new(manager);
+
+        let result = tools
+            .query_metadata(r#"status: "published""#)
+            .await
+            .unwrap();
+        assert_eq!(result["matched"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_query_metadata_reflects_external_modification() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("note.md");
+        std::fs::write(&path, "---\nstatus: \"draft\"\n---\n# Note").unwrap();
+
+        let manager = make_manager(temp_dir.path());
+        manager.initialize().await.unwrap();
+        let tools = MetadataTools::new(manager);
+
+        // Initially matches "draft", not "published".
+        let before = tools.query_metadata(r#"status: "draft""#).await.unwrap();
+        assert_eq!(before["matched"], 1);
+
+        // External write — sleep to ensure mtime advances.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        std::fs::write(&path, "---\nstatus: \"published\"\n---\n# Note").unwrap();
+
+        // After external modification, cache is invalidated and query reflects new state.
+        let after_draft = tools.query_metadata(r#"status: "draft""#).await.unwrap();
+        let after_published = tools
+            .query_metadata(r#"status: "published""#)
+            .await
+            .unwrap();
+        assert_eq!(after_draft["matched"], 0);
+        assert_eq!(after_published["matched"], 1);
     }
 }
