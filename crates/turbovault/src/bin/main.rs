@@ -57,6 +57,15 @@ struct Args {
     #[arg(long, value_delimiter = ',', env = "TURBOVAULT_DISABLED_TOOLS")]
     disabled_tools: Vec<String>,
 
+    /// Comma-separated tags — all tools carrying any of these tags are disabled.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_DISABLED_TAGS")]
+    disabled_tags: Vec<String>,
+
+    /// Comma-separated tags — hidden from tools/list but callable by name.
+    /// NOTE: no-op until turbomcp hide_tags() is available; a warning is logged at startup.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_HIDDEN_TAGS")]
+    hidden_tags: Vec<String>,
+
     /// Hide all tools not annotated as read-only by TurboMCP.
     #[arg(
         long,
@@ -313,16 +322,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log::info!("Starting TurboVault Server (multi-version MCP protocol)");
     if tool_visibility.has_rules() {
         log::info!(
-            "Tool visibility configured: allowed={} hidden={} disabled={} require_read_only={}",
+            "Tool visibility configured: allowed={} hidden={} disabled={} \
+             disabled_tags={} hidden_tags={} require_read_only={}",
             tool_visibility.allowed.len(),
             tool_visibility.hidden.len(),
             tool_visibility.disabled.len(),
+            tool_visibility.disabled_tags.len(),
+            tool_visibility.hidden_tags.len(),
             tool_visibility.require_read_only
         );
     }
 
-    let server = VisibilityLayer::new(server)
-        .with_visibility_config(tool_visibility.into_visibility_config());
+    let server = tool_visibility.apply_to_layer(VisibilityLayer::new(server));
 
     match args.transport.as_str() {
         "stdio" => {
@@ -436,6 +447,8 @@ async fn load_tool_visibility(
         allowed: args.allowed_tools.clone(),
         hidden: args.hidden_tools.clone(),
         disabled: args.disabled_tools.clone(),
+        disabled_tags: args.disabled_tags.clone(),
+        hidden_tags: args.hidden_tags.clone(),
         require_read_only: args.require_read_only_tools,
     });
 

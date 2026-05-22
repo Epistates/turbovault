@@ -317,5 +317,45 @@ performance:
 #   security_auditing: true
 
 # ==============================================================================
+# TOOL VISIBILITY
+# ==============================================================================
+# Control which MCP tools are exposed to clients.
+# All name lists accept exact tool names (case-sensitive).
+# Available tags: read, write, delete, admin, graph, search,
+#                 frontmatter, template, batch, export, audit,
+#                 health, semantic, sql
+
+# tool_visibility:
+#   # Whitelist — if set, only these tools are listed and callable.
+#   allowed:
+#     - read_note
+#     - search
+#     - write_note
+#
+#   # Hide from tools/list, still callable by exact name.
+#   hidden:
+#     - full_health_analysis
+#     - vault_quality_report
+#
+#   # Remove from tools/list and reject direct calls.
+#   disabled:
+#     - delete_note
+#     - rollback_note
+#
+#   # Disable ALL tools carrying any of these tags.
+#   disabled_tags:
+#     - delete
+#     - admin
+#
+#   # Hide all tools with these tags from tools/list (still callable by name).
+#   # NOTE: requires turbomcp hide_tags() support (pending); set for forward-compatibility.
+#   hidden_tags:
+#     - semantic
+#     - export
+#
+#   # Hide all tools not annotated read_only = true.
+#   require_read_only: false
+
+# ==============================================================================
 # END OF CONFIGURATION
 # ==============================================================================
