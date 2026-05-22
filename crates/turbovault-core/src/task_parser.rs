@@ -19,6 +19,7 @@
 
 use std::collections::HashMap;
 
+use chrono::NaiveDate;
 use winnow::{
     ModalResult, Parser,
     ascii::space0,
@@ -130,7 +131,8 @@ pub fn parse_task_line(input: &str) -> Result<Task, String> {
 pub fn parse_task_content(content: &str) -> ParsedTaskMetadata {
     let meta_start = find_metadata_start(content);
     let mut parsed = parse_metadata_section(content[meta_start..].trim_start());
-    parsed.description = content[..meta_start].trim_end().to_string();
+    parsed.tags = extract_tags(content);
+    parsed.description = build_description(content, meta_start);
     parsed
 }
 
@@ -221,6 +223,71 @@ fn parse_metadata_section(meta_str: &str) -> ParsedTaskMetadata {
     result
 }
 
+fn build_description(content: &str, meta_start: usize) -> String {
+    let mut description = content[..meta_start].trim_end().to_string();
+
+    for tag in extract_tag_literals(&content[meta_start..]) {
+        if !description.is_empty() {
+            description.push(' ');
+        }
+        description.push_str(tag);
+    }
+
+    description
+}
+
+fn extract_tags(content: &str) -> Vec<String> {
+    extract_tag_literals(content)
+        .into_iter()
+        .map(|tag| tag.trim_start_matches('#').to_string())
+        .collect()
+}
+
+fn extract_tag_literals(content: &str) -> Vec<&str> {
+    let mut tags = Vec::new();
+
+    for (i, c) in content.char_indices() {
+        if c == '#'
+            && is_tag_boundary(content, i)
+            && let Some((_, end)) = parse_tag_literal(&content[i..])
+        {
+            tags.push(&content[i..i + end]);
+        }
+    }
+
+    tags
+}
+
+fn is_tag_boundary(content: &str, index: usize) -> bool {
+    content[..index]
+        .chars()
+        .next_back()
+        .is_none_or(|c| c.is_whitespace())
+}
+
+fn parse_tag_literal(s: &str) -> Option<(&str, usize)> {
+    let rest = s.strip_prefix('#')?;
+    let mut end = 1usize;
+    let mut has_alpha = false;
+    let mut has_name = false;
+
+    for c in rest.chars() {
+        if c.is_alphanumeric() || c == '-' || c == '_' || c == '/' {
+            has_name = true;
+            has_alpha |= c.is_alphabetic();
+            end += c.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    if has_name && has_alpha {
+        Some((&s[1..end], end))
+    } else {
+        None
+    }
+}
+
 fn consume_metadata_separator(input: &mut &str) -> ModalResult<()> {
     let _ = space0.parse_next(input)?;
 
@@ -259,9 +326,14 @@ fn parse_emoji_date_field(input: &mut &str) -> ModalResult<ParsedTaskMetadata> {
     .parse_next(input)?;
     let _ = space0.parse_next(input)?;
     let value: &str = take_while(1.., |c: char| !c.is_whitespace()).parse_next(input)?;
+    let value = value.trim();
+
+    if !is_valid_task_date(value) {
+        return Err(ErrMode::Backtrack(ContextError::new()));
+    }
 
     let mut meta = ParsedTaskMetadata::default();
-    set_standard_field(&mut meta, key, value.trim());
+    set_standard_field(&mut meta, key, value);
     Ok(meta)
 }
 
@@ -483,12 +555,14 @@ fn is_priority_emoji(s: &str) -> bool {
 
 fn set_standard_field(meta: &mut ParsedTaskMetadata, key: &str, value: &str) {
     match key {
-        "due" => meta.due = Some(value.to_string()),
-        "scheduled" => meta.scheduled = Some(value.to_string()),
-        "start" => meta.start = Some(value.to_string()),
-        "done" | "completion" => meta.done = Some(value.to_string()),
-        "cancelled" | "canceled" => meta.cancelled = Some(value.to_string()),
-        "created" => meta.created = Some(value.to_string()),
+        "due" if is_valid_task_date(value) => meta.due = Some(value.to_string()),
+        "scheduled" if is_valid_task_date(value) => meta.scheduled = Some(value.to_string()),
+        "start" if is_valid_task_date(value) => meta.start = Some(value.to_string()),
+        "done" | "completion" if is_valid_task_date(value) => meta.done = Some(value.to_string()),
+        "cancelled" | "canceled" if is_valid_task_date(value) => {
+            meta.cancelled = Some(value.to_string());
+        }
+        "created" if is_valid_task_date(value) => meta.created = Some(value.to_string()),
         "recurrence" | "repeat" => meta.recurrence = Some(value.to_string()),
         "oncompletion" => meta.on_completion = Some(value.to_ascii_lowercase()),
         "id" => meta.id = Some(value.to_string()),
@@ -496,6 +570,10 @@ fn set_standard_field(meta: &mut ParsedTaskMetadata, key: &str, value: &str) {
         "priority" => meta.priority = priority_from_dataview_value(value),
         _ => {}
     }
+}
+
+fn is_valid_task_date(value: &str) -> bool {
+    NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
 
 fn split_dependency_ids(value: &str) -> Vec<String> {
@@ -569,6 +647,26 @@ mod tests {
         let task = parse_task_line("- [ ] Buy milk 📅 2025-05-15").unwrap();
         assert_eq!(task.description, "Buy milk");
         assert_eq!(task.due.as_deref(), Some("2025-05-15"));
+    }
+
+    #[test]
+    fn non_iso_date_metadata_is_parsed_but_not_converted_to_task_date() {
+        // This test ensures that the parser behaves like the Obsidian Tasks plugin does
+        let parsed = parse_task_content("Buy milk 📅 05-01-2026 ⏳ 2026-05-02");
+        assert_eq!(parsed.description, "Buy milk 📅 05-01-2026");
+        assert_eq!(parsed.due.as_deref(), None);
+        assert_eq!(parsed.scheduled.as_deref(), Some("2026-05-02"));
+
+        let task = crate::models::TaskItem::from_parsed_metadata(
+            parsed,
+            false,
+            crate::models::SourcePosition::start(),
+        );
+        assert!(task.due_date.is_none());
+        assert_eq!(
+            task.scheduled_date.map(|date| date.to_string()).as_deref(),
+            Some("2026-05-02")
+        );
     }
 
     #[test]
@@ -655,10 +753,49 @@ mod tests {
     fn parses_tags_and_block_ref_after_metadata() {
         let task = parse_task_line("- [ ] Task description 📅 2025-05-10 #urgent #work ^task-123")
             .unwrap();
-        assert_eq!(task.description, "Task description");
+        assert_eq!(task.description, "Task description #urgent #work");
         assert_eq!(task.due.as_deref(), Some("2025-05-10"));
         assert_eq!(task.tags, vec!["urgent".to_string(), "work".to_string()]);
         assert_eq!(task.block_ref.as_deref(), Some("task-123"));
+    }
+
+    #[test]
+    fn parses_tag_at_start_of_task_content() {
+        let task =
+            parse_task_line("- [ ] #task This is the task content 📅 2026-05-01 🔺").unwrap();
+
+        assert_eq!(task.description, "#task This is the task content");
+        assert_eq!(task.due.as_deref(), Some("2026-05-01"));
+        assert_eq!(task.priority, Some('🔺'));
+        assert_eq!(task.tags, vec!["task".to_string()]);
+    }
+
+    #[test]
+    fn parses_two_tags_at_start_of_task_content() {
+        let task = parse_task_line("- [ ] #task #urgent This is the task content 📅 2026-05-01 🔺")
+            .unwrap();
+
+        assert_eq!(task.description, "#task #urgent This is the task content");
+        assert_eq!(task.due.as_deref(), Some("2026-05-01"));
+        assert_eq!(task.priority, Some('🔺'));
+        assert_eq!(task.tags, vec!["task".to_string(), "urgent".to_string()]);
+    }
+
+    #[test]
+    fn indexes_tags_without_metadata_and_keeps_them_in_description() {
+        let task = parse_task_line("- [ ] Read #book chapter #research").unwrap();
+
+        assert_eq!(task.description, "Read #book chapter #research");
+        assert_eq!(task.tags, vec!["book".to_string(), "research".to_string()]);
+    }
+
+    #[test]
+    fn stops_tag_at_dot_and_keeps_full_text_in_description() {
+        // The Obsidian Tasks plugin treats #task.foo as #task tag with .foo as part of the description. This test demonstrates mirroring that behavior.
+        let task = parse_task_line("- [ ] Update #task.foo before standup").unwrap();
+
+        assert_eq!(task.description, "Update #task.foo before standup");
+        assert_eq!(task.tags, vec!["task".to_string()]);
     }
 
     #[test]
@@ -698,11 +835,12 @@ mod tests {
 
     #[test]
     fn parses_dataview_value_with_wikilink() {
+        // #123 is not a valid tag, but should be preserved in the description.
         let task = parse_task_line(
             "- [ ] Review PR #123 [project:: [[Team Work]]] 📅 2025-05-20 🔼 #review ^pr-123",
         )
         .unwrap();
-        assert_eq!(task.description, "Review PR #123");
+        assert_eq!(task.description, "Review PR #123 #review");
         assert_eq!(task.due.as_deref(), Some("2025-05-20"));
         assert_eq!(task.priority, Some('🔼'));
         assert_eq!(task.tags, vec!["review".to_string()]);

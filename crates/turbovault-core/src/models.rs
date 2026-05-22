@@ -254,6 +254,10 @@ pub struct TaskItem {
     /// fields remain available here.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
+    /// Whether this task's metadata was written in emoji or dataview notation.
+    /// Detected at parse time; used to round-trip writes in the original format.
+    #[serde(default)]
+    pub metadata_format: TaskMetadataFormat,
 }
 
 impl TaskItem {
@@ -264,6 +268,7 @@ impl TaskItem {
         is_completed: bool,
         position: SourcePosition,
     ) -> Self {
+        let metadata_format = TaskMetadataFormat::detect(&parsed.metadata);
         Self {
             content: parsed.description,
             is_completed,
@@ -285,6 +290,96 @@ impl TaskItem {
             tags: parsed.tags,
             block_ref: parsed.block_ref,
             metadata: parsed.metadata,
+            metadata_format,
+        }
+    }
+
+    /// Serialize this task back to an Obsidian Tasks markdown line.
+    ///
+    /// Dispatches to emoji or dataview format based on the format detected at parse time.
+    /// Tags are emitted as part of `content` (where the parser left them).
+    /// Canonical field order: content priority 🔁 🛫 ⏳ 📅 ✅ ❌
+    pub fn to_markdown_line(&self) -> String {
+        match self.metadata_format {
+            TaskMetadataFormat::Emoji => self.to_markdown_line_emoji(),
+            TaskMetadataFormat::Dataview => self.to_markdown_line_dataview(),
+        }
+    }
+
+    fn to_markdown_line_emoji(&self) -> String {
+        let checkbox = if self.is_completed { "[x]" } else { "[ ]" };
+        let content = self.content.trim();
+        let mut meta: Vec<String> = Vec::new();
+
+        let priority_emoji = self.priority.emoji();
+        if !priority_emoji.is_empty() {
+            meta.push(priority_emoji.to_string());
+        }
+        if let Some(ref rec) = self.recurrence {
+            meta.push(format!("🔁 {}", rec));
+        }
+        if let Some(d) = self.start_date {
+            meta.push(format!("🛫 {}", d));
+        }
+        if let Some(d) = self.scheduled_date {
+            meta.push(format!("⏳ {}", d));
+        }
+        if let Some(d) = self.due_date {
+            meta.push(format!("📅 {}", d));
+        }
+        if let Some(d) = self.done_date {
+            meta.push(format!("✅ {}", d));
+        }
+        if let Some(d) = self.cancelled_date {
+            meta.push(format!("❌ {}", d));
+        }
+
+        if meta.is_empty() {
+            format!("- {} {}", checkbox, content)
+        } else {
+            format!("- {} {} {}", checkbox, content, meta.join(" "))
+        }
+    }
+
+    fn to_markdown_line_dataview(&self) -> String {
+        let checkbox = if self.is_completed { "[x]" } else { "[ ]" };
+        let content = self.content.trim();
+        let mut meta: Vec<String> = Vec::new();
+
+        if self.priority != TaskPriority::Normal {
+            let prio_text = match self.priority {
+                TaskPriority::Lowest => "lowest",
+                TaskPriority::Low => "low",
+                TaskPriority::Medium => "medium",
+                TaskPriority::High => "high",
+                TaskPriority::Highest => "highest",
+                TaskPriority::Normal => unreachable!(),
+            };
+            meta.push(format!("[priority:: {}]", prio_text));
+        }
+        if let Some(ref rec) = self.recurrence {
+            meta.push(format!("[recurrence:: {}]", rec));
+        }
+        if let Some(d) = self.start_date {
+            meta.push(format!("[start:: {}]", d));
+        }
+        if let Some(d) = self.scheduled_date {
+            meta.push(format!("[scheduled:: {}]", d));
+        }
+        if let Some(d) = self.due_date {
+            meta.push(format!("[due:: {}]", d));
+        }
+        if let Some(d) = self.done_date {
+            meta.push(format!("[done:: {}]", d));
+        }
+        if let Some(d) = self.cancelled_date {
+            meta.push(format!("[cancelled:: {}]", d));
+        }
+
+        if meta.is_empty() {
+            format!("- {} {}", checkbox, content)
+        } else {
+            format!("- {} {} {}", checkbox, content, meta.join(" "))
         }
     }
 }
@@ -345,6 +440,42 @@ impl fmt::Display for TaskPriority {
             TaskPriority::Highest => "🔺",
         };
         write!(f, "{}", s)
+    }
+}
+
+/// Whether a task's metadata uses emoji notation (📅 ⏫) or Dataview notation ([due:: …]).
+///
+/// Detected at parse time by checking whether any standard field keys appear in the
+/// raw `metadata` HashMap (dataview fields are stored there; emoji fields are not).
+/// Used by `TaskItem::to_markdown_line()` to round-trip writes without converting format.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskMetadataFormat {
+    #[default]
+    Emoji,
+    Dataview,
+}
+
+impl TaskMetadataFormat {
+    fn detect(metadata: &HashMap<String, String>) -> Self {
+        const DATAVIEW_KEYS: &[&str] = &[
+            "due",
+            "scheduled",
+            "start",
+            "done",
+            "completion",
+            "cancelled",
+            "canceled",
+            "created",
+            "recurrence",
+            "repeat",
+            "priority",
+        ];
+        if DATAVIEW_KEYS.iter().any(|k| metadata.contains_key(*k)) {
+            Self::Dataview
+        } else {
+            Self::Emoji
+        }
     }
 }
 
@@ -1080,6 +1211,142 @@ mod tests {
         assert_eq!(
             serde_json::to_value(TaskPriority::High).unwrap(),
             serde_json::Value::String("HIGH".to_string())
+        );
+    }
+
+    // ==================== TaskItem::to_markdown_line() ====================
+
+    fn make_task(content: &str, is_completed: bool) -> TaskItem {
+        TaskItem {
+            content: content.to_string(),
+            is_completed,
+            position: SourcePosition::default(),
+            created_date: None,
+            scheduled_date: None,
+            start_date: None,
+            due_date: None,
+            done_date: None,
+            cancelled_date: None,
+            priority: TaskPriority::Normal,
+            recurrence: None,
+            on_completion: None,
+            id: None,
+            depends_on: Vec::new(),
+            tags: Vec::new(),
+            block_ref: None,
+            metadata: HashMap::new(),
+            metadata_format: TaskMetadataFormat::Emoji,
+        }
+    }
+
+    #[test]
+    fn test_to_markdown_line_simple_pending() {
+        let task = make_task("Take out the trash", false);
+        assert_eq!(task.to_markdown_line(), "- [ ] Take out the trash");
+    }
+
+    #[test]
+    fn test_to_markdown_line_simple_completed() {
+        let task = make_task("Submit expense report", true);
+        assert_eq!(task.to_markdown_line(), "- [x] Submit expense report");
+    }
+
+    #[test]
+    fn test_to_markdown_line_emoji_full() {
+        use chrono::NaiveDate;
+        let mut task = make_task("Take out the trash", false);
+        task.priority = TaskPriority::Highest;
+        task.recurrence = Some("every day".to_string());
+        task.start_date = NaiveDate::from_ymd_opt(2026, 4, 30);
+        task.scheduled_date = NaiveDate::from_ymd_opt(2026, 4, 30);
+        task.due_date = NaiveDate::from_ymd_opt(2026, 4, 30);
+        assert_eq!(
+            task.to_markdown_line(),
+            "- [ ] Take out the trash 🔺 🔁 every day 🛫 2026-04-30 ⏳ 2026-04-30 📅 2026-04-30"
+        );
+    }
+
+    #[test]
+    fn test_to_markdown_line_emoji_completed_with_dates() {
+        use chrono::NaiveDate;
+        let mut task = make_task("Submit expense report", true);
+        task.due_date = NaiveDate::from_ymd_opt(2026, 4, 28);
+        task.done_date = NaiveDate::from_ymd_opt(2026, 4, 29);
+        assert_eq!(
+            task.to_markdown_line(),
+            "- [x] Submit expense report 📅 2026-04-28 ✅ 2026-04-29"
+        );
+    }
+
+    #[test]
+    fn test_to_markdown_line_emoji_with_tag_in_content() {
+        use chrono::NaiveDate;
+        let mut task = make_task("Clean the kitchen #task_type_1", false);
+        task.tags = vec!["task_type_1".to_string()];
+        task.recurrence = Some("every week".to_string());
+        task.start_date = NaiveDate::from_ymd_opt(2026, 4, 30);
+        task.scheduled_date = NaiveDate::from_ymd_opt(2026, 4, 30);
+        task.due_date = NaiveDate::from_ymd_opt(2026, 4, 30);
+        assert_eq!(
+            task.to_markdown_line(),
+            "- [ ] Clean the kitchen #task_type_1 🔁 every week 🛫 2026-04-30 ⏳ 2026-04-30 📅 2026-04-30"
+        );
+    }
+
+    #[test]
+    fn test_to_markdown_line_dataview_format() {
+        use chrono::NaiveDate;
+        let mut task = make_task("Buy groceries #errands", false);
+        task.metadata_format = TaskMetadataFormat::Dataview;
+        task.priority = TaskPriority::Medium;
+        task.due_date = NaiveDate::from_ymd_opt(2026, 5, 1);
+        task.tags = vec!["errands".to_string()];
+        assert_eq!(
+            task.to_markdown_line(),
+            "- [ ] Buy groceries #errands [priority:: medium] [due:: 2026-05-01]"
+        );
+    }
+
+    #[test]
+    fn test_to_markdown_line_dataview_full() {
+        use chrono::NaiveDate;
+        let mut task = make_task("Plan sprint", false);
+        task.metadata_format = TaskMetadataFormat::Dataview;
+        task.priority = TaskPriority::High;
+        task.start_date = NaiveDate::from_ymd_opt(2026, 5, 1);
+        task.due_date = NaiveDate::from_ymd_opt(2026, 5, 7);
+        assert_eq!(
+            task.to_markdown_line(),
+            "- [ ] Plan sprint [priority:: high] [start:: 2026-05-01] [due:: 2026-05-07]"
+        );
+    }
+
+    #[test]
+    fn test_metadata_format_detection_emoji() {
+        let metadata = HashMap::new();
+        assert_eq!(
+            TaskMetadataFormat::detect(&metadata),
+            TaskMetadataFormat::Emoji
+        );
+    }
+
+    #[test]
+    fn test_metadata_format_detection_dataview_due() {
+        let mut metadata = HashMap::new();
+        metadata.insert("due".to_string(), "2026-05-01".to_string());
+        assert_eq!(
+            TaskMetadataFormat::detect(&metadata),
+            TaskMetadataFormat::Dataview
+        );
+    }
+
+    #[test]
+    fn test_metadata_format_detection_custom_key_not_dataview() {
+        let mut metadata = HashMap::new();
+        metadata.insert("project".to_string(), "myproject".to_string());
+        assert_eq!(
+            TaskMetadataFormat::detect(&metadata),
+            TaskMetadataFormat::Emoji
         );
     }
 }

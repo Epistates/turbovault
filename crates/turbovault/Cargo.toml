@@ -68,6 +68,7 @@ yaml_serde = { workspace = true }
 config = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+chrono = { workspace = true }
 log = { workspace = true }
 simple_logger = "5.2"
 tracing = { workspace = true }
@@ -76,6 +77,8 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
+chrono = { workspace = true }
+turbovault-vault = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
 
 [[bench]]

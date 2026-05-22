@@ -119,7 +119,7 @@ mod tests {
         let tasks = parse_tasks(content);
 
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].content, "Review PR");
+        assert_eq!(tasks[0].content, "Review PR #review");
         assert_eq!(
             tasks[0].due_date.map(|date| date.to_string()).as_deref(),
             Some("2026-05-01")

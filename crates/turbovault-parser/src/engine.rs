@@ -1790,7 +1790,7 @@ Some text here.
         let result = engine.parse(&ParseOptions::all());
 
         assert_eq!(result.tasks.len(), 1);
-        assert_eq!(result.tasks[0].content, "Review PR");
+        assert_eq!(result.tasks[0].content, "Review PR #review");
         assert_eq!(
             result.tasks[0]
                 .due_date
