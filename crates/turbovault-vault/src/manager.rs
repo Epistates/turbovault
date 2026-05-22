@@ -261,12 +261,11 @@ impl VaultManager {
             }
         }
 
-        // Invalidate file cache
-        let mut cache = self.file_cache.write().await;
-        cache.remove(&vault_path);
-        drop(cache); // Release write lock before parsing
-
-        // Parse file and update graph
+        // Parse file and update graph + cache
+        //
+        // We no longer pre-remove the old entry here. cache.insert() below atomically
+        // overwrites it, so a pre-remove would only create a brief absence window during
+        // which vault_files_validated() would silently miss this file.
         match self.parser.parse_file(&vault_path, content) {
             Ok(vault_file) => {
                 log::debug!(
@@ -288,6 +287,11 @@ impl VaultManager {
                     );
                 }
                 log::debug!("Graph updated for {}", vault_path.display());
+                drop(graph);
+
+                // Reinsert into file cache so vault_files_validated() sees the new file
+                // without requiring a full reinitialize().
+                self.insert_cache_entry(vault_path, vault_file).await;
             }
             Err(e) => {
                 log::warn!(
@@ -503,7 +507,7 @@ impl VaultManager {
             cache.remove(&from_path);
         }
 
-        // Parse and add to graph at new location
+        // Parse and add to graph + cache at new location
         match self.parser.parse_file(&to_path, &content) {
             Ok(vault_file) => {
                 let mut graph = self.link_graph.write().await;
@@ -513,6 +517,10 @@ impl VaultManager {
                 if let Err(e) = graph.update_links(&vault_file) {
                     log::warn!("Graph update_links failed for {}: {}", to_path.display(), e);
                 }
+                drop(graph);
+
+                // Insert new path into cache so vault_files_validated() finds the moved note.
+                self.insert_cache_entry(to_path.clone(), vault_file).await;
             }
             Err(e) => {
                 log::warn!("Failed to parse {} after move: {}", to_path.display(), e);
@@ -690,6 +698,24 @@ impl VaultManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64()
+    }
+
+    /// Insert a parsed `VaultFile` into the file cache with `cached_at = now`.
+    ///
+    /// Setting `cached_at` to the current wall-clock time after a write ensures the
+    /// invariant `cached_at >= file_mtime` holds: `vault_files_validated()` treats
+    /// `mtime > cached_at` as stale, so stamping the entry after the write prevents
+    /// false-positive re-parses on the very next validated read.
+    async fn insert_cache_entry(&self, path: PathBuf, file: VaultFile) {
+        let now = self.current_timestamp();
+        let mut cache = self.file_cache.write().await;
+        cache.insert(
+            path,
+            CacheEntry {
+                file,
+                cached_at: now,
+            },
+        );
     }
 
     /// Check if cache entry is expired (TTL-based)
@@ -1454,5 +1480,254 @@ mod tests {
 
         // After deletion the entry must be evicted from the cache.
         assert_eq!(manager.vault_files_validated().await.len(), 0);
+    }
+
+    // ── scan_vault_dtype ─────────────────────────────────────────────────────
+
+    /// scan_vault_dtype must find the same markdown files as scan_vault for a
+    /// normal vault (no symlinks).
+    #[tokio::test]
+    async fn test_scan_vault_dtype_parity_with_scan_vault() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("root.md"), "# Root").unwrap();
+        std::fs::create_dir(temp_dir.path().join("sub")).unwrap();
+        std::fs::write(temp_dir.path().join("sub/child.md"), "# Child").unwrap();
+        std::fs::write(temp_dir.path().join("ignored.txt"), "not markdown").unwrap();
+
+        let mut classic = manager.scan_vault().await.unwrap();
+        let mut dtype = manager.scan_vault_dtype().await.unwrap();
+
+        classic.sort();
+        dtype.sort();
+
+        assert_eq!(
+            classic, dtype,
+            "scan_vault_dtype must find identical files as scan_vault"
+        );
+    }
+
+    /// scan_vault_dtype must recurse into nested subdirectories.
+    #[tokio::test]
+    async fn test_scan_vault_dtype_recurses_subdirectories() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::create_dir_all(temp_dir.path().join("a/b/c")).unwrap();
+        std::fs::write(temp_dir.path().join("a/b/c/deep.md"), "# Deep").unwrap();
+
+        let files = manager.scan_vault_dtype().await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("deep.md"));
+    }
+
+    /// scan_vault_dtype must skip non-markdown files.
+    #[tokio::test]
+    async fn test_scan_vault_dtype_skips_non_markdown() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("note.md"), "# Note").unwrap();
+        std::fs::write(temp_dir.path().join("image.png"), "fake png").unwrap();
+        std::fs::write(temp_dir.path().join("data.json"), "{}").unwrap();
+
+        let files = manager.scan_vault_dtype().await.unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("note.md"));
+    }
+
+    // ── all_cached_vault_files ───────────────────────────────────────────────
+
+    /// Before initialize(), all_cached_vault_files returns an empty list.
+    #[tokio::test]
+    async fn test_all_cached_vault_files_empty_before_init() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("note.md"), "# Note").unwrap();
+
+        // Cache is empty — initialize() has not been called.
+        assert!(manager.all_cached_vault_files().await.is_empty());
+    }
+
+    /// After initialize(), all_cached_vault_files returns all parsed files.
+    #[tokio::test]
+    async fn test_all_cached_vault_files_populated_after_init() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("a.md"), "# A").unwrap();
+        std::fs::write(temp_dir.path().join("b.md"), "# B").unwrap();
+        manager.initialize().await.unwrap();
+
+        assert_eq!(manager.all_cached_vault_files().await.len(), 2);
+    }
+
+    /// all_cached_vault_files does NOT pick up external disk modifications —
+    /// it returns whatever is in the cache without mtime checks.  This is the
+    /// intended "fast path" behaviour; callers that need freshness should use
+    /// vault_files_validated() instead.
+    #[tokio::test]
+    async fn test_all_cached_vault_files_does_not_detect_external_modification() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        let path = temp_dir.path().join("note.md");
+        std::fs::write(&path, "---\nstatus: draft\n---\n# Note").unwrap();
+        manager.initialize().await.unwrap();
+
+        // Externally overwrite the file.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        std::fs::write(&path, "---\nstatus: published\n---\n# Note").unwrap();
+
+        // all_cached_vault_files returns stale data — still "draft".
+        let files = manager.all_cached_vault_files().await;
+        let status = files
+            .iter()
+            .find(|f| f.path == path)
+            .and_then(|f| f.frontmatter.as_ref())
+            .and_then(|fm| fm.data.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(
+            status, "draft",
+            "all_cached_vault_files must not re-read disk"
+        );
+    }
+
+    // ── cache-coherence: write_file / move_file / delete_file ────────────────
+
+    /// write_file() on a brand-new file must insert it into the cache so that
+    /// all_cached_vault_files() returns it without a reinitialize().
+    #[tokio::test]
+    async fn test_write_file_new_inserts_into_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        manager.initialize().await.unwrap(); // warm empty cache
+
+        manager
+            .write_file(Path::new("new.md"), "---\nstatus: fresh\n---\n# New", None)
+            .await
+            .unwrap();
+
+        let files = manager.all_cached_vault_files().await;
+        assert_eq!(
+            files.len(),
+            1,
+            "new file must appear in cache after write_file"
+        );
+
+        let status = files[0]
+            .frontmatter
+            .as_ref()
+            .and_then(|fm| fm.data.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(status, "fresh");
+    }
+
+    /// write_file() that overwrites an existing note must update the cached
+    /// frontmatter; the cache must NOT keep the stale pre-write values.
+    #[tokio::test]
+    async fn test_write_file_overwrite_updates_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(
+            temp_dir.path().join("note.md"),
+            "---\nstatus: old\n---\n# Note",
+        )
+        .unwrap();
+        manager.initialize().await.unwrap();
+
+        manager
+            .write_file(
+                Path::new("note.md"),
+                "---\nstatus: updated\n---\n# Note",
+                None,
+            )
+            .await
+            .unwrap();
+
+        let files = manager.all_cached_vault_files().await;
+        assert_eq!(files.len(), 1);
+        let status = files[0]
+            .frontmatter
+            .as_ref()
+            .and_then(|fm| fm.data.get("status"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        assert_eq!(status, "updated", "cache must reflect updated frontmatter");
+    }
+
+    /// move_file() must evict the old path and insert the new path so that
+    /// all_cached_vault_files() reflects the move without reinitialize().
+    #[tokio::test]
+    async fn test_move_file_updates_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(
+            temp_dir.path().join("from.md"),
+            "---\nstatus: active\n---\n# From",
+        )
+        .unwrap();
+        manager.initialize().await.unwrap();
+
+        manager
+            .move_file(Path::new("from.md"), Path::new("to.md"), None)
+            .await
+            .unwrap();
+
+        let files = manager.all_cached_vault_files().await;
+        assert_eq!(
+            files.len(),
+            1,
+            "cache should have exactly one entry after move"
+        );
+
+        let from_abs = temp_dir.path().join("from.md");
+        let to_abs = temp_dir.path().join("to.md");
+        assert!(
+            !files.iter().any(|f| f.path == from_abs),
+            "old path must be absent from cache after move"
+        );
+        assert!(
+            files.iter().any(|f| f.path == to_abs),
+            "new path must be present in cache after move"
+        );
+    }
+
+    /// delete_file() must evict the entry from the cache immediately.
+    #[tokio::test]
+    async fn test_delete_file_evicts_from_cache() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("note.md"), "# Note").unwrap();
+        manager.initialize().await.unwrap();
+        assert_eq!(manager.all_cached_vault_files().await.len(), 1);
+
+        manager
+            .delete_file(Path::new("note.md"), None)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            manager.all_cached_vault_files().await.len(),
+            0,
+            "deleted file must be evicted from cache"
+        );
     }
 }

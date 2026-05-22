@@ -78,6 +78,30 @@ impl VaultCache {
         })
     }
 
+    /// Initialize cache with an explicit cache directory, bypassing `get_cache_dir()`.
+    ///
+    /// Use this in tests instead of mutating `XDG_CACHE_HOME`. Passing the cache
+    /// dir directly is inherently thread-safe; env-var mutation is not.
+    pub async fn init_with_cache_dir(cache_dir: &Path, project_root: &Path) -> Result<Self> {
+        let project_id = Self::get_project_id(project_root)?;
+        let project_cache_dir = cache_dir.join("projects").join(&project_id);
+
+        if !project_cache_dir.exists() {
+            fs::create_dir_all(&project_cache_dir)
+                .await
+                .map_err(Error::io)?;
+        }
+
+        Ok(Self {
+            cache_dir: cache_dir.to_path_buf(),
+            project_cache_dir: project_cache_dir.clone(),
+            vaults_file: project_cache_dir.join("vaults.yaml"),
+            metadata_file: project_cache_dir.join("metadata.json"),
+            project_id,
+            working_dir: project_root.to_path_buf(),
+        })
+    }
+
     /// Initialize cache with a specific project (useful for testing)
     pub async fn init_with_project(project_root: &Path) -> Result<Self> {
         let cache_dir = Self::get_cache_dir()?;
@@ -327,14 +351,10 @@ mod tests {
     ///
     /// We point `XDG_CACHE_HOME` at the temp dir so `get_cache_dir()` uses it.
     ///
-    /// SAFETY: modifying environment variables is unsafe in Rust 2024+ because
-    /// it is not thread-safe; however these tests are run with `#[tokio::test]`
-    /// which provides single-threaded isolation for each test function.
     async fn make_cache(temp: &TempDir) -> VaultCache {
-        // Override the cache root so nothing leaks into ~/.cache
-        // SAFETY: single-threaded test context; no other threads read XDG_CACHE_HOME.
-        unsafe { std::env::set_var("XDG_CACHE_HOME", temp.path()) };
-        VaultCache::init_with_project(temp.path()).await.unwrap()
+        VaultCache::init_with_cache_dir(temp.path(), temp.path())
+            .await
+            .unwrap()
     }
 
     fn make_vault_config(name: &str, path: &std::path::Path) -> VaultConfig {
