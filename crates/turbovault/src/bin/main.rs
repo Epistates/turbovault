@@ -24,8 +24,8 @@ struct Args {
     #[arg(short, long, default_value = "development")]
     profile: String,
 
-    /// Transport mode (stdio, http, websocket)
-    #[arg(short, long, default_value = "stdio")]
+    /// Transport mode (stdio, http, websocket, tcp, unix)
+    #[arg(short, long, default_value = "stdio", env = "TURBOVAULT_TRANSPORT")]
     transport: String,
 
     /// Port to bind for network transports (http, websocket, tcp)
