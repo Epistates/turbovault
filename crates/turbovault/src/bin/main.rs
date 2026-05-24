@@ -46,7 +46,7 @@ struct Args {
 
     /// Output format for non-STDIO transports (json, human, text)
     /// Note: STDIO transport always uses JSON per MCP protocol specification
-    #[arg(long, default_value = "json")]
+    #[arg(long, default_value = "json", env = "TURBOVAULT_OUTPUT_FORMAT")]
     output_format: String,
 
     /// Initialize vault on startup (scan and build graph)
