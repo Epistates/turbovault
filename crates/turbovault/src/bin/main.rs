@@ -388,7 +388,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
-                .transport(turbomcp::Transport::unix(args.socket_path))
+                .transport(turbomcp::Transport::unix(&args.socket_path))
                 .serve()
                 .await?;
         }
