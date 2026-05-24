@@ -21,7 +21,7 @@ struct Args {
     vault: Option<PathBuf>,
 
     /// Configuration profile to use (development, production, etc.)
-    #[arg(short, long, default_value = "development")]
+    #[arg(short, long, default_value = "development", env = "TURBOVAULT_PROFILE")]
     profile: String,
 
     /// Transport mode (stdio, http, websocket, tcp, unix)
