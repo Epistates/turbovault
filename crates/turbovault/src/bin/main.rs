@@ -32,6 +32,14 @@ struct Args {
     #[arg(long, default_value = "3000", env = "TURBOVAULT_PORT")]
     port: u16,
 
+    /// Socket path for the unix transport
+    #[arg(
+        long,
+        default_value = "/tmp/turbovault.sock",
+        env = "TURBOVAULT_SOCKET_PATH"
+    )]
+    socket_path: String,
+
     /// Output format for non-STDIO transports (json, human, text)
     /// Note: STDIO transport always uses JSON per MCP protocol specification
     #[arg(long, default_value = "json")]
@@ -371,13 +379,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "unix")]
         "unix" => {
-            let socket_path = "/tmp/turbovault.sock".to_string();
-            log::info!("Running Unix socket server on {}", socket_path);
+            log::info!("Running Unix socket server on {}", args.socket_path);
             log::info!("Output format: {:?}", output_format);
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
-                .transport(turbomcp::Transport::unix(&socket_path))
+                .transport(turbomcp::Transport::unix(args.socket_path))
                 .serve()
                 .await?;
         }
