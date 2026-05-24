@@ -28,8 +28,8 @@ struct Args {
     #[arg(short, long, default_value = "stdio")]
     transport: String,
 
-    /// HTTP server port (for http transport)
-    #[arg(long, default_value = "3000")]
+    /// Port to bind for network transports (http, websocket, tcp)
+    #[arg(long, default_value = "3000", env = "TURBOVAULT_PORT")]
     port: u16,
 
     /// Output format for non-STDIO transports (json, human, text)
