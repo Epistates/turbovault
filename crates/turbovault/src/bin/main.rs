@@ -28,6 +28,10 @@ struct Args {
     #[arg(short, long, default_value = "stdio", env = "TURBOVAULT_TRANSPORT")]
     transport: String,
 
+    /// Host/interface to bind for network transports (http, websocket, tcp)
+    #[arg(long, default_value = "127.0.0.1", env = "TURBOVAULT_HOST")]
+    host: String,
+
     /// Port to bind for network transports (http, websocket, tcp)
     #[arg(long, default_value = "3000", env = "TURBOVAULT_PORT")]
     port: u16,
@@ -343,7 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "http")]
         "http" => {
-            let addr = format!("127.0.0.1:{}", args.port);
+            let addr = format!("{}:{}", args.host, args.port);
             log::info!("Running HTTP server on {}", addr);
             log::info!("Output format: {:?}", output_format);
             server
@@ -355,7 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "websocket")]
         "websocket" => {
-            let addr = format!("127.0.0.1:{}", args.port);
+            let addr = format!("{}:{}", args.host, args.port);
             log::info!("Running WebSocket server on {}", addr);
             log::info!("Output format: {:?}", output_format);
             server
@@ -367,7 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "tcp")]
         "tcp" => {
-            let addr = format!("127.0.0.1:{}", args.port);
+            let addr = format!("{}:{}", args.host, args.port);
             log::info!("Running TCP server on {}", addr);
             log::info!("Output format: {:?}", output_format);
             server
