@@ -80,7 +80,17 @@ impl VaultCache {
 
     /// Initialize cache with a specific project (useful for testing)
     pub async fn init_with_project(project_root: &Path) -> Result<Self> {
-        let cache_dir = Self::get_cache_dir()?;
+        Self::init_with_project_in(project_root, Self::get_cache_dir()?).await
+    }
+
+    /// Like [`init_with_project`](Self::init_with_project) but with an explicit
+    /// cache root instead of the platform default. Lets callers (notably tests)
+    /// isolate the cache store without mutating the process-global
+    /// `XDG_CACHE_HOME` environment variable.
+    pub(crate) async fn init_with_project_in(
+        project_root: &Path,
+        cache_dir: PathBuf,
+    ) -> Result<Self> {
         let project_id = Self::get_project_id(project_root)?;
         let project_cache_dir = cache_dir.join("projects").join(&project_id);
 
@@ -321,20 +331,20 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// Build a VaultCache whose project-cache directory lives entirely inside
-    /// a temporary directory, keeping tests isolated from each other and from
-    /// the real user cache.
+    /// Build a VaultCache whose cache store lives entirely inside this test's
+    /// temp directory, keeping tests isolated from each other and from the real
+    /// user cache.
     ///
-    /// We point `XDG_CACHE_HOME` at the temp dir so `get_cache_dir()` uses it.
-    ///
-    /// SAFETY: modifying environment variables is unsafe in Rust 2024+ because
-    /// it is not thread-safe; however these tests are run with `#[tokio::test]`
-    /// which provides single-threaded isolation for each test function.
+    /// The cache root is injected explicitly (no `XDG_CACHE_HOME` mutation).
+    /// The previous implementation set that process-global env var, which is
+    /// NOT thread-safe — `#[tokio::test]` does not serialize test functions
+    /// (cargo runs them on parallel threads), so concurrent tests raced on the
+    /// env var and could resolve into each other's temp dirs (beads
+    /// turbovault-491). Injection removes the shared state entirely.
     async fn make_cache(temp: &TempDir) -> VaultCache {
-        // Override the cache root so nothing leaks into ~/.cache
-        // SAFETY: single-threaded test context; no other threads read XDG_CACHE_HOME.
-        unsafe { std::env::set_var("XDG_CACHE_HOME", temp.path()) };
-        VaultCache::init_with_project(temp.path()).await.unwrap()
+        VaultCache::init_with_project_in(temp.path(), temp.path().join("cache"))
+            .await
+            .unwrap()
     }
 
     fn make_vault_config(name: &str, path: &std::path::Path) -> VaultConfig {
@@ -375,10 +385,9 @@ mod tests {
     #[tokio::test]
     async fn test_init_creates_cache_directory() {
         let temp = TempDir::new().unwrap();
-        // SAFETY: single-threaded test context; no other threads read XDG_CACHE_HOME.
-        unsafe { std::env::set_var("XDG_CACHE_HOME", temp.path()) };
-
-        let cache = VaultCache::init_with_project(temp.path()).await.unwrap();
+        let cache = VaultCache::init_with_project_in(temp.path(), temp.path().join("cache"))
+            .await
+            .unwrap();
 
         // The project cache directory should now exist on disk
         assert!(
