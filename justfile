@@ -34,6 +34,12 @@ test: fmt-check lint test-all
 test-all:
     cargo test --workspace --all-features
 
+# cargo's fail-fast is per-binary: it stops launching binaries after the first
+# fails, under-reporting failures that span crates. Slower; use in TDD red phases.
+# Run all tests, reporting EVERY failure across all binaries (--no-fail-fast)
+test-all-full:
+    cargo test --workspace --all-features --no-fail-fast
+
 # Run tests only (skip fmt and lint checks)
 test-quick:
     cargo test --workspace --all-features
