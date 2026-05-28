@@ -207,7 +207,14 @@ impl VaultRepo {
         let changed = txn.changed_paths();
 
         self.with_commit_lock(|| {
+            // `parent_at_apply` is captured INSIDE `commit_with_retry`'s
+            // success closure so the post-commit hook reports the correct
+            // first parent even after a CAS-rebuild loop (the parent we
+            // committed against, NOT the parent at function entry, which
+            // may be stale).
+            let mut parent_at_apply: Option<Oid> = None;
             let commit = self.commit_with_retry(&refname, |tip| {
+                parent_at_apply = tip;
                 let base_tree = match tip {
                     Some(c) => Some(self.git().find_commit(c)?.tree_id()),
                     None => None,
@@ -221,6 +228,13 @@ impl VaultRepo {
 
             // Reveal the commit to the working tree (still under the lock).
             self.materialize(commit, &changed)?;
+
+            // Fire the GWS.14 reindex hook inside the commit lock so the
+            // queue observes commits in commit order (matches the order
+            // a future drainer must replay them).
+            if let Some(hook) = &self.commit_hook {
+                hook(parent_at_apply, commit);
+            }
 
             Ok(TransactionResult {
                 commit,
@@ -536,5 +550,101 @@ mod tests {
         assert!(vr.blob_oid_at(tree, "new.md").unwrap().is_some());
         assert_eq!(read_wt(&vr, "link1.md"), "see [[new]]");
         assert_eq!(read_wt(&vr, "link2.md"), "ref [[new]] here");
+    }
+
+    // -------- GWS.14: commit hook --------
+
+    type HookCalls = std::sync::Arc<std::sync::Mutex<Vec<(Option<Oid>, Oid)>>>;
+    type CommitOnlyCalls = std::sync::Arc<std::sync::Mutex<Vec<Oid>>>;
+
+    fn open_unborn_with_hook(hook: crate::CommitHook) -> (TempDir, crate::VaultRepo) {
+        let tmp = TempDir::new().unwrap();
+        let mut opts = git2::RepositoryInitOptions::new();
+        opts.initial_head("main");
+        Repository::init_opts(tmp.path(), &opts).unwrap();
+        let vr = crate::VaultRepo::open_with_locks_and_hook(
+            tmp.path(),
+            std::sync::Arc::new(crate::CommitLocks::new()),
+            hook,
+        )
+        .unwrap();
+        (tmp, vr)
+    }
+
+    #[test]
+    fn commit_hook_fires_on_initial_commit_with_no_parent() {
+        let calls: HookCalls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_clone = std::sync::Arc::clone(&calls);
+        let hook: crate::CommitHook = std::sync::Arc::new(move |p, c| {
+            calls_clone.lock().unwrap().push((p, c));
+        });
+        let (_tmp, vr) = open_unborn_with_hook(hook);
+
+        let res = vr
+            .apply_transaction(&Transaction::new("c").create("a.md", "alpha"))
+            .unwrap();
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, None, "initial commit has no parent");
+        assert_eq!(calls[0].1, res.commit);
+    }
+
+    #[test]
+    fn commit_hook_reports_parent_on_followup_commit() {
+        let calls: HookCalls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_clone = std::sync::Arc::clone(&calls);
+        let hook: crate::CommitHook = std::sync::Arc::new(move |p, c| {
+            calls_clone.lock().unwrap().push((p, c));
+        });
+        let (_tmp, vr) = open_unborn_with_hook(hook);
+
+        let r1 = vr
+            .apply_transaction(&Transaction::new("c1").create("a.md", "v1"))
+            .unwrap();
+        let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
+        let r2 = vr
+            .apply_transaction(&Transaction::new("c2").update("a.md", "v2", v1))
+            .unwrap();
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0], (None, r1.commit));
+        assert_eq!(
+            calls[1],
+            (Some(r1.commit), r2.commit),
+            "second commit's parent is the first commit"
+        );
+    }
+
+    #[test]
+    fn commit_hook_does_not_fire_on_precondition_abort() {
+        let calls: CommitOnlyCalls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_clone = std::sync::Arc::clone(&calls);
+        let hook: crate::CommitHook = std::sync::Arc::new(move |_p, c| {
+            calls_clone.lock().unwrap().push(c);
+        });
+        let (_tmp, vr) = open_unborn_with_hook(hook);
+
+        vr.apply_transaction(&Transaction::new("c").create("a.md", "v1"))
+            .unwrap();
+
+        // Stale precondition -> reconsideration domino -> no commit.
+        let stale = crate::VaultRepo::blob_oid_of(b"OLD").unwrap();
+        assert!(
+            vr.apply_transaction(&Transaction::new("u").update("a.md", "v2", stale))
+                .is_err()
+        );
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "hook only fires for the successful commit");
+    }
+
+    #[test]
+    fn vault_repo_without_hook_is_silent() {
+        // Sanity: open_with_locks (no hook) still applies cleanly.
+        let (_tmp, vr) = open_unborn();
+        let r = vr.apply_transaction(&Transaction::new("c").create("a.md", "x"));
+        assert!(r.is_ok());
     }
 }

@@ -35,7 +35,7 @@ pub use fanout::{FanoutTransaction, MergeBackResult, MergeStrategy};
 pub use locks::CommitLocks;
 pub use occ::Precondition;
 pub use plumbing::TreeChange;
-pub use repo::VaultRepo;
+pub use repo::{CommitHook, VaultRepo};
 pub use txn::{Transaction, TransactionResult};
 
 /// Re-exported so substrate consumers (e.g. `turbovault-tools`) can talk about

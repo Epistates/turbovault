@@ -15,12 +15,29 @@ use git2::{Oid, Repository};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Callback fired by [`VaultRepo::apply_transaction`] after a successful
+/// commit + materialize, **inside** the commit lock. Arguments are the
+/// commit's first-parent oid (or `None` for the initial commit on an
+/// unborn branch) and the new commit oid.
+///
+/// The hook is the substrate's GWS.14 plumbing: downstream consumers
+/// (the reindex queue) push the new commit onto a pending-reindex queue;
+/// the actual diff + graph/search update runs out of band (lazy GSU,
+/// see `git-write-substrate-architecture.md` §8.1 as refined by GWS.14).
+///
+/// The substrate itself does NOT touch graph or search — that would
+/// smear write-substrate logic outward. The hook is the only contract.
+pub type CommitHook = Arc<dyn Fn(Option<Oid>, Oid) + Send + Sync>;
+
 /// A handle to the git repository backing a vault.
 pub struct VaultRepo {
     repo: Repository,
     /// Shared per-worktree commit-lock registry (GWS.6). All handles to the same
     /// worktree must share one registry to serialize the commit critical section.
     commit_locks: Arc<CommitLocks>,
+    /// Optional post-commit hook fired inside the commit lock after the
+    /// transaction is materialized. Plumbed for GWS.14 lazy GSU.
+    pub(crate) commit_hook: Option<CommitHook>,
 }
 
 impl VaultRepo {
@@ -39,12 +56,34 @@ impl VaultRepo {
     /// the same worktree serialize their commit critical sections.
     pub fn open_with_locks(vault_root: &Path, commit_locks: Arc<CommitLocks>) -> Result<Self> {
         match Repository::open(vault_root) {
-            Ok(repo) => Ok(Self { repo, commit_locks }),
+            Ok(repo) => Ok(Self {
+                repo,
+                commit_locks,
+                commit_hook: None,
+            }),
             Err(e) if e.code() == git2::ErrorCode::NotFound => {
                 Err(Error::NotARepo(vault_root.to_path_buf()))
             }
             Err(e) => Err(Error::Git(e)),
         }
+    }
+
+    /// Open the repo with both a shared commit-lock registry AND a post-commit
+    /// hook. The hook fires once per successful `apply_transaction`, inside
+    /// the commit lock, after materialization (GWS.14 plumbing).
+    ///
+    /// Multiple `VaultRepo` handles to the same worktree may install
+    /// different hooks; each handle's hook fires only for transactions
+    /// applied through THAT handle. The server-side pattern is to install
+    /// the same hook on every cached handle for a given vault.
+    pub fn open_with_locks_and_hook(
+        vault_root: &Path,
+        commit_locks: Arc<CommitLocks>,
+        commit_hook: CommitHook,
+    ) -> Result<Self> {
+        let mut vr = Self::open_with_locks(vault_root, commit_locks)?;
+        vr.commit_hook = Some(commit_hook);
+        Ok(vr)
     }
 
     /// Clone the shared commit-lock registry — handed to a scratch worktree's

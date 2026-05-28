@@ -63,6 +63,48 @@ impl VaultRepo {
         Ok(paths)
     }
 
+    /// Per-path change status between two commits, or between the empty tree
+    /// and `b` when `a` is `None` (the initial-commit case).
+    ///
+    /// Each entry is `(path, present_in_b)`:
+    /// - `true`  → path was added or modified in `b` (re-index it).
+    /// - `false` → path was deleted in `b` (drop it from derived indexes).
+    ///
+    /// Used by the GWS.14 reindex apply step, which needs to distinguish
+    /// "added/modified → parse + add to graph" from "deleted → remove from
+    /// graph". `paths_changed_between` collapses both into one bag, which
+    /// loses the information.
+    pub fn diff_path_statuses(&self, a: Option<Oid>, b: Oid) -> Result<Vec<(String, bool)>> {
+        let r = self.git();
+        let b_tree = r.find_commit(b)?.tree()?;
+        let a_tree = match a {
+            Some(oid) => Some(r.find_commit(oid)?.tree()?),
+            None => None,
+        };
+        let diff = r.diff_tree_to_tree(a_tree.as_ref(), Some(&b_tree), None)?;
+
+        let mut out = Vec::new();
+        diff.foreach(
+            &mut |delta, _| {
+                let status = delta.status();
+                // Pick the path that actually exists on the relevant side.
+                let path = match status {
+                    git2::Delta::Deleted => delta.old_file().path(),
+                    _ => delta.new_file().path().or_else(|| delta.old_file().path()),
+                };
+                if let Some(p) = path {
+                    let present_in_b = !matches!(status, git2::Delta::Deleted);
+                    out.push((p.to_string_lossy().to_string(), present_in_b));
+                }
+                true
+            },
+            None,
+            None,
+            None,
+        )?;
+        Ok(out)
+    }
+
     /// Build a transaction that restores `paths` to their state at
     /// `target_commit`, with a precondition on each path's current blob at
     /// HEAD (so a concurrent write since the restore was requested aborts the
@@ -293,5 +335,65 @@ mod tests {
         let res = vr.apply_transaction(&restore_txn);
         assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
         assert_eq!(read_wt(&vr, "a.md"), "v3", "concurrent change preserved");
+    }
+
+    // -------- GWS.14: diff_path_statuses --------
+
+    #[test]
+    fn diff_path_statuses_initial_commit_treats_everything_as_added() {
+        let (_t, vr) = open_unborn();
+        let c = commit(
+            &vr,
+            Transaction::new("init")
+                .create("a.md", "A")
+                .create("dir/b.md", "B"),
+        );
+        let mut out = vr.diff_path_statuses(None, c).unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec![("a.md".to_string(), true), ("dir/b.md".to_string(), true)],
+        );
+    }
+
+    #[test]
+    fn diff_path_statuses_distinguishes_added_modified_deleted() {
+        let (_t, vr) = open_unborn();
+        let c1 = commit(
+            &vr,
+            Transaction::new("seed")
+                .create("keep.md", "K")
+                .create("gone.md", "G")
+                .create("mod.md", "M1"),
+        );
+        let m1 = VaultRepo::blob_oid_of(b"M1").unwrap();
+        let g = VaultRepo::blob_oid_of(b"G").unwrap();
+        let c2 = commit(
+            &vr,
+            Transaction::new("mix")
+                .create("new.md", "N")
+                .update("mod.md", "M2", m1)
+                .delete("gone.md", g),
+        );
+
+        let mut out = vr.diff_path_statuses(Some(c1), c2).unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec![
+                ("gone.md".to_string(), false), // deleted
+                ("mod.md".to_string(), true),   // modified
+                ("new.md".to_string(), true),   // added
+            ],
+            "keep.md (unchanged) is NOT in the diff"
+        );
+    }
+
+    #[test]
+    fn diff_path_statuses_empty_for_identical_commits() {
+        let (_t, vr) = open_unborn();
+        let c = commit(&vr, Transaction::new("c").create("a.md", "x"));
+        let out = vr.diff_path_statuses(Some(c), c).unwrap();
+        assert!(out.is_empty());
     }
 }
