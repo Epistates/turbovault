@@ -14,6 +14,7 @@ documentation = "https://docs.rs/turbovault-git"
 turbovault-core = { workspace = true }
 
 git2 = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 log = { workspace = true }
 

@@ -10,11 +10,18 @@
 //! legacy `VaultManager` write path (mutators, batch executor, path-lock
 //! registry, audit/snapshot rollback).
 //!
-//! Status: scaffolding. The GWS.0 spike below validates that `git2` covers the
-//! primitives the substrate needs (in-memory index tree-building + ref CAS); the
-//! real abstractions land in GWS.1–GWS.10.
+//! Status: scaffolding. The GWS.0 spike (now in `#[cfg(test)] mod spike`)
+//! validated that `git2` covers the primitives the substrate needs; the real
+//! abstractions land incrementally (GWS.1: repo handle; GWS.2+: plumbing, CAS,
+//! preconditions, materialization, transactions).
 
 #![forbid(unsafe_code)]
+
+mod error;
+mod repo;
+
+pub use error::{Error, Result};
+pub use repo::VaultRepo;
 
 #[cfg(test)]
 mod spike {
