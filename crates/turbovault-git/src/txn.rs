@@ -84,6 +84,79 @@ impl Transaction {
         self
     }
 
+    // -------- Semantic ops --------
+    // These compose the raw primitives (`upsert`/`remove`/preconditions) with the
+    // safe-by-default precondition policy. Use them for the standard ops; reach
+    // for the raw builders only when you explicitly want a blind write.
+
+    /// Create a new file. Precondition: `path` must currently be absent.
+    /// Aborts the transaction if the path exists.
+    pub fn create(mut self, path: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
+        let path = path.into();
+        self.changes.push(TreeChange::Upsert {
+            path: path.clone(),
+            content: content.into(),
+        });
+        self.preconditions.push(Precondition::expect_absent(path));
+        self
+    }
+
+    /// Update an existing file. Precondition: `path` must currently hold
+    /// `expected` (the version token the caller read). Protects against lost
+    /// updates — a concurrent change to `path` aborts the transaction.
+    pub fn update(
+        mut self,
+        path: impl Into<String>,
+        content: impl Into<Vec<u8>>,
+        expected: Oid,
+    ) -> Self {
+        let path = path.into();
+        self.changes.push(TreeChange::Upsert {
+            path: path.clone(),
+            content: content.into(),
+        });
+        self.preconditions
+            .push(Precondition::expect_blob(path, expected));
+        self
+    }
+
+    /// Delete an existing file. Precondition: it must currently hold `expected`.
+    /// Aborts if the file changed or is absent since the caller read it.
+    pub fn delete(mut self, path: impl Into<String>, expected: Oid) -> Self {
+        let path = path.into();
+        self.changes.push(TreeChange::Remove { path: path.clone() });
+        self.preconditions
+            .push(Precondition::expect_blob(path, expected));
+        self
+    }
+
+    /// Atomic rename: move `from` (which must currently hold `expected_from`)
+    /// to `to` (which must currently be absent), as **one commit**. Both
+    /// endpoints get preconditions. `content` is the bytes to write at `to` —
+    /// usually the caller passes the source's bytes unchanged for a pure
+    /// rename; passing different bytes is a rename-and-modify. Chain
+    /// `.update()`/`.upsert()` after this for link-target updates in the same
+    /// commit (move + link-updates is atomic).
+    pub fn rename(
+        mut self,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        content: impl Into<Vec<u8>>,
+        expected_from: Oid,
+    ) -> Self {
+        let from = from.into();
+        let to = to.into();
+        self.changes.push(TreeChange::Remove { path: from.clone() });
+        self.changes.push(TreeChange::Upsert {
+            path: to.clone(),
+            content: content.into(),
+        });
+        self.preconditions
+            .push(Precondition::expect_blob(from, expected_from));
+        self.preconditions.push(Precondition::expect_absent(to));
+        self
+    }
+
     /// The distinct paths this transaction mutates (the materialization set).
     fn changed_paths(&self) -> Vec<String> {
         self.changes.iter().map(|c| c.path().to_string()).collect()
@@ -308,5 +381,150 @@ mod tests {
         let tree = vr.git().find_commit(res.commit).unwrap().tree_id();
         assert!(vr.blob_oid_at(tree, "old.md").unwrap().is_none());
         assert!(vr.blob_oid_at(tree, "new.md").unwrap().is_some());
+    }
+
+    // -------- Semantic constructors (GWS.8) --------
+
+    #[test]
+    fn create_on_absent_succeeds_create_on_existing_fails() {
+        let (_tmp, vr) = open_unborn();
+        // create succeeds when path is absent.
+        vr.apply_transaction(&Transaction::new("c").create("a.md", "alpha"))
+            .unwrap();
+        assert_eq!(read_wt(&vr, "a.md"), "alpha");
+
+        // create on an existing path fails (expect_absent precondition).
+        let res = vr.apply_transaction(&Transaction::new("c2").create("a.md", "again"));
+        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        assert_eq!(
+            read_wt(&vr, "a.md"),
+            "alpha",
+            "no overwrite on create-existing"
+        );
+    }
+
+    #[test]
+    fn update_requires_correct_expected_blob() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+            .unwrap();
+
+        let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
+        vr.apply_transaction(&Transaction::new("u").update("a.md", "v2", v1))
+            .unwrap();
+        assert_eq!(read_wt(&vr, "a.md"), "v2");
+
+        // Update with stale expected (still v1, but file is now v2) aborts.
+        let res = vr.apply_transaction(&Transaction::new("u-stale").update("a.md", "v3", v1));
+        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        assert_eq!(read_wt(&vr, "a.md"), "v2", "stale update did not apply");
+    }
+
+    #[test]
+    fn delete_requires_correct_expected_blob() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+            .unwrap();
+
+        // Stale expected -> abort, file still there.
+        let stale = VaultRepo::blob_oid_of(b"OLD").unwrap();
+        let res = vr.apply_transaction(&Transaction::new("d-stale").delete("a.md", stale));
+        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        assert!(workfile(&vr, "a.md").exists(), "stale delete did not apply");
+
+        // Correct expected -> file gone.
+        let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
+        vr.apply_transaction(&Transaction::new("d").delete("a.md", v1))
+            .unwrap();
+        assert!(!workfile(&vr, "a.md").exists());
+    }
+
+    #[test]
+    fn rename_atomically_with_endpoint_preconditions() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("old.md", "body"))
+            .unwrap();
+
+        let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
+        let res = vr
+            .apply_transaction(
+                &Transaction::new("rn").rename("old.md", "new.md", "body", from_blob),
+            )
+            .unwrap();
+
+        assert!(!workfile(&vr, "old.md").exists(), "source removed");
+        assert_eq!(read_wt(&vr, "new.md"), "body", "destination written");
+        let tree = vr.git().find_commit(res.commit).unwrap().tree_id();
+        assert!(vr.blob_oid_at(tree, "old.md").unwrap().is_none());
+        assert!(vr.blob_oid_at(tree, "new.md").unwrap().is_some());
+    }
+
+    #[test]
+    fn rename_aborts_on_stale_source() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("old.md", "body"))
+            .unwrap();
+
+        let stale = VaultRepo::blob_oid_of(b"different").unwrap();
+        let res =
+            vr.apply_transaction(&Transaction::new("rn").rename("old.md", "new.md", "body", stale));
+        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "old.md"));
+        assert!(workfile(&vr, "old.md").exists(), "source kept on abort");
+        assert!(
+            !workfile(&vr, "new.md").exists(),
+            "destination not written on abort"
+        );
+    }
+
+    #[test]
+    fn rename_aborts_when_destination_exists() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(
+            &Transaction::new("seed")
+                .create("old.md", "body")
+                .create("new.md", "occupied"),
+        )
+        .unwrap();
+
+        let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
+        let res = vr.apply_transaction(
+            &Transaction::new("rn").rename("old.md", "new.md", "body", from_blob),
+        );
+        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "new.md"));
+        assert!(workfile(&vr, "old.md").exists());
+        assert_eq!(read_wt(&vr, "new.md"), "occupied", "destination untouched");
+    }
+
+    #[test]
+    fn rename_chained_with_link_updates_is_one_commit() {
+        // Move + update-links: rename old->new AND fix link targets in two other
+        // files, all in one atomic commit (the case the legacy batch couldn't).
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(
+            &Transaction::new("seed")
+                .create("old.md", "body")
+                .create("link1.md", "see [[old]]")
+                .create("link2.md", "ref [[old]] here"),
+        )
+        .unwrap();
+
+        let body_blob = VaultRepo::blob_oid_of(b"body").unwrap();
+        let l1_blob = VaultRepo::blob_oid_of(b"see [[old]]").unwrap();
+        let l2_blob = VaultRepo::blob_oid_of(b"ref [[old]] here").unwrap();
+        let res = vr
+            .apply_transaction(
+                &Transaction::new("mv+links")
+                    .rename("old.md", "new.md", "body", body_blob)
+                    .update("link1.md", "see [[new]]", l1_blob)
+                    .update("link2.md", "ref [[new]] here", l2_blob),
+            )
+            .unwrap();
+
+        // All four file changes landed in ONE commit.
+        let tree = vr.git().find_commit(res.commit).unwrap().tree_id();
+        assert!(vr.blob_oid_at(tree, "old.md").unwrap().is_none());
+        assert!(vr.blob_oid_at(tree, "new.md").unwrap().is_some());
+        assert_eq!(read_wt(&vr, "link1.md"), "see [[new]]");
+        assert_eq!(read_wt(&vr, "link2.md"), "ref [[new]] here");
     }
 }

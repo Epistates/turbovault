@@ -1,9 +1,9 @@
 //! Error type for the git write substrate.
 //!
-//! The crate owns its error domain (git2 / io / invariant violations) rather
-//! than leaking `git2` into `turbovault-core`. Conversion to
-//! `turbovault_core::Error` happens at the tool-layer boundary (added when the
-//! substrate is wired into the MCP server, GWS.12).
+//! The crate owns its error domain (git2 / io / invariant violations) so it
+//! stays self-contained — no leakage of `git2` into a consumer crate. Conversion
+//! to the consumer's error type happens at the tool-layer boundary (added when
+//! the substrate is wired into the MCP server, GWS.12).
 
 use std::path::PathBuf;
 

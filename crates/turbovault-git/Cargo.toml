@@ -11,8 +11,8 @@ description = "Git-native write substrate for TurboVault: every mutation is a co
 documentation = "https://docs.rs/turbovault-git"
 
 [dependencies]
-turbovault-core = { workspace = true }
-
+# Intentionally NO workspace-internal deps: turbovault-git is the substrate's
+# write core and stays self-contained for easy extraction to a separate repo.
 git2 = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
