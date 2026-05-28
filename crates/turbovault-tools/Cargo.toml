@@ -19,6 +19,7 @@ turbovault-batch = { workspace = true }
 turbovault-export = { workspace = true }
 turbovault-audit = { workspace = true }
 turbovault-git = { workspace = true }
+futures = { workspace = true }
 
 # MCP server framework
 # Note: No features needed here - tools crate only defines tool implementations

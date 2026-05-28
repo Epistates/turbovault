@@ -15,12 +15,24 @@
 //! /`move_file`). All mutations route through [`VaultRepo::apply_transaction`].
 
 use crate::file_tools::{NoteInfo, WriteMode};
+use futures::future::BoxFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult, OperationRecord};
 use turbovault_core::prelude::*;
 use turbovault_git::{CommitHook, CommitLocks, Oid, Transaction, VaultRepo};
 use turbovault_vault::{EditEngine, EditResult, VaultManager};
+
+/// Callback invoked **before** returning a `ConcurrencyError` from
+/// [`GitFileTools::apply_txn`] (GWS.14b). The MCP server installs one that
+/// drains the per-vault reindex queue — so the agent's re-read (which the
+/// error tells it to do) sees a coherent graph + search state, not the
+/// pre-conflict snapshot.
+///
+/// Boxed-future shape rather than a plain `async fn` so the type can be
+/// stored on the `GitFileTools` struct without each call site naming an
+/// `impl Future`.
+pub type CasCollisionFlush = Arc<dyn Fn() -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
 /// Write-side tools backed by the git substrate.
 ///
@@ -41,6 +53,12 @@ pub struct GitFileTools {
     /// `ReindexQueue`. `None` = no reindex wiring (acceptable for tests
     /// that don't care about derived state).
     pub commit_hook: Option<CommitHook>,
+    /// Optional flush callback fired BEFORE returning a `ConcurrencyError`
+    /// (GWS.14b). Drains the reindex queue so the agent's re-read sees
+    /// coherent derived state. `None` = skip flush; callers see the raw
+    /// concurrency error and the graph stays as stale as the last
+    /// flush-on-query did.
+    pub flush_on_collision: Option<CasCollisionFlush>,
 }
 
 impl GitFileTools {
@@ -57,6 +75,7 @@ impl GitFileTools {
             vault_path,
             commit_locks,
             commit_hook: None,
+            flush_on_collision: None,
         }
     }
 
@@ -73,6 +92,27 @@ impl GitFileTools {
             vault_path,
             commit_locks,
             commit_hook: Some(commit_hook),
+            flush_on_collision: None,
+        }
+    }
+
+    /// Construct with both a reindex hook AND a CAS-collision flush callback
+    /// (GWS.14b). The flush callback runs BEFORE the `ConcurrencyError` is
+    /// returned to the caller, so the agent's re-read sees coherent derived
+    /// state.
+    pub fn new_with_hook_and_flush(
+        manager: Arc<VaultManager>,
+        vault_path: PathBuf,
+        commit_locks: Arc<CommitLocks>,
+        commit_hook: CommitHook,
+        flush_on_collision: CasCollisionFlush,
+    ) -> Self {
+        Self {
+            manager,
+            vault_path,
+            commit_locks,
+            commit_hook: Some(commit_hook),
+            flush_on_collision: Some(flush_on_collision),
         }
     }
 
@@ -364,7 +404,7 @@ impl GitFileTools {
         let locks = Arc::clone(&self.commit_locks);
         let hook = self.commit_hook.clone();
         let txn = txn.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
+        let result = tokio::task::spawn_blocking(move || -> Result<()> {
             let repo = match hook {
                 Some(h) => VaultRepo::open_with_locks_and_hook(&path, locks, h),
                 None => VaultRepo::open_with_locks(&path, locks),
@@ -375,7 +415,24 @@ impl GitFileTools {
                 .map_err(git_err_to_core)
         })
         .await
-        .map_err(|e| Error::config_error(format!("git transaction task failed: {}", e)))?
+        .map_err(|e| Error::config_error(format!("git transaction task failed: {}", e)))?;
+
+        // GWS.14b: on the reconsideration-domino abort, drain the reindex
+        // queue BEFORE returning the error so the agent's re-read sees a
+        // coherent graph/search state. In-process bursts where the conflict
+        // is against THIS process's own earlier commit benefit directly;
+        // cross-process conflicts (§8.4) still need a separate listener.
+        if let Err(ref e) = result
+            && matches!(e, Error::ConcurrencyError { .. })
+            && let Some(flush) = &self.flush_on_collision
+            && let Err(flush_err) = flush().await
+        {
+            log::warn!(
+                "GWS.14b CAS-collision flush failed (returning original error): {}",
+                flush_err
+            );
+        }
+        result
     }
 }
 
@@ -751,5 +808,134 @@ mod tests {
         let res = tools.batch_execute(vec![]).await.unwrap();
         assert!(!res.success);
         assert_eq!(res.total, 0);
+    }
+
+    // -------- GWS.14b: CAS-collision flush --------
+
+    #[tokio::test]
+    async fn cas_collision_flush_fires_before_concurrency_error_returns() {
+        // Wire a sentinel flush callback that flips an Arc<AtomicBool> so we
+        // can prove flush ran BEFORE the error reached the caller.
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
+        let locks = Arc::new(CommitLocks::new());
+        let commit_hook: CommitHook = Arc::new(|_p, _c| {});
+
+        let flushed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flushed_clone = Arc::clone(&flushed);
+        let flush: CasCollisionFlush = Arc::new(move || {
+            let f = Arc::clone(&flushed_clone);
+            Box::pin(async move {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        });
+
+        let tools = GitFileTools::new_with_hook_and_flush(
+            manager,
+            tmp.path().to_path_buf(),
+            locks,
+            commit_hook,
+            flush,
+        );
+
+        // Trigger a guaranteed precondition failure: write v1, then update
+        // with a stale expected blob.
+        tools.write_file("a.md", "v1").await.unwrap();
+        let stale_oid = VaultRepo::blob_oid_of(b"WAS_NEVER_HERE").unwrap();
+        let err = tools
+            .write_file_with_mode(
+                "a.md",
+                "v2",
+                WriteMode::Overwrite,
+                Some(&stale_oid.to_string()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "got: {err:?}"
+        );
+        assert!(
+            flushed.load(std::sync::atomic::Ordering::SeqCst),
+            "flush callback must fire before the ConcurrencyError surfaces to the caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_collision_flush_skipped_on_successful_write() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
+        let locks = Arc::new(CommitLocks::new());
+        let commit_hook: CommitHook = Arc::new(|_p, _c| {});
+
+        let flush_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let flush_calls_clone = Arc::clone(&flush_calls);
+        let flush: CasCollisionFlush = Arc::new(move || {
+            let c = Arc::clone(&flush_calls_clone);
+            Box::pin(async move {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        });
+
+        let tools = GitFileTools::new_with_hook_and_flush(
+            manager,
+            tmp.path().to_path_buf(),
+            locks,
+            commit_hook,
+            flush,
+        );
+
+        tools.write_file("a.md", "alpha").await.unwrap();
+        tools.write_file("b.md", "beta").await.unwrap();
+        assert_eq!(
+            flush_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "flush only fires on ConcurrencyError, never on successful writes"
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_collision_flush_error_does_not_mask_original_concurrency_error() {
+        // Even when the flush callback itself errors, the caller still sees
+        // the original ConcurrencyError — flush failures are logged + dropped
+        // (correctness contract).
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
+        let locks = Arc::new(CommitLocks::new());
+        let commit_hook: CommitHook = Arc::new(|_p, _c| {});
+
+        let flush: CasCollisionFlush =
+            Arc::new(|| Box::pin(async { Err(Error::config_error("simulated flush failure")) }));
+
+        let tools = GitFileTools::new_with_hook_and_flush(
+            manager,
+            tmp.path().to_path_buf(),
+            locks,
+            commit_hook,
+            flush,
+        );
+
+        tools.write_file("a.md", "v1").await.unwrap();
+        let stale_oid = VaultRepo::blob_oid_of(b"WAS_NEVER_HERE").unwrap();
+        let err = tools
+            .write_file_with_mode(
+                "a.md",
+                "v2",
+                WriteMode::Overwrite,
+                Some(&stale_oid.to_string()),
+            )
+            .await
+            .unwrap_err();
+        // Caller sees the original ConcurrencyError, NOT the flush's
+        // ConfigError. Flush failures are best-effort.
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "got: {err:?}"
+        );
     }
 }

@@ -199,7 +199,7 @@ pub use diff_tools::{DiffResult, DiffSummary, DiffTools};
 pub use duplicate_tools::{CompareResult, DuplicateGroup, DuplicateTools};
 pub use export_tools::ExportTools;
 pub use file_tools::{FileTools, NoteInfo, WriteMode, obsidian_uri};
-pub use git_file_tools::GitFileTools;
+pub use git_file_tools::{CasCollisionFlush, GitFileTools};
 pub use graph_tools::{BrokenLinkInfo, GraphTools, HealthInfo};
 pub use metadata_tools::MetadataTools;
 pub use output_formatter::{OutputFormat, ResponseFormatter};

@@ -12,10 +12,10 @@ use turbovault_core::config::WriteBackend;
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
-    AnalysisTools, AuditTools, BatchOperation, CommitHook, CommitLocks, DiffTools, DuplicateTools,
-    ExportTools, FileTools, GraphTools, MetadataTools, QualityTools, ReindexQueue,
-    RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine, TemplateEngine,
-    VaultLifecycleTools, VaultRepo, WriteMode, WriteTools, obsidian_uri,
+    AnalysisTools, AuditTools, BatchOperation, CasCollisionFlush, CommitHook, CommitLocks,
+    DiffTools, DuplicateTools, ExportTools, FileTools, GraphTools, MetadataTools, QualityTools,
+    ReindexQueue, RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine,
+    TemplateEngine, VaultLifecycleTools, VaultRepo, WriteMode, WriteTools, obsidian_uri,
 };
 use turbovault_vault::VaultManager;
 
@@ -481,11 +481,37 @@ impl ObsidianMcpServer {
                 let queue = self.get_or_init_reindex_queue(&vault_name).await;
                 let queue_for_hook = Arc::clone(&queue);
                 let hook: CommitHook = Arc::new(move |_parent, commit| queue_for_hook.push(commit));
-                Ok(WriteTools::git_with_hook(
+
+                // GWS.14b: build a flush callback fired BEFORE the substrate
+                // returns a ConcurrencyError. Captures the vault_name + path
+                // + manager bound at WriteTools construction so the flush
+                // targets the correct vault even if `set_active_vault` shifts
+                // between transaction start and the conflict surfacing.
+                let server = self.clone();
+                let flush_vault_name = vault_name.clone();
+                let flush_vault_path = vault_config.path.clone();
+                let flush_manager = Arc::clone(&manager);
+                let flush_on_collision: CasCollisionFlush = Arc::new(move || {
+                    let server = server.clone();
+                    let vault_name = flush_vault_name.clone();
+                    let path = flush_vault_path.clone();
+                    let manager = Arc::clone(&flush_manager);
+                    Box::pin(async move {
+                        server
+                            .flush_reindex_for_vault(&vault_name, &path, manager)
+                            .await
+                            .map_err(|e| {
+                                Error::config_error(format!("GWS.14b CAS-collision flush: {}", e))
+                            })
+                    })
+                });
+
+                Ok(WriteTools::git_with_hook_and_flush(
                     manager,
                     vault_config.path,
                     locks,
                     hook,
+                    flush_on_collision,
                 ))
             }
         }
@@ -537,16 +563,30 @@ impl ObsidianMcpServer {
         if vault_config.write_backend != WriteBackend::Git {
             return Ok(());
         }
-        let queue = match self.git_reindex_queues.read().await.get(&vault_name) {
+        let manager = self.get_active_vault_manager().await?;
+        self.flush_reindex_for_vault(&vault_name, &vault_config.path, manager)
+            .await
+    }
+
+    /// Flush by vault name + path + manager (no "active vault" resolution).
+    /// The GWS.14b CAS-collision callback uses this so the closure can
+    /// flush the vault it was constructed for even if the active vault
+    /// has shifted by the time `apply_txn` returns the conflict error.
+    async fn flush_reindex_for_vault(
+        &self,
+        vault_name: &str,
+        vault_path: &Path,
+        manager: Arc<VaultManager>,
+    ) -> McpResult<()> {
+        let queue = match self.git_reindex_queues.read().await.get(vault_name) {
             Some(q) => Arc::clone(q),
             None => return Ok(()), // never opened a git-backed write -> nothing pending
         };
         if queue.pending_count() == 0 {
             return Ok(());
         }
-        let manager = self.get_active_vault_manager().await?;
-        let locks = self.get_or_init_git_locks(&vault_name).await;
-        let path = vault_config.path;
+        let locks = self.get_or_init_git_locks(vault_name).await;
+        let path = vault_path.to_path_buf();
 
         // The drainer's full body is async (graph + search invalidation are
         // tokio-locked), but it opens + consumes a !Sync VaultRepo. Run

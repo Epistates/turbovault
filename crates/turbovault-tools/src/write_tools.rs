@@ -12,7 +12,7 @@
 
 use crate::batch_tools::BatchTools;
 use crate::file_tools::{FileTools, NoteInfo, WriteMode};
-use crate::git_file_tools::GitFileTools;
+use crate::git_file_tools::{CasCollisionFlush, GitFileTools};
 use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult};
@@ -66,6 +66,26 @@ impl WriteTools {
             vault_path,
             commit_locks,
             commit_hook,
+        ))
+    }
+
+    /// Git-backed dispatch with reindex hook AND CAS-collision flush
+    /// (GWS.14b). The flush runs before `apply_txn` returns a
+    /// `ConcurrencyError`, so the agent's re-read sees coherent derived
+    /// state.
+    pub fn git_with_hook_and_flush(
+        manager: Arc<VaultManager>,
+        vault_path: PathBuf,
+        commit_locks: Arc<CommitLocks>,
+        commit_hook: CommitHook,
+        flush_on_collision: CasCollisionFlush,
+    ) -> Self {
+        Self::Git(GitFileTools::new_with_hook_and_flush(
+            manager,
+            vault_path,
+            commit_locks,
+            commit_hook,
+            flush_on_collision,
         ))
     }
 
