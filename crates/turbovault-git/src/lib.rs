@@ -21,12 +21,14 @@
 
 mod cas;
 mod error;
+mod locks;
 mod materialize;
 mod occ;
 mod plumbing;
 mod repo;
 
 pub use error::{Error, Result};
+pub use locks::CommitLocks;
 pub use occ::Precondition;
 pub use plumbing::TreeChange;
 pub use repo::VaultRepo;
