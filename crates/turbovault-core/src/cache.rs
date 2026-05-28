@@ -360,6 +360,8 @@ mod tests {
             cache_ttl: None,
             template_dirs: None,
             allowed_operations: None,
+            write_backend: crate::WriteBackend::default(),
+            git: None,
         }
     }
 
