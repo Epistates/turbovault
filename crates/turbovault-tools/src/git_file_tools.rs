@@ -367,10 +367,18 @@ fn parse_blob_oid(s: Option<&str>) -> Result<Option<Oid>> {
     match s {
         None => Ok(None),
         Some(hex) => Oid::from_str(hex).map(Some).map_err(|_| {
-            Error::config_error(format!(
-                "expected_hash for git backend must be a 40-char git blob oid hex (got: {:?})",
-                hex
-            ))
+            // `ConcurrencyError` (not `ConfigError`) so callers can switch on
+            // ONE error type for both backends. Cross-restart edge case
+            // (server flipped `write_backend` between the client's read and
+            // write) lands here for SHA-256→git, and as a hash-mismatch
+            // `ConcurrencyError` for git→SHA-256 — same shape, same fix
+            // (re-read + retry).
+            Error::ConcurrencyError {
+                reason: format!(
+                    "expected_hash for git backend must be a 40-char git blob oid hex (got {:?}). Re-read the file and retry with the fresh token.",
+                    hex
+                ),
+            }
         }),
     }
 }
@@ -526,14 +534,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_with_garbage_hash_is_loud_error() {
+    async fn write_file_with_garbage_hash_is_loud_concurrency_error() {
+        // A malformed hash from the caller (e.g. cross-restart edge case
+        // where the legacy SHA-256 hex still lives in the client) lands as
+        // ConcurrencyError, NOT ConfigError — same shape callers handle for
+        // any other stale-token failure, single switch arm fixes both
+        // backends.
         let (_tmp, tools) = setup().await;
         let err = tools
             .write_file_with_mode("a.md", "v1", WriteMode::Overwrite, Some("not-a-hash"))
             .await
             .unwrap_err();
-        // Loud configuration error, not silent drop.
-        assert!(matches!(err, Error::ConfigError { .. }), "got: {err:?}");
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "got: {err:?}"
+        );
     }
 
     #[tokio::test]
