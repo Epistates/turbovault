@@ -27,6 +27,7 @@ mod materialize;
 mod occ;
 mod plumbing;
 mod repo;
+mod restore;
 mod txn;
 
 pub use error::{Error, Result};

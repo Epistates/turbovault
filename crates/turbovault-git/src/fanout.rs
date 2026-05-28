@@ -148,7 +148,7 @@ impl<'a> FanoutTransaction<'a> {
                     )));
                 }
                 main.cas_ref(&self.main_branch, Some(main_tip_before), wip_tip)?;
-                let changed = paths_changed_between(main, main_tip_before, wip_tip)?;
+                let changed = main.paths_changed_between(main_tip_before, wip_tip)?;
                 main.materialize(wip_tip, &changed)?;
                 Ok(MergeBackResult {
                     tip_after: wip_tip,
@@ -183,7 +183,7 @@ impl<'a> FanoutTransaction<'a> {
                     main.commit_tree(merged_tree_oid, &[main_tip_before, wip_tip], &message)?;
                 main.cas_ref(&self.main_branch, Some(main_tip_before), merge_commit_oid)?;
 
-                let changed = paths_changed_between(main, main_tip_before, merge_commit_oid)?;
+                let changed = main.paths_changed_between(main_tip_before, merge_commit_oid)?;
                 main.materialize(merge_commit_oid, &changed)?;
                 Ok(MergeBackResult {
                     tip_after: merge_commit_oid,
@@ -193,33 +193,6 @@ impl<'a> FanoutTransaction<'a> {
             }
         }
     }
-}
-
-/// Collect the paths whose blob oid differs between two commits' trees — the
-/// set to materialize after a merge-back.
-fn paths_changed_between(repo: &VaultRepo, from: Oid, to: Oid) -> Result<Vec<String>> {
-    let r = repo.git();
-    let from_tree = r.find_commit(from)?.tree()?;
-    let to_tree = r.find_commit(to)?.tree()?;
-    let diff = r.diff_tree_to_tree(Some(&from_tree), Some(&to_tree), None)?;
-    let mut paths = Vec::new();
-    diff.foreach(
-        &mut |delta, _| {
-            let p = delta
-                .new_file()
-                .path()
-                .or_else(|| delta.old_file().path())
-                .map(|p| p.to_string_lossy().to_string());
-            if let Some(p) = p {
-                paths.push(p);
-            }
-            true
-        },
-        None,
-        None,
-        None,
-    )?;
-    Ok(paths)
 }
 
 /// Prune the scratch worktree + delete the wip branch. Tolerant: try every
