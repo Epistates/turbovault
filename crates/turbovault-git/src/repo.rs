@@ -74,8 +74,7 @@ impl VaultRepo {
         )
     }
 
-    /// Borrow the underlying repository (for the plumbing layers, GWS.2+).
-    #[allow(dead_code)] // consumed by the plumbing/CAS layers landing in GWS.2+
+    /// Borrow the underlying repository (for the plumbing layers).
     pub(crate) fn git(&self) -> &Repository {
         &self.repo
     }

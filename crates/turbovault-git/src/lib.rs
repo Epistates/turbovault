@@ -18,9 +18,11 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod plumbing;
 mod repo;
 
 pub use error::{Error, Result};
+pub use plumbing::TreeChange;
 pub use repo::VaultRepo;
 
 #[cfg(test)]
