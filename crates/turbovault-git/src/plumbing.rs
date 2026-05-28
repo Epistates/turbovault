@@ -11,6 +11,7 @@ use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
 use git2::{Commit, Index, IndexEntry, IndexTime, Oid, Signature};
 use std::path::Path;
+use tracing::instrument;
 
 /// A single change to apply to a tree. Moves are modeled at the op-mapping layer
 /// (GWS.8) as `Remove(old)` + `Upsert(new)`.
@@ -36,6 +37,11 @@ impl VaultRepo {
     /// empty base) applying `changes` in an **isolated in-memory index**. Blobs
     /// and the resulting tree are written to the object DB. The shared
     /// `.git/index` is never touched. Returns the new tree oid.
+    #[instrument(
+        skip(self, changes),
+        fields(base = ?base, n_changes = changes.len()),
+        name = "git_build_tree"
+    )]
     pub fn build_tree(&self, base: Option<Oid>, changes: &[TreeChange]) -> Result<Oid> {
         let repo = self.git();
         let mut index = Index::new()?;
@@ -73,6 +79,11 @@ impl VaultRepo {
     /// Create a commit object from `tree` and `parents` **without moving any
     /// ref** (this is `commit-tree`, not `commit`). The ref advance is a separate
     /// CAS step (GWS.3). Returns the new commit oid.
+    #[instrument(
+        skip(self),
+        fields(tree = %tree, n_parents = parents.len(), message = %message),
+        name = "git_commit_tree"
+    )]
     pub fn commit_tree(&self, tree: Oid, parents: &[Oid], message: &str) -> Result<Oid> {
         let repo = self.git();
         let sig = self.author_signature()?;

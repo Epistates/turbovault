@@ -25,6 +25,7 @@ use crate::plumbing::TreeChange;
 use crate::repo::VaultRepo;
 use git2::Oid;
 use std::collections::BTreeSet;
+use tracing::instrument;
 
 /// A unit of change applied as a single commit.
 #[derive(Debug, Clone, Default)]
@@ -178,6 +179,15 @@ impl VaultRepo {
     /// Aborts with [`Error::PreconditionFailed`] if any precondition is stale
     /// (nothing committed, working tree untouched) and with [`Error::Other`] for
     /// an empty transaction or duplicate change paths.
+    #[instrument(
+        skip(self, txn),
+        fields(
+            message = %txn.message,
+            n_changes = txn.changes.len(),
+            n_preconditions = txn.preconditions.len(),
+        ),
+        name = "git_apply_transaction"
+    )]
     pub fn apply_transaction(&self, txn: &Transaction) -> Result<TransactionResult> {
         if txn.changes.is_empty() {
             return Err(Error::Other("empty transaction (no changes)".to_string()));

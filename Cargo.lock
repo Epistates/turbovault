@@ -5246,6 +5246,7 @@ dependencies = [
 name = "turbovault-git"
 version = "1.5.0"
 dependencies = [
+ "criterion",
  "git2",
  "log",
  "tempfile",

@@ -16,6 +16,7 @@ use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
 use git2::Oid;
 use std::path::Path;
+use tracing::instrument;
 use uuid::Uuid;
 
 impl VaultRepo {
@@ -23,6 +24,11 @@ impl VaultRepo {
     /// the index to that tree. For each path: present in the tree → write its
     /// blob atomically (temp + rename, parent dirs created); absent → remove the
     /// working-tree file if present. Idempotent (safe to re-run as a resync).
+    #[instrument(
+        skip(self, paths),
+        fields(commit = %commit, n_paths = paths.len()),
+        name = "git_materialize"
+    )]
     pub fn materialize(&self, commit: Oid, paths: &[String]) -> Result<()> {
         let repo = self.git();
         let workdir = repo

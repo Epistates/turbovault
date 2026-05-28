@@ -26,6 +26,7 @@ use crate::repo::VaultRepo;
 use crate::txn::Transaction;
 use git2::Oid;
 use std::path::Path;
+use tracing::instrument;
 
 impl VaultRepo {
     /// Read a path's bytes at a specific commit. `None` if the path is absent
@@ -75,6 +76,11 @@ impl VaultRepo {
     ///
     /// Returns `Ok(None)` when there is nothing to do (every path is already
     /// at the target state). Errors if the branch is unborn.
+    #[instrument(
+        skip(self, paths, message),
+        fields(target_commit = %target_commit, n_paths = paths.len()),
+        name = "git_build_restore_transaction"
+    )]
     pub fn build_restore_transaction(
         &self,
         target_commit: Oid,

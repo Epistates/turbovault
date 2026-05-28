@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
 use git2::Oid;
 use std::path::{Path, PathBuf};
+use tracing::instrument;
 
 /// How a fan-out merges back into main.
 #[derive(Debug, Clone, Copy)]
@@ -74,6 +75,15 @@ impl<'a> FanoutTransaction<'a> {
     /// Merge the fan-out back into main and clean up the scratch worktree.
     /// On any error the fan-out artifacts may be left behind; call
     /// `abandon_fanout` to clean up explicitly.
+    #[instrument(
+        skip(self),
+        fields(
+            wip_branch = %self.wip_branch,
+            main_branch = %self.main_branch,
+            strategy = ?strategy,
+        ),
+        name = "git_commit_fanout"
+    )]
     pub fn commit_fanout(self, strategy: MergeStrategy) -> Result<MergeBackResult> {
         // Serialize the merge-back on main's commit lock (same critical section
         // every other writer on main uses).
@@ -256,6 +266,11 @@ impl VaultRepo {
     /// fan-out.
     ///
     /// Errors if this branch is unborn (no commit to fork from) or detached.
+    #[instrument(
+        skip(self),
+        fields(id = %id, worktree_path = ?worktree_path),
+        name = "git_begin_fanout"
+    )]
     pub fn begin_fanout(&self, id: &str, worktree_path: &Path) -> Result<FanoutTransaction<'_>> {
         let main_branch = self.head_ref()?; // errors if detached
         let parent_tip = self

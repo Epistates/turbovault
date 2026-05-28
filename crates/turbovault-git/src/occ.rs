@@ -16,6 +16,7 @@
 use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
 use git2::{ObjectType, Oid};
+use tracing::instrument;
 
 /// A precondition on one path: the blob oid the caller expects to find in the
 /// base tree. `expected == None` asserts the path is **absent** (a create).
@@ -58,6 +59,11 @@ impl VaultRepo {
     /// Returns `Ok(())` only if **all** match; the first mismatch aborts with
     /// [`Error::PreconditionFailed`] (the whole transaction fails, nothing
     /// applied).
+    #[instrument(
+        skip(self, preconditions),
+        fields(base = ?base_tree, n = preconditions.len()),
+        name = "git_check_preconditions"
+    )]
     pub fn check_preconditions(
         &self,
         base_tree: Option<Oid>,

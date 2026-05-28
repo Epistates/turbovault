@@ -14,6 +14,7 @@
 use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
 use git2::Oid;
+use tracing::instrument;
 
 /// How many times `commit_with_retry` rebuilds before giving up. Contention is
 /// rare; this only guards against pathological live-lock.
@@ -26,6 +27,11 @@ impl VaultRepo {
     /// `expected_old == None` means the ref must **not** yet exist (the
     /// initial-commit case). On any mismatch returns [`Error::CasConflict`] with
     /// **nothing applied** — the ref is untouched.
+    #[instrument(
+        skip(self),
+        fields(refname = %refname, expected = ?expected_old, new = %new),
+        name = "git_cas_ref"
+    )]
     pub fn cas_ref(&self, refname: &str, expected_old: Option<Oid>, new: Oid) -> Result<()> {
         let repo = self.git();
         let mut tx = repo.transaction()?;
@@ -63,6 +69,11 @@ impl VaultRepo {
     /// The builder owns conflict policy: on a rebuild it re-validates its
     /// per-file preconditions against the new tip (GWS.4) and may itself return
     /// an error to abort (the reconsideration domino) instead of rebuilding.
+    #[instrument(
+        skip(self, build),
+        fields(refname = %refname, max_retries),
+        name = "git_commit_with_retry"
+    )]
     pub fn commit_with_retry_n<F>(
         &self,
         refname: &str,

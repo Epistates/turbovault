@@ -21,6 +21,19 @@ log = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "single_write"
+harness = false
+
+[[bench]]
+name = "batch"
+harness = false
+
+[[bench]]
+name = "materialize"
+harness = false
 
 [package.metadata.docs.rs]
 all-features = true
