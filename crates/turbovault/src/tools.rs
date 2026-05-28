@@ -437,6 +437,18 @@ impl ObsidianMcpServer {
         Ok((vault_name, manager))
     }
 
+    /// Same as `get_vault_pair` but FIRST flushes the GWS.14 reindex queue
+    /// for the active vault (no-op on the Legacy backend or when the queue
+    /// is empty). Called by every read tool that touches derived state
+    /// (link graph, search/tantivy, similarity, quality reports). Read
+    /// tools that consume only working-tree bytes (`read_note`,
+    /// `get_notes_info`, `inspect_frontmatter`, ...) stay on
+    /// `get_vault_pair` since flushing would be wasted work.
+    async fn get_vault_pair_with_reindex(&self) -> McpResult<(String, Arc<VaultManager>)> {
+        self.flush_reindex_for_active_vault().await?;
+        self.get_vault_pair().await
+    }
+
     /// Build the backend-dispatching write surface for the active vault.
     /// `Legacy` → wraps the cached `VaultManager`-backed tools. `Git` →
     /// wraps a cached `VaultRepo` (so all in-process callers share one
@@ -513,9 +525,8 @@ impl ObsidianMcpServer {
     /// an `await`. The drainer's graph work is async (tokio RwLock) and
     /// runs after the blocking phase produces the path-set.
     ///
-    /// Currently unused at call sites — the next GWS.14 commit plugs
-    /// this into the ~17 read tools that consult derived state.
-    #[allow(dead_code)]
+    /// Called by `get_vault_pair_with_reindex` (which derived-state read
+    /// tools use); legacy/eviction-only tools keep `get_vault_pair`.
     async fn flush_reindex_for_active_vault(&self) -> McpResult<()> {
         let vault_name = self.get_active_vault_name().await?;
         let vault_config = self
@@ -990,7 +1001,7 @@ impl ObsidianMcpServer {
     )]
     async fn get_hub_notes(&self, top_n: Option<usize>) -> McpResult<serde_json::Value> {
         let top_n = top_n.unwrap_or(10);
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = GraphTools::new(manager);
         let hubs = tools.get_hub_notes(top_n).await.map_err(to_mcp_error)?;
 
@@ -1015,7 +1026,7 @@ impl ObsidianMcpServer {
         examples = []
     )]
     async fn get_dead_end_notes(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = GraphTools::new(manager);
         let dead_ends = tools.get_dead_end_notes().await.map_err(to_mcp_error)?;
 
@@ -1039,7 +1050,7 @@ impl ObsidianMcpServer {
         examples = []
     )]
     async fn get_isolated_clusters(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = GraphTools::new(manager);
         let clusters = tools.get_isolated_clusters().await.map_err(to_mcp_error)?;
 
@@ -1065,7 +1076,7 @@ impl ObsidianMcpServer {
         examples = ["quick vault check", "is my vault healthy?", "vault health score"]
     )]
     async fn quick_health_check(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = GraphTools::new(manager);
         let health = tools.quick_health_check().await.map_err(to_mcp_error)?;
 
@@ -1093,7 +1104,7 @@ impl ObsidianMcpServer {
         examples = ["detailed health analysis", "comprehensive vault check", "what are all my vault issues?"]
     )]
     async fn full_health_analysis(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = GraphTools::new(manager);
         let health = tools.full_health_analysis().await.map_err(to_mcp_error)?;
 
@@ -1126,7 +1137,7 @@ impl ObsidianMcpServer {
         examples = ["find broken links", "which links are broken?", "show missing note targets"]
     )]
     async fn get_broken_links(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = GraphTools::new(manager);
         let broken = tools.get_broken_links().await.map_err(to_mcp_error)?;
 
@@ -1155,7 +1166,7 @@ impl ObsidianMcpServer {
         examples = ["find circular links", "detect reference cycles", "A→B→C→A patterns"]
     )]
     async fn detect_cycles(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = GraphTools::new(manager);
         let cycles = tools.detect_cycles().await.map_err(to_mcp_error)?;
 
@@ -1185,7 +1196,7 @@ impl ObsidianMcpServer {
         examples = ["Get complete vault status before refactoring", "Present vault health to user", "Generate comprehensive diagnostic report"]
     )]
     async fn explain_vault(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let graph_tools = GraphTools::new(manager.clone());
         let analysis_tools = AnalysisTools::new(manager.clone());
 
@@ -1302,7 +1313,7 @@ impl ObsidianMcpServer {
         examples = ["\"project alpha\"", "authentication", "urgent tasks"]
     )]
     async fn search(&self, query: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
         let results = engine.search(&query).await.map_err(to_mcp_error)?;
 
@@ -1339,7 +1350,7 @@ impl ObsidianMcpServer {
         exclude_paths: Option<Vec<String>>,
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
 
         let result_limit = limit.unwrap_or(10);
@@ -1385,7 +1396,7 @@ impl ObsidianMcpServer {
         key: String,
         value: String,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
 
         let results = engine
@@ -1412,7 +1423,7 @@ impl ObsidianMcpServer {
         examples = ["recommend notes related to 'Machine Learning'", "find similar notes", "what should I read next?"]
     )]
     async fn recommend_related(&self, path: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
         let results = engine
             .recommend_related(&path)
@@ -2234,7 +2245,7 @@ impl ObsidianMcpServer {
         file: String,
         limit: Option<i32>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = RelationshipTools::new(manager);
         let limit = limit.unwrap_or(5) as usize;
         let suggestions = tools
@@ -2270,7 +2281,7 @@ impl ObsidianMcpServer {
         source: String,
         target: String,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = RelationshipTools::new(manager);
         let strength = tools
             .get_link_strength(&source, &target)
@@ -2300,7 +2311,7 @@ impl ObsidianMcpServer {
         ]
     )]
     async fn get_centrality_ranking(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = RelationshipTools::new(manager);
         let ranking = tools.get_centrality_ranking().await.map_err(to_mcp_error)?;
 
@@ -2558,7 +2569,7 @@ impl ObsidianMcpServer {
     )]
     async fn evaluate_note_quality(&self, path: String) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = QualityTools::new(manager);
         let result = tools.evaluate_note(&path).await.map_err(to_mcp_error)?;
         StandardResponse::new(
@@ -2580,7 +2591,7 @@ impl ObsidianMcpServer {
     )]
     async fn vault_quality_report(&self, bottom_n: Option<usize>) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = QualityTools::new(manager);
         let result = tools
             .vault_quality_report(bottom_n.unwrap_or(10))
@@ -2610,7 +2621,7 @@ impl ObsidianMcpServer {
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = QualityTools::new(manager);
         let result = tools
             .find_stale_notes(threshold_days.unwrap_or(90), limit.unwrap_or(20))
@@ -2644,6 +2655,7 @@ impl ObsidianMcpServer {
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
+        self.flush_reindex_for_active_vault().await?;
         let engine = self.get_similarity_engine().await?;
         let results = engine.semantic_search(&query, limit.unwrap_or(10));
         let count = results.len();
@@ -2672,6 +2684,7 @@ impl ObsidianMcpServer {
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
+        self.flush_reindex_for_active_vault().await?;
         let engine = self.get_similarity_engine().await?;
         let results = engine.find_similar_notes(&path, limit.unwrap_or(10));
         let count = results.len();
