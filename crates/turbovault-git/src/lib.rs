@@ -21,6 +21,7 @@
 
 mod cas;
 mod error;
+mod materialize;
 mod occ;
 mod plumbing;
 mod repo;
