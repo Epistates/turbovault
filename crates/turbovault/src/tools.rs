@@ -12,10 +12,10 @@ use turbovault_core::config::WriteBackend;
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
-    AnalysisTools, AuditTools, BatchOperation, CommitLocks, DiffTools, DuplicateTools, ExportTools,
-    FileTools, GraphTools, MetadataTools, QualityTools, RelationshipTools, SearchEngine,
-    SearchQuery, SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo,
-    WriteMode, WriteTools, obsidian_uri,
+    AnalysisTools, AuditTools, BatchOperation, CommitHook, CommitLocks, DiffTools, DuplicateTools,
+    ExportTools, FileTools, GraphTools, MetadataTools, QualityTools, ReindexQueue,
+    RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine, TemplateEngine,
+    VaultLifecycleTools, VaultRepo, WriteMode, WriteTools, obsidian_uri,
 };
 use turbovault_vault::VaultManager;
 
@@ -185,6 +185,12 @@ pub struct ObsidianMcpServer {
     /// `open_with_locks(...)`. That keeps all in-process callers serialized
     /// on one commit-section mutex per worktree at trivial open cost.
     git_locks: Arc<RwLock<HashMap<String, Arc<CommitLocks>>>>,
+    /// Per-vault GWS.14 reindex queues (keyed by vault name,
+    /// lazy-initialized). Each git-backend `VaultRepo` open registers a
+    /// `CommitHook` that pushes onto this queue; read tools that depend on
+    /// derived state call `flush_reindex_for_active_vault` to drain through
+    /// HEAD before answering.
+    git_reindex_queues: Arc<RwLock<HashMap<String, Arc<ReindexQueue>>>>,
 }
 
 impl ObsidianMcpServer {
@@ -204,6 +210,7 @@ impl ObsidianMcpServer {
             similarity_engines: Arc::new(RwLock::new(HashMap::new())),
             search_engines: Arc::new(RwLock::new(HashMap::new())),
             git_locks: Arc::new(RwLock::new(HashMap::new())),
+            git_reindex_queues: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -458,24 +465,151 @@ impl ObsidianMcpServer {
                         vault_name, vault_config.path, e
                     ))
                 })?;
-                let locks = {
-                    let cache = self.git_locks.read().await;
-                    cache.get(&vault_name).map(Arc::clone)
-                };
-                let locks = match locks {
-                    Some(l) => l,
-                    None => {
-                        let fresh = Arc::new(CommitLocks::new());
-                        self.git_locks
-                            .write()
-                            .await
-                            .insert(vault_name.clone(), Arc::clone(&fresh));
-                        fresh
-                    }
-                };
-                Ok(WriteTools::git(manager, vault_config.path, locks))
+                let locks = self.get_or_init_git_locks(&vault_name).await;
+                let queue = self.get_or_init_reindex_queue(&vault_name).await;
+                let queue_for_hook = Arc::clone(&queue);
+                let hook: CommitHook = Arc::new(move |_parent, commit| queue_for_hook.push(commit));
+                Ok(WriteTools::git_with_hook(
+                    manager,
+                    vault_config.path,
+                    locks,
+                    hook,
+                ))
             }
         }
+    }
+
+    async fn get_or_init_git_locks(&self, vault_name: &str) -> Arc<CommitLocks> {
+        if let Some(l) = self.git_locks.read().await.get(vault_name) {
+            return Arc::clone(l);
+        }
+        let fresh = Arc::new(CommitLocks::new());
+        self.git_locks
+            .write()
+            .await
+            .insert(vault_name.to_string(), Arc::clone(&fresh));
+        fresh
+    }
+
+    async fn get_or_init_reindex_queue(&self, vault_name: &str) -> Arc<ReindexQueue> {
+        if let Some(q) = self.git_reindex_queues.read().await.get(vault_name) {
+            return Arc::clone(q);
+        }
+        let fresh = Arc::new(ReindexQueue::new());
+        self.git_reindex_queues
+            .write()
+            .await
+            .insert(vault_name.to_string(), Arc::clone(&fresh));
+        fresh
+    }
+
+    /// Drain the active vault's reindex queue through HEAD before a
+    /// derived-state query (graph/search/analysis) reads. No-op for
+    /// vaults on the legacy backend (no queue) or when the queue is
+    /// empty.
+    ///
+    /// **Send/!Sync note:** `VaultRepo` is opened + dropped inside a
+    /// single `spawn_blocking` task so its libgit2 handle never crosses
+    /// an `await`. The drainer's graph work is async (tokio RwLock) and
+    /// runs after the blocking phase produces the path-set.
+    ///
+    /// Currently unused at call sites — the next GWS.14 commit plugs
+    /// this into the ~17 read tools that consult derived state.
+    #[allow(dead_code)]
+    async fn flush_reindex_for_active_vault(&self) -> McpResult<()> {
+        let vault_name = self.get_active_vault_name().await?;
+        let vault_config = self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
+        if vault_config.write_backend != WriteBackend::Git {
+            return Ok(());
+        }
+        let queue = match self.git_reindex_queues.read().await.get(&vault_name) {
+            Some(q) => Arc::clone(q),
+            None => return Ok(()), // never opened a git-backed write -> nothing pending
+        };
+        if queue.pending_count() == 0 {
+            return Ok(());
+        }
+        let manager = self.get_active_vault_manager().await?;
+        let locks = self.get_or_init_git_locks(&vault_name).await;
+        let path = vault_config.path;
+
+        // The drainer's full body is async (graph + search invalidation are
+        // tokio-locked), but it opens + consumes a !Sync VaultRepo. Run
+        // open inside spawn_blocking, hand back the resolved diff per
+        // commit, apply graph deltas in the async task.
+        loop {
+            // Quick exit when drained.
+            if queue.pending_count() == 0 {
+                break;
+            }
+            // Per-iteration clones are MOVED into spawn_blocking; the
+            // outer `queue`/`locks`/`path` bindings stay valid for
+            // subsequent iterations and for the post-blocking work.
+            let path_for_blocking = path.clone();
+            let locks_for_blocking = Arc::clone(&locks);
+            let queue_for_blocking = Arc::clone(&queue);
+            let drained = tokio::task::spawn_blocking(move || {
+                // Open the repo locally so its !Sync handle never escapes
+                // this thread. Drain the diff bookkeeping (sync); the
+                // graph apply runs back in the async task.
+                let repo = VaultRepo::open_with_locks(&path_for_blocking, locks_for_blocking)
+                    .map_err(|e| McpError::internal(format!("flush_reindex open repo: {}", e)))?;
+                let mut batches = Vec::new();
+                while let Some(commit) = queue_for_blocking.pop_front() {
+                    let parent = repo.git_commit_first_parent(commit).map_err(|e| {
+                        McpError::internal(format!("flush_reindex first-parent: {}", e))
+                    })?;
+                    let changes = repo
+                        .diff_path_statuses(parent, commit)
+                        .map_err(|e| McpError::internal(format!("flush_reindex diff: {}", e)))?;
+                    batches.push((commit, changes));
+                }
+                drop(repo);
+                Ok::<_, McpError>(batches)
+            })
+            .await
+            .map_err(|e| McpError::internal(format!("flush_reindex task: {}", e)))??;
+            if drained.is_empty() {
+                break;
+            }
+            for (commit, changes) in drained {
+                let vault_root = manager.vault_path().clone();
+                let graph_handle = manager.link_graph();
+                for (rel_path, present) in changes {
+                    let full_path = vault_root.join(&rel_path);
+                    if present {
+                        match manager.parse_file(std::path::Path::new(&rel_path)).await {
+                            Ok(vf) => {
+                                let mut graph = graph_handle.write().await;
+                                let _ = graph.remove_file(&full_path);
+                                if let Err(e) = graph.add_file(&vf) {
+                                    log::warn!("flush_reindex add_file({}): {}", rel_path, e);
+                                }
+                                if let Err(e) = graph.update_links(&vf) {
+                                    log::warn!("flush_reindex update_links({}): {}", rel_path, e);
+                                }
+                            }
+                            Err(e) => {
+                                log::debug!("flush_reindex parse_file({}) skip: {}", rel_path, e);
+                            }
+                        }
+                    } else {
+                        let mut graph = graph_handle.write().await;
+                        let _ = graph.remove_file(&full_path);
+                    }
+                }
+                queue.advance_cursor(commit);
+            }
+            // Also evict the cached search + similarity engines so the
+            // next query rebuilds against the now-current graph.
+            self.invalidate_search_cache().await;
+            self.invalidate_similarity_cache().await;
+        }
+        Ok(())
     }
 
     // ==================== Vault Context (LLM Discovery) ====================

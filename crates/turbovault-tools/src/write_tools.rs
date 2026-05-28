@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult};
 use turbovault_core::prelude::*;
-use turbovault_git::CommitLocks;
+use turbovault_git::{CommitHook, CommitLocks};
 use turbovault_vault::{EditResult, VaultManager};
 
 /// Per-vault write surface. One dispatch site per method; the MCP layer is
@@ -50,6 +50,23 @@ impl WriteTools {
         commit_locks: Arc<CommitLocks>,
     ) -> Self {
         Self::Git(GitFileTools::new(manager, vault_path, commit_locks))
+    }
+
+    /// Git-backed dispatch WITH a GWS.14 reindex hook installed on every
+    /// per-call `VaultRepo`. The MCP server uses this; bare `Self::git`
+    /// stays for tests / migrations that don't run the reindex stack.
+    pub fn git_with_hook(
+        manager: Arc<VaultManager>,
+        vault_path: PathBuf,
+        commit_locks: Arc<CommitLocks>,
+        commit_hook: CommitHook,
+    ) -> Self {
+        Self::Git(GitFileTools::new_with_hook(
+            manager,
+            vault_path,
+            commit_locks,
+            commit_hook,
+        ))
     }
 
     // -------- Reads (forwarded; both backends use working-tree bytes) --------

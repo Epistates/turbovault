@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult, OperationRecord};
 use turbovault_core::prelude::*;
-use turbovault_git::{CommitLocks, Oid, Transaction, VaultRepo};
+use turbovault_git::{CommitHook, CommitLocks, Oid, Transaction, VaultRepo};
 use turbovault_vault::{EditEngine, EditResult, VaultManager};
 
 /// Write-side tools backed by the git substrate.
@@ -35,13 +35,18 @@ pub struct GitFileTools {
     pub manager: Arc<VaultManager>,
     pub vault_path: PathBuf,
     pub commit_locks: Arc<CommitLocks>,
+    /// Optional post-commit hook installed on every `VaultRepo` opened
+    /// inside `apply_txn`. Plumbed for GWS.14 lazy GSU: the MCP server
+    /// passes a closure that pushes the new commit onto a per-vault
+    /// `ReindexQueue`. `None` = no reindex wiring (acceptable for tests
+    /// that don't care about derived state).
+    pub commit_hook: Option<CommitHook>,
 }
 
 impl GitFileTools {
-    /// Construct the git-backed write surface. `manager` is used only for
-    /// reads and validation helpers (paths, link graph). `vault_path` and
-    /// `commit_locks` together identify the git repo + its in-process
-    /// commit-section mutex registry (one per worktree).
+    /// Construct without a reindex hook (graph + search stay stale until
+    /// another path triggers their rebuild). Tests use this; the MCP
+    /// server uses [`Self::new_with_hook`].
     pub fn new(
         manager: Arc<VaultManager>,
         vault_path: PathBuf,
@@ -51,6 +56,23 @@ impl GitFileTools {
             manager,
             vault_path,
             commit_locks,
+            commit_hook: None,
+        }
+    }
+
+    /// Construct with a reindex hook fired post-commit. The MCP server
+    /// installs one that pushes onto a per-vault [`crate::ReindexQueue`].
+    pub fn new_with_hook(
+        manager: Arc<VaultManager>,
+        vault_path: PathBuf,
+        commit_locks: Arc<CommitLocks>,
+        commit_hook: CommitHook,
+    ) -> Self {
+        Self {
+            manager,
+            vault_path,
+            commit_locks,
+            commit_hook: Some(commit_hook),
         }
     }
 
@@ -335,12 +357,19 @@ impl GitFileTools {
         // `VaultRepo` is `Send` but `!Sync`; the substrate work is blocking
         // libgit2. Move it to the blocking pool. The `Arc<CommitLocks>` is
         // shared across calls so cross-call commit-section serialization
-        // survives even though we open a fresh `VaultRepo` per call.
+        // survives even though we open a fresh `VaultRepo` per call. The
+        // optional commit hook is cloned in and installed on each per-call
+        // open so the substrate fires it after a successful materialize.
         let path = self.vault_path.clone();
         let locks = Arc::clone(&self.commit_locks);
+        let hook = self.commit_hook.clone();
         let txn = txn.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            let repo = VaultRepo::open_with_locks(&path, locks).map_err(git_err_to_core)?;
+            let repo = match hook {
+                Some(h) => VaultRepo::open_with_locks_and_hook(&path, locks, h),
+                None => VaultRepo::open_with_locks(&path, locks),
+            }
+            .map_err(git_err_to_core)?;
             repo.apply_transaction(&txn)
                 .map(|_| ())
                 .map_err(git_err_to_core)
