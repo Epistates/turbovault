@@ -1,0 +1,25 @@
+[package]
+name = "turbovault-git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Git-native write substrate for TurboVault: every mutation is a commit (blobs -> isolated index -> tree -> commit -> ref CAS -> materialize)"
+documentation = "https://docs.rs/turbovault-git"
+
+[dependencies]
+turbovault-core = { workspace = true }
+
+git2 = { workspace = true }
+tracing = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
