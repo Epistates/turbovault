@@ -26,9 +26,11 @@ mod materialize;
 mod occ;
 mod plumbing;
 mod repo;
+mod txn;
 
 pub use error::{Error, Result};
 pub use locks::CommitLocks;
 pub use occ::Precondition;
 pub use plumbing::TreeChange;
 pub use repo::VaultRepo;
+pub use txn::{Transaction, TransactionResult};
