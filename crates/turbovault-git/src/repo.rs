@@ -153,6 +153,15 @@ impl VaultRepo {
         )
     }
 
+    /// First-parent oid of `commit`, or `None` for a root commit (the
+    /// initial commit on an unborn branch). Thin libgit2 wrapper exposed
+    /// so downstream consumers (the GWS.14 reindex drainer) can resolve a
+    /// commit's parent without taking a direct `git2` dep.
+    pub fn git_commit_first_parent(&self, commit: Oid) -> Result<Option<Oid>> {
+        let c = self.repo.find_commit(commit)?;
+        Ok(c.parent_ids().next())
+    }
+
     /// Borrow the underlying repository (for the plumbing layers).
     pub(crate) fn git(&self) -> &Repository {
         &self.repo
