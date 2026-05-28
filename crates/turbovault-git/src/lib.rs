@@ -21,9 +21,11 @@
 
 mod cas;
 mod error;
+mod occ;
 mod plumbing;
 mod repo;
 
 pub use error::{Error, Result};
+pub use occ::Precondition;
 pub use plumbing::TreeChange;
 pub use repo::VaultRepo;

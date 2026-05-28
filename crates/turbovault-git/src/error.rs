@@ -24,6 +24,18 @@ pub enum Error {
         found: Option<git2::Oid>,
     },
 
+    /// A per-file precondition failed: the blob at `path` in the base tree is not
+    /// what the caller read (it changed underneath the transaction). The whole
+    /// transaction aborts with **nothing applied** — the multi-file CAS / the
+    /// reconsideration domino. The caller re-reads the affected paths and
+    /// re-decides.
+    #[error("precondition failed for {path}: expected {expected:?}, found {found:?}")]
+    PreconditionFailed {
+        path: String,
+        expected: Option<git2::Oid>,
+        found: Option<git2::Oid>,
+    },
+
     /// Underlying libgit2 error.
     #[error("git error: {0}")]
     Git(#[from] git2::Error),
