@@ -21,6 +21,7 @@
 
 mod cas;
 mod error;
+mod fanout;
 mod locks;
 mod materialize;
 mod occ;
@@ -29,6 +30,7 @@ mod repo;
 mod txn;
 
 pub use error::{Error, Result};
+pub use fanout::{FanoutTransaction, MergeBackResult, MergeStrategy};
 pub use locks::CommitLocks;
 pub use occ::Precondition;
 pub use plumbing::TreeChange;

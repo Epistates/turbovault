@@ -47,6 +47,13 @@ impl VaultRepo {
         }
     }
 
+    /// Clone the shared commit-lock registry — handed to a scratch worktree's
+    /// `VaultRepo` (GWS.9) so all handles to the same repo's worktrees keep
+    /// using one registry.
+    pub fn commit_locks(&self) -> Arc<CommitLocks> {
+        Arc::clone(&self.commit_locks)
+    }
+
     /// Run `f` while holding this worktree's commit lock — the serialization
     /// boundary for the commit + checkout critical section (GWS.6/GWS.7). The
     /// key is the worktree's workdir (or the git dir for a bare repo).
