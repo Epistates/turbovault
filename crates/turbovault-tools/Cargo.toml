@@ -18,6 +18,7 @@ turbovault-vault = { workspace = true }
 turbovault-batch = { workspace = true }
 turbovault-export = { workspace = true }
 turbovault-audit = { workspace = true }
+turbovault-git = { workspace = true }
 
 # MCP server framework
 # Note: No features needed here - tools crate only defines tool implementations
@@ -36,6 +37,7 @@ tempfile = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 shellexpand = { workspace = true }
 urlencoding = "2"
+uuid = { workspace = true }
 
 # Diff tools
 similar = { workspace = true }
@@ -53,6 +55,8 @@ sql = ["dep:turbovault-sql"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
+# Tests only — production code uses `turbovault_git::Oid`, never git2 directly.
+git2 = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

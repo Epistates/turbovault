@@ -6,6 +6,7 @@ use turbovault_core::prelude::*;
 use turbovault_vault::VaultManager;
 
 /// Batch operation tools
+#[derive(Clone)]
 pub struct BatchTools {
     pub manager: Arc<VaultManager>,
 }

@@ -8,13 +8,14 @@ use tokio::sync::RwLock;
 use turbomcp::prelude::*;
 use turbovault_audit::{AuditFilter, AuditLog, OperationType, SnapshotStore};
 use turbovault_core::ServerConfig;
+use turbovault_core::config::WriteBackend;
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
-    AnalysisTools, AuditTools, BatchOperation, BatchTools, DiffTools, DuplicateTools, ExportTools,
+    AnalysisTools, AuditTools, BatchOperation, CommitLocks, DiffTools, DuplicateTools, ExportTools,
     FileTools, GraphTools, MetadataTools, QualityTools, RelationshipTools, SearchEngine,
-    SearchQuery, SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, WriteMode,
-    obsidian_uri,
+    SearchQuery, SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo,
+    WriteMode, WriteTools, obsidian_uri,
 };
 use turbovault_vault::VaultManager;
 
@@ -177,6 +178,13 @@ pub struct ObsidianMcpServer {
     similarity_engines: Arc<RwLock<HashMap<String, Arc<SimilarityEngine>>>>,
     /// Search engines per vault (keyed by vault name, lazy-initialized)
     search_engines: Arc<RwLock<HashMap<String, Arc<SearchEngine>>>>,
+    /// Shared per-vault `CommitLocks` registries for the git substrate
+    /// (keyed by vault name, lazy-initialized). `VaultRepo` itself is `!Sync`
+    /// (libgit2 raw pointers), so we cache the lock registry — which IS
+    /// `Send + Sync` — and open a fresh `VaultRepo` per call via
+    /// `open_with_locks(...)`. That keeps all in-process callers serialized
+    /// on one commit-section mutex per worktree at trivial open cost.
+    git_locks: Arc<RwLock<HashMap<String, Arc<CommitLocks>>>>,
 }
 
 impl ObsidianMcpServer {
@@ -195,6 +203,7 @@ impl ObsidianMcpServer {
             snapshot_stores: Arc::new(RwLock::new(HashMap::new())),
             similarity_engines: Arc::new(RwLock::new(HashMap::new())),
             search_engines: Arc::new(RwLock::new(HashMap::new())),
+            git_locks: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -421,6 +430,54 @@ impl ObsidianMcpServer {
         Ok((vault_name, manager))
     }
 
+    /// Build the backend-dispatching write surface for the active vault.
+    /// `Legacy` → wraps the cached `VaultManager`-backed tools. `Git` →
+    /// wraps a cached `VaultRepo` (so all in-process callers share one
+    /// commit-section mutex per vault). The MCP tool methods call this and
+    /// never branch on the backend themselves; cutover (GWS.15) deletes the
+    /// `Legacy` arm here.
+    async fn get_active_write_tools(&self) -> McpResult<WriteTools> {
+        let vault_name = self.get_active_vault_name().await?;
+        let manager = self.get_active_vault_manager().await?;
+        let vault_config = self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
+
+        match vault_config.write_backend {
+            WriteBackend::Legacy => Ok(WriteTools::legacy(manager)),
+            WriteBackend::Git => {
+                // Validate the path IS a git repo upfront so the failure is
+                // surfaced from `get_active_write_tools` (not from the first
+                // mutating call) and so we never cache a `CommitLocks` for a
+                // vault that can't host the substrate.
+                VaultRepo::open(vault_config.path.as_path()).map_err(|e| {
+                    McpError::internal(format!(
+                        "vault {} has write_backend=git but {:?} is not a git repo: {}",
+                        vault_name, vault_config.path, e
+                    ))
+                })?;
+                let locks = {
+                    let cache = self.git_locks.read().await;
+                    cache.get(&vault_name).map(Arc::clone)
+                };
+                let locks = match locks {
+                    Some(l) => l,
+                    None => {
+                        let fresh = Arc::new(CommitLocks::new());
+                        self.git_locks
+                            .write()
+                            .await
+                            .insert(vault_name.clone(), Arc::clone(&fresh));
+                        fresh
+                    }
+                };
+                Ok(WriteTools::git(manager, vault_config.path, locks))
+            }
+        }
+    }
+
     // ==================== Vault Context (LLM Discovery) ====================
 
     /// Get comprehensive vault context in a single call (LLMX: replaces 4+ separate calls)
@@ -573,9 +630,9 @@ impl ObsidianMcpServer {
         mode: Option<String>,
         expected_hash: Option<String>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let vault_name = self.get_active_vault_name().await?;
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
-        let tools = FileTools::new(manager);
+        let tools = self.get_active_write_tools().await?;
         tools
             .write_file_with_mode(&path, &content, write_mode, expected_hash.as_deref())
             .await
@@ -608,8 +665,8 @@ impl ObsidianMcpServer {
         expected_hash: Option<String>,
         dry_run: Option<bool>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
         let dry_run = dry_run.unwrap_or(false);
         let result = tools
             .edit_file(&path, &edits, expected_hash.as_deref(), dry_run)
@@ -649,8 +706,8 @@ impl ObsidianMcpServer {
             )));
         }
 
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
         tools
             .delete_file_with_hash(&path, expected_hash.as_deref())
             .await
@@ -681,8 +738,8 @@ impl ObsidianMcpServer {
         to: String,
         expected_hash: Option<String>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
         tools
             .move_file_with_hash(&from, &to, expected_hash.as_deref())
             .await
@@ -1676,7 +1733,7 @@ impl ObsidianMcpServer {
         ]
     )]
     async fn batch_execute(&self, operations: Vec<BatchOperation>) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let vault_name = self.get_active_vault_name().await?;
 
         if operations.is_empty() {
             return Err(McpError::internal(
@@ -1685,7 +1742,7 @@ impl ObsidianMcpServer {
         }
 
         let op_count = operations.len();
-        let tools = BatchTools::new(manager);
+        let tools = self.get_active_write_tools().await?;
         let result = tools
             .batch_execute(operations)
             .await
@@ -2007,8 +2064,8 @@ impl ObsidianMcpServer {
             )));
         }
 
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
         tools
             .move_file_with_hash(&from, &to, expected_hash.as_deref())
             .await

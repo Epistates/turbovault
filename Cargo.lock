@@ -5304,6 +5304,7 @@ version = "1.5.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "git2",
  "log",
  "serde",
  "serde_json",
@@ -5319,11 +5320,13 @@ dependencies = [
  "turbovault-batch",
  "turbovault-core",
  "turbovault-export",
+ "turbovault-git",
  "turbovault-graph",
  "turbovault-parser",
  "turbovault-sql",
  "turbovault-vault",
  "urlencoding",
+ "uuid",
  "yaml_serde",
 ]
 

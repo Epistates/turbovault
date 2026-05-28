@@ -173,6 +173,7 @@ pub mod diff_tools;
 pub mod duplicate_tools;
 pub mod export_tools;
 pub mod file_tools;
+pub mod git_file_tools;
 pub mod graph_tools;
 pub mod metadata_tools;
 pub mod output_formatter;
@@ -185,6 +186,7 @@ pub mod similarity_engine;
 pub mod templates;
 pub mod validation_tools;
 pub mod vault_lifecycle;
+pub mod write_tools;
 
 #[cfg(feature = "sql")]
 pub mod sql_engine;
@@ -196,6 +198,7 @@ pub use diff_tools::{DiffResult, DiffSummary, DiffTools};
 pub use duplicate_tools::{CompareResult, DuplicateGroup, DuplicateTools};
 pub use export_tools::ExportTools;
 pub use file_tools::{FileTools, NoteInfo, WriteMode, obsidian_uri};
+pub use git_file_tools::GitFileTools;
 pub use graph_tools::{BrokenLinkInfo, GraphTools, HealthInfo};
 pub use metadata_tools::MetadataTools;
 pub use output_formatter::{OutputFormat, ResponseFormatter};
@@ -207,8 +210,10 @@ pub use similarity_engine::{SimilarityEngine, SimilarityResult};
 pub use templates::{TemplateDefinition, TemplateEngine, TemplateFieldType};
 pub use turbovault_batch::{BatchOperation, BatchResult};
 pub use turbovault_core::prelude::*;
+pub use turbovault_git::{CommitLocks, Oid, VaultRepo};
 pub use validation_tools::{ValidationReportInfo, ValidationTools};
 pub use vault_lifecycle::VaultLifecycleTools;
+pub use write_tools::WriteTools;
 
 #[cfg(feature = "sql")]
 pub use sql_engine::FrontmatterSqlEngine;

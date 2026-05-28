@@ -37,3 +37,8 @@ pub use occ::Precondition;
 pub use plumbing::TreeChange;
 pub use repo::VaultRepo;
 pub use txn::{Transaction, TransactionResult};
+
+/// Re-exported so substrate consumers (e.g. `turbovault-tools`) can talk about
+/// blob/commit oids without taking a direct `git2` dep — preserves the
+/// substrate's role as the only crate that knows about libgit2.
+pub use git2::Oid;
