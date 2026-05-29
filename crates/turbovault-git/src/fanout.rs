@@ -44,16 +44,29 @@ pub struct MergeBackResult {
     pub merge_commit: Option<Oid>,
 }
 
+/// Stateless handle to an open fan-out scratch worktree — everything needed
+/// to merge OR abandon the fan-out later, without holding a borrowed
+/// [`FanoutTransaction`] across the wait (e.g. between MCP tool calls).
+///
+/// Returned by [`VaultRepo::open_fanout_worktree`]; consumed by
+/// [`VaultRepo::merge_fanout_back`] and [`VaultRepo::abandon_fanout_by_info`].
+/// The MCP layer uses this triple; the in-process programmatic API
+/// ([`FanoutTransaction`]) wraps the same info for ergonomic borrowing.
+#[derive(Debug, Clone)]
+pub struct FanoutInfo {
+    pub wip_branch: String,
+    pub worktree_name: String,
+    pub worktree_path: PathBuf,
+    pub parent_tip: Oid,
+    pub main_branch: String,
+}
+
 /// An open fan-out scratch worktree. Hold txns through `worktree_repo()`;
 /// finalize via `commit_fanout` (merge back) or `abandon_fanout` (discard).
 pub struct FanoutTransaction<'a> {
     main: &'a VaultRepo,
     worktree_repo: VaultRepo,
-    main_branch: String,
-    wip_branch: String,
-    worktree_name: String,
-    worktree_path: PathBuf,
-    parent_tip: Oid,
+    info: FanoutInfo,
 }
 
 impl<'a> FanoutTransaction<'a> {
@@ -64,12 +77,18 @@ impl<'a> FanoutTransaction<'a> {
 
     /// The wip branch the fan-out commits to (`wip/<id>`).
     pub fn wip_branch(&self) -> &str {
-        &self.wip_branch
+        &self.info.wip_branch
     }
 
     /// Main's tip when the fan-out began.
     pub fn parent_tip(&self) -> Oid {
-        self.parent_tip
+        self.info.parent_tip
+    }
+
+    /// The full info handle (stateless; usable by `merge_fanout_back` /
+    /// `abandon_fanout_by_info` when this `FanoutTransaction`'s borrow ends).
+    pub fn info(&self) -> &FanoutInfo {
+        &self.info
     }
 
     /// Merge the fan-out back into main and clean up the scratch worktree.
@@ -78,130 +97,22 @@ impl<'a> FanoutTransaction<'a> {
     #[instrument(
         skip(self),
         fields(
-            wip_branch = %self.wip_branch,
-            main_branch = %self.main_branch,
+            wip_branch = %self.info.wip_branch,
+            main_branch = %self.info.main_branch,
             strategy = ?strategy,
         ),
         name = "git_commit_fanout"
     )]
     pub fn commit_fanout(self, strategy: MergeStrategy) -> Result<MergeBackResult> {
-        // Serialize the merge-back on main's commit lock (same critical section
-        // every other writer on main uses).
-        let main = self.main;
-        let result = main.with_commit_lock(|| self.merge_back(strategy));
-        // Always attempt cleanup (worktree + wip branch), even on merge error,
-        // so we don't leak the scratch state.
-        let _ = self.cleanup_after_failure_attempt();
-        result
+        // Delegate to the stateless API so behavior is identical to the
+        // MCP path. `main.merge_fanout_back` does the lock + merge + cleanup.
+        self.main.merge_fanout_back(&self.info, strategy)
     }
 
     /// Discard the fan-out: nothing lands on main; scratch worktree + wip
     /// branch removed.
     pub fn abandon_fanout(self) -> Result<()> {
-        self.cleanup()
-    }
-
-    // --- internals ---
-
-    /// `commit_fanout` consumed `self`, so cleanup runs on the borrowed copy of
-    /// the fields before drop. This is a separate helper because the merge
-    /// path borrows `self` and we can't call `cleanup(self)` afterward — so we
-    /// inline a non-consuming variant for the failure-tolerant final step.
-    fn cleanup_after_failure_attempt(&self) -> Result<()> {
-        cleanup_inner(
-            self.main,
-            &self.wip_branch,
-            &self.worktree_name,
-            &self.worktree_path,
-        )
-    }
-
-    fn cleanup(self) -> Result<()> {
-        cleanup_inner(
-            self.main,
-            &self.wip_branch,
-            &self.worktree_name,
-            &self.worktree_path,
-        )
-    }
-
-    fn merge_back(&self, strategy: MergeStrategy) -> Result<MergeBackResult> {
-        let main = self.main;
-        let repo = main.git();
-        let wip_ref = format!("refs/heads/{}", self.wip_branch);
-
-        let wip_tip = repo
-            .refname_to_id(&wip_ref)
-            .map_err(|e| Error::Other(format!("wip branch {} missing: {e}", self.wip_branch)))?;
-        let main_tip_before = repo
-            .refname_to_id(&self.main_branch)
-            .map_err(|e| Error::Other(format!("main branch {} missing: {e}", self.main_branch)))?;
-
-        // If the fan-out made no commits, the wip branch still points at the
-        // parent tip — there is nothing to merge back. Treat as a no-op success.
-        if wip_tip == self.parent_tip {
-            return Ok(MergeBackResult {
-                tip_after: main_tip_before,
-                tip_before: main_tip_before,
-                merge_commit: None,
-            });
-        }
-
-        match strategy {
-            MergeStrategy::FastForward => {
-                // FF only works when main has not advanced since the fan-out began.
-                if main_tip_before != self.parent_tip {
-                    return Err(Error::Other(format!(
-                        "fast-forward merge-back failed: main advanced ({} -> {}) during the \
-                         fan-out; use MergeCommit instead",
-                        self.parent_tip, main_tip_before
-                    )));
-                }
-                main.cas_ref(&self.main_branch, Some(main_tip_before), wip_tip)?;
-                let changed = main.paths_changed_between(main_tip_before, wip_tip)?;
-                main.materialize(wip_tip, &changed)?;
-                Ok(MergeBackResult {
-                    tip_after: wip_tip,
-                    tip_before: main_tip_before,
-                    merge_commit: None,
-                })
-            }
-            MergeStrategy::MergeCommit => {
-                // Build the merged tree (3-way merge: base=parent_tip,
-                // ours=main_tip_before, theirs=wip_tip). If concurrent main
-                // writes don't conflict with the fan-out's changes, the merge
-                // succeeds cleanly; otherwise we surface the conflict.
-                let base_tree = repo.find_commit(self.parent_tip)?.tree()?;
-                let ours_tree = repo.find_commit(main_tip_before)?.tree()?;
-                let theirs_tree = repo.find_commit(wip_tip)?.tree()?;
-                let mut idx = repo.merge_trees(&base_tree, &ours_tree, &theirs_tree, None)?;
-                if idx.has_conflicts() {
-                    return Err(Error::Other(format!(
-                        "merge-back conflict between main ({}) and wip {} ({}); \
-                         resolve manually",
-                        main_tip_before, self.wip_branch, wip_tip
-                    )));
-                }
-                let merged_tree_oid = idx.write_tree_to(repo)?;
-
-                // Merge commit with two parents preserves wip's history.
-                let message = format!(
-                    "merge fan-out {} into {}",
-                    self.wip_branch, self.main_branch
-                );
-                let merge_commit_oid =
-                    main.commit_tree(merged_tree_oid, &[main_tip_before, wip_tip], &message)?;
-                main.cas_ref(&self.main_branch, Some(main_tip_before), merge_commit_oid)?;
-
-                let changed = main.paths_changed_between(main_tip_before, merge_commit_oid)?;
-                main.materialize(merge_commit_oid, &changed)?;
-                Ok(MergeBackResult {
-                    tip_after: merge_commit_oid,
-                    tip_before: main_tip_before,
-                    merge_commit: Some(merge_commit_oid),
-                })
-            }
-        }
+        self.main.abandon_fanout_by_info(&self.info)
     }
 }
 
@@ -272,6 +183,30 @@ impl VaultRepo {
         name = "git_begin_fanout"
     )]
     pub fn begin_fanout(&self, id: &str, worktree_path: &Path) -> Result<FanoutTransaction<'_>> {
+        let info = self.open_fanout_worktree(id, worktree_path)?;
+        // Open the worktree as a VaultRepo, sharing the commit-lock registry.
+        let worktree_repo = VaultRepo::open_with_locks(worktree_path, self.commit_locks())?;
+        Ok(FanoutTransaction {
+            main: self,
+            worktree_repo,
+            info,
+        })
+    }
+
+    /// Stateless variant of [`Self::begin_fanout`] — does the same work but
+    /// returns a [`FanoutInfo`] handle that survives the call boundary
+    /// (where `FanoutTransaction<'a>`'s borrow on `&self` does not). The MCP
+    /// `begin_transaction` tool uses this so it can return to the agent
+    /// between the begin call and the eventual `commit_transaction` /
+    /// `abandon_transaction`.
+    ///
+    /// Same preconditions: branch must be born + not detached.
+    #[instrument(
+        skip(self),
+        fields(id = %id, worktree_path = ?worktree_path),
+        name = "git_open_fanout_worktree"
+    )]
+    pub fn open_fanout_worktree(&self, id: &str, worktree_path: &Path) -> Result<FanoutInfo> {
         let main_branch = self.head_ref()?; // errors if detached
         let parent_tip = self
             .head_oid()
@@ -291,18 +226,136 @@ impl VaultRepo {
         self.git()
             .worktree(&worktree_name, worktree_path, Some(&opts))?;
 
-        // Open the worktree as a VaultRepo, sharing the commit-lock registry.
-        let worktree_repo = VaultRepo::open_with_locks(worktree_path, self.commit_locks())?;
-
-        Ok(FanoutTransaction {
-            main: self,
-            worktree_repo,
-            main_branch,
+        Ok(FanoutInfo {
             wip_branch,
             worktree_name,
             worktree_path: worktree_path.to_path_buf(),
             parent_tip,
+            main_branch,
         })
+    }
+
+    /// Stateless merge-back. Mirrors [`FanoutTransaction::commit_fanout`] but
+    /// takes the info handle instead of consuming a borrowed transaction.
+    /// Holds main's commit lock for the critical section and ALWAYS attempts
+    /// cleanup (worktree + wip branch) — even on merge error.
+    #[instrument(
+        skip(self, info),
+        fields(
+            wip_branch = %info.wip_branch,
+            main_branch = %info.main_branch,
+            strategy = ?strategy,
+        ),
+        name = "git_merge_fanout_back"
+    )]
+    pub fn merge_fanout_back(
+        &self,
+        info: &FanoutInfo,
+        strategy: MergeStrategy,
+    ) -> Result<MergeBackResult> {
+        let result = self.with_commit_lock(|| merge_inner(self, info, strategy));
+        let _ = cleanup_inner(
+            self,
+            &info.wip_branch,
+            &info.worktree_name,
+            &info.worktree_path,
+        );
+        result
+    }
+
+    /// Stateless abandon — cleanup the worktree + wip branch without
+    /// touching main.
+    #[instrument(
+        skip(self, info),
+        fields(
+            wip_branch = %info.wip_branch,
+            worktree_name = %info.worktree_name,
+        ),
+        name = "git_abandon_fanout_by_info"
+    )]
+    pub fn abandon_fanout_by_info(&self, info: &FanoutInfo) -> Result<()> {
+        cleanup_inner(
+            self,
+            &info.wip_branch,
+            &info.worktree_name,
+            &info.worktree_path,
+        )
+    }
+}
+
+/// Implementation extracted from the old `FanoutTransaction::merge_back` so
+/// the stateless and borrowed APIs share one body.
+fn merge_inner(
+    main: &VaultRepo,
+    info: &FanoutInfo,
+    strategy: MergeStrategy,
+) -> Result<MergeBackResult> {
+    let repo = main.git();
+    let wip_ref = format!("refs/heads/{}", info.wip_branch);
+
+    let wip_tip = repo
+        .refname_to_id(&wip_ref)
+        .map_err(|e| Error::Other(format!("wip branch {} missing: {e}", info.wip_branch)))?;
+    let main_tip_before = repo
+        .refname_to_id(&info.main_branch)
+        .map_err(|e| Error::Other(format!("main branch {} missing: {e}", info.main_branch)))?;
+
+    // If the fan-out made no commits, the wip branch still points at the
+    // parent tip — there is nothing to merge back. Treat as a no-op success.
+    if wip_tip == info.parent_tip {
+        return Ok(MergeBackResult {
+            tip_after: main_tip_before,
+            tip_before: main_tip_before,
+            merge_commit: None,
+        });
+    }
+
+    match strategy {
+        MergeStrategy::FastForward => {
+            if main_tip_before != info.parent_tip {
+                return Err(Error::Other(format!(
+                    "fast-forward merge-back failed: main advanced ({} -> {}) during the \
+                     fan-out; use MergeCommit instead",
+                    info.parent_tip, main_tip_before
+                )));
+            }
+            main.cas_ref(&info.main_branch, Some(main_tip_before), wip_tip)?;
+            let changed = main.paths_changed_between(main_tip_before, wip_tip)?;
+            main.materialize(wip_tip, &changed)?;
+            Ok(MergeBackResult {
+                tip_after: wip_tip,
+                tip_before: main_tip_before,
+                merge_commit: None,
+            })
+        }
+        MergeStrategy::MergeCommit => {
+            let base_tree = repo.find_commit(info.parent_tip)?.tree()?;
+            let ours_tree = repo.find_commit(main_tip_before)?.tree()?;
+            let theirs_tree = repo.find_commit(wip_tip)?.tree()?;
+            let mut idx = repo.merge_trees(&base_tree, &ours_tree, &theirs_tree, None)?;
+            if idx.has_conflicts() {
+                return Err(Error::Other(format!(
+                    "merge-back conflict between main ({}) and wip {} ({}); \
+                     resolve manually",
+                    main_tip_before, info.wip_branch, wip_tip
+                )));
+            }
+            let merged_tree_oid = idx.write_tree_to(repo)?;
+            let message = format!(
+                "merge fan-out {} into {}",
+                info.wip_branch, info.main_branch
+            );
+            let merge_commit_oid =
+                main.commit_tree(merged_tree_oid, &[main_tip_before, wip_tip], &message)?;
+            main.cas_ref(&info.main_branch, Some(main_tip_before), merge_commit_oid)?;
+            let changed = main.paths_changed_between(main_tip_before, merge_commit_oid)?;
+            main.materialize(merge_commit_oid, &changed)?;
+            Ok(MergeBackResult {
+                tip_after: merge_commit_oid,
+                tip_before: main_tip_before,
+                merge_commit: Some(merge_commit_oid),
+            })
+        }
     }
 }
 
@@ -491,6 +544,79 @@ mod tests {
         let fanout = vr.begin_fanout("7", &wt_path).unwrap();
         // No txns applied — wip tip == parent_tip.
         let res = fanout.commit_fanout(MergeStrategy::MergeCommit).unwrap();
+        assert!(res.merge_commit.is_none());
+        assert_eq!(res.tip_after, main_tip);
+    }
+
+    // -------- GWS.13 stateless fanout API --------
+
+    #[test]
+    fn stateless_open_returns_info_borrow_ends() {
+        let (_m, scratch, vr) = open_born();
+        let wt_path = scratch_path(&scratch, "stateless-1");
+        let info = vr.open_fanout_worktree("stateless-1", &wt_path).unwrap();
+        assert_eq!(info.wip_branch, "wip/stateless-1");
+        assert_eq!(info.worktree_name, "wip-stateless-1");
+        assert_eq!(info.worktree_path, wt_path);
+        assert_eq!(info.parent_tip, vr.head_oid().unwrap());
+
+        // info survives — we can now drop it / move it / pass through MCP.
+        let info_clone = info.clone();
+        vr.abandon_fanout_by_info(&info_clone).unwrap();
+        assert!(!wt_path.exists());
+    }
+
+    #[test]
+    fn stateless_open_then_write_then_merge_back_lands_on_main() {
+        let (_m, scratch, vr) = open_born();
+        let wt_path = scratch_path(&scratch, "stateless-2");
+        let info = vr.open_fanout_worktree("stateless-2", &wt_path).unwrap();
+
+        // Open the worktree separately (the stateless API doesn't return a
+        // VaultRepo handle — caller manages that lifecycle).
+        let wt = VaultRepo::open_with_locks(&wt_path, vr.commit_locks()).unwrap();
+        wt.apply_transaction(&Transaction::new("c").create("page.md", "PAGE"))
+            .unwrap();
+
+        let res = vr
+            .merge_fanout_back(&info, MergeStrategy::MergeCommit)
+            .unwrap();
+        assert!(res.merge_commit.is_some(), "merge commit landed");
+        assert_eq!(wt_read(&vr, "page.md"), "PAGE");
+        assert!(!wt_path.exists(), "scratch worktree cleaned up");
+    }
+
+    #[test]
+    fn stateless_abandon_after_writes_leaves_main_untouched() {
+        let (_m, scratch, vr) = open_born();
+        let main_tip = vr.head_oid().unwrap();
+        let wt_path = scratch_path(&scratch, "stateless-3");
+        let info = vr.open_fanout_worktree("stateless-3", &wt_path).unwrap();
+
+        let wt = VaultRepo::open_with_locks(&wt_path, vr.commit_locks()).unwrap();
+        wt.apply_transaction(&Transaction::new("c").create("orphan.md", "discarded"))
+            .unwrap();
+
+        vr.abandon_fanout_by_info(&info).unwrap();
+        assert_eq!(vr.head_oid(), Some(main_tip), "main unchanged");
+        assert!(!wt_path.exists());
+        assert!(
+            vr.git()
+                .find_branch("wip/stateless-3", git2::BranchType::Local)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stateless_merge_back_no_commits_is_noop() {
+        let (_m, scratch, vr) = open_born();
+        let main_tip = vr.head_oid().unwrap();
+        let wt_path = scratch_path(&scratch, "stateless-4");
+        let info = vr.open_fanout_worktree("stateless-4", &wt_path).unwrap();
+        // No writes through wt — merge_back should be a no-op.
+        let res = vr
+            .merge_fanout_back(&info, MergeStrategy::MergeCommit)
+            .unwrap();
         assert!(res.merge_commit.is_none());
         assert_eq!(res.tip_after, main_tip);
     }

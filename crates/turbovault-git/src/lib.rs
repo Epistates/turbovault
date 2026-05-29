@@ -31,7 +31,7 @@ mod restore;
 mod txn;
 
 pub use error::{Error, Result};
-pub use fanout::{FanoutTransaction, MergeBackResult, MergeStrategy};
+pub use fanout::{FanoutInfo, FanoutTransaction, MergeBackResult, MergeStrategy};
 pub use locks::CommitLocks;
 pub use occ::Precondition;
 pub use plumbing::TreeChange;
