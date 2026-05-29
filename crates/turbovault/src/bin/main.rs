@@ -517,7 +517,10 @@ mod tests {
     /// per-vault `write_backend: git`.
     ///
     /// Fixture matches `ServerConfig::load_vaults`'s contract (top-level
-    /// YAML array of `VaultConfig`).
+    /// YAML array of `VaultConfig`). Fields named here exercise the parse
+    /// path only; behavioral coverage for each field belongs to its own
+    /// implementing ticket. (turbovault-lri: `include_ignored` is parse-only
+    /// today, so it is intentionally omitted from this fixture.)
     #[tokio::test]
     async fn config_load_registers_git_backend_vault() {
         let vault_tmp = TempDir::new().unwrap();
@@ -525,7 +528,7 @@ mod tests {
         let cfg_path = cfg_tmp.path().join("config.yaml");
 
         let yaml = format!(
-            "- name: gvault\n  path: {}\n  is_default: true\n  write_backend: git\n  git:\n    branch: main\n    merge_strategy: fast-forward\n    include_ignored: false\n",
+            "- name: gvault\n  path: {}\n  is_default: true\n  write_backend: git\n  git:\n    branch: main\n    merge_strategy: fast-forward\n",
             vault_tmp.path().display()
         );
         tokio::fs::write(&cfg_path, yaml).await.unwrap();
