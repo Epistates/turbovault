@@ -6,10 +6,10 @@ use turbomcp::telemetry::TelemetryConfig;
 use turbomcp::{McpServerExt, ProtocolConfig, VisibilityLayer};
 use turbovault::ObsidianMcpServer;
 use turbovault::tool_visibility::{
-    ToolVisibilityOverrides, ToolVisibilitySettings, default_config_path,
+    ToolVisibilityOverrides, ToolVisibilitySettings, TurboVaultConfigFile, default_config_path,
 };
+use turbovault_core::VaultConfig;
 use turbovault_core::cache::VaultCache;
-use turbovault_core::{ServerConfig, VaultConfig};
 use turbovault_tools::OutputFormat;
 
 /// TurboVault Server - AI-powered vault management
@@ -163,23 +163,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //    is added only if the name "default" is still free after (1) and (2).
     // 4. Active vault: a `is_default: true` entry in `--config` wins. Otherwise
     //    cache metadata's `active_vault` is honored.
+    //
+    // The vault block lives under `vaults:` in the same TurboVault YAML file
+    // that `tool_visibility:` is read from (single canonical shape — both
+    // consumers go through `TurboVaultConfigFile`). xj8-followon / wbk.
     let mut config_vault_names: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     let mut config_default_vault: Option<String> = None;
     if let Some(config_path) = args.config.as_deref() {
-        let cfg_vaults = ServerConfig::load_vaults(config_path).await.map_err(|e| {
-            format!(
-                "Failed to load vaults from --config {}: {}",
-                config_path.display(),
-                e
-            )
-        })?;
+        let parsed = TurboVaultConfigFile::load(config_path)
+            .await
+            .map_err(|e| format!("Failed to load --config {}: {}", config_path.display(), e))?;
         log::info!(
             "Loaded {} vault(s) from --config {}",
-            cfg_vaults.len(),
+            parsed.vaults.len(),
             config_path.display()
         );
-        for vault_config in cfg_vaults {
+        for vault_config in parsed.vaults {
             let name = vault_config.name.clone();
             let is_default = vault_config.is_default;
             match server.multi_vault().add_vault(vault_config).await {
@@ -511,16 +511,17 @@ async fn load_tool_visibility(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use turbovault_core::{MultiVaultManager, WriteBackend};
+    use turbovault_core::{MultiVaultManager, ServerConfig, WriteBackend};
 
-    /// turbovault-xj8: `--config` loads the vaults: block and honors
-    /// per-vault `write_backend: git`.
+    /// turbovault-xj8 (refined by xj8-followon): `--config` loads the
+    /// `vaults:` block from the unified TurboVault YAML config — same file
+    /// that holds `tool_visibility:`. Honors per-vault `write_backend: git`.
     ///
-    /// Fixture matches `ServerConfig::load_vaults`'s contract (top-level
-    /// YAML array of `VaultConfig`). Fields named here exercise the parse
-    /// path only; behavioral coverage for each field belongs to its own
-    /// implementing ticket. (turbovault-lri: `include_ignored` is parse-only
-    /// today, so it is intentionally omitted from this fixture.)
+    /// Fixture matches `TurboVaultConfigFile`'s canonical shape (keyed
+    /// `vaults:` section). Fields named here exercise the parse path only;
+    /// behavioral coverage for each field belongs to its own implementing
+    /// ticket. (turbovault-lri: `include_ignored` is parse-only today, so
+    /// it is intentionally omitted from this fixture.)
     #[tokio::test]
     async fn config_load_registers_git_backend_vault() {
         let vault_tmp = TempDir::new().unwrap();
@@ -528,24 +529,50 @@ mod tests {
         let cfg_path = cfg_tmp.path().join("config.yaml");
 
         let yaml = format!(
-            "- name: gvault\n  path: {}\n  is_default: true\n  write_backend: git\n  git:\n    branch: main\n    merge_strategy: fast-forward\n",
+            "vaults:\n  - name: gvault\n    path: {}\n    is_default: true\n    write_backend: git\n    git:\n      branch: main\n      merge_strategy: fast-forward\n",
             vault_tmp.path().display()
         );
         tokio::fs::write(&cfg_path, yaml).await.unwrap();
 
-        let loaded = ServerConfig::load_vaults(&cfg_path).await.unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].name, "gvault");
-        assert_eq!(loaded[0].write_backend, WriteBackend::Git);
-        assert!(loaded[0].is_default);
-        assert!(loaded[0].git.is_some());
+        let parsed = TurboVaultConfigFile::load(&cfg_path).await.unwrap();
+        assert_eq!(parsed.vaults.len(), 1);
+        assert_eq!(parsed.vaults[0].name, "gvault");
+        assert_eq!(parsed.vaults[0].write_backend, WriteBackend::Git);
+        assert!(parsed.vaults[0].is_default);
+        assert!(parsed.vaults[0].git.is_some());
 
         let mv = MultiVaultManager::empty(ServerConfig::default()).unwrap();
-        for v in loaded {
+        for v in parsed.vaults {
             mv.add_vault(v).await.unwrap();
         }
         let registered = mv.get_vault_config("gvault").await.unwrap();
         assert_eq!(registered.write_backend, WriteBackend::Git);
+    }
+
+    /// `tool_visibility:` AND `vaults:` MUST load from the same file in one
+    /// parse — that's the canonical shape both consumers use. Regression
+    /// guard for the xj8-followon two-parser collision.
+    #[tokio::test]
+    async fn config_load_handles_unified_tool_visibility_and_vaults() {
+        let vault_tmp = TempDir::new().unwrap();
+        let cfg_tmp = TempDir::new().unwrap();
+        let cfg_path = cfg_tmp.path().join("config.yaml");
+
+        let yaml = format!(
+            "tool_visibility:\n  allowed:\n    - read_note\n  require_read_only: true\nvaults:\n  - name: v\n    path: {}\n    is_default: true\n",
+            vault_tmp.path().display()
+        );
+        tokio::fs::write(&cfg_path, yaml).await.unwrap();
+
+        let visibility = ToolVisibilitySettings::from_yaml_file(&cfg_path)
+            .await
+            .unwrap();
+        assert_eq!(visibility.allowed, vec!["read_note".to_string()]);
+        assert!(visibility.require_read_only);
+
+        let parsed = TurboVaultConfigFile::load(&cfg_path).await.unwrap();
+        assert_eq!(parsed.vaults.len(), 1);
+        assert_eq!(parsed.vaults[0].name, "v");
     }
 
     /// Parse failure on `--config` must propagate (loud failure contract).
@@ -557,7 +584,7 @@ mod tests {
             .await
             .unwrap();
 
-        let res = ServerConfig::load_vaults(&cfg_path).await;
+        let res = TurboVaultConfigFile::load(&cfg_path).await;
         assert!(res.is_err(), "malformed yaml must surface as Err");
     }
 }

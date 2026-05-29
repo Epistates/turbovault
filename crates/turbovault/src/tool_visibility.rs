@@ -2,6 +2,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use turbomcp::VisibilityConfig;
+use turbovault_core::VaultConfig;
 
 /// User-facing tool visibility settings loaded from TurboVault config.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,28 +27,50 @@ pub struct ToolVisibilityOverrides {
     pub require_read_only: bool,
 }
 
+/// Top-level shape of the TurboVault `--config` / `TURBOVAULT_CONFIG` YAML file.
+///
+/// Both the `tool_visibility:` section AND the `vaults:` section live here so
+/// the file has ONE canonical shape readable by both consumers
+/// (`ToolVisibilitySettings::from_yaml_file` for the visibility rules,
+/// `TurboVaultConfigFile::load` for vault registration). xj8-followon: the
+/// earlier xj8 wiring had `ServerConfig::load_vaults` read the same path as a
+/// bare `Vec<VaultConfig>`, conflicting with the tool-visibility parser. See
+/// also turbovault-wbk (closed by this unification).
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-struct TurboVaultConfigFile {
-    tool_visibility: ToolVisibilitySettings,
+pub struct TurboVaultConfigFile {
+    pub tool_visibility: ToolVisibilitySettings,
+    pub vaults: Vec<VaultConfig>,
+}
+
+impl TurboVaultConfigFile {
+    /// Parse a TurboVault YAML config file.
+    pub fn from_yaml_str(yaml: &str) -> anyhow::Result<Self> {
+        yaml_serde::from_str(yaml).context("invalid TurboVault YAML config")
+    }
+
+    /// Load and parse a TurboVault YAML config file from disk.
+    pub async fn load(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        let yaml = tokio::fs::read_to_string(path)
+            .await
+            .with_context(|| format!("failed to read TurboVault config {}", path.display()))?;
+        Self::from_yaml_str(&yaml)
+            .with_context(|| format!("failed to parse TurboVault config {}", path.display()))
+    }
 }
 
 impl ToolVisibilitySettings {
     /// Parse the `tool_visibility` section from a TurboVault YAML config.
     pub fn from_yaml_str(yaml: &str) -> anyhow::Result<Self> {
-        let config: TurboVaultConfigFile =
-            yaml_serde::from_str(yaml).context("invalid TurboVault YAML config")?;
+        let config = TurboVaultConfigFile::from_yaml_str(yaml)?;
         Ok(config.tool_visibility)
     }
 
     /// Load the `tool_visibility` section from a YAML config file.
     pub async fn from_yaml_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let path = path.as_ref();
-        let yaml = tokio::fs::read_to_string(path)
-            .await
-            .with_context(|| format!("failed to read tool visibility config {}", path.display()))?;
-        Self::from_yaml_str(&yaml)
-            .with_context(|| format!("failed to parse tool visibility config {}", path.display()))
+        let config = TurboVaultConfigFile::load(path).await?;
+        Ok(config.tool_visibility)
     }
 
     /// Merge CLI/env overrides into file settings.
