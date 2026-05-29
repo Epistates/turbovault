@@ -22,6 +22,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 use turbovault_core::prelude::*;
 use turbovault_git::{Oid, VaultRepo};
 use turbovault_vault::VaultManager;
@@ -30,12 +31,20 @@ use turbovault_vault::VaultManager;
 ///
 /// Thread-safety: std `Mutex` (not tokio) — the critical sections are
 /// pure data manipulation, microseconds long; no `await` inside.
+///
+/// `notify` is woken on every `push` so a background drainer (GWS.14a)
+/// can react immediately instead of polling. Idle pollers can ignore it.
 #[derive(Debug, Default)]
 pub struct ReindexQueue {
     pending: Mutex<VecDeque<Oid>>,
     /// Most recent commit fully applied to the derived indexes.
     /// `None` = nothing reindexed yet.
     cursor: Mutex<Option<Oid>>,
+    /// Woken on every `push`. Background drainers (GWS.14a) await this to
+    /// drain promptly without burning CPU on a tight poll loop. Flush-on-
+    /// query callers don't need to await it (they just call `drain_through`
+    /// directly).
+    notify: Notify,
 }
 
 impl ReindexQueue {
@@ -45,8 +54,17 @@ impl ReindexQueue {
     }
 
     /// Enqueue a commit. Called from the substrate's [`turbovault_git::CommitHook`].
+    /// Wakes any background drainer (GWS.14a) currently parked on `notify`.
     pub fn push(&self, commit: Oid) {
         self.pending.lock().unwrap().push_back(commit);
+        self.notify.notify_one();
+    }
+
+    /// Borrow the per-queue notifier. The background drainer awaits
+    /// `notify.notified()` between drain passes; flush-on-query callers
+    /// don't need it.
+    pub fn notify(&self) -> &Notify {
+        &self.notify
     }
 
     /// Number of commits awaiting reindex. Snapshot; may change immediately
@@ -287,6 +305,33 @@ mod tests {
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(queue.cursor(), Some(r1.commit));
+    }
+
+    // -------- GWS.14a: background drainer wiring --------
+
+    #[tokio::test]
+    async fn push_wakes_notify_so_background_drainer_does_not_poll() {
+        // Smoke test the notify path on ReindexQueue. A real drainer is
+        // started by ObsidianMcpServer; here we verify a parked notified()
+        // future fires immediately when push() runs.
+        let q = Arc::new(ReindexQueue::new());
+        let q2 = Arc::clone(&q);
+        let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let woken_clone = Arc::clone(&woken);
+        let waiter = tokio::spawn(async move {
+            let notified = q2.notify().notified();
+            tokio::pin!(notified);
+            tokio::time::timeout(std::time::Duration::from_secs(2), &mut notified)
+                .await
+                .expect("notify should fire before timeout");
+            woken_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        // Yield so the waiter has a chance to park BEFORE we push.
+        tokio::task::yield_now().await;
+        let oid = Oid::from_str("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap();
+        q.push(oid);
+        waiter.await.unwrap();
+        assert!(woken.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[tokio::test]

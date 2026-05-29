@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use turbomcp::prelude::*;
@@ -191,6 +191,12 @@ pub struct ObsidianMcpServer {
     /// derived state call `flush_reindex_for_active_vault` to drain through
     /// HEAD before answering.
     git_reindex_queues: Arc<RwLock<HashMap<String, Arc<ReindexQueue>>>>,
+    /// Per-vault GWS.14a background drainer task handles (keyed by vault
+    /// name). Spawned lazily on the first git-backend `get_active_write_tools`
+    /// call; drains the reindex queue in the background so steady-state
+    /// reads never pay catch-up. Idempotent: re-spawning is guarded by the
+    /// HashMap occupancy check.
+    git_drainers: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
 }
 
 impl ObsidianMcpServer {
@@ -211,6 +217,7 @@ impl ObsidianMcpServer {
             search_engines: Arc::new(RwLock::new(HashMap::new())),
             git_locks: Arc::new(RwLock::new(HashMap::new())),
             git_reindex_queues: Arc::new(RwLock::new(HashMap::new())),
+            git_drainers: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -482,6 +489,16 @@ impl ObsidianMcpServer {
                 let queue_for_hook = Arc::clone(&queue);
                 let hook: CommitHook = Arc::new(move |_parent, commit| queue_for_hook.push(commit));
 
+                // GWS.14a: spawn the background drainer the first time this
+                // vault sees a git-backend write. Idempotent.
+                self.spawn_drainer_if_needed(
+                    &vault_name,
+                    vault_config.path.clone(),
+                    Arc::clone(&manager),
+                    Arc::clone(&queue),
+                )
+                .await;
+
                 // GWS.14b: build a flush callback fired BEFORE the substrate
                 // returns a ConcurrencyError. Captures the vault_name + path
                 // + manager bound at WriteTools construction so the flush
@@ -539,6 +556,71 @@ impl ObsidianMcpServer {
             .await
             .insert(vault_name.to_string(), Arc::clone(&fresh));
         fresh
+    }
+
+    /// Spawn a per-vault background drainer (GWS.14a) the first time a
+    /// git-backend write surface is constructed for `vault_name`. Idempotent
+    /// — subsequent calls early-out if a drainer is already running.
+    ///
+    /// The drainer:
+    /// - Awaits the queue's `Notify` (poked on every `push`).
+    /// - Falls through to a 100ms safety-net poll so a missed/lost wake
+    ///   still eventually drains.
+    /// - Calls `flush_reindex_for_vault` (the same drain path read tools
+    ///   use), which spawn_blocks the libgit2 work and applies graph deltas
+    ///   in the async task.
+    /// - Logs and continues on per-iteration errors.
+    ///
+    /// The task is never explicitly aborted; it lives for the server's
+    /// lifetime. Vault-removal cleanup is a follow-up if the leak becomes
+    /// a problem in practice.
+    async fn spawn_drainer_if_needed(
+        &self,
+        vault_name: &str,
+        vault_path: PathBuf,
+        manager: Arc<VaultManager>,
+        queue: Arc<ReindexQueue>,
+    ) {
+        {
+            let drainers = self.git_drainers.read().await;
+            if drainers.contains_key(vault_name) {
+                return;
+            }
+        }
+        let mut drainers = self.git_drainers.write().await;
+        // Double-check after re-acquiring the write lock (race window).
+        if drainers.contains_key(vault_name) {
+            return;
+        }
+        let server = self.clone();
+        let name = vault_name.to_string();
+        let queue_for_task = Arc::clone(&queue);
+        let manager_for_task = Arc::clone(&manager);
+        let path_for_task = vault_path.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                // Re-arm Notify each iteration. Tokio's notify_one() stores a
+                // single permit when no waiter is parked, so a push() that
+                // races between drain-completion and the next .notified() is
+                // captured by the next await.
+                let notified = queue_for_task.notify().notified();
+                tokio::pin!(notified);
+                tokio::select! {
+                    _ = &mut notified => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                }
+                if queue_for_task.pending_count() == 0 {
+                    continue;
+                }
+                if let Err(e) = server
+                    .flush_reindex_for_vault(&name, &path_for_task, Arc::clone(&manager_for_task))
+                    .await
+                {
+                    log::warn!("GWS.14a background drainer for vault {}: {}", name, e);
+                }
+            }
+        });
+        drainers.insert(vault_name.to_string(), handle);
     }
 
     /// Drain the active vault's reindex queue through HEAD before a
