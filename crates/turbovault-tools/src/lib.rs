@@ -212,7 +212,9 @@ pub use similarity_engine::{SimilarityEngine, SimilarityResult};
 pub use templates::{TemplateDefinition, TemplateEngine, TemplateFieldType};
 pub use turbovault_batch::{BatchOperation, BatchResult};
 pub use turbovault_core::prelude::*;
-pub use turbovault_git::{CommitHook, CommitLocks, Oid, VaultRepo};
+pub use turbovault_git::{
+    CommitHook, CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, VaultRepo,
+};
 pub use validation_tools::{ValidationReportInfo, ValidationTools};
 pub use vault_lifecycle::VaultLifecycleTools;
 pub use write_tools::WriteTools;

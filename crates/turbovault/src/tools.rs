@@ -8,14 +8,15 @@ use tokio::sync::RwLock;
 use turbomcp::prelude::*;
 use turbovault_audit::{AuditFilter, AuditLog, OperationType, SnapshotStore};
 use turbovault_core::ServerConfig;
-use turbovault_core::config::WriteBackend;
+use turbovault_core::config::{GitMergeStrategy as ConfigMergeStrategy, VaultConfig, WriteBackend};
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
     AnalysisTools, AuditTools, BatchOperation, CasCollisionFlush, CommitHook, CommitLocks,
-    DiffTools, DuplicateTools, ExportTools, FileTools, GraphTools, MetadataTools, QualityTools,
-    ReindexQueue, RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine,
-    TemplateEngine, VaultLifecycleTools, VaultRepo, WriteMode, WriteTools, obsidian_uri,
+    DiffTools, DuplicateTools, ExportTools, FanoutInfo, FileTools, GitMergeStrategy, GraphTools,
+    MetadataTools, QualityTools, ReindexQueue, RelationshipTools, SearchEngine, SearchQuery,
+    SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo, WriteMode,
+    WriteTools, obsidian_uri,
 };
 use turbovault_vault::VaultManager;
 
@@ -197,6 +198,21 @@ pub struct ObsidianMcpServer {
     /// reads never pay catch-up. Idempotent: re-spawning is guarded by the
     /// HashMap occupancy check.
     git_drainers: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// GWS.13 active fanout transactions, keyed by **base vault name**
+    /// (the original vault, NOT the auto-registered fanout vault). At most
+    /// one active fanout per base vault — `begin_transaction` errors loudly
+    /// on a second concurrent attempt.
+    active_fanouts: Arc<RwLock<HashMap<String, ActiveFanoutRecord>>>,
+}
+
+/// One row of `ObsidianMcpServer.active_fanouts`.
+#[derive(Debug, Clone)]
+struct ActiveFanoutRecord {
+    tx_id: String,
+    info: FanoutInfo,
+    /// Auto-registered transient vault name (e.g. `<base>-fanout-<tx_id>`)
+    /// that subagents `set_active_vault` to during the transaction.
+    fanout_vault_name: String,
 }
 
 impl ObsidianMcpServer {
@@ -218,6 +234,7 @@ impl ObsidianMcpServer {
             git_locks: Arc::new(RwLock::new(HashMap::new())),
             git_reindex_queues: Arc::new(RwLock::new(HashMap::new())),
             git_drainers: Arc::new(RwLock::new(HashMap::new())),
+            active_fanouts: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -621,6 +638,58 @@ impl ObsidianMcpServer {
             }
         });
         drainers.insert(vault_name.to_string(), handle);
+    }
+
+    // ==================== GWS.13 Fanout transaction helpers ====================
+
+    /// Where on disk to put a fanout's scratch worktree. Must live OUTSIDE
+    /// any existing vault's working tree (git refuses nested worktrees).
+    /// The per-process pid disambiguates concurrent servers on the same box.
+    fn fanout_scratch_path(tx_id: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "turbovault-fanout-{}-{}",
+            std::process::id(),
+            tx_id
+        ))
+    }
+
+    /// Convert a YAML-config merge strategy to the substrate's enum.
+    fn config_to_git_merge_strategy(s: ConfigMergeStrategy) -> GitMergeStrategy {
+        match s {
+            ConfigMergeStrategy::MergeCommit => GitMergeStrategy::MergeCommit,
+            ConfigMergeStrategy::FastForward => GitMergeStrategy::FastForward,
+        }
+    }
+
+    fn parse_merge_strategy(s: Option<&str>) -> McpResult<Option<GitMergeStrategy>> {
+        match s {
+            None => Ok(None),
+            Some("merge-commit") | Some("merge_commit") => Ok(Some(GitMergeStrategy::MergeCommit)),
+            Some("fast-forward") | Some("fast_forward") => Ok(Some(GitMergeStrategy::FastForward)),
+            Some(other) => Err(McpError::invalid_request(format!(
+                "invalid merge_strategy '{}': must be 'merge-commit' or 'fast-forward'",
+                other
+            ))),
+        }
+    }
+
+    /// Resolve the base vault for the active fanout context:
+    /// - If the active vault has an open fanout (keyed by its own name), use it.
+    /// - Otherwise, if the active vault IS a fanout vault, walk back to base.
+    /// - Else: no active fanout, return None.
+    async fn resolve_active_fanout(&self) -> Option<(String, ActiveFanoutRecord)> {
+        let active = self.get_active_vault_name().await.ok()?;
+        let fanouts = self.active_fanouts.read().await;
+        if let Some(rec) = fanouts.get(&active) {
+            return Some((active, rec.clone()));
+        }
+        // active might be the FANOUT vault — find its base by reverse scan.
+        for (base, rec) in fanouts.iter() {
+            if rec.fanout_vault_name == active {
+                return Some((base.clone(), rec.clone()));
+            }
+        }
+        None
     }
 
     /// Drain the active vault's reindex queue through HEAD before a
@@ -2027,6 +2096,258 @@ impl ObsidianMcpServer {
         .with_next_step("quick_health_check");
 
         response.to_json()
+    }
+
+    // ==================== Fanout Transactions (GWS.13) ====================
+
+    /// Begin a fanout transaction on the active vault.
+    #[tool(
+        description = "Open a fanout scratch worktree for the active vault (git backend only). Auto-registers a temporary vault pointing at the worktree; agent/subagents `set_active_vault` to it for the duration. All writes inside go to a `wip/<tx_id>` branch and don't disturb the main working tree until `commit_transaction` merges back.",
+        usage = "Use when you need to fan out subagent writes that should land as an atomic unit. The returned `fanout_vault` is the name to switch into. Default merge strategy comes from the vault's `git.merge_strategy` config (override at `commit_transaction`).",
+        performance = "Cheap (~5-10ms): one branch create + one git worktree add. Worktree shares the object DB with main; the working-tree files materialize into the scratch dir.",
+        related = ["commit_transaction", "abandon_transaction", "set_active_vault"],
+        examples = ["begin_transaction()", "begin_transaction(merge_strategy: \"merge-commit\")"]
+    )]
+    async fn begin_transaction(
+        &self,
+        merge_strategy: Option<String>,
+    ) -> McpResult<serde_json::Value> {
+        let base_vault = self.get_active_vault_name().await?;
+        let base_cfg = self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
+        if base_cfg.write_backend != WriteBackend::Git {
+            return Err(McpError::invalid_request(format!(
+                "vault {} is on the legacy backend; fanout transactions require write_backend=git",
+                base_vault
+            )));
+        }
+
+        // Validate merge strategy upfront (so a bad value is caught at begin,
+        // not at commit). Stored on the record for default-at-commit use.
+        let _ = Self::parse_merge_strategy(merge_strategy.as_deref())?;
+
+        // Refuse nested fanouts: one active per base vault.
+        {
+            let fanouts = self.active_fanouts.read().await;
+            if fanouts.contains_key(&base_vault) {
+                return Err(McpError::invalid_request(format!(
+                    "vault {} already has an active fanout (tx_id={}); commit_transaction or abandon_transaction first",
+                    base_vault, fanouts[&base_vault].tx_id
+                )));
+            }
+            // Refuse if the active vault is itself a fanout vault (nested).
+            for rec in fanouts.values() {
+                if rec.fanout_vault_name == base_vault {
+                    return Err(McpError::invalid_request(format!(
+                        "active vault {} is already a fanout vault; nested fanouts are not supported",
+                        base_vault
+                    )));
+                }
+            }
+        }
+
+        let tx_id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+        let scratch_path = Self::fanout_scratch_path(&tx_id);
+
+        // Open VaultRepo on the base vault path (with its shared lock
+        // registry) and call the stateless open_fanout_worktree.
+        let locks = self.get_or_init_git_locks(&base_vault).await;
+        let base_path = base_cfg.path.clone();
+        let info_path = scratch_path.clone();
+        let tx_id_for_blocking = tx_id.clone();
+        let info = tokio::task::spawn_blocking(move || -> McpResult<FanoutInfo> {
+            let repo = VaultRepo::open_with_locks(&base_path, locks)
+                .map_err(|e| McpError::internal(format!("open base vault: {}", e)))?;
+            repo.open_fanout_worktree(&tx_id_for_blocking, &info_path)
+                .map_err(|e| McpError::internal(format!("open_fanout_worktree: {}", e)))
+        })
+        .await
+        .map_err(|e| McpError::internal(format!("begin_transaction task: {}", e)))??;
+
+        // Auto-register the fanout vault.
+        let fanout_vault_name = format!("{}-fanout-{}", base_vault, tx_id);
+        let fanout_cfg = VaultConfig::builder(&fanout_vault_name, scratch_path.clone())
+            .write_backend(WriteBackend::Git)
+            .build()
+            .map_err(|e| McpError::internal(format!("fanout vault config: {}", e)))?;
+        self.multi_vault_mgr
+            .add_vault(fanout_cfg)
+            .await
+            .map_err(|e| McpError::internal(format!("add_vault for fanout: {}", e)))?;
+
+        // Record the active fanout.
+        self.active_fanouts.write().await.insert(
+            base_vault.clone(),
+            ActiveFanoutRecord {
+                tx_id: tx_id.clone(),
+                info,
+                fanout_vault_name: fanout_vault_name.clone(),
+            },
+        );
+
+        StandardResponse::new(
+            base_vault.clone(),
+            "begin_transaction",
+            serde_json::json!({
+                "tx_id": tx_id,
+                "base_vault": base_vault,
+                "fanout_vault": fanout_vault_name,
+                "worktree_path": scratch_path.to_string_lossy(),
+                "wip_branch": format!("wip/{}", tx_id),
+            }),
+        )
+        .with_next_steps(&[
+            "set_active_vault",
+            "commit_transaction",
+            "abandon_transaction",
+        ])
+        .to_json()
+    }
+
+    /// Commit (merge back) the active fanout transaction.
+    #[tool(
+        description = "Merge the active fanout's wip branch back into the base vault's main branch (one merge-commit by default; configurable). Cleans up the scratch worktree + wip branch + deregisters the fanout vault. Caller may call this with the base vault OR the fanout vault active — both resolve to the same transaction.",
+        usage = "Pair with `begin_transaction`. `merge_strategy` overrides the vault config default at commit time; pass 'fast-forward' if you want main to advance directly to the wip tip (fails if main moved since begin).",
+        performance = "Dominated by the merge (one tree merge + one materialize). Typical ~10-30ms.",
+        related = ["begin_transaction", "abandon_transaction"],
+        examples = ["commit_transaction()", "commit_transaction(merge_strategy: \"fast-forward\")"]
+    )]
+    async fn commit_transaction(
+        &self,
+        merge_strategy: Option<String>,
+    ) -> McpResult<serde_json::Value> {
+        let (base_vault, record) = self.resolve_active_fanout().await.ok_or_else(|| {
+            McpError::invalid_request(
+                "no active fanout transaction (call begin_transaction first)".to_string(),
+            )
+        })?;
+        let base_cfg = self
+            .multi_vault_mgr
+            .list_vaults()
+            .await
+            .map_err(|e| McpError::internal(format!("list_vaults: {}", e)))?
+            .into_iter()
+            .find(|v| v.config.name == base_vault)
+            .ok_or_else(|| McpError::internal(format!("base vault {} disappeared", base_vault)))?
+            .config
+            .clone();
+
+        let strategy =
+            Self::parse_merge_strategy(merge_strategy.as_deref())?.unwrap_or_else(|| {
+                base_cfg
+                    .git
+                    .as_ref()
+                    .map(|g| Self::config_to_git_merge_strategy(g.merge_strategy))
+                    .unwrap_or(GitMergeStrategy::MergeCommit)
+            });
+
+        let locks = self.get_or_init_git_locks(&base_vault).await;
+        let base_path = base_cfg.path.clone();
+        let info = record.info.clone();
+        let merge_result = tokio::task::spawn_blocking(move || -> McpResult<_> {
+            let repo = VaultRepo::open_with_locks(&base_path, locks)
+                .map_err(|e| McpError::internal(format!("open base vault: {}", e)))?;
+            repo.merge_fanout_back(&info, strategy)
+                .map_err(|e| McpError::internal(format!("merge_fanout_back: {}", e)))
+        })
+        .await
+        .map_err(|e| McpError::internal(format!("commit_transaction task: {}", e)))??;
+
+        // Deregister fanout vault + clear record. On error in either step we
+        // keep going so we don't leave the server's in-memory state in a
+        // wedged state.
+        if let Err(e) = self
+            .multi_vault_mgr
+            .remove_vault(&record.fanout_vault_name)
+            .await
+        {
+            log::warn!(
+                "commit_transaction: failed to deregister fanout vault {}: {}",
+                record.fanout_vault_name,
+                e
+            );
+        }
+        self.active_fanouts.write().await.remove(&base_vault);
+
+        StandardResponse::new(
+            base_vault,
+            "commit_transaction",
+            serde_json::json!({
+                "tx_id": record.tx_id,
+                "merge_commit": merge_result.merge_commit.map(|o| o.to_string()),
+                "tip_before": merge_result.tip_before.to_string(),
+                "tip_after": merge_result.tip_after.to_string(),
+            }),
+        )
+        .with_next_step("quick_health_check")
+        .to_json()
+    }
+
+    /// Abandon (discard) the active fanout transaction.
+    #[tool(
+        description = "Discard the active fanout: nothing lands on the base vault, the scratch worktree + wip branch are removed, the auto-registered fanout vault is deregistered. Safe no-op if there's no active fanout (returns ok with `was_active: false`).",
+        usage = "Use to bail out of a fanout that no longer makes sense (subagent error, user cancel, conflicting plan). Symmetric counterpart to `commit_transaction`.",
+        performance = "Fast: a few filesystem + git ref cleanups.",
+        related = ["begin_transaction", "commit_transaction"],
+        examples = ["abandon_transaction()"]
+    )]
+    async fn abandon_transaction(&self) -> McpResult<serde_json::Value> {
+        let Some((base_vault, record)) = self.resolve_active_fanout().await else {
+            return StandardResponse::new(
+                self.get_active_vault_name().await.unwrap_or_default(),
+                "abandon_transaction",
+                serde_json::json!({ "was_active": false }),
+            )
+            .to_json();
+        };
+        let base_cfg = self
+            .multi_vault_mgr
+            .list_vaults()
+            .await
+            .map_err(|e| McpError::internal(format!("list_vaults: {}", e)))?
+            .into_iter()
+            .find(|v| v.config.name == base_vault)
+            .ok_or_else(|| McpError::internal(format!("base vault {} disappeared", base_vault)))?
+            .config
+            .clone();
+        let locks = self.get_or_init_git_locks(&base_vault).await;
+        let base_path = base_cfg.path.clone();
+        let info = record.info.clone();
+
+        tokio::task::spawn_blocking(move || -> McpResult<()> {
+            let repo = VaultRepo::open_with_locks(&base_path, locks)
+                .map_err(|e| McpError::internal(format!("open base vault: {}", e)))?;
+            repo.abandon_fanout_by_info(&info)
+                .map_err(|e| McpError::internal(format!("abandon_fanout_by_info: {}", e)))
+        })
+        .await
+        .map_err(|e| McpError::internal(format!("abandon_transaction task: {}", e)))??;
+
+        if let Err(e) = self
+            .multi_vault_mgr
+            .remove_vault(&record.fanout_vault_name)
+            .await
+        {
+            log::warn!(
+                "abandon_transaction: failed to deregister fanout vault {}: {}",
+                record.fanout_vault_name,
+                e
+            );
+        }
+        self.active_fanouts.write().await.remove(&base_vault);
+
+        StandardResponse::new(
+            base_vault,
+            "abandon_transaction",
+            serde_json::json!({
+                "was_active": true,
+                "tx_id": record.tx_id,
+            }),
+        )
+        .to_json()
     }
 
     // ==================== Export Operations ====================

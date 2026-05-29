@@ -62,6 +62,7 @@ turbomcp = { workspace = true, features = ["stdio", "telemetry"] }
 schemars = { workspace = true }
 shellexpand = { workspace = true }
 tokio = { workspace = true }
+uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 yaml_serde = { workspace = true }
