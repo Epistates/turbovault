@@ -375,12 +375,25 @@ impl ObsidianMcpServer {
         }
     }
 
-    /// Invalidate cached search engine for the active vault (call after any write operation)
+    /// Invalidate cached search engine for the active vault (call after any
+    /// write operation).
+    ///
+    /// **GWS.14c skip:** if the active vault is on the git backend, the
+    /// reindex drainer will incrementally `apply_changes` to the cached
+    /// engine on the next flush — evicting here would force a full
+    /// cold-rebuild on the next query and defeat the optimization. Legacy
+    /// backend still gets the hammer.
     async fn invalidate_search_cache(&self) {
-        if let Ok(vault_name) = self.get_active_vault_name().await {
-            let mut cache = self.search_engines.write().await;
-            cache.remove(&vault_name);
+        let Ok(vault_name) = self.get_active_vault_name().await else {
+            return;
+        };
+        if let Ok(cfg) = self.multi_vault_mgr.get_active_vault_config().await
+            && cfg.write_backend == WriteBackend::Git
+        {
+            return;
         }
+        let mut cache = self.search_engines.write().await;
+        cache.remove(&vault_name);
     }
 
     /// Get or build search engine for a given vault (cached, lazy-initialized)
@@ -778,10 +791,17 @@ impl ObsidianMcpServer {
             if drained.is_empty() {
                 break;
             }
+            // Collapse all pending changes into a path→latest-presence map
+            // so the search engine writer (GWS.14c) commits ONCE per drain
+            // pass instead of once per pending commit (writer create is
+            // ~10ms; amortizes nicely).
+            let mut collapsed_for_search: HashMap<String, bool> = HashMap::new();
+
             for (commit, changes) in drained {
                 let vault_root = manager.vault_path().clone();
                 let graph_handle = manager.link_graph();
                 for (rel_path, present) in changes {
+                    collapsed_for_search.insert(rel_path.clone(), present);
                     let full_path = vault_root.join(&rel_path);
                     if present {
                         match manager.parse_file(std::path::Path::new(&rel_path)).await {
@@ -806,9 +826,31 @@ impl ObsidianMcpServer {
                 }
                 queue.advance_cursor(commit);
             }
-            // Also evict the cached search + similarity engines so the
-            // next query rebuilds against the now-current graph.
-            self.invalidate_search_cache().await;
+
+            // GWS.14c: incrementally update the cached SearchEngine if any.
+            // Skip if not cached — the first query will build fresh from
+            // current state (same outcome, simpler reasoning).
+            if !collapsed_for_search.is_empty() {
+                let cached = {
+                    let engines = self.search_engines.read().await;
+                    engines.get(vault_name).cloned()
+                };
+                if let Some(engine) = cached {
+                    let change_vec: Vec<(String, bool)> =
+                        collapsed_for_search.into_iter().collect();
+                    if let Err(e) = engine.apply_changes(change_vec).await {
+                        log::warn!(
+                            "GWS.14c search incremental apply failed; falling back to evict: {}",
+                            e
+                        );
+                        self.invalidate_search_cache().await;
+                    }
+                }
+            }
+            // Similarity engine stays cache-evict for now — incremental
+            // TF-IDF lives in a follow-up if needed (the corpus IDF table
+            // is corpus-wide, so per-doc add/remove without recomputing
+            // IDF drifts the scores).
             self.invalidate_similarity_cache().await;
         }
         Ok(())

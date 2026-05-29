@@ -225,6 +225,85 @@ impl SearchEngine {
         })
     }
 
+    /// GWS.14c — apply an incremental change set to the tantivy index.
+    /// Each `(path, present_in_commit)` is processed in order:
+    /// - `present=true`  → delete the existing doc for this path (no-op if
+    ///   absent), re-parse the working-tree bytes, add the new doc.
+    /// - `present=false` → delete the doc for this path.
+    /// All changes commit in one writer transaction.
+    ///
+    /// Reads from the working tree (working-tree == HEAD invariant during
+    /// the substrate's commit lock). Parse errors are logged + skipped per
+    /// path — one malformed file does not brick the whole drain pass.
+    ///
+    /// Replaces the pre-GWS.14c pattern where the server evicted the
+    /// cached engine on flush and the next query paid cold-rebuild cost.
+    #[instrument(
+        skip(self, changes),
+        fields(n_changes = changes.len()),
+        name = "search_apply_changes"
+    )]
+    pub async fn apply_changes(&self, changes: Vec<(String, bool)>) -> Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mut writer = self
+            .index
+            .writer(50_000_000)
+            .map_err(|e| Error::config_error(format!("apply_changes: writer create: {}", e)))?;
+        for (rel_path, present) in changes {
+            // delete is a no-op if the path isn't currently in the index.
+            let term = tantivy::Term::from_field_text(self.field_path, &rel_path);
+            writer.delete_term(term);
+
+            if present {
+                match self
+                    .manager
+                    .parse_file(std::path::Path::new(&rel_path))
+                    .await
+                {
+                    Ok(vault_file) => {
+                        let title = vault_file
+                            .frontmatter
+                            .as_ref()
+                            .and_then(|fm| fm.data.get("title"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| {
+                                std::path::Path::new(&rel_path)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("")
+                            })
+                            .to_string();
+                        let tags_str = vault_file
+                            .frontmatter
+                            .as_ref()
+                            .map(|fm| fm.tags().join(" "))
+                            .unwrap_or_default();
+                        let plain_content = to_plain_text(&vault_file.content);
+                        let _ = writer.add_document(doc!(
+                            self.field_path => rel_path.clone(),
+                            self.field_title => title,
+                            self.field_content => plain_content,
+                            self.field_tags => tags_str,
+                        ));
+                    }
+                    Err(e) => {
+                        log::debug!(
+                            "search apply_changes skip {} (parse failed: {})",
+                            rel_path,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        writer
+            .commit()
+            .map_err(|e| Error::config_error(format!("apply_changes: writer commit: {}", e)))?;
+        Ok(())
+    }
+
     /// Simple keyword search
     #[instrument(skip(self), fields(query = query), name = "search_query")]
     pub async fn search(&self, query: &str) -> Result<Vec<SearchResultInfo>> {
