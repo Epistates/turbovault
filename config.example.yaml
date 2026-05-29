@@ -6,7 +6,22 @@
 # Copy this file to config.yaml and customize for your setup.
 #
 # Usage:
-#   turbovault --config config.yaml --init
+#   turbovault --config config.yaml
+#
+# Precedence (turbovault-xj8):
+#   1. `--config` vaults are canonical.
+#   2. Cache-recovered vaults fill in names not present in --config.
+#   3. `--vault <path>` is shorthand for a single "default" vault and
+#      only registers if "default" is still free.
+#   4. `is_default: true` in --config sets the active vault; otherwise
+#      cache metadata's active_vault is honored.
+#   On parse error of --config, the server exits nonzero — no silent
+#   fallback to cache recovery.
+#
+# NOTE: ServerConfig::load_vaults expects the file to be a top-level YAML
+# array of vault entries (matching `Vec<VaultConfig>`). The keyed
+# `vaults:` shape shown below is the future target; current loader reads
+# the array directly. Track this in a follow-up ticket.
 #
 # ==============================================================================
 
