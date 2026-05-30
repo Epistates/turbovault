@@ -158,6 +158,21 @@ impl GitFileTools {
             .await
     }
 
+    /// Strict create: write a NEW file with an `expect_absent` precondition.
+    /// If the path becomes occupied between the caller's check and the
+    /// substrate's CAS, `apply_txn` returns `ConcurrencyError` — the create
+    /// race the MCP layer's pre-check cannot close on its own.
+    ///
+    /// This is the substrate-side guarantee for turbovault-947 / write-note
+    /// CAS-by-default: even with parallel subagents racing to create the
+    /// same absent path, exactly one commit lands; the loser sees a loud
+    /// ConcurrencyError and re-decides.
+    pub async fn create_file(&self, path: &str, content: &str) -> Result<()> {
+        let txn = Transaction::new(format!("create_file {}", path))
+            .create(path, content.as_bytes().to_vec());
+        self.apply_txn(&txn).await
+    }
+
     /// Edit a file via SEARCH/REPLACE blocks. Reads working-tree bytes,
     /// applies the blocks in memory, and commits the result as one
     /// transaction. `dry_run = true` returns the preview without committing.
@@ -834,6 +849,44 @@ mod tests {
         let live = tools.edit_file("a.md", edits, None, false).await.unwrap();
         assert_eq!(dry.old_hash, live.old_hash);
         assert_eq!(dry.new_hash, live.new_hash);
+    }
+
+    /// turbovault-947: create_file on an absent path lands one commit.
+    #[tokio::test]
+    async fn create_file_writes_absent_path() {
+        let (tmp, tools) = setup().await;
+        let head_before = head_oid(&tools);
+        tools.create_file("new.md", "fresh\n").await.unwrap();
+        assert_eq!(tools.read_file("new.md").await.unwrap(), "fresh\n");
+        let head_after = head_oid(&tools).unwrap();
+        assert_ne!(Some(head_after), head_before, "create advanced HEAD");
+        // Existence side-effect lands in the working tree.
+        assert!(tmp.path().join("new.md").exists());
+    }
+
+    /// turbovault-947: create_file on an existing path fails its `expect_absent`
+    /// precondition. ZERO commits land; the working tree is unchanged. This is
+    /// the substrate guarantee for the concurrent-create race the MCP layer
+    /// pre-check cannot close on its own.
+    #[tokio::test]
+    async fn create_file_aborts_on_existing_path() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("dup.md", "v1\n").await.unwrap();
+        let head_before = head_oid(&tools).unwrap();
+
+        let err = tools.create_file("dup.md", "v2\n").await.unwrap_err();
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "expected ConcurrencyError, got: {err:?}"
+        );
+        assert_eq!(
+            tools.read_file("dup.md").await.unwrap(),
+            "v1\n",
+            "original content untouched on aborted create"
+        );
+        assert_eq!(head_oid(&tools), Some(head_before), "no commit on abort");
+        // Working tree file count unchanged: only `dup.md` exists.
+        assert!(tmp.path().join("dup.md").exists());
     }
 
     #[tokio::test]

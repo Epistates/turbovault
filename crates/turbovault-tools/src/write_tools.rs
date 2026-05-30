@@ -136,6 +136,25 @@ impl WriteTools {
         }
     }
 
+    /// Strict create (turbovault-947 / write-note CAS-by-default).
+    ///
+    /// **Git backend:** the substrate's `Transaction::create` carries an
+    /// `expect_absent` precondition — a concurrent winner makes the loser's
+    /// CAS fail loudly with `ConcurrencyError`. This is the safety the
+    /// MCP layer's pre-check cannot provide on its own (TOCTOU window).
+    ///
+    /// **Legacy backend:** delegates to `write_file` (best-effort; legacy
+    /// has no atomic create primitive). The MCP layer's pre-check is the
+    /// only protection — concurrent creates can still race. Known limit of
+    /// the legacy path; documented, not fixed (per the legacy-stays
+    /// direction).
+    pub async fn create_file(&self, path: &str, content: &str) -> Result<()> {
+        match self {
+            Self::Legacy { files, .. } => files.write_file(path, content).await,
+            Self::Git(g) => g.create_file(path, content).await,
+        }
+    }
+
     pub async fn edit_file(
         &self,
         path: &str,
@@ -299,6 +318,34 @@ mod tests {
         let repo = git2::Repository::open(tmp.path()).unwrap();
         assert!(repo.head().is_ok(), "HEAD now exists");
         assert!(matches!(tools, WriteTools::Git(_)));
+    }
+
+    /// turbovault-947: git dispatch carries `expect_absent` on create — a
+    /// second writer for the same path loses with `ConcurrencyError`.
+    #[tokio::test]
+    async fn git_create_file_aborts_on_existing_path() {
+        let tmp = TempDir::new().unwrap();
+        let tools = git_tools(&tmp).await;
+        tools.write_file("dup.md", "v1").await.unwrap();
+        let err = tools.create_file("dup.md", "v2").await.unwrap_err();
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "got: {err:?}"
+        );
+        assert_eq!(tools.read_file("dup.md").await.unwrap(), "v1");
+    }
+
+    /// turbovault-947: legacy dispatch has no atomic create primitive — the
+    /// fallback is `write_file` which blind-overwrites. Documented limit;
+    /// the MCP layer's pre-check is the only protection on legacy.
+    #[tokio::test]
+    async fn legacy_create_file_is_blind_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let tools = legacy_tools(&tmp).await;
+        tools.write_file("dup.md", "v1").await.unwrap();
+        // Legacy intentionally allows this — known limit.
+        tools.create_file("dup.md", "v2").await.unwrap();
+        assert_eq!(tools.read_file("dup.md").await.unwrap(), "v2");
     }
 
     #[tokio::test]

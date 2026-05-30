@@ -1025,11 +1025,11 @@ impl ObsidianMcpServer {
 
     /// Write or update a note with optional mode (overwrite, append, prepend)
     #[tool(
-        description = "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. Supports optimistic concurrency: pass expected_hash (from read_note) to prevent overwriting concurrent changes",
-        usage = "Use for creating new notes, replacing existing ones, or appending/prepending content. Append mode is ideal for daily notes and journals. Prepend inserts after frontmatter if present. Accepts Obsidian Flavored Markdown. For targeted edits, use edit_note instead. Pass expected_hash to detect concurrent modifications",
+        description = "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. CAS-by-default (turbovault-947): on `mode: overwrite`, writing to an EXISTING file requires either `expected_hash` (from read_note) or `force: true` — without one of those, the call is refused loudly to prevent silent clobber. Writing to an ABSENT path implicitly carries an expect-absent precondition that fails the loser of a concurrent-create race.",
+        usage = "Use for creating new notes or replacing existing ones (with CAS proof) or appending/prepending. Default safety on overwrite: pass expected_hash from a prior read_note OR pass force=true to acknowledge blind overwrite. Append/prepend modes preserve historical behavior for now.",
         performance = "Moderate (<50ms typical). Includes filesystem write and link graph update",
         related = ["read_note", "edit_note", "create_from_template"],
-        examples = ["mode: overwrite (default)", "mode: append (add to end)", "mode: prepend (add after frontmatter)", "expected_hash: <hash from read_note>"]
+        examples = ["mode: overwrite (default)", "create absent path (no hash, no force needed)", "overwrite with expected_hash", "force: true blind overwrite (escape hatch)"]
     )]
     async fn write_note(
         &self,
@@ -1037,14 +1037,52 @@ impl ObsidianMcpServer {
         content: String,
         mode: Option<String>,
         expected_hash: Option<String>,
+        force: Option<bool>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
         let tools = self.get_active_write_tools().await?;
-        tools
-            .write_file_with_mode(&path, &content, write_mode, expected_hash.as_deref())
-            .await
-            .map_err(to_mcp_error)?;
+        let force = force.unwrap_or(false);
+
+        // ---- turbovault-947: CAS-by-default for `mode: overwrite` ----
+        //
+        // 1. `force == true`  → blind overwrite (escape hatch; existing behavior).
+        // 2. `expected_hash` supplied → CAS-checked overwrite (existing behavior).
+        // 3. Append / Prepend modes → preserved (historical behavior; their
+        //    semantics are documented as "operate on existing content"
+        //    elsewhere; CAS-default for these modes is a separate
+        //    behavioral change deferred until dogfooding surfaces it).
+        // 4. Overwrite + no force + no expected_hash:
+        //       - target ABSENT → strict-create via `WriteTools::create_file`
+        //         (substrate carries `expect_absent`; concurrent winner makes
+        //         the loser's CAS fail loudly with ConcurrencyError).
+        //       - target EXISTS → refuse loudly with a clear actionable
+        //         message; no blind clobber.
+        let cas_default_applies =
+            !force && expected_hash.is_none() && write_mode == WriteMode::Overwrite;
+        if cas_default_applies {
+            let manager = self.get_active_vault_manager().await?;
+            let full_path = manager.vault_path().join(&path);
+            let exists = tokio::fs::try_exists(&full_path).await.unwrap_or(false);
+            if exists {
+                return Err(McpError::invalid_request(format!(
+                    "write_note refused (turbovault-947 CAS-by-default): path '{}' exists and no expected_hash or force=true was supplied. Either: \
+                     (a) call read_note(path) and pass the returned hash as expected_hash, or \
+                     (b) pass force=true to acknowledge a blind overwrite. \
+                     This prevents silent clobber when concurrent agents target the same file.",
+                    path
+                )));
+            }
+            tools
+                .create_file(&path, &content)
+                .await
+                .map_err(to_mcp_error)?;
+        } else {
+            tools
+                .write_file_with_mode(&path, &content, write_mode, expected_hash.as_deref())
+                .await
+                .map_err(to_mcp_error)?;
+        }
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
