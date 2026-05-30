@@ -564,6 +564,34 @@ impl ObsidianMcpServer {
         }
     }
 
+    /// Compute a content-version token in the active vault's backend-native
+    /// format. Returned by `read_note`'s `hash` field and accepted by
+    /// `write_note`/`edit_note`/`delete_note`/`move_note`'s `expected_hash`
+    /// param. The token a read RETURNS must be the token CAS ACCEPTS — that
+    /// is the contract this helper closes for the git backend.
+    ///
+    /// - **Legacy backend:** 64-char SHA-256 of the working-tree bytes (the
+    ///   token `turbovault_vault::compute_hash` has always produced).
+    /// - **Git backend:** 40-char hex git blob OID, matching `expect_blob`'s
+    ///   tree-side precondition exactly.
+    ///
+    /// turbovault-6sj / TV-011 (pre-this-fix, `read_note` always returned the
+    /// SHA-256, so a round-trip on the git backend failed with
+    /// `expected_hash must be a 40-char git blob oid hex`).
+    async fn hash_for_active_backend(&self, content: &str) -> McpResult<String> {
+        let cfg = self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
+        match cfg.write_backend {
+            WriteBackend::Legacy => Ok(turbovault_vault::compute_hash(content)),
+            WriteBackend::Git => VaultRepo::blob_oid_of(content.as_bytes())
+                .map(|oid| oid.to_string())
+                .map_err(|e| McpError::internal(format!("blob_oid_of failed: {}", e))),
+        }
+    }
+
     async fn get_or_init_git_locks(&self, vault_name: &str) -> Arc<CommitLocks> {
         if let Some(l) = self.git_locks.read().await.get(vault_name) {
             return Arc::clone(l);
@@ -980,8 +1008,10 @@ impl ObsidianMcpServer {
         let tools = FileTools::new(manager);
         let content = tools.read_file(&path).await.map_err(to_mcp_error)?;
 
-        // Compute hash for use with edit_file
-        let hash = turbovault_vault::compute_hash(&content);
+        // Backend-aware version token (turbovault-6sj / TV-011): git blob
+        // OID on git backend, SHA-256 on legacy. Same token round-trips via
+        // `expected_hash` to write/edit/delete/move.
+        let hash = self.hash_for_active_backend(&content).await?;
 
         let uri = obsidian_uri(&vault_name, &path);
         StandardResponse::new(

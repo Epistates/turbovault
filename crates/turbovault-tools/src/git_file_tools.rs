@@ -176,7 +176,19 @@ impl GitFileTools {
         // Apply SEARCH/REPLACE blocks.
         let engine = EditEngine::new();
         let blocks = engine.parse_blocks(edits)?;
-        let (result, new_content) = engine.apply_edits(&current, &blocks, dry_run)?;
+        let (mut result, new_content) = engine.apply_edits(&current, &blocks, dry_run)?;
+
+        // turbovault-6sj / TV-011: overwrite the SHA-256s that EditEngine
+        // computed with git blob OIDs so the returned `old_hash`/`new_hash`
+        // round-trip via `expected_hash` against the substrate's
+        // `expect_blob` precondition. Same in the dry-run path so callers
+        // can use a preview's `new_hash` as the next `expected_hash`.
+        result.old_hash = VaultRepo::blob_oid_of(current.as_bytes())
+            .map_err(|e| Error::config_error(format!("blob_oid_of(current): {}", e)))?
+            .to_string();
+        result.new_hash = VaultRepo::blob_oid_of(new_content.as_bytes())
+            .map_err(|e| Error::config_error(format!("blob_oid_of(new): {}", e)))?
+            .to_string();
 
         if dry_run {
             return Ok(result);
@@ -756,6 +768,72 @@ mod tests {
         let _ = tools.edit_file("a.md", edits, None, true).await.unwrap();
         assert_eq!(head_oid(&tools), head_before, "no commit on dry_run");
         assert_eq!(tools.read_file("a.md").await.unwrap(), "hello\n");
+    }
+
+    /// turbovault-6sj / TV-011: edit_file's returned `old_hash`/`new_hash`
+    /// must be 40-char git blob OIDs on the git backend (NOT 64-char SHA-256).
+    /// Without this, callers cannot use them as `expected_hash` on a follow-up
+    /// call — the CAS round-trip breaks.
+    #[tokio::test]
+    async fn edit_file_returns_blob_oid_hashes_not_sha256() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("a.md", "hello\n").await.unwrap();
+        let edits = "<<<<<<< SEARCH\nhello\n=======\nbye\n>>>>>>> REPLACE\n";
+        let result = tools.edit_file("a.md", edits, None, false).await.unwrap();
+        assert_eq!(
+            result.old_hash.len(),
+            40,
+            "old_hash must be 40-char blob OID hex, got {:?}",
+            result.old_hash
+        );
+        assert_eq!(
+            result.new_hash.len(),
+            40,
+            "new_hash must be 40-char blob OID hex, got {:?}",
+            result.new_hash
+        );
+        // Sanity: each hash equals the blob OID of the actual content.
+        let expected_old = VaultRepo::blob_oid_of(b"hello\n").unwrap().to_string();
+        let expected_new = VaultRepo::blob_oid_of(b"bye\n").unwrap().to_string();
+        assert_eq!(result.old_hash, expected_old);
+        assert_eq!(result.new_hash, expected_new);
+    }
+
+    /// turbovault-6sj: the `new_hash` an edit returns must round-trip as
+    /// `expected_hash` on the next call. This is the CAS contract the legacy
+    /// path delivered; the git backend must do the same.
+    #[tokio::test]
+    async fn edit_file_new_hash_round_trips_as_expected_hash() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("a.md", "v1\n").await.unwrap();
+        let edits1 = "<<<<<<< SEARCH\nv1\n=======\nv2\n>>>>>>> REPLACE\n";
+        let r1 = tools.edit_file("a.md", edits1, None, false).await.unwrap();
+        // Use r1.new_hash as the next expected_hash — must succeed because
+        // no concurrent change has touched the file.
+        let edits2 = "<<<<<<< SEARCH\nv2\n=======\nv3\n>>>>>>> REPLACE\n";
+        let r2 = tools
+            .edit_file("a.md", edits2, Some(&r1.new_hash), false)
+            .await
+            .unwrap();
+        assert_eq!(
+            r2.old_hash, r1.new_hash,
+            "old_hash chains to prior new_hash"
+        );
+        assert_eq!(tools.read_file("a.md").await.unwrap(), "v3\n");
+    }
+
+    /// turbovault-6sj: dry-run hashes must match what an actual apply would
+    /// produce, so callers can use a preview's `new_hash` to plan the next
+    /// `expected_hash`.
+    #[tokio::test]
+    async fn edit_file_dry_run_hashes_match_real_apply() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("a.md", "hello\n").await.unwrap();
+        let edits = "<<<<<<< SEARCH\nhello\n=======\nbye\n>>>>>>> REPLACE\n";
+        let dry = tools.edit_file("a.md", edits, None, true).await.unwrap();
+        let live = tools.edit_file("a.md", edits, None, false).await.unwrap();
+        assert_eq!(dry.old_hash, live.old_hash);
+        assert_eq!(dry.new_hash, live.new_hash);
     }
 
     #[tokio::test]
