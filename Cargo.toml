@@ -134,7 +134,7 @@ debug = false
 inherits = "release"
 lto = "thin"
 strip = false
-# debug = true  # uncomment when profiling with cargo flamegraph or perf
+debug = true  # turbovault-qxl: enabled for cargo-flamegraph / perf
 
 [profile.dev]
 opt-level = 0
