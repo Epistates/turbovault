@@ -69,7 +69,17 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command-line arguments
-    let args = Args::parse();
+    let mut args = Args::parse();
+    // turbovault-01n: `--config` / TURBOVAULT_CONFIG was bare PathBuf; `~`
+    // and env-var references in the supplied path weren't expanded
+    // (asymmetric with --vault which already does this). Resolve up-front
+    // so every downstream consumer sees the absolute path.
+    if let Some(raw) = args.config.as_ref() {
+        let expanded = shellexpand::full(&raw.to_string_lossy())
+            .map_err(|e| format!("Failed to expand --config path: {}", e))?
+            .into_owned();
+        args.config = Some(PathBuf::from(expanded));
+    }
     let tool_visibility = load_tool_visibility(&args).await?;
 
     // Validate output format (unless STDIO transport, which always uses JSON)
