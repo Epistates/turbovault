@@ -309,6 +309,51 @@ impl ObsidianMcpServer {
         self.multi_vault_mgr.clone()
     }
 
+    /// turbovault-z5c: lift the `add_vault` MCP tool's auto-init logic
+    /// to a public method so the CLI `--init` flag can actually
+    /// initialize registered vaults at startup. Walks every registered
+    /// vault, constructs its VaultManager (scans files + builds link
+    /// graph), and caches it. Errors on the first failure.
+    pub async fn initialize_registered_vaults(&self) -> Result<()> {
+        let vaults = self
+            .multi_vault_mgr
+            .list_vaults()
+            .await
+            .map_err(|e| Error::config_error(format!("list_vaults: {}", e)))?;
+        for vault_info in vaults {
+            let name = vault_info.name.clone();
+            // Skip if already cached (idempotent for sequential calls).
+            {
+                let cache = self.vault_managers.read().await;
+                if cache.contains_key(&name) {
+                    continue;
+                }
+            }
+            let vault_config = self
+                .multi_vault_mgr
+                .get_vault_config(&name)
+                .await
+                .map_err(|e| Error::config_error(format!("get_vault_config({name}): {e}")))?;
+            let mut server_config = ServerConfig::default();
+            let mut vault_cfg = vault_config;
+            vault_cfg.is_default = true;
+            server_config.vaults = vec![vault_cfg];
+            let manager = VaultManager::new(server_config)
+                .map_err(|e| Error::config_error(format!("VaultManager::new({name}): {e}")))?;
+            manager
+                .initialize()
+                .await
+                .map_err(|e| Error::config_error(format!("initialize({name}): {e}")))?;
+            let manager = Arc::new(manager);
+            self.vault_managers
+                .write()
+                .await
+                .insert(name.clone(), manager);
+            log::info!("Initialized vault '{}' (--init)", name);
+        }
+        Ok(())
+    }
+
     /// Helper to save vault state to cache
     async fn persist_vault_state(&self) -> Result<()> {
         if let Some(cache) = self.persistent_cache.read().await.as_ref() {

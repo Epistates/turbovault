@@ -367,13 +367,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             log::info!("Vault registered: default -> {:?}", vault_path);
         }
 
-        // Initialize vault (scan files and build graph) if requested
-        if args.init {
-            log::info!("Scanning vault and building link graph...");
-            // Note: Full initialization would require loading the vault manager
-            // For now, we document that users should use the dedicated init tool
-            log::info!("Vault ready for operations");
-        }
+        // (--init handling moved outside this CLI-vault block so it
+        // covers every registered vault, not only the one passed via
+        // --vault. See below.)
     } else {
         log::info!("No vault path provided. Use add_vault MCP tool to register a vault.");
         log::info!("Available tools: add_vault, list_vaults, set_active_vault");
@@ -381,6 +377,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server with multi-version protocol support.
     // Accepts both MCP 2025-06-18 and 2025-11-25 clients.
+    // turbovault-z5c: honor `--init` by walking every registered vault
+    // (cache-recovered, --config, AND --vault forms) and running the
+    // VaultManager scan + link-graph build. Without this flag, vaults
+    // are lazy-initialized on first use; the flag is for operators
+    // who want the build cost paid up-front (faster first query).
+    if args.init {
+        log::info!("--init: initializing registered vaults up-front...");
+        if let Err(e) = server.initialize_registered_vaults().await {
+            log::warn!("--init failed: {} — continuing with lazy init", e);
+        }
+    }
+
     log::info!("Starting TurboVault Server (multi-version MCP protocol)");
     if tool_visibility.has_rules() {
         log::info!(
