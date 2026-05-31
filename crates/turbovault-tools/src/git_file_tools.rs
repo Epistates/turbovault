@@ -24,6 +24,18 @@ use turbovault_core::prelude::*;
 use turbovault_git::{CommitHook, CommitLocks, Oid, Transaction, VaultRepo};
 use turbovault_vault::{EditEngine, EditResult, VaultManager};
 
+/// turbovault-lqr: result of an atomic `move_file_with_link_updates`. The
+/// rename + every link-source rewrite landed as ONE commit. Reports which
+/// sources were rewritten so the caller can surface the diff to the user.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MoveWithLinksResult {
+    pub from: String,
+    pub to: String,
+    /// Vault-relative paths of source files whose inbound wikilinks were
+    /// rewritten in the same commit.
+    pub link_sources_updated: Vec<String>,
+}
+
 /// Callback invoked **before** returning a `ConcurrencyError` from
 /// [`GitFileTools::apply_txn`] (GWS.14b). The MCP server installs one that
 /// drains the per-vault reindex queue — so the agent's re-read (which the
@@ -354,6 +366,103 @@ impl GitFileTools {
         // Destination is always required to be absent — refuses to clobber.
         txn = txn.expect_absent(to);
         self.apply_txn(&txn).await
+    }
+
+    /// turbovault-lqr: atomic move + inbound-wikilink rewrite. Renames
+    /// `from` -> `to` AND rewrites every backlinking source's
+    /// `[[from-basename]]` / `[[from-path]]` (plus alias / section /
+    /// block-anchor / embed forms) to point at the new target, all in
+    /// **one substrate transaction**.
+    ///
+    /// Per-source CAS: each rewritten source carries an `expect_blob`
+    /// precondition. If ANY source's blob OID changed between the
+    /// read-modify and the substrate apply, the WHOLE transaction
+    /// aborts (architecture §6.3 reconsideration domino). The
+    /// destination always carries `expect_absent` (no clobber).
+    ///
+    /// `expected_hash` (optional, blob OID hex) protects the SOURCE
+    /// against a concurrent edit between the caller's read and this
+    /// call.
+    ///
+    /// Returns the list of source paths whose content was rewritten so
+    /// the caller can surface what changed.
+    pub async fn move_file_with_link_updates(
+        &self,
+        from: &str,
+        to: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<MoveWithLinksResult> {
+        use crate::wikilink_rewriter::rewrite_wikilinks;
+        use std::path::Path as StdPath;
+
+        let expected_from = parse_blob_oid(expected_hash)?;
+        let content = self.read_file(from).await?;
+
+        // Resolve backlinks via the in-memory link graph (kept coherent
+        // by the substrate's CommitHook + drainer / external-listener).
+        // Source paths are vault-relative PathBuf.
+        let backlink_paths = {
+            let lg = self.manager.link_graph();
+            let graph = lg.read().await;
+            graph
+                .backlinks(&self.manager.vault_path().join(from))
+                .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
+                .into_iter()
+                .map(|(p, _links)| p)
+                .collect::<Vec<_>>()
+        };
+
+        // Read each source, rewrite, capture blob OID for the
+        // precondition. Skip sources whose rewritten content equals
+        // the original (no actual link change — e.g. the source's
+        // `[[from]]` literal sits in a code fence the parser missed).
+        let mut link_updates: Vec<(String, String, Oid)> = Vec::new();
+        for full_src in &backlink_paths {
+            // Strip the vault prefix to get the substrate-relative path.
+            let rel = full_src
+                .strip_prefix(self.manager.vault_path())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|_| full_src.clone());
+            let rel_str = rel
+                .to_str()
+                .ok_or_else(|| Error::config_error(format!("non-utf8 source path: {:?}", rel)))?
+                .to_string();
+            let src_content = self.read_file(&rel_str).await?;
+            let rewritten = rewrite_wikilinks(&src_content, from, to);
+            if rewritten == src_content {
+                continue;
+            }
+            let src_oid = VaultRepo::blob_oid_of(src_content.as_bytes())
+                .map_err(|e| Error::config_error(format!("blob_oid_of: {}", e)))?;
+            link_updates.push((rel_str, rewritten, src_oid));
+        }
+
+        // Build the atomic transaction: source rename + each link
+        // source's rewrite, with their preconditions.
+        let mut txn = Transaction::new(message.to_string())
+            .remove(from)
+            .upsert(to, content.into_bytes());
+        if let Some(oid) = expected_from {
+            txn = txn.expect_blob(from, oid);
+        }
+        txn = txn.expect_absent(to);
+        for (rel_path, rewritten, oid) in &link_updates {
+            txn = txn
+                .upsert(rel_path.clone(), rewritten.clone().into_bytes())
+                .expect_blob(rel_path.clone(), *oid);
+        }
+
+        self.apply_txn(&txn).await?;
+
+        // Mark the destination's directory as moved-from-known if we
+        // need it later; for now we just report the diff.
+        let _ = StdPath::new(to); // (no-op; reserved)
+        Ok(MoveWithLinksResult {
+            from: from.to_string(),
+            to: to.to_string(),
+            link_sources_updated: link_updates.into_iter().map(|(p, _, _)| p).collect(),
+        })
     }
 
     /// Copy a file — read source, commit target (no source change). One
@@ -1504,5 +1613,118 @@ mod tests {
         tools.batch_execute(ops).await.unwrap();
         let msg = head_commit_message(&tools);
         assert!(msg.contains("batch_execute (1 ops)"), "got: {msg:?}");
+    }
+
+    // -------- turbovault-lqr: atomic move + wikilink rewrite --------
+
+    /// turbovault-lqr: move with one backlinking source. The rename AND
+    /// the link rewrite land as ONE commit. HEAD advances by exactly one
+    /// commit touching both paths.
+    #[tokio::test]
+    async fn move_with_link_updates_atomic_one_commit() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("old.md", "# Old\n").await.unwrap();
+        tools
+            .write_file("linker.md", "I link to [[old]] here.\n")
+            .await
+            .unwrap();
+        // Initialize link graph from the seeded files so backlinks resolve.
+        tools.manager.initialize().await.unwrap();
+        let head_before = head_oid(&tools).unwrap();
+
+        let result = tools
+            .move_file_with_link_updates("old.md", "new.md", None, "rename old -> new")
+            .await
+            .unwrap();
+        assert_eq!(result.link_sources_updated, vec!["linker.md".to_string()]);
+        // Working tree state.
+        assert!(!tmp.path().join("old.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("new.md")).unwrap(),
+            "# Old\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("linker.md")).unwrap(),
+            "I link to [[new]] here.\n"
+        );
+        // Exactly one new commit touched both files.
+        let head_after = head_oid(&tools).unwrap();
+        assert_ne!(head_after, head_before);
+        let repo = git2::Repository::open(&tools.vault_path).unwrap();
+        let commit = repo.find_commit(head_after).unwrap();
+        assert_eq!(commit.parent_count(), 1, "single parent");
+    }
+
+    /// turbovault-lqr: move with multiple backlinking sources. All link
+    /// rewrites + the rename land in one commit.
+    #[tokio::test]
+    async fn move_with_link_updates_handles_multiple_sources() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("old.md", "# Old\n").await.unwrap();
+        tools
+            .write_file("a.md", "see [[old|the page]]\n")
+            .await
+            .unwrap();
+        tools
+            .write_file("b.md", "embed: ![[old]]\nsection: [[old#Header]]\n")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+
+        let result = tools
+            .move_file_with_link_updates("old.md", "new.md", None, "rename")
+            .await
+            .unwrap();
+        let mut updated = result.link_sources_updated.clone();
+        updated.sort();
+        assert_eq!(updated, vec!["a.md".to_string(), "b.md".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.md")).unwrap(),
+            "see [[new|the page]]\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.md")).unwrap(),
+            "embed: ![[new]]\nsection: [[new#Header]]\n"
+        );
+    }
+
+    /// turbovault-lqr: a source modified between the read and the apply
+    /// fails its expect_blob precondition, aborting the entire move —
+    /// zero files change.
+    #[tokio::test]
+    async fn move_with_link_updates_aborts_on_stale_source() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("old.md", "# Old\n").await.unwrap();
+        tools
+            .write_file("linker.md", "see [[old]]\n")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+
+        // Simulate stale read: an external commit mutates linker.md
+        // between the link-graph lookup and the substrate apply. We
+        // approximate that by using a stale expected_hash on the
+        // source — substrate aborts identically.
+        // Compute a bogus oid to feed as expected_hash.
+        let bogus_oid = VaultRepo::blob_oid_of(b"NEVER_HERE_LQR")
+            .unwrap()
+            .to_string();
+        let head_before = head_oid(&tools).unwrap();
+        let res = tools
+            .move_file_with_link_updates("old.md", "new.md", Some(&bogus_oid), "should abort")
+            .await;
+        let err = res.unwrap_err();
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "expected ConcurrencyError, got: {err:?}"
+        );
+        // Working tree unchanged.
+        assert!(tmp.path().join("old.md").exists());
+        assert!(!tmp.path().join("new.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("linker.md")).unwrap(),
+            "see [[old]]\n"
+        );
+        assert_eq!(head_oid(&tools), Some(head_before), "no commit on abort");
     }
 }

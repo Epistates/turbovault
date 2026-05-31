@@ -43,6 +43,9 @@ uuid = { workspace = true }
 # Diff tools
 similar = { workspace = true }
 
+# Wikilink rewriting for atomic move_note + delete_note (turbovault-lqr / oz6)
+regex = { workspace = true }
+
 # Tier 1d: Production-grade full-text search
 tantivy = { workspace = true }
 

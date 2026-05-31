@@ -1292,11 +1292,11 @@ impl ObsidianMcpServer {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note within active vault. Does NOT update wikilinks — use get_backlinks first to assess impact. Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to `move_note <from> -> <to>`.",
-        usage = "Use to reorganize vault structure or rename notes. This performs a filesystem move only. Links pointing to the old path will become broken. Always call get_backlinks before moving to understand impact, then manually update references if needed. Pass expected_hash for concurrency protection. Pass commit_message to explain WHY.",
-        performance = "Fast (<20ms typical). Filesystem rename, falls back to copy+delete for cross-filesystem moves",
+        description = "Move or rename a note within active vault. By default (turbovault-lqr) atomically rewrites every inbound wikilink to point at the new path in the SAME commit: `[[old]]`, `[[old|alias]]`, `[[old#section]]`, `[[old#^block-id]]`, `![[old]]` (and path-prefix forms) all become their new-target equivalents. Pass `update_backlinks: false` to skip the rewrite (rename only; links become broken — matches the pre-fork behavior). Pass `commit_message` for a meaningful git commit subject (turbovault-0bh).",
+        usage = "Use to reorganize vault structure or rename notes. By default the inbound-wikilink rewrite is atomic: a concurrent change to any link source aborts the whole move with ConcurrencyError. Pass `update_backlinks: false` if the legacy rename-only behavior is wanted. Pass expected_hash to guard the source against a concurrent edit. Pass commit_message to explain WHY.",
+        performance = "Moderate. Linear in inbound-link count: each backlink source is read + rewritten + included in the same atomic commit.",
         related = ["get_backlinks", "get_forward_links", "search"],
-        examples = ["commit_message: 'rename concept page to canonical slug'"]
+        examples = ["update_backlinks: true (default) — atomic rename + link rewrite", "update_backlinks: false — rename only, links dangle", "commit_message: 'rename concept page to canonical slug'"]
     )]
     async fn move_note(
         &self,
@@ -1304,25 +1304,45 @@ impl ObsidianMcpServer {
         to: String,
         expected_hash: Option<String>,
         commit_message: Option<String>,
+        update_backlinks: Option<bool>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
         // turbovault-0bh: caller-supplied or auto-derived.
         let msg = commit_message.unwrap_or_else(|| format!("move_note {} -> {}", from, to));
-        tools
-            .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &msg)
-            .await
-            .map_err(to_mcp_error)?;
+        let update_backlinks = update_backlinks.unwrap_or(true);
+
+        let updated_sources: Vec<String> = if update_backlinks {
+            // turbovault-lqr: atomic rename + inbound-wikilink rewrite.
+            // Returns the list of source files whose links were rewritten.
+            let result = tools
+                .move_file_with_link_updates(&from, &to, expected_hash.as_deref(), &msg)
+                .await
+                .map_err(to_mcp_error)?;
+            result.link_sources_updated
+        } else {
+            // Legacy rename-only path. Links will dangle.
+            tools
+                .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &msg)
+                .await
+                .map_err(to_mcp_error)?;
+            Vec::new()
+        };
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
         StandardResponse::new(
             vault_name,
             "move_note",
-            serde_json::json!({"from": from, "to": to, "status": "moved"}),
+            serde_json::json!({
+                "from": from,
+                "to": to,
+                "status": "moved",
+                "update_backlinks": update_backlinks,
+                "link_sources_updated": updated_sources,
+            }),
         )
         .with_next_steps(&["get_backlinks", "get_forward_links"])
-        .with_warning("Links pointing to the old path are now broken. Use get_backlinks and edit_note to update references.")
         .to_json()
     }
 

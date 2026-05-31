@@ -12,7 +12,7 @@
 
 use crate::batch_tools::BatchTools;
 use crate::file_tools::{FileTools, NoteInfo, WriteMode};
-use crate::git_file_tools::{CasCollisionFlush, GitFileTools};
+use crate::git_file_tools::{CasCollisionFlush, GitFileTools, MoveWithLinksResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult};
@@ -240,6 +240,28 @@ impl WriteTools {
             Self::Legacy { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
             Self::Git(g) => {
                 g.move_file_with_hash_and_message(from, to, expected_hash, message)
+                    .await
+            }
+        }
+    }
+
+    /// turbovault-lqr: atomic move + inbound-wikilink rewrite.
+    /// **Git backend only** — legacy refuses loudly (no atomic multi-file
+    /// primitive; the substrate's killer feature that the legacy path
+    /// cannot match).
+    pub async fn move_file_with_link_updates(
+        &self,
+        from: &str,
+        to: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<MoveWithLinksResult> {
+        match self {
+            Self::Legacy { .. } => Err(Error::config_error(
+                "Atomic move + wikilink update requires write_backend=git. The legacy backend has no multi-file atomic primitive; use the legacy `move_file` flow (rename only; links will dangle) or switch to git.",
+            )),
+            Self::Git(g) => {
+                g.move_file_with_link_updates(from, to, expected_hash, message)
                     .await
             }
         }
