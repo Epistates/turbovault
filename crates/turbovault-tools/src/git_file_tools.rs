@@ -887,6 +887,9 @@ impl GitFileTools {
         // survives even though we open a fresh `VaultRepo` per call. The
         // optional commit hook is cloned in and installed on each per-call
         // open so the substrate fires it after a successful materialize.
+        // turbovault-bna: time the whole substrate op (open + commit machinery
+        // + materialize + collision flush) at the git chokepoint.
+        let txn_start = std::time::Instant::now();
         let path = self.vault_path.clone();
         let locks = Arc::clone(&self.commit_locks);
         let hook = self.commit_hook.clone();
@@ -934,6 +937,21 @@ impl GitFileTools {
                 flush_err
             );
         }
+
+        // turbovault-bna: substrate-op telemetry at the git chokepoint. This is
+        // the exact op latency PERF-1 (turbovault-a0l, cached repo handle)
+        // targets, measured at the GitFileTools seam — port-proof (survives a
+        // git2->gix swap, since the seam stays). Per-MCP-op labels are Phase 2
+        // at the tool layer. `metrics` macros are no-ops unless a recorder is
+        // installed (the opt-in Prometheus exporter wired in main.rs).
+        let outcome = match &result {
+            Ok(()) => "ok",
+            Err(Error::ConcurrencyError { .. }) => "conflict",
+            Err(_) => "error",
+        };
+        metrics::histogram!("turbovault_apply_transaction_seconds", "outcome" => outcome)
+            .record(txn_start.elapsed().as_secs_f64());
+        metrics::counter!("turbovault_apply_transaction_total", "outcome" => outcome).increment(1);
         result
     }
 }
