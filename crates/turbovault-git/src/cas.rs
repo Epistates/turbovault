@@ -183,6 +183,43 @@ mod tests {
         ));
     }
 
+    /// turbovault-a0l (PERF-1 safety guard): a REUSED `VaultRepo` handle must
+    /// still observe a ref advance made by a DIFFERENT handle (another process)
+    /// under `lock_ref`. If libgit2's refdb served a stale cached tip, handle A
+    /// would clobber B's commit — a cross-process lost update, the exact failure
+    /// the substrate exists to prevent. This is the pivotal correctness question
+    /// for caching the repo handle (PERF-1): if it fails, caching is unsafe.
+    #[test]
+    fn reused_handle_detects_external_ref_advance_no_lost_update() {
+        let (tmp, vr_a) = open_unborn();
+        // A makes the initial commit (populates A's refdb with c0).
+        let c0 = build_on(&vr_a, None, "a.md", "v1");
+        vr_a.cas_ref(MAIN, None, c0).unwrap();
+        assert_eq!(vr_a.head_oid(), Some(c0));
+
+        // B = a SEPARATE handle (mimics another process) advances main.
+        let vr_b = VaultRepo::open(tmp.path()).unwrap();
+        let c1 = build_on(&vr_b, Some(c0), "b.md", "from-B");
+        vr_b.cas_ref(MAIN, Some(c0), c1).unwrap();
+
+        // A, REUSING its handle, advances main. commit_with_retry reads the tip
+        // and CAS-locks; correct behavior is to see c1 and commit on top of it,
+        // never clobber it from a stale c0.
+        let got = vr_a
+            .commit_with_retry(MAIN, |tip| Ok(Some(build_on(&vr_a, tip, "c.md", "from-A"))))
+            .unwrap()
+            .expect("a commit was produced");
+        let parent = vr_a.git().find_commit(got).unwrap().parent_id(0).unwrap();
+        assert_eq!(
+            parent, c1,
+            "reused handle committed atop B's external advance (saw the ref change; no lost update)"
+        );
+        assert!(
+            vr_a.git().find_commit(c1).is_ok(),
+            "B's commit is still reachable, not clobbered"
+        );
+    }
+
     #[test]
     fn commit_with_retry_no_contention() {
         let (_tmp, vr) = open_unborn();
