@@ -122,56 +122,69 @@ impl EditEngine {
     /// >>>>>>> REPLACE
     /// ```
     pub fn parse_blocks(&self, input: &str) -> Result<Vec<SearchReplaceBlock>> {
+        // turbovault-u9w: collect each block's body into a buffer, THEN
+        // detect the divider — this lets us catch the multi-`=======` case
+        // (SEARCH content that legitimately contains a `=======` line) as a
+        // loud ParseError rather than silently mis-splitting the block.
+        // The old greedy parser took the first `=======` it saw in InSearch
+        // as the divider regardless of how many followed.
         let mut blocks = Vec::new();
-        let mut current_search = String::new();
-        let mut current_replace = String::new();
-        let mut state = ParseState::Init;
+        let mut buffer: Vec<&str> = Vec::new();
+        let mut in_block = false;
 
         for line in input.lines() {
             let trimmed = line.trim();
-
-            match state {
-                ParseState::Init => {
-                    if trimmed == "<<<<<<< SEARCH" {
-                        state = ParseState::InSearch;
-                    }
+            if trimmed == "<<<<<<< SEARCH" {
+                if in_block {
+                    return Err(Error::ParseError {
+                        reason:
+                            "Nested SEARCH block: missing >>>>>>> REPLACE before the next <<<<<<< SEARCH"
+                                .to_string(),
+                    });
                 }
-                ParseState::InSearch => {
-                    if trimmed == "=======" {
-                        state = ParseState::InReplace;
-                    } else {
-                        if !current_search.is_empty() {
-                            current_search.push('\n');
-                        }
-                        current_search.push_str(line); // Preserve original indentation
-                    }
+                in_block = true;
+                buffer.clear();
+            } else if trimmed == ">>>>>>> REPLACE" {
+                if !in_block {
+                    return Err(Error::ParseError {
+                        reason:
+                            "Unexpected >>>>>>> REPLACE outside a SEARCH block. Missing <<<<<<< SEARCH?"
+                                .to_string(),
+                    });
                 }
-                ParseState::InReplace => {
-                    if trimmed == ">>>>>>> REPLACE" {
-                        blocks.push(SearchReplaceBlock {
-                            search: current_search.clone(),
-                            replace: current_replace.clone(),
-                        });
-                        current_search.clear();
-                        current_replace.clear();
-                        state = ParseState::Init;
-                    } else {
-                        if !current_replace.is_empty() {
-                            current_replace.push('\n');
-                        }
-                        current_replace.push_str(line); // Preserve original indentation
-                    }
+                let divider_count = buffer.iter().filter(|l| l.trim() == "=======").count();
+                if divider_count == 0 {
+                    return Err(Error::ParseError {
+                        reason: "SEARCH/REPLACE block is missing the ======= divider".to_string(),
+                    });
                 }
+                if divider_count > 1 {
+                    // turbovault-u9w: ambiguity. The SEARCH or REPLACE
+                    // content contains a literal `=======` line that the
+                    // parser cannot distinguish from a divider. Fail loud
+                    // rather than silently corrupt the edit.
+                    return Err(Error::ParseError {
+                        reason: format!(
+                            "SEARCH/REPLACE block contains {} `=======` lines but the divider must appear exactly once. \
+                             If the matched content has a literal `=======` line, split the edit into smaller blocks whose SEARCH/REPLACE bodies do not contain `=======` (turbovault-u9w).",
+                            divider_count
+                        ),
+                    });
+                }
+                let divider_idx = buffer.iter().position(|l| l.trim() == "=======").unwrap();
+                let search = buffer[..divider_idx].join("\n");
+                let replace = buffer[divider_idx + 1..].join("\n");
+                blocks.push(SearchReplaceBlock { search, replace });
+                buffer.clear();
+                in_block = false;
+            } else if in_block {
+                buffer.push(line);
             }
         }
 
-        // Check for incomplete block
-        if state != ParseState::Init {
+        if in_block {
             return Err(Error::ParseError {
-                reason: format!(
-                    "Incomplete SEARCH/REPLACE block (state: {:?}). Expected >>>>>>> REPLACE",
-                    state
-                ),
+                reason: "Incomplete SEARCH/REPLACE block. Expected >>>>>>> REPLACE".to_string(),
             });
         }
 
@@ -520,14 +533,6 @@ impl Default for EditEngine {
     }
 }
 
-/// Parse state machine
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ParseState {
-    Init,
-    InSearch,
-    InReplace,
-}
-
 /// Type of match found
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum MatchType {
@@ -595,6 +600,73 @@ second new
 
         let blocks = engine.parse_blocks(input).unwrap();
         assert_eq!(blocks.len(), 2);
+    }
+
+    /// turbovault-u9w: SEARCH content containing a literal `=======` line
+    /// must produce a LOUD parse error, not silent mis-splitting.
+    #[test]
+    fn parse_block_with_divider_in_search_content_errors_loudly() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<< SEARCH\nbefore divider\n=======\ncontent containing\n=======\nfooter\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`=======`") && msg.contains("turbovault-u9w"),
+            "expected u9w ambiguity error, got: {msg}"
+        );
+    }
+
+    /// turbovault-u9w: REPLACE content with a literal `=======` is the
+    /// same shape (the parser sees N+1 dividers total, where N is the
+    /// number of dividers in the body).
+    #[test]
+    fn parse_block_with_divider_in_replace_content_errors_loudly() {
+        let engine = EditEngine::new();
+        let input =
+            "<<<<<<< SEARCH\nold\n=======\nnew with\n=======\nan extra divider\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("turbovault-u9w"),
+            "expected u9w ambiguity error, got: {err}"
+        );
+    }
+
+    /// turbovault-u9w: a block with NO `=======` is incomplete and errors.
+    #[test]
+    fn parse_block_without_divider_errors() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<< SEARCH\nold\nnew\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("======="),
+            "expected missing-divider error, got: {err}"
+        );
+    }
+
+    /// turbovault-u9w: A `>>>>>>> REPLACE` outside any `<<<<<<< SEARCH` is
+    /// a structural error.
+    #[test]
+    fn parse_block_with_dangling_replace_marker_errors() {
+        let engine = EditEngine::new();
+        let input = "no marker yet\n>>>>>>> REPLACE\nthen content";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("outside"),
+            "expected dangling-marker error, got: {err}"
+        );
+    }
+
+    /// turbovault-u9w: nested `<<<<<<< SEARCH` (missing the prior `>>>>>>>
+    /// REPLACE`) is also a structural error.
+    #[test]
+    fn parse_nested_search_marker_errors() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<< SEARCH\nold\n<<<<<<< SEARCH\nmore\n=======\nnew\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("Nested"),
+            "expected nested-marker error, got: {err}"
+        );
     }
 
     #[test]
