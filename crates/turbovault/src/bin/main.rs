@@ -97,11 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let obs_config = TelemetryConfig::builder()
             .service_name("turbovault")
             .service_version(env!("CARGO_PKG_VERSION"))
-            .log_level(if args.profile == "production" {
-                "info,turbo_vault=debug".to_string()
-            } else {
-                "debug".to_string()
-            })
+            .log_level(resolve_log_level(&args.profile))
             .json_logs(true)
             .stderr_output(true)
             .build();
@@ -117,24 +113,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let obs_config = TelemetryConfig::builder()
                     .service_name("turbovault")
                     .service_version(env!("CARGO_PKG_VERSION"))
-                    .log_level(if args.profile == "production" {
-                        "info,turbo_vault=debug".to_string()
-                    } else {
-                        "debug".to_string()
-                    })
+                    .log_level(resolve_log_level(&args.profile))
                     .json_logs(true)
                     .stderr_output(false) // HTTP/WS can use stdout
                     .build();
                 Some(obs_config.init()?)
             }
             OutputFormat::Human | OutputFormat::Text => {
-                // Human-readable format for terminal/stdout
+                // Human-readable format for terminal/stdout.
+                // turbovault-foy: honor RUST_LOG for SimpleLogger too; the
+                // env_logger-style filter strings (e.g. "info,turbo_vault=debug")
+                // are SimpleLogger-compatible at the comma-separated module:level
+                // shape but with_level wants a single LevelFilter — so we parse
+                // the FIRST component as the global threshold and ignore
+                // module-specific overrides (they would need module_loggers()
+                // which SimpleLogger supports but is more verbose).
+                let level = parse_simplelogger_level(&args.profile);
                 SimpleLogger::new()
-                    .with_level(if args.profile == "production" {
-                        log::LevelFilter::Info
-                    } else {
-                        log::LevelFilter::Debug
-                    })
+                    .with_level(level)
                     .with_utc_timestamps()
                     .init()
                     .map_err(|e| format!("Failed to initialize logger: {}", e))?;
@@ -494,6 +490,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// turbovault-foy: resolve the log-level filter string. Priority:
+///   1. `RUST_LOG` env var (env_logger-compatible filter, e.g.
+///      "warn,turbo_vault=trace").
+///   2. `--profile production` default: `info,turbo_vault=debug`.
+///   3. `--profile development` default (anything else): `debug`.
+///
+/// The README has advertised `RUST_LOG` since at least the first
+/// public release; this lifts it from claim to truth.
+fn resolve_log_level(profile: &str) -> String {
+    if let Ok(env_value) = std::env::var("RUST_LOG")
+        && !env_value.is_empty()
+    {
+        return env_value;
+    }
+    if profile == "production" {
+        "info,turbo_vault=debug".to_string()
+    } else {
+        "debug".to_string()
+    }
+}
+
+/// turbovault-foy: distill the resolved filter string into a single
+/// `LevelFilter` for `SimpleLogger` (which doesn't accept env_logger
+/// syntax). Walks the comma-separated components, ignores anything
+/// containing `=` (module overrides), and parses the first bare token.
+/// Defaults to `Info` if nothing parses.
+fn parse_simplelogger_level(profile: &str) -> log::LevelFilter {
+    let filter = resolve_log_level(profile);
+    for part in filter.split(',') {
+        let token = part.trim();
+        if token.is_empty() || token.contains('=') {
+            continue;
+        }
+        if let Ok(lvl) = token.parse::<log::LevelFilter>() {
+            return lvl;
+        }
+    }
+    log::LevelFilter::Info
 }
 
 async fn load_tool_visibility(
