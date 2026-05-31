@@ -2434,6 +2434,18 @@ impl ObsidianMcpServer {
         }
 
         let op_count = operations.len();
+        // turbovault-rxx: backend-aware `transactional` meta. Git
+        // substrate is genuinely atomic (`batch_execute_failure_leaves_
+        // no_partial_state` covers it). Legacy `BatchExecutor` is NOT
+        // atomic and never was (the historic #213 "lie"); on legacy,
+        // honesty = derive from result.success — true only when no op
+        // failed; false otherwise (partial state may have landed).
+        let backend = self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map(|c| c.write_backend)
+            .unwrap_or(WriteBackend::Legacy);
         let tools = self.get_active_write_tools().await?;
         // turbovault-0bh: caller-supplied or op-tally derivation.
         let msg = commit_message.unwrap_or_else(|| derive_batch_message(&operations));
@@ -2444,13 +2456,24 @@ impl ObsidianMcpServer {
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
+        let transactional = match backend {
+            WriteBackend::Git => true,
+            WriteBackend::Legacy => result.success,
+        };
         let response = StandardResponse::new(
             vault_name,
             "batch_execute",
             serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
         )
         .with_count(op_count)
-        .with_meta("transactional", serde_json::json!(true))
+        .with_meta("transactional", serde_json::json!(transactional))
+        .with_meta(
+            "backend",
+            serde_json::json!(match backend {
+                WriteBackend::Git => "git",
+                WriteBackend::Legacy => "legacy",
+            }),
+        )
         .with_next_step("quick_health_check");
 
         response.to_json()
