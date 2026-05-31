@@ -2409,8 +2409,8 @@ impl ObsidianMcpServer {
 
     /// Execute batch file operations atomically
     #[tool(
-        description = "Execute multiple file operations atomically (all-or-nothing transaction). Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to an op-tally summary like `batch: 5 creates, 2 updates, 1 delete`.",
-        usage = "Use for complex multi-file workflows requiring consistency. If any operation fails, all changes are rolled back. Not idempotent. Pass commit_message to explain the batch's WHY.",
+        description = "Execute multiple file operations as ONE atomic substrate commit (turbovault-61k / TV-012: THIS is the all-or-nothing primitive. `begin_transaction` is worktree isolation for fanout, NOT atomic-batch — don't confuse them.) On git backend: every op carries optional per-op `expected_hash` (CAS), CreateNote implicitly carries `expect_absent`; a mismatch on ANY op aborts the whole batch and ZERO files change. Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to an op-tally summary like `batch: 5 creates, 2 updates, 1 delete`.",
+        usage = "Use for multi-file workflows requiring all-or-nothing. Substrate atomicity holds: zero ops commit if any op fails. Not idempotent. Pass commit_message to explain the batch's WHY. For parallel-subagent isolation (without atomicity), use `begin_transaction` instead.",
         performance = "Depends on operation count and types. Transactions add ~10-50ms overhead.",
         related = ["write_note", "delete_note", "move_note"],
         examples = [
@@ -2460,11 +2460,11 @@ impl ObsidianMcpServer {
 
     /// Begin a fanout transaction on the active vault.
     #[tool(
-        description = "Open a fanout scratch worktree for the active vault (git backend only). Auto-registers a temporary vault pointing at the worktree; agent/subagents `set_active_vault` to it for the duration. All writes inside go to a `wip/<tx_id>` branch and don't disturb the main working tree until `commit_transaction` merges back.",
-        usage = "Use when you need to fan out subagent writes that should land as an atomic unit. The returned `fanout_vault` is the name to switch into. Default merge strategy comes from the vault's `git.merge_strategy` config (override at `commit_transaction`).",
+        description = "ISOLATION ONLY — NOT atomic-rollback (turbovault-61k / TV-012). Opens a scratch git worktree on a `wip/<tx_id>` branch for the active git-backend vault and auto-registers a temporary vault pointing at it. N subagents `set_active_vault` to the fanout vault and write freely; their commits go to the wip branch without disturbing the base vault's working tree. A failed write INSIDE the fanout does NOT abort the rest — for all-or-nothing semantics use `batch_execute`. `commit_transaction` merges the wip branch back; `abandon_transaction` discards it.",
+        usage = "Use to fan out subagent writes (e.g. parallel ingest of N sources) into a single visible reveal at merge-back. NOT a substitute for batch_execute's atomicity — fanout is git-worktree isolation, batch_execute is multi-file CAS. Default merge strategy comes from the vault's `git.merge_strategy` config (override at commit time).",
         performance = "Cheap (~5-10ms): one branch create + one git worktree add. Worktree shares the object DB with main; the working-tree files materialize into the scratch dir.",
-        related = ["commit_transaction", "abandon_transaction", "set_active_vault"],
-        examples = ["begin_transaction()", "begin_transaction(merge_strategy: \"merge-commit\")"]
+        related = ["commit_transaction", "abandon_transaction", "batch_execute", "set_active_vault"],
+        examples = ["begin_transaction() — open fanout for subagent ingest", "begin_transaction(merge_strategy: \"merge-commit\")", "(for atomic multi-op: prefer batch_execute, NOT begin_transaction)"]
     )]
     async fn begin_transaction(
         &self,
@@ -2567,10 +2567,10 @@ impl ObsidianMcpServer {
 
     /// Commit (merge back) the active fanout transaction.
     #[tool(
-        description = "Merge the active fanout's wip branch back into the base vault's main branch (one merge-commit by default; configurable). Cleans up the scratch worktree + wip branch + deregisters the fanout vault. Caller may call this with the base vault OR the fanout vault active — both resolve to the same transaction.",
+        description = "Merge the active fanout's wip branch back into the base vault's main branch (turbovault-61k / TV-012: this is worktree merge-back, NOT atomic-commit-of-a-transactional batch; if you wanted batch atomicity, use `batch_execute` instead). One merge-commit by default; configurable. Cleans up the scratch worktree + wip branch + deregisters the fanout vault. Caller may call this with the base vault OR the fanout vault active — both resolve to the same transaction.",
         usage = "Pair with `begin_transaction`. `merge_strategy` overrides the vault config default at commit time; pass 'fast-forward' if you want main to advance directly to the wip tip (fails if main moved since begin).",
         performance = "Dominated by the merge (one tree merge + one materialize). Typical ~10-30ms.",
-        related = ["begin_transaction", "abandon_transaction"],
+        related = ["begin_transaction", "abandon_transaction", "batch_execute"],
         examples = ["commit_transaction()", "commit_transaction(merge_strategy: \"fast-forward\")"]
     )]
     async fn commit_transaction(
@@ -2646,10 +2646,10 @@ impl ObsidianMcpServer {
 
     /// Abandon (discard) the active fanout transaction.
     #[tool(
-        description = "Discard the active fanout: nothing lands on the base vault, the scratch worktree + wip branch are removed, the auto-registered fanout vault is deregistered. Safe no-op if there's no active fanout (returns ok with `was_active: false`).",
+        description = "Discard the active fanout (turbovault-61k / TV-012: this is a worktree-discard, NOT a transactional-rollback of an atomic batch — `batch_execute` is the atomic primitive). Nothing lands on the base vault; the scratch worktree + wip branch are removed; the auto-registered fanout vault is deregistered. Safe no-op if there's no active fanout (returns ok with `was_active: false`).",
         usage = "Use to bail out of a fanout that no longer makes sense (subagent error, user cancel, conflicting plan). Symmetric counterpart to `commit_transaction`.",
         performance = "Fast: a few filesystem + git ref cleanups.",
-        related = ["begin_transaction", "commit_transaction"],
+        related = ["begin_transaction", "commit_transaction", "batch_execute"],
         examples = ["abandon_transaction()"]
     )]
     async fn abandon_transaction(&self) -> McpResult<serde_json::Value> {
