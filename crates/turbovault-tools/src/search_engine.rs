@@ -129,7 +129,13 @@ impl SearchEngine {
     pub async fn new(manager: Arc<VaultManager>) -> Result<Self> {
         // Define schema: fields to index
         let mut schema_builder = Schema::builder();
-        schema_builder.add_text_field("path", TEXT | STORED);
+        // turbovault-2ag: `path` is a raw STRING (not tokenized TEXT) so that
+        // `apply_changes`' `delete_term(Term::from_field_text(path, rel))`
+        // matches the exact path and removes the prior doc on edit. A TEXT
+        // field tokenizes "a/b.md" into terms, so delete_term never matched
+        // and every edit left a stale duplicate. The query parser only
+        // searches title/content/tags, so path is never full-text queried.
+        schema_builder.add_text_field("path", STRING | STORED);
         schema_builder.add_text_field("title", TEXT | STORED);
         schema_builder.add_text_field("content", TEXT);
         schema_builder.add_text_field("tags", TEXT | STORED);
@@ -170,7 +176,16 @@ impl SearchEngine {
 
             match manager.parse_file(&file_path).await {
                 Ok(vault_file) => {
-                    let path_str = file_path.to_string_lossy().to_string();
+                    // turbovault-2ag: index docs by VAULT-RELATIVE path so the
+                    // field_path key matches `apply_changes` (which uses the
+                    // git-diff relative path). Keying the initial build by the
+                    // absolute path made `apply_changes`'s relative `delete_term`
+                    // miss, leaving a stale duplicate doc on every edit.
+                    let path_str = file_path
+                        .strip_prefix(manager.vault_path())
+                        .unwrap_or(&file_path)
+                        .to_string_lossy()
+                        .to_string();
 
                     // Get title
                     let title = vault_file
@@ -695,6 +710,50 @@ mod tests {
         assert!(!"/vault/readme.txt".ends_with(".md"));
         assert!(!"/vault/file.md.bak".ends_with(".md"));
         assert!("relative/path/note.md".ends_with(".md"));
+    }
+
+    /// turbovault-2ag: an incremental reindex of an edited file must REPLACE
+    /// its doc, not leave a stale duplicate. Regression for two bugs: the
+    /// initial build keyed docs by absolute path while `apply_changes` keyed
+    /// by vault-relative path, and the `path` field was tokenized TEXT so
+    /// `delete_term` never matched. Either alone leaves the old doc behind.
+    #[tokio::test]
+    async fn apply_changes_replaces_edited_doc_without_duplicate() {
+        use tempfile::TempDir;
+        use turbovault_core::config::{ServerConfig, VaultConfig};
+
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("s.md"), "# S\n\nalphaword content here\n").unwrap();
+
+        let mut cfg = ServerConfig::new();
+        cfg.vaults
+            .push(VaultConfig::builder("v", tmp.path()).build().unwrap());
+        let manager = Arc::new(VaultManager::new(cfg).unwrap());
+
+        let engine = SearchEngine::new(Arc::clone(&manager)).await.unwrap();
+        assert_eq!(
+            engine.search("alphaword").await.unwrap().len(),
+            1,
+            "alphaword indexed by the initial build"
+        );
+
+        // Edit the file on disk, then incrementally reindex just that path.
+        std::fs::write(tmp.path().join("s.md"), "# S\n\nbetaword content here\n").unwrap();
+        engine
+            .apply_changes(vec![("s.md".to_string(), true)])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine.search("betaword").await.unwrap().len(),
+            1,
+            "new term findable after incremental reindex"
+        );
+        assert_eq!(
+            engine.search("alphaword").await.unwrap().len(),
+            0,
+            "old doc replaced, not duplicated"
+        );
     }
 
     /// Test: Stopword filtering works for keyword extraction

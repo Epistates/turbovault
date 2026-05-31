@@ -23,12 +23,13 @@
 //! Serialized (`#[serial_test::serial]`): each test spawns its own server
 //! process, but the test process shares libgit2's process-wide init.
 //!
-//! One test is `#[ignore]`d as an executable bug repro for a derived-index
-//! coherence gap this suite surfaced on the git backend — turbovault-2ag
-//! (edit/modify doesn't reindex the search index). Run with `--ignored` to
-//! reproduce; remove the `#[ignore]` once it is fixed. (turbovault-9zr —
-//! multi-file commits not reindexing the link graph — is now fixed: the graph
-//! re-resolves dangling links on file add, and flush passes are serialized.)
+//! This suite surfaced two derived-index coherence bugs on the git backend,
+//! both now fixed (all scenarios run; none ignored):
+//! - turbovault-9zr: multi-file commits didn't reindex the link graph — fixed
+//!   by re-resolving dangling links on file add + serializing flush passes.
+//! - turbovault-2ag: edit didn't reindex search — fixed by keying search docs
+//!   by vault-relative path and making the path field a raw STRING so
+//!   `delete_term` matches (was a tokenized TEXT field).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -351,7 +352,6 @@ async fn wire_batch_execute_atomic_multi_file() {
 /// 2ag is fixed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-#[ignore = "turbovault-2ag: edit (modify) doesn't reindex the search index"]
 async fn wire_edit_note_updates_search_index() {
     let (_vault, _cfg, client) = setup_wire_vault().await;
 
