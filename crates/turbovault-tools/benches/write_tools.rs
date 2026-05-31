@@ -271,6 +271,7 @@ fn batch_ops(n: usize) -> Vec<BatchOperation> {
         .map(|i| BatchOperation::CreateNote {
             path: format!("note_{i}.md"),
             content: format!("body {i}"),
+            force: None,
         })
         .collect()
 }

@@ -35,6 +35,7 @@ async fn test_batch_execute_single_write() {
     let ops = vec![BatchOperation::WriteNote {
         path: "new.md".to_string(),
         content: "# New Note\nContent".to_string(),
+        expected_hash: None,
     }];
 
     let result = tools.batch_execute(ops).await;
@@ -57,14 +58,17 @@ async fn test_batch_execute_multiple_writes() {
         BatchOperation::WriteNote {
             path: "note1.md".to_string(),
             content: "# Note 1".to_string(),
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "note2.md".to_string(),
             content: "# Note 2".to_string(),
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "note3.md".to_string(),
             content: "# Note 3".to_string(),
+            expected_hash: None,
         },
     ];
 
@@ -82,6 +86,7 @@ async fn test_batch_execute_delete() {
 
     let ops = vec![BatchOperation::DeleteNote {
         path: "existing.md".to_string(),
+        expected_hash: None,
     }];
 
     let result = tools.batch_execute(ops).await;
@@ -102,6 +107,7 @@ async fn test_batch_execute_move() {
     let ops = vec![BatchOperation::MoveNote {
         from: "existing.md".to_string(),
         to: "moved.md".to_string(),
+        expected_hash: None,
     }];
 
     let result = tools.batch_execute(ops).await;
@@ -124,14 +130,17 @@ async fn test_batch_execute_mixed_operations() {
         BatchOperation::WriteNote {
             path: "new1.md".to_string(),
             content: "# New 1".to_string(),
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "new2.md".to_string(),
             content: "# New 2".to_string(),
+            expected_hash: None,
         },
         BatchOperation::MoveNote {
             from: "existing.md".to_string(),
             to: "renamed.md".to_string(),
+            expected_hash: None,
         },
     ];
 
@@ -151,13 +160,16 @@ async fn test_batch_execute_rollback_on_error() {
         BatchOperation::WriteNote {
             path: "success1.md".to_string(),
             content: "# Success 1".to_string(),
+            expected_hash: None,
         },
         BatchOperation::DeleteNote {
-            path: "nonexistent.md".to_string(), // This will fail
+            path: "nonexistent.md".to_string(), // This will fail,
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "success2.md".to_string(),
             content: "# Success 2".to_string(),
+            expected_hash: None,
         },
     ];
 
@@ -195,6 +207,7 @@ async fn test_batch_execute_creates_directories() {
     let ops = vec![BatchOperation::WriteNote {
         path: "nested/deep/folder/note.md".to_string(),
         content: "# Nested Note".to_string(),
+        expected_hash: None,
     }];
 
     let result = tools.batch_execute(ops).await;
@@ -215,10 +228,12 @@ async fn test_batch_execute_atomic_guarantees() {
         BatchOperation::WriteNote {
             path: "atomic1.md".to_string(),
             content: "# Atomic 1".to_string(),
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "atomic2.md".to_string(),
             content: "# Atomic 2".to_string(),
+            expected_hash: None,
         },
     ];
 
@@ -230,9 +245,11 @@ async fn test_batch_execute_atomic_guarantees() {
         BatchOperation::WriteNote {
             path: "atomic3.md".to_string(),
             content: "# Atomic 3".to_string(),
+            expected_hash: None,
         },
         BatchOperation::DeleteNote {
             path: "nonexistent_for_atomic_test.md".to_string(),
+            expected_hash: None,
         },
     ];
 
@@ -264,6 +281,7 @@ async fn test_async_error_path_concurrent_batch_operations() {
                 let ops = vec![BatchOperation::WriteNote {
                     path: format!("concurrent_{}.md", i),
                     content: format!("# Concurrent {}", i),
+                    expected_hash: None,
                 }];
                 tools.batch_execute(ops).await
             })

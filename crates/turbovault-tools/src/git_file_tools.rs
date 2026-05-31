@@ -284,22 +284,77 @@ impl GitFileTools {
     // -------- internals --------
 
     async fn translate_op(&self, txn: Transaction, op: &BatchOperation) -> Result<Transaction> {
+        // Per-op preconditions (turbovault-c0e). Every variant that touches
+        // an existing target accepts `expected_hash` (git blob OID hex on
+        // git backend); `CreateNote` carries an implicit `expect_absent`
+        // unless `force == Some(true)`. A mismatch on any single op aborts
+        // the whole batch (architecture §6.3 reconsideration domino).
         Ok(match op {
-            BatchOperation::CreateNote { path, content } => txn.create(path, content.as_bytes()),
-            BatchOperation::WriteNote { path, content } => txn.upsert(path, content.as_bytes()),
-            BatchOperation::DeleteNote { path } => txn.remove(path),
-            BatchOperation::MoveNote { from, to } => {
+            BatchOperation::CreateNote {
+                path,
+                content,
+                force,
+            } => {
+                if force.unwrap_or(false) {
+                    // Caller-acknowledged blind create/overwrite — drops
+                    // expect_absent. Equivalent to a WriteNote with no
+                    // expected_hash but kept under CreateNote semantics
+                    // for the intent the caller declared.
+                    txn.upsert(path, content.as_bytes())
+                } else {
+                    // Strict create — `txn.create` carries `expect_absent`.
+                    txn.create(path, content.as_bytes())
+                }
+            }
+            BatchOperation::WriteNote {
+                path,
+                content,
+                expected_hash,
+            } => {
+                let mut t = txn.upsert(path, content.as_bytes());
+                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
+                    t = t.expect_blob(path, oid);
+                }
+                t
+            }
+            BatchOperation::DeleteNote {
+                path,
+                expected_hash,
+            } => {
+                let mut t = txn.remove(path);
+                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
+                    t = t.expect_blob(path, oid);
+                }
+                t
+            }
+            BatchOperation::MoveNote {
+                from,
+                to,
+                expected_hash,
+            } => {
                 let content = self.read_file(from).await?;
-                txn.remove(from).upsert(to, content.into_bytes())
+                let mut t = txn.remove(from).upsert(to, content.into_bytes());
+                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
+                    t = t.expect_blob(from, oid);
+                }
+                // Destination always carries expect_absent — single-op
+                // move_file does the same.
+                t = t.expect_absent(to);
+                t
             }
             BatchOperation::UpdateLinks {
                 file,
                 old_target,
                 new_target,
+                expected_hash,
             } => {
                 let current = self.read_file(file).await?;
                 let updated = current.replace(old_target, new_target);
-                txn.upsert(file, updated.into_bytes())
+                let mut t = txn.upsert(file, updated.into_bytes());
+                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
+                    t = t.expect_blob(file, oid);
+                }
+                t
             }
         })
     }
@@ -555,8 +610,8 @@ fn describe_op(op: &BatchOperation) -> String {
     match op {
         BatchOperation::CreateNote { path, .. } => format!("created {}", path),
         BatchOperation::WriteNote { path, .. } => format!("wrote {}", path),
-        BatchOperation::DeleteNote { path } => format!("deleted {}", path),
-        BatchOperation::MoveNote { from, to } => format!("moved {} -> {}", from, to),
+        BatchOperation::DeleteNote { path, .. } => format!("deleted {}", path),
+        BatchOperation::MoveNote { from, to, .. } => format!("moved {} -> {}", from, to),
         BatchOperation::UpdateLinks { file, .. } => format!("updated links in {}", file),
     }
 }
@@ -864,6 +919,83 @@ mod tests {
         assert!(tmp.path().join("new.md").exists());
     }
 
+    /// turbovault-c0e: `WriteNote.expected_hash` carries an `expect_blob`
+    /// precondition. A stale hash aborts the WHOLE batch (atomicity §6.3),
+    /// not just that op — zero files land, HEAD unchanged. The substrate
+    /// folds the apply-time ConcurrencyError into the returned `BatchResult`
+    /// (matching the existing batch-failure shape) rather than surfacing
+    /// it as `Err`.
+    #[tokio::test]
+    async fn batch_write_note_with_stale_expected_hash_aborts_atomically() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("a.md", "v1\n").await.unwrap();
+        let bogus = VaultRepo::blob_oid_of(b"NEVER_HERE").unwrap().to_string();
+        let head_before = head_oid(&tools).unwrap();
+
+        let ops = vec![
+            BatchOperation::CreateNote {
+                path: "fresh.md".into(),
+                content: "ok".into(),
+                force: None,
+            },
+            BatchOperation::WriteNote {
+                path: "a.md".into(),
+                content: "v2\n".into(),
+                expected_hash: Some(bogus),
+            },
+        ];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(!res.success, "batch reports failure");
+        assert_eq!(res.executed, 0, "no op committed on abort");
+        let any_concurrency = res.errors.iter().any(|e| e.contains("precondition failed"));
+        assert!(
+            any_concurrency,
+            "expected precondition-failed error in result: {:?}",
+            res.errors
+        );
+        // Atomic abort: fresh.md was NOT created; a.md is unchanged.
+        assert!(!tmp.path().join("fresh.md").exists());
+        assert_eq!(tools.read_file("a.md").await.unwrap(), "v1\n");
+        assert_eq!(head_oid(&tools), Some(head_before), "no commit on abort");
+    }
+
+    /// turbovault-c0e: matching `expected_hash` succeeds — the whole batch
+    /// lands as one commit.
+    #[tokio::test]
+    async fn batch_write_note_with_matching_expected_hash_lands() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("a.md", "v1\n").await.unwrap();
+        let current = VaultRepo::blob_oid_of(b"v1\n").unwrap().to_string();
+        let head_before = head_oid(&tools);
+
+        let ops = vec![BatchOperation::WriteNote {
+            path: "a.md".into(),
+            content: "v2\n".into(),
+            expected_hash: Some(current),
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success);
+        assert_eq!(tools.read_file("a.md").await.unwrap(), "v2\n");
+        assert_ne!(head_oid(&tools), head_before, "commit advanced HEAD");
+    }
+
+    /// turbovault-c0e: `CreateNote { force: true }` drops `expect_absent`,
+    /// behaving as a blind upsert. Existing content is replaced; the batch
+    /// lands.
+    #[tokio::test]
+    async fn batch_create_note_force_true_is_blind_upsert() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("dup.md", "v1\n").await.unwrap();
+        let ops = vec![BatchOperation::CreateNote {
+            path: "dup.md".into(),
+            content: "v2\n".into(),
+            force: Some(true),
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success);
+        assert_eq!(tools.read_file("dup.md").await.unwrap(), "v2\n");
+    }
+
     /// turbovault-947: create_file on an existing path fails its `expect_absent`
     /// precondition. ZERO commits land; the working tree is unchanged. This is
     /// the substrate guarantee for the concurrent-create race the MCP layer
@@ -905,22 +1037,27 @@ mod tests {
             BatchOperation::CreateNote {
                 path: "new1.md".into(),
                 content: "C1".into(),
+                force: None,
             },
             BatchOperation::WriteNote {
                 path: "new2.md".into(),
                 content: "W2".into(),
+                expected_hash: None,
             },
             BatchOperation::DeleteNote {
                 path: "seed_del.md".into(),
+                expected_hash: None,
             },
             BatchOperation::MoveNote {
                 from: "seed_mv.md".into(),
                 to: "moved.md".into(),
+                expected_hash: None,
             },
             BatchOperation::UpdateLinks {
                 file: "links.md".into(),
                 old_target: "old-target".into(),
                 new_target: "new-target".into(),
+                expected_hash: None,
             },
         ];
 
@@ -968,14 +1105,17 @@ mod tests {
             BatchOperation::WriteNote {
                 path: "untouched1.md".into(),
                 content: "X".into(),
+                expected_hash: None,
             },
             BatchOperation::CreateNote {
                 path: "exists.md".into(),
                 content: "boom".into(),
+                force: None,
             },
             BatchOperation::WriteNote {
                 path: "untouched2.md".into(),
                 content: "Y".into(),
+                expected_hash: None,
             },
         ];
 

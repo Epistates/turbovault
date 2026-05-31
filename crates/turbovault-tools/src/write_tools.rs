@@ -216,7 +216,19 @@ impl WriteTools {
 
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
         match self {
-            Self::Legacy { batch, .. } => batch.batch_execute(operations).await,
+            Self::Legacy { batch, .. } => {
+                // turbovault-c0e: legacy backend has no per-op CAS primitive
+                // on the batch path (per the legacy-stays direction in
+                // turbovault-6fo.16). Refuse loudly rather than silently
+                // dropping the precondition the caller declared.
+                if let Some(idx) = first_op_with_precondition(&operations) {
+                    return Err(Error::config_error(format!(
+                        "BatchOperation at index {} carries a per-op CAS precondition (expected_hash), but write_backend=legacy has no batch-level CAS. Use write_backend=git for per-op CAS, or drop the precondition.",
+                        idx
+                    )));
+                }
+                batch.batch_execute(operations).await
+            }
             Self::Git(g) => g.batch_execute(operations).await,
         }
     }
@@ -266,10 +278,34 @@ impl WriteTools {
                         "read_set preconditions require write_backend=git",
                     ));
                 }
+                if let Some(idx) = first_op_with_precondition(&operations) {
+                    return Err(Error::config_error(format!(
+                        "BatchOperation at index {} carries a per-op CAS precondition (expected_hash), but write_backend=legacy has no batch-level CAS. Use write_backend=git for per-op CAS, or drop the precondition.",
+                        idx
+                    )));
+                }
                 batch.batch_execute(operations).await
             }
         }
     }
+}
+
+/// turbovault-c0e: scan a batch for ops that declare a per-op CAS
+/// precondition the legacy backend cannot honor. Returns the index of the
+/// first one found, or `None` if every op is precondition-free.
+///
+/// `CreateNote` is NOT flagged — `force: Some(true)` and `force: None` both
+/// map cleanly to the legacy "blind create/overwrite" behavior. The
+/// `expect_absent` semantic the git backend adds is git-only; legacy
+/// callers accept the no-CAS risk by virtue of choosing the legacy backend.
+fn first_op_with_precondition(operations: &[BatchOperation]) -> Option<usize> {
+    operations.iter().position(|op| match op {
+        BatchOperation::CreateNote { .. } => false,
+        BatchOperation::WriteNote { expected_hash, .. }
+        | BatchOperation::DeleteNote { expected_hash, .. }
+        | BatchOperation::MoveNote { expected_hash, .. }
+        | BatchOperation::UpdateLinks { expected_hash, .. } => expected_hash.is_some(),
+    })
 }
 
 #[cfg(test)]
@@ -335,6 +371,41 @@ mod tests {
         assert_eq!(tools.read_file("dup.md").await.unwrap(), "v1");
     }
 
+    /// turbovault-c0e: legacy backend refuses a batch with per-op
+    /// preconditions loudly. Caller switches to git backend or drops the
+    /// precondition rather than silently losing CAS.
+    #[tokio::test]
+    async fn legacy_batch_refuses_per_op_precondition() {
+        let tmp = TempDir::new().unwrap();
+        let tools = legacy_tools(&tmp).await;
+        let ops = vec![BatchOperation::WriteNote {
+            path: "a.md".into(),
+            content: "v".into(),
+            expected_hash: Some("0123456789abcdef0123456789abcdef01234567".into()),
+        }];
+        let err = tools.batch_execute(ops).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("write_backend=legacy") && msg.contains("CAS"),
+            "expected legacy-refuse error, got: {msg}"
+        );
+    }
+
+    /// turbovault-c0e: precondition-FREE batches still pass through to the
+    /// legacy executor unchanged.
+    #[tokio::test]
+    async fn legacy_batch_passes_through_when_no_preconditions() {
+        let tmp = TempDir::new().unwrap();
+        let tools = legacy_tools(&tmp).await;
+        let ops = vec![BatchOperation::WriteNote {
+            path: "a.md".into(),
+            content: "v".into(),
+            expected_hash: None,
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success);
+    }
+
     /// turbovault-947: legacy dispatch has no atomic create primitive — the
     /// fallback is `write_file` which blind-overwrites. Documented limit;
     /// the MCP layer's pre-check is the only protection on legacy.
@@ -358,14 +429,17 @@ mod tests {
                 BatchOperation::WriteNote {
                     path: "first.md".into(),
                     content: "F".into(),
+                    expected_hash: None,
                 },
                 BatchOperation::MoveNote {
                     from: "missing.md".into(),
                     to: "anywhere.md".into(),
+                    expected_hash: None,
                 },
                 BatchOperation::WriteNote {
                     path: "third.md".into(),
                     content: "T".into(),
+                    expected_hash: None,
                 },
             ]
         };

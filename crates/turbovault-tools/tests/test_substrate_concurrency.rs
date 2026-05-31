@@ -332,14 +332,17 @@ async fn batch_failure_leaves_zero_partial_state() {
         BatchOperation::WriteNote {
             path: "first.md".into(),
             content: "F".into(),
+            expected_hash: None,
         },
         BatchOperation::MoveNote {
             from: "does_not_exist.md".into(),
             to: "anywhere.md".into(),
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "third.md".into(),
             content: "T".into(),
+            expected_hash: None,
         },
     ];
     let res = tools.batch_execute(ops).await.unwrap();
@@ -445,10 +448,12 @@ async fn read_set_aborts_whole_batch_when_any_source_changes() {
         turbovault_batch::BatchOperation::CreateNote {
             path: "out1.md".into(),
             content: "O1".into(),
+            force: None,
         },
         turbovault_batch::BatchOperation::CreateNote {
             path: "out2.md".into(),
             content: "O2".into(),
+            force: None,
         },
     ];
     let res = a

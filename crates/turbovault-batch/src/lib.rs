@@ -25,15 +25,18 @@
 //!         BatchOperation::CreateNote {
 //!             path: "notes/new1.md".to_string(),
 //!             content: "# First Note".to_string(),
+//!             force: None,
 //!         },
 //!         BatchOperation::CreateNote {
 //!             path: "notes/new2.md".to_string(),
 //!             content: "# Second Note".to_string(),
+//!             force: None,
 //!         },
 //!         BatchOperation::UpdateLinks {
 //!             file: "notes/index.md".to_string(),
 //!             old_target: "old-link".to_string(),
 //!             new_target: "new-link".to_string(),
+//!             expected_hash: None,
 //!         },
 //!     ];
 //!
@@ -92,10 +95,12 @@
 //! let write = BatchOperation::WriteNote {
 //!     path: "file.md".to_string(),
 //!     content: "content".to_string(),
+//!     expected_hash: None,
 //! };
 //!
 //! let delete = BatchOperation::DeleteNote {
 //!     path: "file.md".to_string(),
+//!     expected_hash: None,
 //! };
 //!
 //! assert!(write.conflicts_with(&delete));
@@ -139,28 +144,67 @@ use turbovault_vault::VaultManager;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type")]
 pub enum BatchOperation {
-    /// Create a new note with content
+    /// Create a new note with content. Defaults to strict-create: the
+    /// substrate adds `expect_absent`, so the loser of a concurrent-create
+    /// race aborts the entire batch with `ConcurrencyError`
+    /// (turbovault-947 / 6fo §6 reconsideration domino).
+    ///
+    /// `force: Some(true)` disables `expect_absent`, falling back to
+    /// upsert semantics (caller-acknowledged blind create/overwrite —
+    /// equivalent to `WriteNote { expected_hash: None }`).
     #[serde(rename = "CreateNote", alias = "CreateFile")]
-    CreateNote { path: String, content: String },
+    CreateNote {
+        path: String,
+        content: String,
+        /// Disable the implicit `expect_absent` precondition. Default
+        /// false; pass true to acknowledge a blind create/overwrite.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
 
-    /// Write/overwrite a note
+    /// Write/overwrite a note. `expected_hash` (git blob OID hex on git
+    /// backend, SHA-256 on legacy) carries an `expect_blob` precondition;
+    /// the whole batch aborts if the target file no longer matches the
+    /// expected pre-image (turbovault-c0e).
     #[serde(rename = "WriteNote", alias = "WriteFile")]
-    WriteNote { path: String, content: String },
+    WriteNote {
+        path: String,
+        content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
 
-    /// Delete a note
+    /// Delete a note. `expected_hash` guards the delete against a
+    /// concurrent modification of the target.
     #[serde(rename = "DeleteNote", alias = "DeleteFile")]
-    DeleteNote { path: String },
+    DeleteNote {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
 
-    /// Move/rename a note
+    /// Move/rename a note. `expected_hash` guards the SOURCE against
+    /// concurrent modification (the destination always carries
+    /// `expect_absent`, refusing to clobber).
     #[serde(rename = "MoveNote", alias = "MoveFile")]
-    MoveNote { from: String, to: String },
+    MoveNote {
+        from: String,
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
 
-    /// Update links in a note (find and replace link target)
+    /// Update links in a note (find and replace link target).
+    /// `expected_hash` guards the source file from concurrent
+    /// modification — important when several batch ops update siblings
+    /// of the same renamed page.
     #[serde(rename = "UpdateLinks")]
     UpdateLinks {
         file: String,
         old_target: String,
         new_target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
     },
 }
 
@@ -170,12 +214,13 @@ impl BatchOperation {
         match self {
             Self::CreateNote { path, .. } => vec![path.clone()],
             Self::WriteNote { path, .. } => vec![path.clone()],
-            Self::DeleteNote { path } => vec![path.clone()],
-            Self::MoveNote { from, to } => vec![from.clone(), to.clone()],
+            Self::DeleteNote { path, .. } => vec![path.clone()],
+            Self::MoveNote { from, to, .. } => vec![from.clone(), to.clone()],
             Self::UpdateLinks {
                 file,
                 old_target,
                 new_target,
+                ..
             } => {
                 vec![file.clone(), old_target.clone(), new_target.clone()]
             }
@@ -357,26 +402,32 @@ impl BatchExecutor {
 
     /// Execute a single operation
     async fn execute_operation(&self, op: &BatchOperation) -> Result<String> {
+        // Legacy executor does not consult per-op preconditions
+        // (`expected_hash` / `force`). The legacy substrate has no CAS
+        // primitive on the batch path (per the legacy-stays direction in
+        // turbovault-6fo.16). `WriteTools::Legacy::batch_execute` refuses
+        // batches that carry preconditions, so reaching this code path with
+        // a precondition set is a bug elsewhere.
         match op {
-            BatchOperation::CreateNote { path, content } => {
+            BatchOperation::CreateNote { path, content, .. } => {
                 let path_buf = PathBuf::from(path);
                 self.manager.write_file(&path_buf, content, None).await?;
                 Ok(format!("Created: {}", path))
             }
 
-            BatchOperation::WriteNote { path, content } => {
+            BatchOperation::WriteNote { path, content, .. } => {
                 let path_buf = PathBuf::from(path);
                 self.manager.write_file(&path_buf, content, None).await?;
                 Ok(format!("Updated: {}", path))
             }
 
-            BatchOperation::DeleteNote { path } => {
+            BatchOperation::DeleteNote { path, .. } => {
                 let path_buf = PathBuf::from(path);
                 self.manager.delete_file(&path_buf, None).await?;
                 Ok(format!("Deleted: {}", path))
             }
 
-            BatchOperation::MoveNote { from, to } => {
+            BatchOperation::MoveNote { from, to, .. } => {
                 let from_buf = PathBuf::from(from);
                 let to_buf = PathBuf::from(to);
                 self.manager.move_file(&from_buf, &to_buf, None).await?;
@@ -387,6 +438,7 @@ impl BatchExecutor {
                 file,
                 old_target,
                 new_target,
+                ..
             } => {
                 // Read file
                 let path_buf = PathBuf::from(file);
@@ -424,6 +476,7 @@ mod tests {
         let op = BatchOperation::MoveNote {
             from: "a.md".to_string(),
             to: "b.md".to_string(),
+            expected_hash: None,
         };
         let affected = op.affected_files();
         assert_eq!(affected.len(), 2);
@@ -436,9 +489,11 @@ mod tests {
         let op1 = BatchOperation::WriteNote {
             path: "file.md".to_string(),
             content: "content".to_string(),
+            expected_hash: None,
         };
         let op2 = BatchOperation::DeleteNote {
             path: "file.md".to_string(),
+            expected_hash: None,
         };
 
         assert!(op1.conflicts_with(&op2));
@@ -450,10 +505,12 @@ mod tests {
         let op1 = BatchOperation::WriteNote {
             path: "file1.md".to_string(),
             content: "content".to_string(),
+            expected_hash: None,
         };
         let op2 = BatchOperation::WriteNote {
             path: "file2.md".to_string(),
             content: "content".to_string(),
+            expected_hash: None,
         };
 
         assert!(!op1.conflicts_with(&op2));
@@ -487,6 +544,7 @@ mod tests {
             .execute(vec![BatchOperation::CreateNote {
                 path: "hello.md".to_string(),
                 content: "# Hello World".to_string(),
+                force: None,
             }])
             .await
             .unwrap();
@@ -510,6 +568,7 @@ mod tests {
             .execute(vec![BatchOperation::WriteNote {
                 path: "existing.md".to_string(),
                 content: "new content".to_string(),
+                expected_hash: None,
             }])
             .await
             .unwrap();
@@ -529,6 +588,7 @@ mod tests {
         let result = executor
             .execute(vec![BatchOperation::DeleteNote {
                 path: "to_delete.md".to_string(),
+                expected_hash: None,
             }])
             .await
             .unwrap();
@@ -547,6 +607,7 @@ mod tests {
             .execute(vec![BatchOperation::MoveNote {
                 from: "source.md".to_string(),
                 to: "destination.md".to_string(),
+                expected_hash: None,
             }])
             .await
             .unwrap();
@@ -570,14 +631,17 @@ mod tests {
             BatchOperation::CreateNote {
                 path: "alpha.md".to_string(),
                 content: "alpha v1".to_string(),
+                force: None,
             },
             BatchOperation::CreateNote {
                 path: "beta.md".to_string(),
                 content: "beta v1".to_string(),
+                force: None,
             },
             BatchOperation::CreateNote {
                 path: "gamma.md".to_string(),
                 content: "gamma".to_string(),
+                force: None,
             },
         ];
 
@@ -607,9 +671,11 @@ mod tests {
             BatchOperation::CreateNote {
                 path: "succeeds.md".to_string(),
                 content: "I was created".to_string(),
+                force: None,
             },
             BatchOperation::DeleteNote {
                 path: "nonexistent.md".to_string(),
+                expected_hash: None,
             },
         ];
 
