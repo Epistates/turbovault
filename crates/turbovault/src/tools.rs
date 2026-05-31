@@ -2449,16 +2449,27 @@ impl ObsidianMcpServer {
         template_id: String,
         file_path: String,
         fields: String, // JSON string
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = TemplateEngine::new(manager);
 
-        // Parse fields JSON
         let field_values: HashMap<String, String> = serde_json::from_str(&fields)
             .map_err(|e| McpError::invalid_request(format!("Invalid fields JSON: {}", e)))?;
 
-        let result = engine
-            .create_from_template(&template_id, &file_path, field_values)
+        let (full_content, info) = engine
+            .compute_from_template(&template_id, &file_path, field_values)
+            .await
+            .map_err(to_mcp_error)?;
+
+        // turbovault-gje: route the new-file write through WriteTools so
+        // the git backend records the template-rendered note as a commit
+        // instead of bypassing the substrate via VaultManager.
+        let write_tools = self.get_active_write_tools().await?;
+        let msg = commit_message
+            .unwrap_or_else(|| format!("create_from_template {} -> {}", template_id, file_path));
+        write_tools
+            .create_file_with_message(&file_path, &full_content, &msg)
             .await
             .map_err(to_mcp_error)?;
 
@@ -2467,7 +2478,7 @@ impl ObsidianMcpServer {
         let response = StandardResponse::new(
             vault_name,
             "create_from_template",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
+            serde_json::to_value(&info).map_err(|e| McpError::internal(e.to_string()))?,
         )
         .with_next_step("read_note")
         .with_next_step("find_notes_from_template");
@@ -3317,29 +3328,40 @@ impl ObsidianMcpServer {
     async fn update_frontmatter(
         &self,
         path: String,
-        frontmatter: serde_json::Value,
+        // turbovault-gje / TV-007: `HashMap<String, serde_json::Value>`
+        // derives a JsonSchema with `type: object`, so MCP clients send a
+        // structured object — NOT a string-coerced AnyValue. Replaces the
+        // old `serde_json::Value` param that schemars emitted as Any,
+        // which forced clients to send a stringified body the server
+        // then rejected with "frontmatter must be a JSON object".
+        frontmatter: HashMap<String, serde_json::Value>,
         merge: Option<bool>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager);
 
-        let fm_map = match frontmatter {
-            serde_json::Value::Object(map) => map,
-            _ => {
-                return Err(McpError::invalid_request(
-                    "frontmatter must be a JSON object".to_string(),
-                ));
-            }
-        };
+        let fm_map: serde_json::Map<String, serde_json::Value> = frontmatter.into_iter().collect();
+        let (new_content, info) = tools
+            .compute_update_frontmatter(&path, fm_map, merge.unwrap_or(true))
+            .await
+            .map_err(to_mcp_error)?;
 
-        let result = tools
-            .update_frontmatter(&path, fm_map, merge.unwrap_or(true))
+        // turbovault-gje: route the write through WriteTools so the git
+        // backend records this mutation as a commit instead of bypassing
+        // the substrate via VaultManager::write_file. Legacy backend
+        // behavior is preserved (WriteTools::Legacy still calls
+        // VaultManager directly).
+        let write_tools = self.get_active_write_tools().await?;
+        let msg = commit_message.unwrap_or_else(|| format!("update_frontmatter {}", path));
+        write_tools
+            .write_file_with_mode_and_message(&path, &new_content, WriteMode::Overwrite, None, &msg)
             .await
             .map_err(to_mcp_error)?;
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
-        StandardResponse::new(vault_name, "update_frontmatter", result)
+        StandardResponse::new(vault_name, "update_frontmatter", info)
             .with_next_steps(&["read_note", "query_metadata"])
             .to_json()
     }
@@ -3361,18 +3383,38 @@ impl ObsidianMcpServer {
         path: String,
         operation: String,
         tags: Option<Vec<String>>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager);
 
-        let result = tools
-            .manage_tags(&path, &operation, tags.as_deref())
+        let (maybe_write, info) = tools
+            .compute_manage_tags(&path, &operation, tags.as_deref())
             .await
             .map_err(to_mcp_error)?;
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
-        StandardResponse::new(vault_name, "manage_tags", result)
+        // turbovault-gje: route mutations through WriteTools so the git
+        // backend records add/remove as commits. `list` is read-only —
+        // `maybe_write` is `None` — and skips the write path entirely.
+        if let Some(new_content) = maybe_write {
+            let write_tools = self.get_active_write_tools().await?;
+            let msg =
+                commit_message.unwrap_or_else(|| format!("manage_tags {} {}", operation, path));
+            write_tools
+                .write_file_with_mode_and_message(
+                    &path,
+                    &new_content,
+                    WriteMode::Overwrite,
+                    None,
+                    &msg,
+                )
+                .await
+                .map_err(to_mcp_error)?;
+            self.invalidate_similarity_cache().await;
+            self.invalidate_search_cache().await;
+        }
+
+        StandardResponse::new(vault_name, "manage_tags", info)
             .with_next_steps(&["update_frontmatter", "query_metadata"])
             .to_json()
     }

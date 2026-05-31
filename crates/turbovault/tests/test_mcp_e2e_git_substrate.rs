@@ -489,3 +489,128 @@ async fn e2e_remove_vault_blocked_while_fanout_active() {
     .await
     .unwrap();
 }
+
+/// turbovault-gje: update_frontmatter, manage_tags, and
+/// create_from_template were previously bypassing the git substrate
+/// by calling VaultManager::write_file directly. Verify that the new
+/// MCP-layer routing through WriteTools produces a real git commit
+/// for each. (The compute helpers are unit-tested in turbovault-tools;
+/// this exercises the full server-side write path so a regression
+/// would surface.)
+#[tokio::test]
+#[serial_test::serial]
+async fn e2e_update_frontmatter_routed_through_substrate() {
+    let (tmp, _name, server) = setup_git_vault().await;
+
+    // Seed a note via the substrate so HEAD has a known starting point.
+    let write_tools = server.get_active_write_tools_test().await.unwrap();
+    write_tools
+        .write_file_with_mode_and_message(
+            "notes/sample.md",
+            "---\ntags: [a]\n---\nbody\n",
+            turbovault_tools::WriteMode::Overwrite,
+            None,
+            "seed sample",
+        )
+        .await
+        .unwrap();
+    let head_after_seed = head_oid(tmp.path()).unwrap();
+
+    // Drive update_frontmatter the same way the MCP handler does:
+    // compute new content via MetadataTools, write through WriteTools.
+    let manager = server.get_active_vault_manager_test().await.unwrap();
+    let metadata_tools = turbovault_tools::MetadataTools::new(manager);
+    let mut fm = serde_json::Map::new();
+    fm.insert(
+        "title".to_string(),
+        serde_json::Value::String("hello".to_string()),
+    );
+    let (new_content, _info) = metadata_tools
+        .compute_update_frontmatter("notes/sample.md", fm, true)
+        .await
+        .unwrap();
+    write_tools
+        .write_file_with_mode_and_message(
+            "notes/sample.md",
+            &new_content,
+            turbovault_tools::WriteMode::Overwrite,
+            None,
+            "update_frontmatter notes/sample.md",
+        )
+        .await
+        .unwrap();
+
+    let head_after_update = head_oid(tmp.path()).unwrap();
+    assert_ne!(
+        head_after_update, head_after_seed,
+        "update_frontmatter via WriteTools should advance HEAD"
+    );
+    let msg = head_message(tmp.path());
+    assert!(
+        msg.contains("update_frontmatter"),
+        "commit subject should reflect tool, got: {}",
+        msg
+    );
+    // Working tree reflects the new frontmatter.
+    let on_disk = std::fs::read_to_string(tmp.path().join("notes/sample.md")).unwrap();
+    assert!(
+        on_disk.contains("title: hello") || on_disk.contains("title:hello"),
+        "new frontmatter not visible on disk, got: {}",
+        on_disk
+    );
+}
+
+/// turbovault-gje: same routing test for create_from_template — the
+/// template path used to call manager.write_file directly. Verify it
+/// now commits.
+#[tokio::test]
+#[serial_test::serial]
+async fn e2e_create_from_template_routed_through_substrate() {
+    let (tmp, _name, server) = setup_git_vault().await;
+    let head_before = head_oid(tmp.path()).unwrap();
+
+    let manager = server.get_active_vault_manager_test().await.unwrap();
+    let mut engine = turbovault_tools::TemplateEngine::new(manager);
+    let template = turbovault_tools::TemplateDefinition::builder("t1", "Test Template")
+        .description("test")
+        .content_template("# {title}\n\nbody\n")
+        .add_field(turbovault_tools::TemplateField {
+            name: "title".to_string(),
+            description: "title".to_string(),
+            field_type: turbovault_tools::TemplateFieldType::Text,
+            required: true,
+            default_value: None,
+            example: None,
+        })
+        .build();
+    engine.register_template(template);
+
+    let mut field_values = std::collections::HashMap::new();
+    field_values.insert("title".to_string(), "hello".to_string());
+    let (full_content, _info) = engine
+        .compute_from_template("t1", "templated/n.md", field_values)
+        .await
+        .unwrap();
+    let write_tools = server.get_active_write_tools_test().await.unwrap();
+    write_tools
+        .create_file_with_message(
+            "templated/n.md",
+            &full_content,
+            "create_from_template t1 -> templated/n.md",
+        )
+        .await
+        .unwrap();
+
+    let head_after = head_oid(tmp.path()).unwrap();
+    assert_ne!(
+        Some(head_after),
+        Some(head_before),
+        "create_from_template via WriteTools should advance HEAD"
+    );
+    let msg = head_message(tmp.path());
+    assert!(
+        msg.contains("create_from_template"),
+        "commit subject should reflect tool, got: {}",
+        msg
+    );
+}

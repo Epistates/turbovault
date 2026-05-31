@@ -174,12 +174,33 @@ impl MetadataTools {
         frontmatter: serde_json::Map<String, Value>,
         merge: bool,
     ) -> Result<Value> {
+        let (new_content, info) = self
+            .compute_update_frontmatter(path, frontmatter, merge)
+            .await?;
+        let file_path = PathBuf::from(path);
+        self.manager
+            .write_file(&file_path, &new_content, None)
+            .await?;
+        Ok(info)
+    }
+
+    /// turbovault-gje: pure compute variant of [`Self::update_frontmatter`]
+    /// — does the read + deep merge + reconstruct work and returns the
+    /// new content + summary JSON, but does NOT write. Lets the MCP
+    /// layer route the write through `WriteTools` (substrate-aware)
+    /// instead of the `VaultManager`-direct path that bypassed the git
+    /// backend's commit machinery.
+    pub async fn compute_update_frontmatter(
+        &self,
+        path: &str,
+        frontmatter: serde_json::Map<String, Value>,
+        merge: bool,
+    ) -> Result<(String, Value)> {
         let file_path = PathBuf::from(path);
         let content = self.manager.read_file(&file_path).await?;
 
         let (existing_yaml, body) = split_frontmatter(&content);
 
-        // Parse existing frontmatter
         let existing_fm: serde_json::Map<String, Value> = if let Some(yaml_str) = &existing_yaml {
             yaml_serde::from_str(yaml_str).map_err(|e| {
                 Error::config_error(format!("Failed to parse existing frontmatter YAML: {}", e))
@@ -200,18 +221,15 @@ impl MetadataTools {
             frontmatter
         };
 
-        // Reconstruct and write
         let new_content = reconstruct_content(Some(&final_fm), &body);
-        self.manager
-            .write_file(&file_path, &new_content, None)
-            .await?;
 
-        Ok(json!({
+        let info = json!({
             "path": path,
             "status": "updated",
             "merge": merge,
             "keys_set": final_fm.keys().collect::<Vec<_>>()
-        }))
+        });
+        Ok((new_content, info))
     }
 
     /// Manage tags on a note (add, remove, list)
@@ -225,6 +243,26 @@ impl MetadataTools {
         operation: &str,
         tags: Option<&[String]>,
     ) -> Result<Value> {
+        let (maybe_write, info) = self.compute_manage_tags(path, operation, tags).await?;
+        if let Some(new_content) = maybe_write {
+            let file_path = PathBuf::from(path);
+            self.manager
+                .write_file(&file_path, &new_content, None)
+                .await?;
+        }
+        Ok(info)
+    }
+
+    /// turbovault-gje: pure compute variant of [`Self::manage_tags`].
+    /// Returns `(Some(new_content), info)` for add/remove (write needed)
+    /// and `(None, info)` for `list` (read-only). Lets the MCP layer
+    /// route writes through `WriteTools` instead of `VaultManager`.
+    pub async fn compute_manage_tags(
+        &self,
+        path: &str,
+        operation: &str,
+        tags: Option<&[String]>,
+    ) -> Result<(Option<String>, Value)> {
         let file_path = PathBuf::from(path);
         let content = self.manager.read_file(&file_path).await?;
 
@@ -256,12 +294,15 @@ impl MetadataTools {
                     }
                 }
 
-                Ok(json!({
-                    "path": path,
-                    "frontmatter_tags": fm_tags,
-                    "inline_tags": inline_tags,
-                    "all_tags": all_tags
-                }))
+                Ok((
+                    None,
+                    json!({
+                        "path": path,
+                        "frontmatter_tags": fm_tags,
+                        "inline_tags": inline_tags,
+                        "all_tags": all_tags
+                    }),
+                ))
             }
             "add" => {
                 let tags_to_add = tags.ok_or_else(|| {
@@ -297,16 +338,15 @@ impl MetadataTools {
                 );
 
                 let new_content = reconstruct_content(Some(&fm), &body);
-                self.manager
-                    .write_file(&file_path, &new_content, None)
-                    .await?;
-
-                Ok(json!({
-                    "path": path,
-                    "operation": "add",
-                    "tags": existing_tags,
-                    "status": "updated"
-                }))
+                Ok((
+                    Some(new_content),
+                    json!({
+                        "path": path,
+                        "operation": "add",
+                        "tags": existing_tags,
+                        "status": "updated"
+                    }),
+                ))
             }
             "remove" => {
                 let tags_to_remove = tags.ok_or_else(|| {
@@ -319,12 +359,15 @@ impl MetadataTools {
                         Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                     })?
                 } else {
-                    return Ok(json!({
-                        "path": path,
-                        "operation": "remove",
-                        "tags": [],
-                        "status": "no_frontmatter"
-                    }));
+                    return Ok((
+                        None,
+                        json!({
+                            "path": path,
+                            "operation": "remove",
+                            "tags": [],
+                            "status": "no_frontmatter"
+                        }),
+                    ));
                 };
 
                 let existing_tags = extract_tags_from_value(fm.get("tags"));
@@ -344,16 +387,15 @@ impl MetadataTools {
                 );
 
                 let new_content = reconstruct_content(Some(&fm), &body);
-                self.manager
-                    .write_file(&file_path, &new_content, None)
-                    .await?;
-
-                Ok(json!({
-                    "path": path,
-                    "operation": "remove",
-                    "tags": remaining,
-                    "status": "updated"
-                }))
+                Ok((
+                    Some(new_content),
+                    json!({
+                        "path": path,
+                        "operation": "remove",
+                        "tags": remaining,
+                        "status": "updated"
+                    }),
+                ))
             }
             other => Err(Error::config_error(format!(
                 "Invalid tag operation '{}'. Must be 'add', 'remove', or 'list'",
