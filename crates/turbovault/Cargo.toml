@@ -86,6 +86,14 @@ git2 = { workspace = true }
 # on a hot machine when tests run in parallel; isolating them removes
 # the flake entirely).
 serial_test = "3"
+# turbovault-3i5: wire-level MCP e2e — spawn the real `turbovault` binary
+# over stdio and drive it with the first-party turbomcp client, exercising
+# the JSON-RPC layer the in-process 6fo.18 suite skips and asserting derived
+# graph/search state via MCP tool responses (the real flush-on-query path,
+# no `flush_*_test` backdoor).
+turbomcp-client = "3.1.5"
+turbomcp-transport = "3.1.5"
+turbomcp-protocol = "3.1.5"
 
 [[bench]]
 name = "tool_benchmarks"

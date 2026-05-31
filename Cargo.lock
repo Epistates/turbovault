@@ -3911,6 +3911,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "serial_test"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "699f4197115b8a7e7ff19c9a315a4bd6fffec26cc4626ef45ecaea389e081c6d"
+dependencies = [
+ "futures-executor",
+ "futures-util",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "serial_test_derive",
+]
+
+[[package]]
+name = "serial_test_derive"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94e153fc76e1c6a068703d6d29c508a0b15c061c4b7e43da59cc097bc342673c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4867,6 +4892,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbomcp-client"
+version = "3.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dab5b8f3be285b6968d55abbcce3efa9048603199a7b6bc01eb16542710bc197"
+dependencies = [
+ "chrono",
+ "futures",
+ "futures-util",
+ "parking_lot",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+ "turbomcp-protocol",
+ "turbomcp-transport",
+ "uuid",
+]
+
+[[package]]
 name = "turbomcp-core"
 version = "3.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5162,10 +5211,12 @@ dependencies = [
  "clap",
  "config",
  "criterion",
+ "git2",
  "log",
  "schemars",
  "serde",
  "serde_json",
+ "serial_test",
  "shellexpand",
  "simple_logger",
  "tempfile",
@@ -5173,10 +5224,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "turbomcp",
+ "turbomcp-client",
+ "turbomcp-protocol",
+ "turbomcp-transport",
  "turbovault-audit",
  "turbovault-core",
  "turbovault-tools",
  "turbovault-vault",
+ "uuid",
  "yaml_serde",
 ]
 
@@ -5304,8 +5359,11 @@ version = "1.5.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "criterion",
+ "futures",
  "git2",
  "log",
+ "regex",
  "serde",
  "serde_json",
  "shellexpand",
