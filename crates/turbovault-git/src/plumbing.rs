@@ -113,14 +113,22 @@ impl VaultRepo {
         Ok(self.git().find_blob(oid)?.content().to_vec())
     }
 
-    /// Author/committer signature: the repo's configured identity, falling back
-    /// to a TurboVault default when `user.name`/`user.email` are unset. (A
-    /// configurable identity arrives with GWS.11.)
+    /// Author/committer signature.
+    ///
+    /// turbovault-ov7 / TV-004: defaults to the built-in
+    /// `TurboVault <turbovault@localhost>` identity so machine-authored
+    /// commits are visibly distinguishable from human commits in
+    /// `git log` / `git blame`. The previous behavior pulled the
+    /// operator's global `user.name` / `user.email` first, muddying
+    /// the audit trail and blocking "act only on bot commits"
+    /// automation.
+    ///
+    /// Per-vault override via `VaultGitConfig::author` is the
+    /// documented upgrade path (architecture §13.5); plumbing that
+    /// override into the substrate is a follow-up — until then this
+    /// is the single default.
     fn author_signature(&self) -> Result<Signature<'static>> {
-        match self.git().signature() {
-            Ok(sig) => Ok(sig),
-            Err(_) => Ok(Signature::now("TurboVault", "turbovault@localhost")?),
-        }
+        Ok(Signature::now("TurboVault", "turbovault@localhost")?)
     }
 }
 
