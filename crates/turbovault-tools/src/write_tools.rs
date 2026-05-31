@@ -155,6 +155,116 @@ impl WriteTools {
         }
     }
 
+    // -------- turbovault-0bh: caller-supplied commit message variants --------
+    //
+    // Each `_with_message` method behaves identically to its base sibling
+    // except that on the git backend the caller's `message` becomes the
+    // commit subject (and body, when newline-separated). Legacy backend
+    // silently ignores `message` — legacy writes don't produce commits.
+
+    pub async fn write_file_with_mode_and_message(
+        &self,
+        path: &str,
+        content: &str,
+        mode: WriteMode,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Legacy { files, .. } => {
+                files
+                    .write_file_with_mode(path, content, mode, expected_hash)
+                    .await
+            }
+            Self::Git(g) => {
+                g.write_file_with_mode_and_message(path, content, mode, expected_hash, message)
+                    .await
+            }
+        }
+    }
+
+    pub async fn create_file_with_message(
+        &self,
+        path: &str,
+        content: &str,
+        message: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Legacy { files, .. } => files.write_file(path, content).await,
+            Self::Git(g) => g.create_file_with_message(path, content, message).await,
+        }
+    }
+
+    pub async fn edit_file_with_message(
+        &self,
+        path: &str,
+        edits: &str,
+        expected_hash: Option<&str>,
+        dry_run: bool,
+        message: &str,
+    ) -> Result<EditResult> {
+        match self {
+            Self::Legacy { files, .. } => {
+                files.edit_file(path, edits, expected_hash, dry_run).await
+            }
+            Self::Git(g) => {
+                g.edit_file_with_message(path, edits, expected_hash, dry_run, message)
+                    .await
+            }
+        }
+    }
+
+    pub async fn delete_file_with_hash_and_message(
+        &self,
+        path: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Legacy { files, .. } => files.delete_file_with_hash(path, expected_hash).await,
+            Self::Git(g) => {
+                g.delete_file_with_hash_and_message(path, expected_hash, message)
+                    .await
+            }
+        }
+    }
+
+    pub async fn move_file_with_hash_and_message(
+        &self,
+        from: &str,
+        to: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Legacy { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
+            Self::Git(g) => {
+                g.move_file_with_hash_and_message(from, to, expected_hash, message)
+                    .await
+            }
+        }
+    }
+
+    pub async fn batch_execute_with_message(
+        &self,
+        operations: Vec<BatchOperation>,
+        message: &str,
+    ) -> Result<BatchResult> {
+        match self {
+            Self::Legacy { batch, .. } => {
+                if let Some(idx) = first_op_with_precondition(&operations) {
+                    return Err(Error::config_error(format!(
+                        "BatchOperation at index {} carries a per-op CAS precondition (expected_hash), but write_backend=legacy has no batch-level CAS. Use write_backend=git for per-op CAS, or drop the precondition.",
+                        idx
+                    )));
+                }
+                // Legacy doesn't commit; message ignored.
+                batch.batch_execute(operations).await
+            }
+            Self::Git(g) => g.batch_execute_with_message(operations, message).await,
+        }
+    }
+
     pub async fn edit_file(
         &self,
         path: &str,

@@ -152,6 +152,24 @@ impl GitFileTools {
             .await
     }
 
+    /// turbovault-0bh: caller-supplied commit message variant of
+    /// [`Self::write_file_with_mode`]. Substrate auto-derives the message
+    /// otherwise (`write_file <path>`); this override lets the MCP layer
+    /// pass a richer message (caller's text + verb=tool_name per TV-008).
+    pub async fn write_file_with_mode_and_message(
+        &self,
+        path: &str,
+        content: &str,
+        mode: WriteMode,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<()> {
+        let final_content = self.resolve_write_content(path, content, mode).await?;
+        let expected = parse_blob_oid(expected_hash)?;
+        let txn = build_upsert_txn(message.to_string(), path, &final_content, expected);
+        self.apply_txn(&txn).await
+    }
+
     /// Overwrite shortcut — equivalent to `write_file_with_mode(.., Overwrite, None)`.
     pub async fn write_file(&self, path: &str, content: &str) -> Result<()> {
         self.write_file_with_mode(path, content, WriteMode::Overwrite, None)
@@ -168,8 +186,20 @@ impl GitFileTools {
     /// same absent path, exactly one commit lands; the loser sees a loud
     /// ConcurrencyError and re-decides.
     pub async fn create_file(&self, path: &str, content: &str) -> Result<()> {
-        let txn = Transaction::new(format!("create_file {}", path))
-            .create(path, content.as_bytes().to_vec());
+        self.create_file_with_message(path, content, &format!("create_file {}", path))
+            .await
+    }
+
+    /// turbovault-0bh: caller-supplied commit message variant of
+    /// [`Self::create_file`]. The `message` becomes the commit subject (and
+    /// body, when newline-separated). All other semantics are identical.
+    pub async fn create_file_with_message(
+        &self,
+        path: &str,
+        content: &str,
+        message: &str,
+    ) -> Result<()> {
+        let txn = Transaction::new(message.to_string()).create(path, content.as_bytes().to_vec());
         self.apply_txn(&txn).await
     }
 
@@ -214,6 +244,38 @@ impl GitFileTools {
         Ok(result)
     }
 
+    /// turbovault-0bh: caller-supplied commit message variant of
+    /// [`Self::edit_file`]. Behaviorally identical except the commit
+    /// subject is the caller's message instead of the auto-derived
+    /// `edit_file <path>`.
+    pub async fn edit_file_with_message(
+        &self,
+        path: &str,
+        edits: &str,
+        expected_hash: Option<&str>,
+        dry_run: bool,
+        message: &str,
+    ) -> Result<EditResult> {
+        let expected = parse_blob_oid(expected_hash)?;
+        let current = self.read_file(path).await?;
+        let engine = EditEngine::new();
+        let blocks = engine.parse_blocks(edits)?;
+        let (mut result, new_content) = engine.apply_edits(&current, &blocks, dry_run)?;
+        // 6sj: blob-OID hashes; same as edit_file.
+        result.old_hash = VaultRepo::blob_oid_of(current.as_bytes())
+            .map_err(|e| Error::config_error(format!("blob_oid_of(current): {}", e)))?
+            .to_string();
+        result.new_hash = VaultRepo::blob_oid_of(new_content.as_bytes())
+            .map_err(|e| Error::config_error(format!("blob_oid_of(new): {}", e)))?
+            .to_string();
+        if dry_run {
+            return Ok(result);
+        }
+        let txn = build_upsert_txn(message.to_string(), path, &new_content, expected);
+        self.apply_txn(&txn).await?;
+        Ok(result)
+    }
+
     /// Delete a file. `expected_hash` (blob oid hex) enforces a CAS
     /// precondition — pass `None` for a blind delete.
     pub async fn delete_file(&self, path: &str) -> Result<()> {
@@ -234,6 +296,22 @@ impl GitFileTools {
         self.apply_txn(&txn).await
     }
 
+    /// turbovault-0bh: caller-supplied commit message variant of
+    /// [`Self::delete_file_with_hash`].
+    pub async fn delete_file_with_hash_and_message(
+        &self,
+        path: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<()> {
+        let expected = parse_blob_oid(expected_hash)?;
+        let mut txn = Transaction::new(message.to_string()).remove(path);
+        if let Some(oid) = expected {
+            txn = txn.expect_blob(path, oid);
+        }
+        self.apply_txn(&txn).await
+    }
+
     /// Move a file — `remove(from) + upsert(to, bytes)` in one commit.
     pub async fn move_file(&self, from: &str, to: &str) -> Result<()> {
         self.move_file_with_hash(from, to, None).await
@@ -246,10 +324,28 @@ impl GitFileTools {
         to: &str,
         expected_hash: Option<&str>,
     ) -> Result<()> {
+        self.move_file_with_hash_and_message(
+            from,
+            to,
+            expected_hash,
+            &format!("move_file {} -> {}", from, to),
+        )
+        .await
+    }
+
+    /// turbovault-0bh: caller-supplied commit message variant of
+    /// [`Self::move_file_with_hash`].
+    pub async fn move_file_with_hash_and_message(
+        &self,
+        from: &str,
+        to: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<()> {
         let expected_from = parse_blob_oid(expected_hash)?;
         let content = self.read_file(from).await?;
 
-        let mut txn = Transaction::new(format!("move_file {} -> {}", from, to))
+        let mut txn = Transaction::new(message.to_string())
             .remove(from)
             .upsert(to, content.into_bytes());
         if let Some(oid) = expected_from {
@@ -279,6 +375,18 @@ impl GitFileTools {
     /// partial state on disk).
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
         self.batch_execute_with_read_set(operations, None).await
+    }
+
+    /// turbovault-0bh: caller-supplied commit message variant of
+    /// [`Self::batch_execute`]. Overrides the auto-derived
+    /// `batch_execute (N ops)` subject with the caller's message.
+    pub async fn batch_execute_with_message(
+        &self,
+        operations: Vec<BatchOperation>,
+        message: &str,
+    ) -> Result<BatchResult> {
+        self.batch_execute_inner(operations, None, Some(message))
+            .await
     }
 
     // -------- internals --------
@@ -392,6 +500,18 @@ impl GitFileTools {
         operations: Vec<BatchOperation>,
         read_set: Option<&ReadSet>,
     ) -> Result<BatchResult> {
+        self.batch_execute_inner(operations, read_set, None).await
+    }
+
+    /// turbovault-0bh internal: full batch implementation accepting an
+    /// optional caller-supplied commit message. `None` falls back to the
+    /// auto-derived `batch_execute (N ops)` subject (existing behavior).
+    async fn batch_execute_inner(
+        &self,
+        operations: Vec<BatchOperation>,
+        read_set: Option<&ReadSet>,
+        message: Option<&str>,
+    ) -> Result<BatchResult> {
         let started = std::time::Instant::now();
         let transaction_id = uuid::Uuid::new_v4().to_string();
         let total = operations.len();
@@ -410,7 +530,10 @@ impl GitFileTools {
             });
         }
 
-        let mut txn = Transaction::new(format!("batch_execute ({} ops)", total));
+        let commit_msg = message
+            .map(String::from)
+            .unwrap_or_else(|| format!("batch_execute ({} ops)", total));
+        let mut txn = Transaction::new(commit_msg);
         let mut changes = Vec::with_capacity(total);
         let mut records = Vec::with_capacity(total);
 
@@ -718,6 +841,16 @@ mod tests {
 
     fn head_oid(tools: &GitFileTools) -> Option<git2::Oid> {
         VaultRepo::open(&tools.vault_path).unwrap().head_oid()
+    }
+
+    fn head_commit_message(tools: &GitFileTools) -> String {
+        let repo = git2::Repository::open(&tools.vault_path).unwrap();
+        let oid = head_oid(tools).unwrap();
+        repo.find_commit(oid)
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_string()
     }
 
     #[tokio::test]
@@ -1263,5 +1396,113 @@ mod tests {
             matches!(err, Error::ConcurrencyError { .. }),
             "got: {err:?}"
         );
+    }
+
+    // -------- turbovault-0bh: caller-supplied commit messages --------
+
+    #[tokio::test]
+    async fn write_file_with_mode_and_message_uses_caller_subject() {
+        let (_tmp, tools) = setup().await;
+        tools
+            .write_file_with_mode_and_message(
+                "a.md",
+                "alpha",
+                WriteMode::Overwrite,
+                None,
+                "add concept page for Alpha",
+            )
+            .await
+            .unwrap();
+        let msg = head_commit_message(&tools);
+        assert!(msg.contains("add concept page for Alpha"), "got: {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn create_file_with_message_uses_caller_subject() {
+        let (_tmp, tools) = setup().await;
+        tools
+            .create_file_with_message("new.md", "fresh", "create stub page")
+            .await
+            .unwrap();
+        let msg = head_commit_message(&tools);
+        assert!(msg.contains("create stub page"), "got: {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn edit_file_with_message_uses_caller_subject() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("a.md", "hello\n").await.unwrap();
+        let edits = "<<<<<<< SEARCH\nhello\n=======\nbye\n>>>>>>> REPLACE\n";
+        let _ = tools
+            .edit_file_with_message("a.md", edits, None, false, "fix greeting")
+            .await
+            .unwrap();
+        let msg = head_commit_message(&tools);
+        assert!(msg.contains("fix greeting"), "got: {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_file_with_hash_and_message_uses_caller_subject() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("a.md", "v").await.unwrap();
+        tools
+            .delete_file_with_hash_and_message("a.md", None, "remove superseded page")
+            .await
+            .unwrap();
+        let msg = head_commit_message(&tools);
+        assert!(msg.contains("remove superseded page"), "got: {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn move_file_with_hash_and_message_uses_caller_subject() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("a.md", "v").await.unwrap();
+        tools
+            .move_file_with_hash_and_message("a.md", "b.md", None, "rename to canonical slug")
+            .await
+            .unwrap();
+        let msg = head_commit_message(&tools);
+        assert!(msg.contains("rename to canonical slug"), "got: {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn batch_execute_with_message_uses_caller_subject() {
+        let (_tmp, tools) = setup().await;
+        let ops = vec![
+            BatchOperation::CreateNote {
+                path: "x.md".into(),
+                content: "x".into(),
+                force: None,
+            },
+            BatchOperation::CreateNote {
+                path: "y.md".into(),
+                content: "y".into(),
+                force: None,
+            },
+        ];
+        tools
+            .batch_execute_with_message(ops, "ingest source S: 2 concept pages")
+            .await
+            .unwrap();
+        let msg = head_commit_message(&tools);
+        assert!(
+            msg.contains("ingest source S: 2 concept pages"),
+            "got: {msg:?}"
+        );
+    }
+
+    /// Auto-derived fallback still says `batch_execute (N ops)` when no
+    /// message is supplied (legacy behavior preserved).
+    #[tokio::test]
+    async fn batch_execute_auto_derive_unchanged() {
+        let (_tmp, tools) = setup().await;
+        let ops = vec![BatchOperation::CreateNote {
+            path: "x.md".into(),
+            content: "x".into(),
+            force: None,
+        }];
+        tools.batch_execute(ops).await.unwrap();
+        let msg = head_commit_message(&tools);
+        assert!(msg.contains("batch_execute (1 ops)"), "got: {msg:?}");
     }
 }

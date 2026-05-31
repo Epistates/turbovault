@@ -48,6 +48,56 @@ fn extract_count(value: &serde_json::Value) -> usize {
     }
 }
 
+/// turbovault-0bh: auto-derive a commit subject from a batch's op tally.
+/// Used as the fallback when the caller doesn't supply `commit_message`.
+/// Example: `batch: 5 creates, 2 updates, 1 delete`.
+fn derive_batch_message(operations: &[turbovault_tools::BatchOperation]) -> String {
+    use turbovault_tools::BatchOperation;
+    let mut creates = 0u32;
+    let mut updates = 0u32;
+    let mut deletes = 0u32;
+    let mut moves = 0u32;
+    let mut link_updates = 0u32;
+    for op in operations {
+        match op {
+            BatchOperation::CreateNote { .. } => creates += 1,
+            BatchOperation::WriteNote { .. } => updates += 1,
+            BatchOperation::DeleteNote { .. } => deletes += 1,
+            BatchOperation::MoveNote { .. } => moves += 1,
+            BatchOperation::UpdateLinks { .. } => link_updates += 1,
+        }
+    }
+    let pluralize = |n: u32, word: &str| -> String {
+        if n == 1 {
+            format!("1 {}", word)
+        } else {
+            format!("{} {}s", n, word)
+        }
+    };
+    let mut parts = Vec::new();
+    if creates > 0 {
+        parts.push(pluralize(creates, "create"));
+    }
+    if updates > 0 {
+        parts.push(pluralize(updates, "update"));
+    }
+    if deletes > 0 {
+        parts.push(pluralize(deletes, "delete"));
+    }
+    if moves > 0 {
+        parts.push(pluralize(moves, "move"));
+    }
+    if link_updates > 0 {
+        parts.push(pluralize(link_updates, "link update"));
+    }
+    if parts.is_empty() {
+        // Should be unreachable — empty batches are rejected upstream.
+        "batch_execute (0 ops)".to_string()
+    } else {
+        format!("batch: {}", parts.join(", "))
+    }
+}
+
 /// Standardized response envelope for all tools (LLMX improvement)
 /// Generic, non-cumbersome, forward-looking design
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -1025,11 +1075,11 @@ impl ObsidianMcpServer {
 
     /// Write or update a note with optional mode (overwrite, append, prepend)
     #[tool(
-        description = "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. CAS-by-default (turbovault-947): on `mode: overwrite`, writing to an EXISTING file requires either `expected_hash` (from read_note) or `force: true` — without one of those, the call is refused loudly to prevent silent clobber. Writing to an ABSENT path implicitly carries an expect-absent precondition that fails the loser of a concurrent-create race.",
-        usage = "Use for creating new notes or replacing existing ones (with CAS proof) or appending/prepending. Default safety on overwrite: pass expected_hash from a prior read_note OR pass force=true to acknowledge blind overwrite. Append/prepend modes preserve historical behavior for now.",
+        description = "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. CAS-by-default (turbovault-947): on `mode: overwrite`, writing to an EXISTING file requires either `expected_hash` (from read_note) or `force: true` — without one of those, the call is refused loudly to prevent silent clobber. Writing to an ABSENT path implicitly carries an expect-absent precondition that fails the loser of a concurrent-create race. Pass `commit_message` to set a meaningful git commit subject (turbovault-0bh); defaults to `write_note <path>`.",
+        usage = "Use for creating new notes or replacing existing ones (with CAS proof) or appending/prepending. Default safety on overwrite: pass expected_hash from a prior read_note OR pass force=true to acknowledge blind overwrite. Append/prepend modes preserve historical behavior for now. Pass commit_message to explain WHY the write was made; first line is the subject, double-newline starts a body.",
         performance = "Moderate (<50ms typical). Includes filesystem write and link graph update",
         related = ["read_note", "edit_note", "create_from_template"],
-        examples = ["mode: overwrite (default)", "create absent path (no hash, no force needed)", "overwrite with expected_hash", "force: true blind overwrite (escape hatch)"]
+        examples = ["mode: overwrite (default)", "create absent path (no hash, no force needed)", "overwrite with expected_hash", "force: true blind overwrite (escape hatch)", "commit_message: 'add concept page for X'"]
     )]
     async fn write_note(
         &self,
@@ -1038,11 +1088,15 @@ impl ObsidianMcpServer {
         mode: Option<String>,
         expected_hash: Option<String>,
         force: Option<bool>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
         let tools = self.get_active_write_tools().await?;
         let force = force.unwrap_or(false);
+        // turbovault-0bh: caller-supplied or auto-derived commit message
+        // (verb=tool_name per TV-008).
+        let msg = commit_message.unwrap_or_else(|| format!("write_note {}", path));
 
         // ---- turbovault-947: CAS-by-default for `mode: overwrite` ----
         //
@@ -1074,12 +1128,18 @@ impl ObsidianMcpServer {
                 )));
             }
             tools
-                .create_file(&path, &content)
+                .create_file_with_message(&path, &content, &msg)
                 .await
                 .map_err(to_mcp_error)?;
         } else {
             tools
-                .write_file_with_mode(&path, &content, write_mode, expected_hash.as_deref())
+                .write_file_with_mode_and_message(
+                    &path,
+                    &content,
+                    write_mode,
+                    expected_hash.as_deref(),
+                    &msg,
+                )
                 .await
                 .map_err(to_mcp_error)?;
         }
@@ -1098,11 +1158,11 @@ impl ObsidianMcpServer {
 
     /// Edit note using SEARCH/REPLACE blocks
     #[tool(
-        description = "Apply targeted edits using SEARCH/REPLACE blocks (safer than full overwrite)",
-        usage = "Use for precise modifications without reading/writing entire file. Requires exact match of search text. Supports optional content hash for conflict detection and dry_run mode for preview. Returns applied changes, rejected changes, and new hash",
+        description = "Apply targeted edits using SEARCH/REPLACE blocks (safer than full overwrite). Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to `edit_note <path>`.",
+        usage = "Use for precise modifications without reading/writing entire file. Requires exact match of search text. Supports optional content hash for conflict detection and dry_run mode for preview. Returns applied changes, rejected changes, and new hash. Pass commit_message to explain WHY the edit was made.",
         performance = "Fast (<30ms typical). More efficient than read+write cycle for small edits",
         related = ["read_note", "write_note"],
-        examples = []
+        examples = ["edits with SEARCH/REPLACE", "commit_message: 'fix stale link in concept-X'"]
     )]
     async fn edit_note(
         &self,
@@ -1110,12 +1170,15 @@ impl ObsidianMcpServer {
         edits: String,
         expected_hash: Option<String>,
         dry_run: Option<bool>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
         let dry_run = dry_run.unwrap_or(false);
+        // turbovault-0bh: caller-supplied or auto-derived.
+        let msg = commit_message.unwrap_or_else(|| format!("edit_note {}", path));
         let result = tools
-            .edit_file(&path, &edits, expected_hash.as_deref(), dry_run)
+            .edit_file_with_message(&path, &edits, expected_hash.as_deref(), dry_run, &msg)
             .await
             .map_err(to_mcp_error)?;
 
@@ -1132,17 +1195,18 @@ impl ObsidianMcpServer {
 
     /// Delete a note (confirmation-protected)
     #[tool(
-        description = "Permanently delete a note from active vault (irreversible, confirmation-protected)",
-        usage = "Use to remove unwanted notes. REQUIRES confirm_path parameter matching path exactly to prevent accidental deletion. Removes file from filesystem and updates link graph. Any links to this note become broken links. Use get_backlinks first to understand impact. Pass expected_hash for concurrency protection",
+        description = "Permanently delete a note from active vault (irreversible, confirmation-protected). Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to `delete_note <path>`.",
+        usage = "Use to remove unwanted notes. REQUIRES confirm_path parameter matching path exactly to prevent accidental deletion. Removes file from filesystem and updates link graph. Any links to this note become broken links. Use get_backlinks first to understand impact. Pass expected_hash for concurrency protection. Pass commit_message to explain WHY.",
         performance = "Fast (<20ms typical). Includes filesystem delete and link graph update",
         related = ["get_backlinks", "get_broken_links", "move_note"],
-        examples = ["path: drafts/old-idea.md, confirm_path: drafts/old-idea.md"]
+        examples = ["path: drafts/old-idea.md, confirm_path: drafts/old-idea.md", "commit_message: 'remove superseded concept page'"]
     )]
     async fn delete_note(
         &self,
         path: String,
         confirm_path: String,
         expected_hash: Option<String>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirm_path must match path exactly
         if path != confirm_path {
@@ -1154,8 +1218,10 @@ impl ObsidianMcpServer {
 
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
+        // turbovault-0bh: caller-supplied or auto-derived.
+        let msg = commit_message.unwrap_or_else(|| format!("delete_note {}", path));
         tools
-            .delete_file_with_hash(&path, expected_hash.as_deref())
+            .delete_file_with_hash_and_message(&path, expected_hash.as_deref(), &msg)
             .await
             .map_err(to_mcp_error)?;
 
@@ -1172,22 +1238,25 @@ impl ObsidianMcpServer {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note within active vault. Does NOT update wikilinks — use get_backlinks first to assess impact",
-        usage = "Use to reorganize vault structure or rename notes. This performs a filesystem move only. Links pointing to the old path will become broken. Always call get_backlinks before moving to understand impact, then manually update references if needed. Pass expected_hash for concurrency protection",
+        description = "Move or rename a note within active vault. Does NOT update wikilinks — use get_backlinks first to assess impact. Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to `move_note <from> -> <to>`.",
+        usage = "Use to reorganize vault structure or rename notes. This performs a filesystem move only. Links pointing to the old path will become broken. Always call get_backlinks before moving to understand impact, then manually update references if needed. Pass expected_hash for concurrency protection. Pass commit_message to explain WHY.",
         performance = "Fast (<20ms typical). Filesystem rename, falls back to copy+delete for cross-filesystem moves",
         related = ["get_backlinks", "get_forward_links", "search"],
-        examples = []
+        examples = ["commit_message: 'rename concept page to canonical slug'"]
     )]
     async fn move_note(
         &self,
         from: String,
         to: String,
         expected_hash: Option<String>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
+        // turbovault-0bh: caller-supplied or auto-derived.
+        let msg = commit_message.unwrap_or_else(|| format!("move_note {} -> {}", from, to));
         tools
-            .move_file_with_hash(&from, &to, expected_hash.as_deref())
+            .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &msg)
             .await
             .map_err(to_mcp_error)?;
 
@@ -2168,17 +2237,22 @@ impl ObsidianMcpServer {
 
     /// Execute batch file operations atomically
     #[tool(
-        description = "Execute multiple file operations atomically (all-or-nothing transaction)",
-        usage = "Use for complex multi-file workflows requiring consistency. If any operation fails, all changes are rolled back. Not idempotent.",
+        description = "Execute multiple file operations atomically (all-or-nothing transaction). Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to an op-tally summary like `batch: 5 creates, 2 updates, 1 delete`.",
+        usage = "Use for complex multi-file workflows requiring consistency. If any operation fails, all changes are rolled back. Not idempotent. Pass commit_message to explain the batch's WHY.",
         performance = "Depends on operation count and types. Transactions add ~10-50ms overhead.",
         related = ["write_note", "delete_note", "move_note"],
         examples = [
             r#"[{"type":"write","path":"note1.md","content":"..."}]"#,
             r#"[{"type":"delete","path":"old.md"},{"type":"write","path":"new.md","content":"..."}]"#,
-            r#"[{"type":"move","from":"a.md","to":"b.md"},{"type":"write","path":"index.md","content":"..."}]"#
+            r#"[{"type":"move","from":"a.md","to":"b.md"},{"type":"write","path":"index.md","content":"..."}]"#,
+            r#"commit_message: 'ingest source X: 3 concept pages + 1 entity update'"#
         ]
     )]
-    async fn batch_execute(&self, operations: Vec<BatchOperation>) -> McpResult<serde_json::Value> {
+    async fn batch_execute(
+        &self,
+        operations: Vec<BatchOperation>,
+        commit_message: Option<String>,
+    ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
 
         if operations.is_empty() {
@@ -2189,8 +2263,10 @@ impl ObsidianMcpServer {
 
         let op_count = operations.len();
         let tools = self.get_active_write_tools().await?;
+        // turbovault-0bh: caller-supplied or op-tally derivation.
+        let msg = commit_message.unwrap_or_else(|| derive_batch_message(&operations));
         let result = tools
-            .batch_execute(operations)
+            .batch_execute_with_message(operations, &msg)
             .await
             .map_err(to_mcp_error)?;
 
@@ -2747,6 +2823,7 @@ impl ObsidianMcpServer {
         confirm_from: String,
         confirm_to: String,
         expected_hash: Option<String>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirmations must match
         if from != confirm_from {
@@ -2764,8 +2841,10 @@ impl ObsidianMcpServer {
 
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
+        // turbovault-0bh: caller-supplied or auto-derived.
+        let msg = commit_message.unwrap_or_else(|| format!("move_file {} -> {}", from, to));
         tools
-            .move_file_with_hash(&from, &to, expected_hash.as_deref())
+            .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &msg)
             .await
             .map_err(to_mcp_error)?;
 
