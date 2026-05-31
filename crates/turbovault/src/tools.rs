@@ -1421,7 +1421,10 @@ impl ObsidianMcpServer {
         examples = []
     )]
     async fn get_backlinks(&self, path: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        // turbovault-brs / TV-001: derived-state read — flush pending
+        // reindex queue before answering so concurrent commits land in
+        // the link graph first.
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = SearchTools::new(manager);
         let backlinks = tools.find_backlinks(&path).await.map_err(to_mcp_error)?;
 
@@ -1450,7 +1453,9 @@ impl ObsidianMcpServer {
         examples = []
     )]
     async fn get_forward_links(&self, path: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        // turbovault-brs / TV-001: derived-state read — flush pending
+        // reindex queue before answering.
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = SearchTools::new(manager);
         let links = tools
             .find_forward_links(&path)
@@ -1480,7 +1485,9 @@ impl ObsidianMcpServer {
         path: String,
         max_hops: Option<usize>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        // turbovault-brs / TV-001: derived-state (graph traversal) — flush
+        // pending reindex queue before answering.
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = SearchTools::new(manager);
         let max_hops = max_hops.unwrap_or(2).min(5); // Cap at 5 hops to prevent runaway traversal
         let related = tools
