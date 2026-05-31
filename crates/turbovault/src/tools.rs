@@ -633,6 +633,67 @@ impl ObsidianMcpServer {
         }
     }
 
+    // ==================== Test support (turbovault-6fo.18) ====================
+    //
+    // Public wrappers that expose internals the e2e tests need to drive
+    // the substrate as a real MCP handler would. These mirror the
+    // private helpers; suffixed `_test` to discourage production use.
+
+    /// Test-only: expose `get_active_write_tools` so e2e tests can drive
+    /// the same dispatcher the `#[tool]` handlers use.
+    pub async fn get_active_write_tools_test(&self) -> McpResult<turbovault_tools::WriteTools> {
+        self.get_active_write_tools().await
+    }
+
+    /// Test-only: expose the active vault's `VaultManager` so e2e tests
+    /// can read the link graph after a substrate write.
+    pub async fn get_active_vault_manager_test(&self) -> McpResult<Arc<VaultManager>> {
+        self.get_active_vault_manager().await
+    }
+
+    /// Test-only: borrow the per-vault `ReindexQueue` for assertions
+    /// about external-commit observation (turbovault-bou).
+    pub async fn get_reindex_queue_test(&self, vault_name: &str) -> Option<Arc<ReindexQueue>> {
+        self.git_reindex_queues
+            .read()
+            .await
+            .get(vault_name)
+            .cloned()
+    }
+
+    /// Test-only: drain pending reindex work via the same flush helper
+    /// every derived-state read uses.
+    pub async fn flush_reindex_for_active_vault_test(&self) -> McpResult<()> {
+        self.flush_reindex_for_active_vault().await
+    }
+
+    /// Test-only: spawn a HEAD-ref listener with a CUSTOM polling
+    /// interval, bypassing the lazy-spawn-with-5s-default path. e2e
+    /// tests use this to keep wall-clock test time short.
+    pub async fn spawn_ref_listener_with_interval_test(
+        &self,
+        vault_name: &str,
+        interval: std::time::Duration,
+    ) {
+        let cfg = self
+            .multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .expect("vault config");
+        let queue = self.get_or_init_reindex_queue(vault_name).await;
+        let mut listeners = self.git_ref_listeners.write().await;
+        // Abort any existing listener (the test wants ITS interval).
+        if let Some(handle) = listeners.remove(vault_name) {
+            handle.abort();
+        }
+        let queue_for_task = Arc::clone(&queue);
+        let path_for_task = cfg.path.clone();
+        let handle = tokio::spawn(async move {
+            turbovault_tools::watch_ref_changes(path_for_task, queue_for_task, interval).await;
+        });
+        listeners.insert(vault_name.to_string(), handle);
+    }
+
     /// turbovault-8df / TV-009: legacy audit MCP tools (audit_log /
     /// audit_stats / rollback_preview / rollback_note) are not wired to
     /// the git substrate's history yet. On a git-backend vault they
