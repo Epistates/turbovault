@@ -633,6 +633,33 @@ impl ObsidianMcpServer {
         }
     }
 
+    /// turbovault-8df / TV-009: legacy audit MCP tools (audit_log /
+    /// audit_stats / rollback_preview / rollback_note) are not wired to
+    /// the git substrate's history yet. On a git-backend vault they
+    /// would silently return empty / inert results, which is the worst
+    /// failure shape — looks like "nothing happened" but the writes did
+    /// happen via the substrate. Refuse loudly instead, naming the
+    /// alternative (git log) so callers know where to look.
+    ///
+    /// Phase A of the architecture §15.2 cutover plan; Phase B (wire
+    /// rollback_note/rollback_preview to git-history restore) is part
+    /// of GWS.15 cutover or a follow-on (turbovault-8df remediation
+    /// notes).
+    async fn refuse_audit_on_git_backend(&self, tool_name: &str) -> McpResult<()> {
+        let cfg = self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
+        if cfg.write_backend == WriteBackend::Git {
+            return Err(McpError::invalid_request(format!(
+                "{} is not wired for the git substrate (turbovault-8df). Use `git log` / `git revert` / `git show` from the vault directory directly — every substrate write is one commit with a clear subject. Audit ergonomics through MCP are a planned cutover deliverable; until then this tool returns nothing useful for write_backend=git.",
+                tool_name
+            )));
+        }
+        Ok(())
+    }
+
     /// Compute a content-version token in the active vault's backend-native
     /// format. Returned by `read_note`'s `hash` field and accepted by
     /// `write_note`/`edit_note`/`delete_note`/`move_note`'s `expected_hash`
@@ -3549,6 +3576,7 @@ impl ObsidianMcpServer {
         operation: Option<String>,
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("audit_log").await?;
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;
@@ -3595,6 +3623,7 @@ impl ObsidianMcpServer {
         examples = ["rollback_preview(operation_id='abc-123-def-456')"]
     )]
     async fn rollback_preview(&self, operation_id: String) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("rollback_preview").await?;
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let audit_tools = self.get_audit_tools().await?;
@@ -3624,6 +3653,7 @@ impl ObsidianMcpServer {
         examples = ["rollback_note(operation_id='abc-123-def-456')"]
     )]
     async fn rollback_note(&self, operation_id: String) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("rollback_note").await?;
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let audit_tools = self.get_audit_tools().await?;
@@ -3668,6 +3698,7 @@ impl ObsidianMcpServer {
         examples = ["audit_stats()"]
     )]
     async fn audit_stats(&self) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("audit_stats").await?;
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;
