@@ -12,11 +12,11 @@ use turbovault_core::config::{GitMergeStrategy as ConfigMergeStrategy, VaultConf
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
-    AnalysisTools, AuditTools, BatchOperation, CasCollisionFlush, CommitHook, CommitLocks,
-    DiffTools, DuplicateTools, ExportTools, FanoutInfo, FileTools, GitMergeStrategy, GraphTools,
-    MetadataTools, QualityTools, ReindexQueue, RelationshipTools, SearchEngine, SearchQuery,
-    SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo, WriteMode,
-    WriteTools, obsidian_uri,
+    AnalysisTools, AuditTools, BatchOperation, CachedRepo, CasCollisionFlush, CommitHook,
+    CommitLocks, DiffTools, DuplicateTools, ExportTools, FanoutInfo, FileTools, GitMergeStrategy,
+    GraphTools, MetadataTools, QualityTools, ReindexQueue, RelationshipTools, SearchEngine,
+    SearchQuery, SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo,
+    WriteMode, WriteTools, obsidian_uri,
 };
 use turbovault_vault::VaultManager;
 
@@ -236,6 +236,14 @@ pub struct ObsidianMcpServer {
     /// `open_with_locks(...)`. That keeps all in-process callers serialized
     /// on one commit-section mutex per worktree at trivial open cost.
     git_locks: Arc<RwLock<HashMap<String, Arc<CommitLocks>>>>,
+    /// turbovault-a0l (PERF-1): per-vault cached `VaultRepo` handle, opened once
+    /// (with the shared `CommitLocks` + reindex `CommitHook`) and reused for
+    /// every write — eliding the ~140µs `Repository::open` that dominated the
+    /// substrate op latency when done per call. Lazy-initialized in
+    /// `get_or_init_git_repo`, which also serves as the write-backend
+    /// validation. Cross-process CAS stays safe (libgit2 re-reads refs under
+    /// `lock_ref`); torn down on `remove_vault`.
+    git_repos: Arc<RwLock<HashMap<String, CachedRepo>>>,
     /// Per-vault GWS.14 reindex queues (keyed by vault name,
     /// lazy-initialized). Each git-backend `VaultRepo` open registers a
     /// `CommitHook` that pushes onto this queue; read tools that depend on
@@ -289,6 +297,7 @@ impl ObsidianMcpServer {
             similarity_engines: Arc::new(RwLock::new(HashMap::new())),
             search_engines: Arc::new(RwLock::new(HashMap::new())),
             git_locks: Arc::new(RwLock::new(HashMap::new())),
+            git_repos: Arc::new(RwLock::new(HashMap::new())),
             git_reindex_queues: Arc::new(RwLock::new(HashMap::new())),
             git_drainers: Arc::new(RwLock::new(HashMap::new())),
             git_ref_listeners: Arc::new(RwLock::new(HashMap::new())),
@@ -770,20 +779,27 @@ impl ObsidianMcpServer {
         match vault_config.write_backend {
             WriteBackend::Legacy => Ok(WriteTools::legacy(manager)),
             WriteBackend::Git => {
-                // Validate the path IS a git repo upfront so the failure is
-                // surfaced from `get_active_write_tools` (not from the first
-                // mutating call) and so we never cache a `CommitLocks` for a
-                // vault that can't host the substrate.
-                VaultRepo::open(vault_config.path.as_path()).map_err(|e| {
-                    McpError::internal(format!(
-                        "vault {} has write_backend=git but {:?} is not a git repo: {}",
-                        vault_name, vault_config.path, e
-                    ))
-                })?;
                 let locks = self.get_or_init_git_locks(&vault_name).await;
                 let queue = self.get_or_init_reindex_queue(&vault_name).await;
                 let queue_for_hook = Arc::clone(&queue);
                 let hook: CommitHook = Arc::new(move |_parent, commit| queue_for_hook.push(commit));
+
+                // turbovault-a0l (PERF-1): open the per-vault `VaultRepo` ONCE
+                // and cache it (shared `CommitLocks` + reindex hook bound in),
+                // so writes reuse it instead of paying ~140µs `Repository::open`
+                // each call. This is ALSO the write-backend validation — a
+                // non-git path fails here, surfaced from `get_active_write_tools`
+                // exactly as the prior throwaway open did, but without re-opening
+                // on every write (it used to open twice per write: validate +
+                // apply).
+                let cached_repo = self
+                    .get_or_init_git_repo(
+                        &vault_name,
+                        vault_config.path.as_path(),
+                        Arc::clone(&locks),
+                        Arc::clone(&hook),
+                    )
+                    .await?;
 
                 // GWS.14a: spawn the background drainer the first time this
                 // vault sees a git-backend write. Idempotent.
@@ -849,7 +865,8 @@ impl ObsidianMcpServer {
                     hook,
                     flush_on_collision,
                 )
-                .with_include_ignored(include_ignored))
+                .with_include_ignored(include_ignored)
+                .with_cached_repo(cached_repo))
             }
         }
     }
@@ -1050,6 +1067,42 @@ impl ObsidianMcpServer {
             .await
             .insert(vault_name.to_string(), Arc::clone(&fresh));
         fresh
+    }
+
+    /// turbovault-a0l (PERF-1): get (or lazily open) the cached `VaultRepo` for
+    /// `vault_name`, opened once with the shared `CommitLocks` + reindex
+    /// `CommitHook` and reused for every write — eliding the per-op
+    /// `Repository::open`. Opening also validates the path IS a usable git repo,
+    /// so this replaces the throwaway validation-open that used to fire on every
+    /// `get_active_write_tools` call. `locks`/`hook` are consumed only on the
+    /// first (opening) call; later calls return the cached handle and ignore
+    /// them (the handle already carries the first-bound pair — stable, since the
+    /// hook just pushes onto the per-vault reindex queue).
+    async fn get_or_init_git_repo(
+        &self,
+        vault_name: &str,
+        path: &std::path::Path,
+        locks: Arc<CommitLocks>,
+        hook: CommitHook,
+    ) -> McpResult<CachedRepo> {
+        if let Some(repo) = self.git_repos.read().await.get(vault_name) {
+            return Ok(Arc::clone(repo));
+        }
+        // Open once (outside the lock so a slow open doesn't block readers).
+        let repo = VaultRepo::open_with_locks_and_hook(path, locks, hook).map_err(|e| {
+            McpError::internal(format!(
+                "vault {} has write_backend=git but {:?} is not a usable git repo: {}",
+                vault_name, path, e
+            ))
+        })?;
+        let handle: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
+        // Double-checked insert: another task may have opened concurrently while
+        // we held no lock — keep whichever landed first, drop our spare.
+        let mut map = self.git_repos.write().await;
+        let entry = map
+            .entry(vault_name.to_string())
+            .or_insert_with(|| Arc::clone(&handle));
+        Ok(Arc::clone(entry))
     }
 
     /// Spawn a per-vault background drainer (GWS.14a) the first time a
@@ -2684,6 +2737,10 @@ impl ObsidianMcpServer {
         }
         self.git_reindex_queues.write().await.remove(&name);
         self.git_locks.write().await.remove(&name);
+        // turbovault-a0l: drop the cached `VaultRepo` handle so a re-`add_vault`
+        // of the same name re-opens fresh (and a stale handle to a removed vault
+        // isn't held open).
+        self.git_repos.write().await.remove(&name);
         // active_fanouts already empty for this name (refused above).
 
         let response = StandardResponse::new(
