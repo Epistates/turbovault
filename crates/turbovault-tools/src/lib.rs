@@ -206,7 +206,7 @@ pub use metadata_tools::MetadataTools;
 pub use output_formatter::{OutputFormat, ResponseFormatter};
 pub use quality_tools::{QualityScore, QualityTools, VaultQualityReport};
 pub use read_set::{ReadSet, apply_read_set_to_transaction};
-pub use reindex::{ReindexQueue, apply_commit_diff};
+pub use reindex::{ReindexQueue, apply_commit_diff, watch_ref_changes};
 pub use relationship_tools::RelationshipTools;
 pub use search_engine::{SearchEngine, SearchQuery, SearchResultInfo};
 pub use search_tools::SearchTools;

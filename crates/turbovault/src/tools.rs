@@ -248,6 +248,13 @@ pub struct ObsidianMcpServer {
     /// reads never pay catch-up. Idempotent: re-spawning is guarded by the
     /// HashMap occupancy check.
     git_drainers: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
+    /// turbovault-bou: per-vault HEAD-ref polling listener. Detects
+    /// out-of-band ref advances (manual git pull/checkout, sibling
+    /// turbovault instance committing) and pushes the new oid onto the
+    /// reindex queue. Lazy-spawned at first git-backend write (alongside
+    /// the drainer). One task per vault; the value is the JoinHandle so
+    /// vault removal can abort it.
+    git_ref_listeners: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// GWS.13 active fanout transactions, keyed by **base vault name**
     /// (the original vault, NOT the auto-registered fanout vault). At most
     /// one active fanout per base vault — `begin_transaction` errors loudly
@@ -284,6 +291,7 @@ impl ObsidianMcpServer {
             git_locks: Arc::new(RwLock::new(HashMap::new())),
             git_reindex_queues: Arc::new(RwLock::new(HashMap::new())),
             git_drainers: Arc::new(RwLock::new(HashMap::new())),
+            git_ref_listeners: Arc::new(RwLock::new(HashMap::new())),
             active_fanouts: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -579,6 +587,17 @@ impl ObsidianMcpServer {
                 )
                 .await;
 
+                // turbovault-bou: HEAD-ref polling listener. Detects
+                // out-of-band ref advances (cross-instance commits, manual
+                // git pull, etc.) and pushes the new oid onto the same
+                // reindex queue the drainer drains.
+                self.spawn_ref_listener_if_needed(
+                    &vault_name,
+                    vault_config.path.clone(),
+                    Arc::clone(&queue),
+                )
+                .await;
+
                 // GWS.14b: build a flush callback fired BEFORE the substrate
                 // returns a ConcurrencyError. Captures the vault_name + path
                 // + manager bound at WriteTools construction so the flush
@@ -729,6 +748,41 @@ impl ObsidianMcpServer {
             }
         });
         drainers.insert(vault_name.to_string(), handle);
+    }
+
+    /// turbovault-bou: lazy-spawn the HEAD-ref polling listener for a
+    /// git-backend vault. Idempotent (skips if already running). Default
+    /// poll interval: 5s — fast enough for cross-instance dogfooding to
+    /// notice within a few seconds, slow enough that the listener's
+    /// `VaultRepo::open` overhead is negligible.
+    async fn spawn_ref_listener_if_needed(
+        &self,
+        vault_name: &str,
+        vault_path: PathBuf,
+        queue: Arc<ReindexQueue>,
+    ) {
+        {
+            let listeners = self.git_ref_listeners.read().await;
+            if listeners.contains_key(vault_name) {
+                return;
+            }
+        }
+        let mut listeners = self.git_ref_listeners.write().await;
+        // Double-check after re-acquiring the write lock (race window).
+        if listeners.contains_key(vault_name) {
+            return;
+        }
+        let queue_for_task = Arc::clone(&queue);
+        let path_for_task = vault_path.clone();
+        let handle = tokio::spawn(async move {
+            turbovault_tools::watch_ref_changes(
+                path_for_task,
+                queue_for_task,
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+        });
+        listeners.insert(vault_name.to_string(), handle);
     }
 
     // ==================== GWS.13 Fanout transaction helpers ====================

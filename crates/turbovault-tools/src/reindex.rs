@@ -120,6 +120,62 @@ impl ReindexQueue {
 // rather than calling `git2` directly here (preserves the rule that the
 // substrate is the only crate that talks to libgit2).
 
+/// turbovault-bou / architecture §8.4 + §8.5: HEAD-ref polling listener.
+///
+/// Detects **out-of-band git ref advances** — a `git pull`, `git checkout`,
+/// a bare `git commit` by another process, or a sibling turbovault
+/// instance writing through its own substrate — and pushes the new HEAD
+/// oid onto the per-vault [`ReindexQueue`] so the next drain absorbs the
+/// change. Without this listener, a multi-instance dogfood setup silently
+/// desyncs the in-memory link graph + tantivy index from disk for every
+/// commit the other instance lands.
+///
+/// **Does NOT detect uncommitted working-tree edits.** A direct Obsidian
+/// edit (or a CC `Edit` outside MCP) changes bytes on disk without
+/// advancing HEAD; the polling listener can't see it. Architecture §8.4
+/// limitation; a working-tree inotify listener (resurrecting the dormant
+/// `turbovault_vault::watcher::VaultWatcher`) is the documented Phase 2.
+///
+/// Initial HEAD is snapshotted at startup, so the listener won't re-push
+/// commits that landed before it started. A commit advanced by THIS
+/// process (CommitHook already pushed) will also be observed by the
+/// listener and re-pushed — that's wasteful but idempotent in net effect
+/// (the drainer's `apply_commit_diff` is a function of `(parent, commit)`
+/// and produces the same delta on a replay).
+///
+/// Runs forever; cancellation is via task abort (the server stores the
+/// `JoinHandle` and calls `abort()` on `remove_vault` / shutdown).
+pub async fn watch_ref_changes(
+    vault_path: std::path::PathBuf,
+    queue: Arc<ReindexQueue>,
+    interval: std::time::Duration,
+) {
+    let mut last_oid = read_head_oid(&vault_path).await;
+    loop {
+        tokio::time::sleep(interval).await;
+        let current = read_head_oid(&vault_path).await;
+        if current != last_oid {
+            if let Some(new) = current {
+                queue.push(new);
+            }
+            last_oid = current;
+        }
+    }
+}
+
+/// Read HEAD's oid via libgit2 inside `spawn_blocking` (libgit2 is
+/// `!Sync`). Returns `None` for unborn branches or any error opening the
+/// repo (transient errors are skipped — the next poll retries).
+async fn read_head_oid(vault_path: &std::path::Path) -> Option<Oid> {
+    let path = vault_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        VaultRepo::open(&path).ok().and_then(|repo| repo.head_oid())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Apply one commit's diff to the link graph. Reads the working tree for
 /// changed/added paths (working-tree == HEAD invariant) and removes deleted
 /// paths from the graph.
@@ -358,5 +414,142 @@ mod tests {
         // The remove+re-add cycle replaces edges; the implementation is
         // idempotent for repeated drains, which is what the contract
         // requires.
+    }
+
+    // -------- turbovault-bou: HEAD-ref polling listener --------
+
+    /// Create a commit using bare git2, bypassing the substrate. Simulates
+    /// an out-of-band ref advance (manual `git pull`, another process
+    /// committing). Returns the new commit's oid.
+    fn make_external_commit(repo_path: &StdPath, file_name: &str, content: &str) -> Oid {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        std::fs::write(repo_path.join(file_name), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(StdPath::new(file_name)).unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = git2::Signature::now("Ext", "ext@example").unwrap();
+        let parent = repo
+            .head()
+            .ok()
+            .and_then(|h| h.target())
+            .and_then(|oid| repo.find_commit(oid).ok());
+        match parent {
+            Some(parent) => repo
+                .commit(Some("HEAD"), &sig, &sig, content, &tree, &[&parent])
+                .unwrap(),
+            None => repo
+                .commit(Some("HEAD"), &sig, &sig, content, &tree, &[])
+                .unwrap(),
+        }
+    }
+
+    /// Wait up to `timeout` for `queue.pending_count()` to reach `target`.
+    /// Returns `true` on success, `false` on timeout.
+    async fn wait_for_pending(
+        queue: &ReindexQueue,
+        target: usize,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout {
+            if queue.pending_count() >= target {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    /// turbovault-bou: an out-of-band commit (made directly via git2,
+    /// bypassing the substrate) is detected by the listener and pushed
+    /// onto the queue within the poll interval.
+    #[tokio::test]
+    async fn watch_ref_changes_detects_external_commit() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        // Seed an initial commit so the listener has a non-None baseline.
+        make_external_commit(tmp.path(), "seed.md", "seed");
+        let queue = Arc::new(ReindexQueue::new());
+
+        let vault_path = tmp.path().to_path_buf();
+        let queue_clone = Arc::clone(&queue);
+        let listener = tokio::spawn(async move {
+            watch_ref_changes(
+                vault_path,
+                queue_clone,
+                std::time::Duration::from_millis(25),
+            )
+            .await;
+        });
+
+        // Give the listener a couple of polls to establish baseline.
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        assert_eq!(queue.pending_count(), 0, "baseline shouldn't enqueue");
+
+        // External commit — listener should detect on next poll.
+        let new_oid = make_external_commit(tmp.path(), "ext.md", "ext-content");
+        let detected = wait_for_pending(&queue, 1, std::time::Duration::from_millis(500)).await;
+        assert!(detected, "listener should detect external commit");
+        assert_eq!(queue.pop_front(), Some(new_oid));
+
+        listener.abort();
+    }
+
+    /// turbovault-bou: when no out-of-band changes happen, the listener
+    /// stays silent — the queue doesn't accumulate idle pushes.
+    #[tokio::test]
+    async fn watch_ref_changes_idle_no_pushes() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        make_external_commit(tmp.path(), "seed.md", "seed");
+        let queue = Arc::new(ReindexQueue::new());
+
+        let vault_path = tmp.path().to_path_buf();
+        let queue_clone = Arc::clone(&queue);
+        let listener = tokio::spawn(async move {
+            watch_ref_changes(
+                vault_path,
+                queue_clone,
+                std::time::Duration::from_millis(25),
+            )
+            .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(queue.pending_count(), 0, "idle listener stays quiet");
+
+        listener.abort();
+    }
+
+    /// turbovault-bou: an unborn-branch baseline (no commits yet) doesn't
+    /// crash the listener. It picks up the first commit when it appears.
+    #[tokio::test]
+    async fn watch_ref_changes_handles_unborn_baseline() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        // No initial commit; HEAD is unborn at listener start.
+        let queue = Arc::new(ReindexQueue::new());
+
+        let vault_path = tmp.path().to_path_buf();
+        let queue_clone = Arc::clone(&queue);
+        let listener = tokio::spawn(async move {
+            watch_ref_changes(
+                vault_path,
+                queue_clone,
+                std::time::Duration::from_millis(25),
+            )
+            .await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        let first_oid = make_external_commit(tmp.path(), "first.md", "first");
+
+        let detected = wait_for_pending(&queue, 1, std::time::Duration::from_millis(500)).await;
+        assert!(detected, "listener should detect the first commit");
+        assert_eq!(queue.pop_front(), Some(first_oid));
+
+        listener.abort();
     }
 }
