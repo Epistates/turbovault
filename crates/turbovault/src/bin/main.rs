@@ -400,65 +400,107 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // turbovault-84k: scan every git-backend vault for orphan `wip-*`
+    // worktrees from prior sessions. Log a warning per detection so the
+    // operator knows about residue; list_orphan_fanouts MCP tool can
+    // enumerate at runtime.
+    server.log_orphan_fanouts_warnings().await;
+
+    // turbovault-84k: clone the server BEFORE the VisibilityLayer wrap so
+    // the shutdown handler has access to `active_fanouts` for best-effort
+    // abandon. ObsidianMcpServer is #[derive(Clone)] — all fields are
+    // already Arc-wrapped, so cloning is cheap.
+    let shutdown_handle = server.clone();
+
     let server = VisibilityLayer::new(server)
         .with_visibility_config(tool_visibility.into_visibility_config());
 
     match args.transport.as_str() {
         "stdio" => {
             log::info!("Running in STDIO mode for MCP protocol");
-            server
+            let serve_fut = server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
-                .serve()
-                .await?;
+                .serve();
+            tokio::select! {
+                res = serve_fut => res?,
+                _ = shutdown_signal() => {
+                    log::info!("Shutdown signal received; abandoning active fanouts...");
+                    shutdown_handle.shutdown_fanouts_best_effort().await;
+                }
+            }
         }
         #[cfg(feature = "http")]
         "http" => {
             let addr = format!("127.0.0.1:{}", args.port);
             log::info!("Running HTTP server on {}", addr);
             log::info!("Output format: {:?}", output_format);
-            server
+            let serve_fut = server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::http(&addr))
-                .serve()
-                .await?;
+                .serve();
+            tokio::select! {
+                res = serve_fut => res?,
+                _ = shutdown_signal() => {
+                    log::info!("Shutdown signal received; abandoning active fanouts...");
+                    shutdown_handle.shutdown_fanouts_best_effort().await;
+                }
+            }
         }
         #[cfg(feature = "websocket")]
         "websocket" => {
             let addr = format!("127.0.0.1:{}", args.port);
             log::info!("Running WebSocket server on {}", addr);
             log::info!("Output format: {:?}", output_format);
-            server
+            let serve_fut = server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::websocket(&addr))
-                .serve()
-                .await?;
+                .serve();
+            tokio::select! {
+                res = serve_fut => res?,
+                _ = shutdown_signal() => {
+                    log::info!("Shutdown signal received; abandoning active fanouts...");
+                    shutdown_handle.shutdown_fanouts_best_effort().await;
+                }
+            }
         }
         #[cfg(feature = "tcp")]
         "tcp" => {
             let addr = format!("127.0.0.1:{}", args.port);
             log::info!("Running TCP server on {}", addr);
             log::info!("Output format: {:?}", output_format);
-            server
+            let serve_fut = server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::tcp(&addr))
-                .serve()
-                .await?;
+                .serve();
+            tokio::select! {
+                res = serve_fut => res?,
+                _ = shutdown_signal() => {
+                    log::info!("Shutdown signal received; abandoning active fanouts...");
+                    shutdown_handle.shutdown_fanouts_best_effort().await;
+                }
+            }
         }
         #[cfg(feature = "unix")]
         "unix" => {
             let socket_path = "/tmp/turbovault.sock".to_string();
             log::info!("Running Unix socket server on {}", socket_path);
             log::info!("Output format: {:?}", output_format);
-            server
+            let serve_fut = server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::unix(&socket_path))
-                .serve()
-                .await?;
+                .serve();
+            tokio::select! {
+                res = serve_fut => res?,
+                _ = shutdown_signal() => {
+                    log::info!("Shutdown signal received; abandoning active fanouts...");
+                    shutdown_handle.shutdown_fanouts_best_effort().await;
+                }
+            }
         }
         transport => {
             #[cfg(not(feature = "http"))]
@@ -498,6 +540,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// turbovault-84k: wait for SIGINT (Ctrl-C) or SIGTERM (kill / process
+/// supervisor stop). On non-unix platforms only Ctrl-C is honored.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("Failed to install SIGTERM handler: {}", e);
+                let _ = tokio::signal::ctrl_c().await;
+                return;
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => log::info!("Received SIGINT"),
+            _ = term.recv() => log::info!("Received SIGTERM"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        log::info!("Received Ctrl+C");
+    }
 }
 
 /// turbovault-foy: resolve the log-level filter string. Priority:

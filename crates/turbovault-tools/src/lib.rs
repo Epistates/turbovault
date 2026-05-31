@@ -216,7 +216,8 @@ pub use templates::{TemplateDefinition, TemplateEngine, TemplateFieldType};
 pub use turbovault_batch::{BatchOperation, BatchResult};
 pub use turbovault_core::prelude::*;
 pub use turbovault_git::{
-    CommitHook, CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, VaultRepo,
+    CommitHook, CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, OrphanFanout,
+    VaultRepo,
 };
 pub use validation_tools::{ValidationReportInfo, ValidationTools};
 pub use vault_lifecycle::VaultLifecycleTools;

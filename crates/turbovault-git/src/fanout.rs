@@ -281,6 +281,44 @@ impl VaultRepo {
             &info.worktree_path,
         )
     }
+
+    /// Scan this repo's registered worktrees for `wip-*` entries — fanout
+    /// artifacts left over from a previous session. Pure read; never mutates.
+    /// Caller decides whether to clean each one up (via
+    /// [`abandon_fanout_by_info`] if they can rebuild the [`FanoutInfo`], or
+    /// manually via `git worktree remove` + `git branch -D`).
+    pub fn list_orphan_fanouts(&self) -> Result<Vec<OrphanFanout>> {
+        let repo = self.git();
+        let names = repo.worktrees()?;
+        let mut out = Vec::new();
+        for i in 0..names.len() {
+            let Some(name) = names.get(i) else { continue };
+            let Some(id) = name.strip_prefix("wip-") else {
+                continue;
+            };
+            let wt = match repo.find_worktree(name) {
+                Ok(wt) => wt,
+                Err(_) => continue,
+            };
+            out.push(OrphanFanout {
+                worktree_name: name.to_string(),
+                wip_branch: format!("wip/{id}"),
+                worktree_path: wt.path().to_path_buf(),
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// One fan-out artifact (`wip-<id>` worktree + `wip/<id>` branch) found on
+/// disk by [`VaultRepo::list_orphan_fanouts`]. Whether a given entry is
+/// truly "orphan" — i.e. not tracked by a live caller — is a server-layer
+/// concern; the substrate just enumerates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanFanout {
+    pub worktree_name: String,
+    pub wip_branch: String,
+    pub worktree_path: PathBuf,
 }
 
 /// Implementation extracted from the old `FanoutTransaction::merge_back` so
@@ -619,5 +657,67 @@ mod tests {
             .unwrap();
         assert!(res.merge_commit.is_none());
         assert_eq!(res.tip_after, main_tip);
+    }
+
+    #[test]
+    fn list_orphan_fanouts_empty_when_no_worktrees() {
+        let (_m, _scratch, vr) = open_born();
+        assert!(vr.list_orphan_fanouts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_orphan_fanouts_detects_open_wip_worktree() {
+        let (_m, scratch, vr) = open_born();
+        let wt_path = scratch_path(&scratch, "orphan-1");
+        let info = vr.open_fanout_worktree("orphan-1", &wt_path).unwrap();
+        let orphans = vr.list_orphan_fanouts().unwrap();
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].worktree_name, "wip-orphan-1");
+        assert_eq!(orphans[0].wip_branch, "wip/orphan-1");
+        // git2 may canonicalize paths; compare by canonical form.
+        assert_eq!(
+            orphans[0].worktree_path.canonicalize().unwrap(),
+            wt_path.canonicalize().unwrap()
+        );
+        // Cleanup so the temp dirs drop cleanly.
+        vr.abandon_fanout_by_info(&info).unwrap();
+    }
+
+    #[test]
+    fn list_orphan_fanouts_skips_non_wip_worktrees() {
+        let (_m, scratch, vr) = open_born();
+        // Create a worktree on a NEW branch (not main, since main is
+        // checked out in the primary worktree). Name it without the `wip-`
+        // prefix to verify the filter.
+        let wt_path = scratch.path().join("worktree-other");
+        let head_oid = vr.head_oid().unwrap();
+        let head_commit = vr.git().find_commit(head_oid).unwrap();
+        let feature_branch = vr.git().branch("feature-x", &head_commit, false).unwrap();
+        let feature_ref = feature_branch.into_reference();
+        let mut opts = git2::WorktreeAddOptions::new();
+        opts.reference(Some(&feature_ref));
+        let _wt = vr
+            .git()
+            .worktree("notwip-1", &wt_path, Some(&opts))
+            .unwrap();
+        let orphans = vr.list_orphan_fanouts().unwrap();
+        assert!(
+            orphans.is_empty(),
+            "non-wip worktree should not be reported, got: {:?}",
+            orphans
+        );
+    }
+
+    #[test]
+    fn list_orphan_fanouts_detects_after_abandon_is_empty() {
+        let (_m, scratch, vr) = open_born();
+        let wt_path = scratch_path(&scratch, "orphan-2");
+        let info = vr.open_fanout_worktree("orphan-2", &wt_path).unwrap();
+        assert_eq!(vr.list_orphan_fanouts().unwrap().len(), 1);
+        vr.abandon_fanout_by_info(&info).unwrap();
+        assert!(
+            vr.list_orphan_fanouts().unwrap().is_empty(),
+            "abandon should remove the orphan entry"
+        );
     }
 }

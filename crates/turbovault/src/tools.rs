@@ -368,6 +368,169 @@ impl ObsidianMcpServer {
         }
         Ok(())
     }
+
+    /// turbovault-84k: scan every git-backend vault (or just `vault_filter`
+    /// if specified) for `wip-*` worktrees that aren't backed by an entry
+    /// in `active_fanouts`. Pure read; never mutates. Used by the startup
+    /// warning and the `list_orphan_fanouts` MCP tool.
+    pub async fn scan_orphan_fanouts(
+        &self,
+        vault_filter: Option<&str>,
+    ) -> Result<Vec<OrphanFanoutEntry>> {
+        let vaults = self.multi_vault_mgr.list_vaults().await?;
+        let active_worktree_names: std::collections::HashSet<String> = {
+            let guard = self.active_fanouts.read().await;
+            guard
+                .values()
+                .map(|r| r.info.worktree_name.clone())
+                .collect()
+        };
+        let mut out = Vec::new();
+        for entry in vaults {
+            let cfg = entry.config.clone();
+            if let Some(filter) = vault_filter
+                && cfg.name != filter
+            {
+                continue;
+            }
+            if !matches!(cfg.write_backend, WriteBackend::Git) {
+                continue;
+            }
+            let locks = self.get_or_init_git_locks(&cfg.name).await;
+            let cfg_name = cfg.name.clone();
+            let path = cfg.path.clone();
+            let active_clone = active_worktree_names.clone();
+            let found: Result<Vec<OrphanFanoutEntry>> =
+                tokio::task::spawn_blocking(move || -> Result<Vec<OrphanFanoutEntry>> {
+                    let repo = VaultRepo::open_with_locks(&path, locks)
+                        .map_err(|e| anyhow::anyhow!("open vault {}: {}", cfg_name, e))?;
+                    Ok(repo
+                        .list_orphan_fanouts()
+                        .map_err(|e| anyhow::anyhow!("list_orphan_fanouts({}): {}", cfg_name, e))?
+                        .into_iter()
+                        .filter(|o| !active_clone.contains(&o.worktree_name))
+                        .map(|o| OrphanFanoutEntry {
+                            vault_name: cfg_name.clone(),
+                            worktree_name: o.worktree_name,
+                            wip_branch: o.wip_branch,
+                            worktree_path: o.worktree_path,
+                        })
+                        .collect())
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("scan_orphan_fanouts task: {}", e))?;
+            out.extend(found?);
+        }
+        Ok(out)
+    }
+
+    /// turbovault-84k: best-effort `abandon_fanout_by_info` over every
+    /// entry in `active_fanouts`. Called from the SIGTERM/SIGINT handler.
+    /// Logs each result, then clears the registry. Survives individual
+    /// failures so a slow vault can't block shutdown.
+    pub async fn shutdown_fanouts_best_effort(&self) {
+        let snapshot: Vec<(String, ActiveFanoutRecord)> = {
+            let guard = self.active_fanouts.read().await;
+            guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        };
+        if snapshot.is_empty() {
+            return;
+        }
+        log::info!("shutdown: abandoning {} active fanout(s)", snapshot.len());
+        let vaults = match self.multi_vault_mgr.list_vaults().await {
+            Ok(list) => list,
+            Err(e) => {
+                log::warn!("shutdown: list_vaults: {}", e);
+                return;
+            }
+        };
+        for (base_vault, record) in snapshot {
+            let Some(base_cfg) = vaults
+                .iter()
+                .find(|v| v.config.name == base_vault)
+                .map(|v| v.config.clone())
+            else {
+                log::warn!(
+                    "shutdown: base vault {} disappeared, skipping abandon",
+                    base_vault
+                );
+                continue;
+            };
+            let locks = self.get_or_init_git_locks(&base_vault).await;
+            let info = record.info.clone();
+            let path = base_cfg.path.clone();
+            let join = tokio::task::spawn_blocking(move || -> Result<()> {
+                let repo = VaultRepo::open_with_locks(&path, locks)
+                    .map_err(|e| anyhow::anyhow!("open base vault: {}", e))?;
+                repo.abandon_fanout_by_info(&info)
+                    .map_err(|e| anyhow::anyhow!("abandon_fanout_by_info: {}", e))
+            })
+            .await;
+            match join {
+                Ok(Ok(())) => log::info!(
+                    "shutdown: abandoned fanout tx_id={} on base vault {}",
+                    record.tx_id,
+                    base_vault
+                ),
+                Ok(Err(e)) => log::warn!(
+                    "shutdown: failed to abandon fanout tx_id={} on {}: {}",
+                    record.tx_id,
+                    base_vault,
+                    e
+                ),
+                Err(e) => log::warn!("shutdown: abandon task panicked for {}: {}", base_vault, e),
+            }
+            if let Err(e) = self
+                .multi_vault_mgr
+                .remove_vault(&record.fanout_vault_name)
+                .await
+            {
+                log::warn!(
+                    "shutdown: failed to deregister fanout vault {}: {}",
+                    record.fanout_vault_name,
+                    e
+                );
+            }
+        }
+        self.active_fanouts.write().await.clear();
+    }
+
+    /// turbovault-84k: startup hook — scan + log a warning per orphan
+    /// detected. Operator decides whether to clean up (manual `git
+    /// worktree remove` / `git branch -D`, or call `list_orphan_fanouts`
+    /// MCP tool for inspection).
+    pub async fn log_orphan_fanouts_warnings(&self) {
+        match self.scan_orphan_fanouts(None).await {
+            Ok(orphans) if orphans.is_empty() => {}
+            Ok(orphans) => {
+                log::warn!(
+                    "Startup: detected {} orphan fanout worktree(s). Inspect via list_orphan_fanouts MCP tool; clean up with `git worktree remove <name>` + `git branch -D wip/<id>`.",
+                    orphans.len()
+                );
+                for o in &orphans {
+                    log::warn!(
+                        "  orphan: vault={} worktree={} branch={} path={}",
+                        o.vault_name,
+                        o.worktree_name,
+                        o.wip_branch,
+                        o.worktree_path.display()
+                    );
+                }
+            }
+            Err(e) => log::warn!("Startup orphan fanout scan failed: {}", e),
+        }
+    }
+}
+
+/// turbovault-84k: one fanout artifact found by [`ObsidianMcpServer::
+/// scan_orphan_fanouts`]. Wraps the substrate's `OrphanFanout` with the
+/// owning vault's name (which the substrate alone can't know).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OrphanFanoutEntry {
+    pub vault_name: String,
+    pub worktree_name: String,
+    pub wip_branch: String,
+    pub worktree_path: PathBuf,
 }
 
 impl Default for ObsidianMcpServer {
@@ -2832,6 +2995,31 @@ impl ObsidianMcpServer {
             serde_json::json!({
                 "was_active": true,
                 "tx_id": record.tx_id,
+            }),
+        )
+        .to_json()
+    }
+
+    /// turbovault-84k: enumerate fanout artifacts from prior sessions.
+    #[tool(
+        description = "List orphan fanout `wip-*` worktrees this server didn't open. Detects worktrees left behind by a crashed predecessor or by `commit/abandon_transaction` cleanup failures. Pure read; never mutates. Operator-driven cleanup: `git worktree remove <name>` + `git branch -D wip/<id>` from the vault root.",
+        usage = "Diagnostic. Use after a server restart, or when `begin_transaction` errors with 'vault already has an active fanout' but no `commit/abandon_transaction` works.",
+        performance = "Fast (~1-2ms per git-backend vault).",
+        related = ["begin_transaction", "abandon_transaction"],
+        examples = ["list_orphan_fanouts()", "list_orphan_fanouts(vault: \"my-vault\")"]
+    )]
+    async fn list_orphan_fanouts(&self, vault: Option<String>) -> McpResult<serde_json::Value> {
+        let orphans = self
+            .scan_orphan_fanouts(vault.as_deref())
+            .await
+            .map_err(|e| McpError::internal(format!("scan_orphan_fanouts: {}", e)))?;
+        let active = self.get_active_vault_name().await.unwrap_or_default();
+        StandardResponse::new(
+            active,
+            "list_orphan_fanouts",
+            serde_json::json!({
+                "count": orphans.len(),
+                "orphans": orphans,
             }),
         )
         .to_json()
