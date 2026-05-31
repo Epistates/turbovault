@@ -902,6 +902,64 @@ impl ObsidianMcpServer {
         listeners.insert(vault_name.to_string(), handle);
     }
 
+    /// Test-only: check whether a background drainer task is registered
+    /// for `vault_name`. Used by turbovault-1ne cleanup tests.
+    pub async fn has_git_drainer_test(&self, vault_name: &str) -> bool {
+        self.git_drainers.read().await.contains_key(vault_name)
+    }
+
+    /// Test-only: check whether a HEAD-ref listener task is registered
+    /// for `vault_name`. Used by turbovault-1ne cleanup tests.
+    pub async fn has_git_ref_listener_test(&self, vault_name: &str) -> bool {
+        self.git_ref_listeners.read().await.contains_key(vault_name)
+    }
+
+    /// Test-only: check whether a `CommitLocks` registry is cached for
+    /// `vault_name`. Used by turbovault-1ne cleanup tests.
+    pub async fn has_git_locks_test(&self, vault_name: &str) -> bool {
+        self.git_locks.read().await.contains_key(vault_name)
+    }
+
+    /// Test-only: invoke the `remove_vault` MCP tool from integration
+    /// tests. Used by turbovault-1ne tests.
+    pub async fn remove_vault_test(&self, name: &str) -> McpResult<serde_json::Value> {
+        self.remove_vault(name.to_string()).await
+    }
+
+    /// Test-only: expose the lazy `CommitLocks` initializer for tests
+    /// that need to drive substrate operations against the same lock
+    /// registry the server uses. Used by turbovault-1ne tests.
+    pub async fn get_or_init_git_locks_test(&self, vault_name: &str) -> Arc<CommitLocks> {
+        self.get_or_init_git_locks(vault_name).await
+    }
+
+    /// Test-only: install an `active_fanouts` entry so tests can
+    /// observe the remove_vault refusal without driving the full
+    /// `begin_transaction` MCP wire path. Used by turbovault-1ne.
+    pub async fn register_active_fanout_test(
+        &self,
+        base_vault: &str,
+        tx_id: &str,
+        info: FanoutInfo,
+        fanout_vault_name: &str,
+    ) {
+        let rec = ActiveFanoutRecord {
+            tx_id: tx_id.to_string(),
+            info,
+            fanout_vault_name: fanout_vault_name.to_string(),
+        };
+        self.active_fanouts
+            .write()
+            .await
+            .insert(base_vault.to_string(), rec);
+    }
+
+    /// Test-only: clear the `active_fanouts` entry for `base_vault`.
+    /// Used by turbovault-1ne cleanup.
+    pub async fn clear_active_fanout_test(&self, base_vault: &str) {
+        self.active_fanouts.write().await.remove(base_vault);
+    }
+
     /// turbovault-8df / TV-009: legacy audit MCP tools (audit_log /
     /// audit_stats / rollback_preview / rollback_note) are not wired to
     /// the git substrate's history yet. On a git-backend vault they
@@ -2542,6 +2600,28 @@ impl ObsidianMcpServer {
         examples = ["Remove temporary vault", "Cleanup after migration", "Close vault for maintenance"]
     )]
     async fn remove_vault(&self, name: String) -> McpResult<serde_json::Value> {
+        // turbovault-1ne: refuse if the vault has an active fanout (as
+        // base) OR IS itself a fanout vault — symmetric with the
+        // `begin_transaction` nested-fanout refusal. Operator must
+        // `abandon_transaction` first to clean state.
+        {
+            let fanouts = self.active_fanouts.read().await;
+            if let Some(rec) = fanouts.get(&name) {
+                return Err(McpError::invalid_request(format!(
+                    "vault {} has an active fanout transaction (tx_id={}); abandon_transaction first",
+                    name, rec.tx_id
+                )));
+            }
+            for rec in fanouts.values() {
+                if rec.fanout_vault_name == name {
+                    return Err(McpError::invalid_request(format!(
+                        "vault {} is a fanout transaction's worktree (tx_id={}); abandon_transaction on the base vault first",
+                        name, rec.tx_id
+                    )));
+                }
+            }
+        }
+
         let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
         tools.remove_vault(&name).await.map_err(to_mcp_error)?;
 
@@ -2558,6 +2638,21 @@ impl ObsidianMcpServer {
             let mut mgr_cache = self.vault_managers.write().await;
             mgr_cache.remove(&name);
         }
+
+        // turbovault-1ne: tear down per-vault git-backend state. Abort
+        // the background drainer + ref-listener tasks (they'd otherwise
+        // poll forever against a removed vault), then drop the lock,
+        // queue, and registry entries so a re-`add_vault` of the same
+        // name starts clean.
+        if let Some(handle) = self.git_drainers.write().await.remove(&name) {
+            handle.abort();
+        }
+        if let Some(handle) = self.git_ref_listeners.write().await.remove(&name) {
+            handle.abort();
+        }
+        self.git_reindex_queues.write().await.remove(&name);
+        self.git_locks.write().await.remove(&name);
+        // active_fanouts already empty for this name (refused above).
 
         let response = StandardResponse::new(
             name.clone(),

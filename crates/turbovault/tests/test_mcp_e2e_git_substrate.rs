@@ -381,3 +381,111 @@ async fn e2e_reindex_queue_drains_after_substrate_writes() {
     let queue = server.get_reindex_queue_test("e2e").await.unwrap();
     assert_eq!(queue.pending_count(), 0, "flush should leave queue empty");
 }
+
+/// turbovault-1ne: remove_vault refuses while a fanout is active
+/// (symmetric with begin_transaction's nested-fanout refusal), and
+/// cleanly aborts the drainer + ref-listener tasks + drops the
+/// lock/queue entries when allowed.
+#[tokio::test]
+#[serial_test::serial]
+async fn e2e_remove_vault_cleans_up_git_backend_state() {
+    let (tmp, name, server) = setup_git_vault().await;
+
+    // Drive one write so the lazy drainer + ref listener spawn,
+    // and the lock/queue entries materialize.
+    let tools = server.get_active_write_tools_test().await.unwrap();
+    tools.write_file("seed.md", "seed\n").await.unwrap();
+    server
+        .spawn_ref_listener_with_interval_test(name, Duration::from_millis(50))
+        .await;
+
+    assert!(
+        server.has_git_drainer_test(name).await,
+        "drainer should be live"
+    );
+    assert!(
+        server.has_git_ref_listener_test(name).await,
+        "ref listener should be live"
+    );
+    assert!(
+        server.has_git_locks_test(name).await,
+        "locks entry should be live"
+    );
+
+    server.remove_vault_test(name).await.unwrap();
+
+    assert!(
+        !server.has_git_drainer_test(name).await,
+        "drainer entry should be dropped after remove_vault"
+    );
+    assert!(
+        !server.has_git_ref_listener_test(name).await,
+        "ref listener entry should be dropped after remove_vault"
+    );
+    assert!(
+        !server.has_git_locks_test(name).await,
+        "locks entry should be dropped after remove_vault"
+    );
+
+    // Vault gone from the registry too.
+    let vaults = server.multi_vault().list_vaults().await.unwrap();
+    assert!(
+        vaults.iter().all(|v| v.config.name != name),
+        "vault should be deregistered"
+    );
+    drop(tmp);
+}
+
+/// turbovault-1ne: remove_vault is refused while a fanout is active.
+/// Caller must abandon_transaction first. Symmetric with the
+/// nested-fanout refusal in begin_transaction.
+#[tokio::test]
+#[serial_test::serial]
+async fn e2e_remove_vault_blocked_while_fanout_active() {
+    let (_tmp, name, server) = setup_git_vault().await;
+
+    // Bring up the drainer + lock entries with a seed write.
+    let tools = server.get_active_write_tools_test().await.unwrap();
+    tools.write_file("seed.md", "seed\n").await.unwrap();
+
+    // Open a fanout transaction directly through the substrate-side
+    // path so the e2e test doesn't depend on the full
+    // `begin_transaction` MCP wire shape (which is exercised
+    // separately). We need active_fanouts populated.
+    let cfg = server.multi_vault().get_vault_config(name).await.unwrap();
+    let locks = server.get_or_init_git_locks_test(name).await;
+    let scratch = tempfile::TempDir::new().unwrap();
+    let wt_path = scratch.path().join("wt-1");
+    let info = {
+        let path = cfg.path.clone();
+        tokio::task::spawn_blocking(move || {
+            let repo = VaultRepo::open_with_locks(&path, locks).unwrap();
+            repo.open_fanout_worktree("tx-1ne", &wt_path).unwrap()
+        })
+        .await
+        .unwrap()
+    };
+    let fanout_vault_name = format!("{}-fanout-tx-1ne", name);
+    server
+        .register_active_fanout_test(name, "tx-1ne", info.clone(), &fanout_vault_name)
+        .await;
+
+    // remove_vault on the base vault should now fail loudly.
+    let err = server.remove_vault_test(name).await.unwrap_err();
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("active fanout") && msg.contains("abandon_transaction"),
+        "expected refuse-message mentioning fanout + abandon_transaction, got: {}",
+        msg
+    );
+
+    // Clean up so the temp dirs drop without leaks.
+    server.clear_active_fanout_test(name).await;
+    let cfg_path = cfg.path.clone();
+    tokio::task::spawn_blocking(move || {
+        let repo = VaultRepo::open(&cfg_path).unwrap();
+        repo.abandon_fanout_by_info(&info).unwrap();
+    })
+    .await
+    .unwrap();
+}
