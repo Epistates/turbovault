@@ -78,6 +78,13 @@ criterion = "0.8"
 # Logging
 log = "0.4"
 
+# turbovault-bna: metrics facade for substrate-op telemetry. The Prometheus
+# exporter (metrics-exporter-prometheus) is already pulled in by turbomcp's
+# `telemetry` feature (-> turbomcp-telemetry/full -> prometheus); this is the
+# emit-side facade used at the GitFileTools chokepoint. Macros are no-ops
+# until a recorder is installed (the endpoint wired opt-in in main.rs).
+metrics = "0.24"
+
 # MCP server framework
 turbomcp = { version = "3.1.5", default-features = false }
 

@@ -34,6 +34,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
+# turbovault-bna: emit substrate-op metrics at the GitFileTools chokepoint.
+metrics = { workspace = true }
 tempfile = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 shellexpand = { workspace = true }
