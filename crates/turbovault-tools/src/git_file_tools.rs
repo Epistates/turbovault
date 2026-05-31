@@ -72,6 +72,12 @@ pub struct GitFileTools {
     /// concurrency error and the graph stays as stale as the last
     /// flush-on-query did.
     pub flush_on_collision: Option<CasCollisionFlush>,
+    /// turbovault-lri: when `false`, every mutation pre-checks each
+    /// touched path against the worktree's `.gitignore` matcher and
+    /// refuses the transaction if any path would be ignored. Default
+    /// `true` preserves pre-lri "always-write" behavior. Wired from
+    /// `VaultGitConfig::include_ignored` by the MCP server.
+    pub include_ignored: bool,
 }
 
 impl GitFileTools {
@@ -89,6 +95,7 @@ impl GitFileTools {
             commit_locks,
             commit_hook: None,
             flush_on_collision: None,
+            include_ignored: true,
         }
     }
 
@@ -106,6 +113,7 @@ impl GitFileTools {
             commit_locks,
             commit_hook: Some(commit_hook),
             flush_on_collision: None,
+            include_ignored: true,
         }
     }
 
@@ -126,7 +134,17 @@ impl GitFileTools {
             commit_locks,
             commit_hook: Some(commit_hook),
             flush_on_collision: Some(flush_on_collision),
+            include_ignored: true,
         }
+    }
+
+    /// turbovault-lri: builder-style override for `include_ignored`.
+    /// `false` makes every subsequent mutation pre-check each touched
+    /// path against the worktree's `.gitignore` matcher and refuse the
+    /// transaction if any path would be ignored. Default `true`.
+    pub fn with_include_ignored(mut self, include_ignored: bool) -> Self {
+        self.include_ignored = include_ignored;
+        self
     }
 
     // -------- Reads (forwarded to VaultManager / fs) --------
@@ -873,12 +891,27 @@ impl GitFileTools {
         let locks = Arc::clone(&self.commit_locks);
         let hook = self.commit_hook.clone();
         let txn = txn.clone();
+        let include_ignored = self.include_ignored;
         let result = tokio::task::spawn_blocking(move || -> Result<()> {
             let repo = match hook {
                 Some(h) => VaultRepo::open_with_locks_and_hook(&path, locks, h),
                 None => VaultRepo::open_with_locks(&path, locks),
             }
             .map_err(git_err_to_core)?;
+            // turbovault-lri: gate the transaction on the gitignore matcher
+            // when `include_ignored = false`. Refuse loudly with a typed
+            // error so the caller knows their write was rejected by policy,
+            // NOT silently dropped. Default `true` skips this pass.
+            if !include_ignored {
+                for changed in txn.touched_paths() {
+                    if repo.is_path_ignored(&changed).map_err(git_err_to_core)? {
+                        return Err(Error::config_error(format!(
+                            "path '{}' is gitignored and include_ignored=false (turbovault-lri); enable include_ignored or add an exclusion in .gitignore",
+                            changed
+                        )));
+                    }
+                }
+            }
             repo.apply_transaction(&txn)
                 .map(|_| ())
                 .map_err(git_err_to_core)

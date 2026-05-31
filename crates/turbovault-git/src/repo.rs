@@ -162,6 +162,14 @@ impl VaultRepo {
         Ok(c.parent_ids().next())
     }
 
+    /// turbovault-lri: whether `path` (repo-root-relative) is excluded by
+    /// any active `.gitignore`. Thin wrapper over libgit2's
+    /// `is_path_ignored`. Used by the substrate's `include_ignored`
+    /// policy enforcement.
+    pub fn is_path_ignored(&self, path: &str) -> Result<bool> {
+        Ok(self.repo.is_path_ignored(Path::new(path))?)
+    }
+
     /// Borrow the underlying repository (for the plumbing layers).
     pub(crate) fn git(&self) -> &Repository {
         &self.repo

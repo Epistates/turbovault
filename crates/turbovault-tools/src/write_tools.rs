@@ -91,6 +91,19 @@ impl WriteTools {
         ))
     }
 
+    /// turbovault-lri: builder-style override for the underlying
+    /// [`GitFileTools::include_ignored`] policy. No-op on the legacy arm
+    /// (the legacy backend doesn't consult `.gitignore` at all). When
+    /// `false`, every mutation pre-checks each touched path against the
+    /// worktree's `.gitignore` matcher and refuses the transaction with
+    /// a typed error if any path would be ignored. Default `true`.
+    pub fn with_include_ignored(self, include_ignored: bool) -> Self {
+        match self {
+            Self::Git(g) => Self::Git(g.with_include_ignored(include_ignored)),
+            other => other,
+        }
+    }
+
     // -------- Reads (forwarded; both backends use working-tree bytes) --------
 
     pub async fn read_file(&self, path: &str) -> Result<String> {

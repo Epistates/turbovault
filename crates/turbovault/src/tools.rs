@@ -830,13 +830,26 @@ impl ObsidianMcpServer {
                     })
                 });
 
+                // turbovault-lri: thread the per-vault `include_ignored`
+                // policy through. Default `true` preserves pre-lri
+                // "always-write" behavior; vault configs that set
+                // `include_ignored: false` get the gitignore-refusal
+                // pass in `apply_txn`. `vault_config.git` is optional;
+                // a missing section is treated as defaults
+                // (`include_ignored == true`).
+                let include_ignored = vault_config
+                    .git
+                    .as_ref()
+                    .map(|g| g.include_ignored)
+                    .unwrap_or(true);
                 Ok(WriteTools::git_with_hook_and_flush(
                     manager,
                     vault_config.path,
                     locks,
                     hook,
                     flush_on_collision,
-                ))
+                )
+                .with_include_ignored(include_ignored))
             }
         }
     }

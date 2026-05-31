@@ -69,8 +69,14 @@ pub struct VaultGitConfig {
     /// Default merge strategy for fan-out merge-back (`commit_transaction`).
     #[serde(default)]
     pub merge_strategy: GitMergeStrategy,
-    /// If true, commit batch-touched paths even when `.gitignore` excludes
-    /// them (the user explicitly asked to write them). Default: true.
+    /// turbovault-lri: when `false`, every git-backend mutation pre-checks
+    /// each touched path against the worktree's `.gitignore` matcher and
+    /// refuses the transaction (typed config error) if any path would be
+    /// excluded. When `true` (the default), `.gitignore` is ignored and
+    /// every requested path is committed — the original always-write
+    /// behavior. Useful for vaults that gitignore `.obsidian/`, build
+    /// artifacts, or per-user clutter and want a backstop against an MCP
+    /// client accidentally committing them.
     #[serde(default = "default_include_ignored")]
     pub include_ignored: bool,
 }

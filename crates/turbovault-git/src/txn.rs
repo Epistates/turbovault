@@ -162,6 +162,15 @@ impl Transaction {
     fn changed_paths(&self) -> Vec<String> {
         self.changes.iter().map(|c| c.path().to_string()).collect()
     }
+
+    /// turbovault-lri: enumerate the paths this transaction mutates so
+    /// higher layers can apply policies like the `include_ignored`
+    /// gitignore-refusal check before submission. Same content as the
+    /// private `changed_paths` helper; exposed for consumers in
+    /// `turbovault-tools`.
+    pub fn touched_paths(&self) -> Vec<String> {
+        self.changed_paths()
+    }
 }
 
 /// Outcome of a committed transaction.
