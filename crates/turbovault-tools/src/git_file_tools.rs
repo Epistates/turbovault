@@ -1564,6 +1564,60 @@ mod tests {
         );
     }
 
+    /// turbovault-9zr: the full batch path. `batch_execute` must fire the
+    /// commit hook (enqueue exactly one commit), and draining that commit must
+    /// produce the one -> two link edge in the graph.
+    #[tokio::test]
+    async fn batch_execute_enqueues_and_reindexes_intra_commit_edge() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
+        let locks = Arc::new(CommitLocks::new());
+
+        let queue = Arc::new(crate::ReindexQueue::new());
+        let q = Arc::clone(&queue);
+        let commit_hook: CommitHook = Arc::new(move |_p, c| q.push(c));
+        let flush: CasCollisionFlush = Arc::new(|| Box::pin(async { Ok(()) }));
+        let tools = GitFileTools::new_with_hook_and_flush(
+            Arc::clone(&manager),
+            tmp.path().to_path_buf(),
+            locks,
+            commit_hook,
+            flush,
+        );
+
+        tools
+            .batch_execute(vec![
+                BatchOperation::CreateNote {
+                    path: "one.md".to_string(),
+                    content: "# One\n\nlinks [[two]]\n".to_string(),
+                    force: None,
+                },
+                BatchOperation::CreateNote {
+                    path: "two.md".to_string(),
+                    content: "# Two\n".to_string(),
+                    force: None,
+                },
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            queue.pending_count(),
+            1,
+            "batch_execute should enqueue exactly one commit"
+        );
+
+        let repo = VaultRepo::open(tmp.path()).unwrap();
+        queue.drain_through(&repo, &manager).await.unwrap();
+
+        assert_eq!(
+            manager.link_graph().read().await.edge_count(),
+            1,
+            "drained batch commit should produce the one -> two edge"
+        );
+    }
+
     #[tokio::test]
     async fn cas_collision_flush_skipped_on_successful_write() {
         let tmp = TempDir::new().unwrap();

@@ -23,11 +23,12 @@
 //! Serialized (`#[serial_test::serial]`): each test spawns its own server
 //! process, but the test process shares libgit2's process-wide init.
 //!
-//! Three tests are `#[ignore]`d as executable bug repros for derived-index
-//! coherence gaps this suite surfaced on the git backend — turbovault-9zr
-//! (multi-file commits don't reindex the link graph) and turbovault-2ag
+//! One test is `#[ignore]`d as an executable bug repro for a derived-index
+//! coherence gap this suite surfaced on the git backend — turbovault-2ag
 //! (edit/modify doesn't reindex the search index). Run with `--ignored` to
-//! reproduce; remove the `#[ignore]` once the corresponding bug is fixed.
+//! reproduce; remove the `#[ignore]` once it is fixed. (turbovault-9zr —
+//! multi-file commits not reindexing the link graph — is now fixed: the graph
+//! re-resolves dangling links on file add, and flush passes are serialized.)
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -219,14 +220,11 @@ async fn wire_write_note_updates_link_graph() {
 }
 
 /// move_note + update_backlinks is one atomic commit; afterwards the inbound
-/// linker is rewritten to the new slug and the backlink follows.
-///
-/// IGNORED — executable repro for turbovault-9zr. The on-disk link REWRITE
-/// works (the content assert passes), but the POST-move graph is stale, so
-/// get_backlinks(renamed) is empty. Remove `#[ignore]` once 9zr is fixed.
+/// linker is rewritten to the new slug and the backlink follows. Regression
+/// guard for turbovault-9zr: the post-move graph reflects the rename (the move
+/// commit adds renamed.md and rewrites linker.md -> [[renamed]] in one commit).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-#[ignore = "turbovault-9zr: move commit doesn't reindex the link graph"]
 async fn wire_move_note_rewrites_links() {
     let (_vault, _cfg, client) = setup_wire_vault().await;
 
@@ -244,9 +242,10 @@ async fn wire_move_note_rewrites_links() {
     .await;
 
     // Drain the reindex queue (a derived read flushes it) so the link graph
-    // knows linker->old before the move computes the inbound links to rewrite.
-    // Without this the rewrite finds nothing (a separate sharp edge); with it,
-    // the rewrite succeeds — but the POST-move graph is still stale (9zr).
+    // knows linker->old before move_note computes the inbound links to rewrite.
+    // move_note reads the graph at write time and does NOT flush its own queue
+    // (a separate sharp edge, not 9zr); without this drain the rewrite finds
+    // nothing to rewrite.
     call(&client, "get_backlinks", json!({ "path": "old.md" })).await;
 
     call(
@@ -311,15 +310,12 @@ async fn wire_delete_note_drops_from_search() {
     );
 }
 
-/// batch_execute applies multiple creates in one commit; both files should be
-/// in the link graph afterwards (atomic, all-or-none reveal).
-///
-/// IGNORED — executable repro for turbovault-9zr: multi-file commits don't
-/// update the link graph (the files commit fine, but get_forward_links is
-/// empty). Remove `#[ignore]` once 9zr is fixed.
+/// batch_execute applies multiple creates in one commit; both files are in the
+/// link graph afterwards (atomic, all-or-none reveal). Regression guard for
+/// turbovault-9zr: a `[[two]]` link from a file added alongside its target in
+/// one commit now resolves to an edge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
-#[ignore = "turbovault-9zr: multi-file commits don't reindex the link graph"]
 async fn wire_batch_execute_atomic_multi_file() {
     let (_vault, _cfg, client) = setup_wire_vault().await;
 

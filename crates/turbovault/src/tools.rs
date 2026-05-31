@@ -1245,6 +1245,14 @@ impl ObsidianMcpServer {
             Some(q) => Arc::clone(q),
             None => return Ok(()), // never opened a git-backed write -> nothing pending
         };
+        // turbovault-9zr: serialize the whole flush pass. The drain below pops
+        // commits (in spawn_blocking) BEFORE applying them, so two concurrent
+        // flushers (the background drainer + this read-path flush) must not
+        // interleave — otherwise one sees pending==0 while the other has popped
+        // but not yet applied, and a read observes a stale graph. Acquire the
+        // lock BEFORE the pending check so an empty queue here means a peer
+        // flush already fully applied (not just popped).
+        let _flush_guard = queue.lock_flush().await;
         if queue.pending_count() == 0 {
             return Ok(());
         }

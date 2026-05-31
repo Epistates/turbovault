@@ -61,8 +61,8 @@ impl LinkGraph {
         let path = file.path.clone();
 
         // Create node if not exists
-        let node_idx = if let Some(&idx) = self.path_index.get(&path) {
-            idx
+        let (node_idx, is_new) = if let Some(&idx) = self.path_index.get(&path) {
+            (idx, false)
         } else {
             let idx = self.graph.add_node(path.clone());
             self.path_index.insert(path.clone(), idx);
@@ -89,7 +89,7 @@ impl LinkGraph {
                 self.path_suffix_index.entry(suffix).or_default().push(idx);
             }
 
-            idx
+            (idx, true)
         };
 
         // Register aliases from frontmatter (lowercased for case-insensitive resolution).
@@ -104,7 +104,47 @@ impl LinkGraph {
             }
         }
 
+        // turbovault-9zr: a wikilink authored before its target file existed is
+        // parked in `unresolved_links` and would otherwise never become an edge.
+        // Now that this node and its resolution indices (stem/suffix/alias)
+        // exist, promote any dangling links that resolve to it. Without this,
+        // multi-file commits — and any source-before-target ordering — leave the
+        // link graph permanently stale (the bug this fixes).
+        if is_new {
+            self.resolve_dangling_links_to(node_idx);
+        }
+
         Ok(())
+    }
+
+    /// Promote previously-unresolved links whose target now resolves to
+    /// `new_idx` into real graph edges (turbovault-9zr). Called from `add_file`
+    /// when a node is first created. Cost is O(unresolved links) per new node;
+    /// the unresolved set is normally small (genuinely broken links).
+    fn resolve_dangling_links_to(&mut self, new_idx: NodeIndex) {
+        let drained = std::mem::take(&mut self.unresolved_links);
+        let mut promotions: Vec<(PathBuf, Link)> = Vec::new();
+        let mut still_unresolved: HashMap<PathBuf, Vec<Link>> = HashMap::new();
+        for (source_path, links) in drained {
+            for link in links {
+                if self.resolve_link(&link.target) == Some(new_idx) {
+                    promotions.push((source_path.clone(), link));
+                } else {
+                    still_unresolved
+                        .entry(source_path.clone())
+                        .or_default()
+                        .push(link);
+                }
+            }
+        }
+        self.unresolved_links = still_unresolved;
+        for (source_path, link) in promotions {
+            if let Some(&source_idx) = self.path_index.get(&source_path) {
+                let mut resolved = link;
+                resolved.is_valid = true;
+                self.graph.add_edge(source_idx, new_idx, resolved);
+            }
+        }
     }
 
     /// Remove a file from the graph.
@@ -687,6 +727,45 @@ mod tests {
         assert_eq!(unresolved[&note2_path].len(), 1);
         assert_eq!(unresolved[&note2_path][0].target, "nonexistent");
         assert!(!unresolved[&note2_path][0].is_valid);
+    }
+
+    /// turbovault-9zr: a wikilink authored before its target file exists must
+    /// become a real edge once the target is added — not stay dangling forever.
+    /// This is the root cause behind multi-file commits (batch_execute,
+    /// move_note) leaving the graph stale: files added later in the same commit
+    /// never promoted the links pointing at them.
+    #[test]
+    fn unresolved_link_resolves_when_target_added_later() {
+        let mut graph = LinkGraph::new();
+
+        // Source committed BEFORE its target exists (e.g. earlier in a batch).
+        let src = create_test_file("a.md", vec!["b"]);
+        graph.add_file(&src).unwrap();
+        graph.update_links(&src).unwrap();
+
+        // b.md not present yet -> link parked as unresolved, no edge.
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.unresolved_link_count(), 1);
+
+        // Target appears (added later in the same commit / a later commit).
+        let tgt = create_test_file("b.md", vec![]);
+        graph.add_file(&tgt).unwrap();
+
+        // The dangling [[b]] must now be a resolved edge a -> b.
+        assert_eq!(
+            graph.unresolved_link_count(),
+            0,
+            "dangling link should resolve once its target is added"
+        );
+        assert_eq!(graph.edge_count(), 1, "a.md -> b.md edge should exist");
+
+        let fwd = graph.forward_links(&PathBuf::from("a.md")).unwrap();
+        assert_eq!(fwd.len(), 1, "a.md should have a forward link");
+        assert_eq!(fwd[0].0, PathBuf::from("b.md"));
+
+        let back = graph.backlinks(&PathBuf::from("b.md")).unwrap();
+        assert_eq!(back.len(), 1, "b.md should have a backlink from a.md");
+        assert_eq!(back[0].0, PathBuf::from("a.md"));
     }
 
     #[test]

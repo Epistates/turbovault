@@ -45,6 +45,13 @@ pub struct ReindexQueue {
     /// query callers don't need to await it (they just call `drain_through`
     /// directly).
     notify: Notify,
+    /// Serializes whole flush passes (turbovault-9zr). Both the background
+    /// drainer and a read-path flush drain + apply this queue; each pops
+    /// commits BEFORE applying them to the derived indexes, so without this
+    /// lock a concurrent flush could observe `pending_count() == 0` while the
+    /// other flush has popped a commit but not yet applied it — and then read
+    /// a stale graph. Held across an entire drain+apply pass.
+    flush_lock: tokio::sync::Mutex<()>,
 }
 
 impl ReindexQueue {
@@ -65,6 +72,14 @@ impl ReindexQueue {
     /// don't need it.
     pub fn notify(&self) -> &Notify {
         &self.notify
+    }
+
+    /// Acquire the flush serialization lock (turbovault-9zr). A whole flush
+    /// pass (pop + apply) must hold this so two flushers — the background
+    /// drainer and a read-path flush — cannot interleave the pop-before-apply
+    /// window and let a reader observe a half-drained graph.
+    pub async fn lock_flush(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.flush_lock.lock().await
     }
 
     /// Number of commits awaiting reindex. Snapshot; may change immediately
@@ -101,6 +116,10 @@ impl ReindexQueue {
         repo: &VaultRepo,
         manager: &Arc<VaultManager>,
     ) -> Result<usize> {
+        // turbovault-9zr: hold the flush lock for the whole pass so this drain
+        // can't interleave with the server's read-path flush (which also pops
+        // before applying).
+        let _flush_guard = self.lock_flush().await;
         let mut applied = 0usize;
         while let Some(commit) = self.pop_front() {
             let parent = repo
@@ -351,6 +370,34 @@ mod tests {
         let n = queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(n, 3);
         assert_eq!(manager.link_graph().read().await.node_count(), 3);
+    }
+
+    /// turbovault-9zr: a single commit that adds a file AND a file linking to it
+    /// (batch_execute / move shape) must produce a resolved edge after drain.
+    #[tokio::test]
+    async fn drain_resolves_intra_commit_link_in_one_commit() {
+        let (_tmp, manager, repo, queue) = setup();
+
+        repo.apply_transaction(
+            &Transaction::new("batch")
+                .create("one.md", "# One\n\nlinks [[two]]\n")
+                .create("two.md", "# Two\n"),
+        )
+        .unwrap();
+        assert_eq!(queue.pending_count(), 1, "one commit for the whole batch");
+
+        queue.drain_through(&repo, &manager).await.unwrap();
+
+        let lg = manager.link_graph();
+        let graph = lg.read().await;
+        assert_eq!(graph.node_count(), 2, "both files in the graph");
+        assert_eq!(
+            graph.unresolved_link_count(),
+            0,
+            "[[two]] should resolve once both files land in one commit"
+        );
+        // edge_count is key-agnostic (nodes are keyed by absolute path).
+        assert_eq!(graph.edge_count(), 1, "one.md -> two.md edge should exist");
     }
 
     #[tokio::test]
