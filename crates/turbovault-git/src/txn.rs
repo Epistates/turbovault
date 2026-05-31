@@ -176,10 +176,17 @@ impl Transaction {
 /// Outcome of a committed transaction.
 #[derive(Debug, Clone)]
 pub struct TransactionResult {
-    /// The new commit the branch now points at.
+    /// The commit the branch points at. For a no-op transaction
+    /// (`no_op == true`) this is the *unchanged* HEAD — nothing was committed.
     pub commit: Oid,
-    /// The paths materialized into the working tree.
+    /// The paths materialized into the working tree. Empty when `no_op`.
     pub paths: Vec<String>,
+    /// turbovault-4nc: `true` when the transaction's changes produced a tree
+    /// identical to the parent's (an idempotent / no-effect write). The
+    /// substrate skipped the commit, ref CAS, materialize, and reindex hook —
+    /// the working tree already matched HEAD. Preconditions are still checked
+    /// first, so a stale read aborts even when the result would be identical.
+    pub no_op: bool,
 }
 
 impl VaultRepo {
@@ -222,33 +229,67 @@ impl VaultRepo {
             // committed against, NOT the parent at function entry, which
             // may be stale).
             let mut parent_at_apply: Option<Oid> = None;
-            let commit = self.commit_with_retry(&refname, |tip| {
+            let committed = self.commit_with_retry(&refname, |tip| {
                 parent_at_apply = tip;
                 let base_tree = match tip {
                     Some(c) => Some(self.git().find_commit(c)?.tree_id()),
                     None => None,
                 };
                 // Abort the whole transaction if any precondition is stale.
+                // This MUST run before the identity-tree short-circuit below: a
+                // stale read aborts loudly (the reconsideration domino) even
+                // when the resulting tree would be identical, because the read
+                // was against a now-changed base.
                 self.check_preconditions(base_tree, &txn.preconditions)?;
                 let tree = self.build_tree(base_tree, &txn.changes)?;
+                // turbovault-4nc: identity-tree short-circuit. If the changes
+                // produce a tree byte-identical to the base (an idempotent
+                // rewrite, a remove of an already-absent path, ...), there is
+                // nothing to commit — return `None` so `commit_with_retry`
+                // skips the ref CAS. The working tree already matches HEAD, so
+                // materialize + the reindex hook are skipped below too.
+                if Some(tree) == base_tree {
+                    return Ok(None);
+                }
                 let parents: Vec<Oid> = tip.into_iter().collect();
-                self.commit_tree(tree, &parents, &txn.message)
+                Ok(Some(self.commit_tree(tree, &parents, &txn.message)?))
             })?;
 
-            // Reveal the commit to the working tree (still under the lock).
-            self.materialize(commit, &changed)?;
+            match committed {
+                Some(commit) => {
+                    // Reveal the commit to the working tree (still under the lock).
+                    self.materialize(commit, &changed)?;
 
-            // Fire the GWS.14 reindex hook inside the commit lock so the
-            // queue observes commits in commit order (matches the order
-            // a future drainer must replay them).
-            if let Some(hook) = &self.commit_hook {
-                hook(parent_at_apply, commit);
+                    // Fire the GWS.14 reindex hook inside the commit lock so the
+                    // queue observes commits in commit order (matches the order
+                    // a future drainer must replay them).
+                    if let Some(hook) = &self.commit_hook {
+                        hook(parent_at_apply, commit);
+                    }
+
+                    Ok(TransactionResult {
+                        commit,
+                        paths: changed,
+                        no_op: false,
+                    })
+                }
+                None => {
+                    // Identity tree -> no commit, no CAS, no materialize, no
+                    // hook. `parent_at_apply` is the tip we evaluated (whose
+                    // preconditions passed); an identity tree implies a
+                    // non-unborn base, so it is always `Some` here.
+                    let commit = parent_at_apply.ok_or_else(|| {
+                        Error::Other(
+                            "identity-tree no-op on an unborn branch is impossible".to_string(),
+                        )
+                    })?;
+                    Ok(TransactionResult {
+                        commit,
+                        paths: Vec::new(),
+                        no_op: true,
+                    })
+                }
             }
-
-            Ok(TransactionResult {
-                commit,
-                paths: changed,
-            })
         })
     }
 }
@@ -655,5 +696,94 @@ mod tests {
         let (_tmp, vr) = open_unborn();
         let r = vr.apply_transaction(&Transaction::new("c").create("a.md", "x"));
         assert!(r.is_ok());
+    }
+
+    // -------- turbovault-4nc: identity-tree no-op short-circuit --------
+
+    #[test]
+    fn identity_tree_write_is_noop() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+            .unwrap();
+        let head_before = vr.head_oid();
+
+        // Rewrite a.md with the SAME content + correct precondition: the
+        // resulting tree is identical to the base -> no-op.
+        let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
+        let res = vr
+            .apply_transaction(&Transaction::new("idempotent").update("a.md", "v1", v1))
+            .unwrap();
+
+        assert!(res.no_op, "identity rewrite is a no-op");
+        assert!(res.paths.is_empty(), "no paths materialized on a no-op");
+        assert_eq!(vr.head_oid(), head_before, "HEAD did not advance");
+        assert_eq!(
+            res.commit,
+            head_before.unwrap(),
+            "result.commit is the unchanged HEAD"
+        );
+        assert_eq!(read_wt(&vr, "a.md"), "v1", "working tree unchanged");
+    }
+
+    #[test]
+    fn noop_skips_commit_hook() {
+        let calls: CommitOnlyCalls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls_clone = std::sync::Arc::clone(&calls);
+        let hook: crate::CommitHook = std::sync::Arc::new(move |_p, c| {
+            calls_clone.lock().unwrap().push(c);
+        });
+        let (_tmp, vr) = open_unborn_with_hook(hook);
+
+        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+            .unwrap();
+        let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
+        let res = vr
+            .apply_transaction(&Transaction::new("idempotent").update("a.md", "v1", v1))
+            .unwrap();
+
+        assert!(res.no_op);
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "hook fires for the seed commit only, never for the no-op"
+        );
+    }
+
+    #[test]
+    fn stale_precondition_aborts_before_identity_shortcircuit() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+            .unwrap();
+        let head_before = vr.head_oid();
+
+        // Same content (the tree WOULD be identical) but a stale precondition:
+        // the abort must win — preconditions are checked before the identity
+        // short-circuit, so a stale read never silently passes as a no-op.
+        let stale = VaultRepo::blob_oid_of(b"WRONG").unwrap();
+        let res = vr.apply_transaction(
+            &Transaction::new("idempotent-but-stale").update("a.md", "v1", stale),
+        );
+        assert!(
+            matches!(res, Err(Error::PreconditionFailed { ref path, .. }) if path == "a.md"),
+            "stale precondition aborts even when the tree would be identical: {res:?}"
+        );
+        assert_eq!(vr.head_oid(), head_before, "nothing committed on abort");
+    }
+
+    #[test]
+    fn remove_absent_path_alone_is_noop() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+            .unwrap();
+        let head_before = vr.head_oid();
+
+        // Removing a path that isn't in the tree leaves the tree unchanged.
+        let res = vr
+            .apply_transaction(&Transaction::new("rm ghost").remove("ghost.md"))
+            .unwrap();
+        assert!(res.no_op, "removing an absent path is a no-op");
+        assert!(res.paths.is_empty());
+        assert_eq!(vr.head_oid(), head_before, "HEAD unchanged");
     }
 }

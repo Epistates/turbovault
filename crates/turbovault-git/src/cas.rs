@@ -53,18 +53,21 @@ impl VaultRepo {
 
     /// Advance `refname` with optimistic retry (default retry budget).
     /// See [`Self::commit_with_retry_n`].
-    pub fn commit_with_retry<F>(&self, refname: &str, build: F) -> Result<Oid>
+    pub fn commit_with_retry<F>(&self, refname: &str, build: F) -> Result<Option<Oid>>
     where
-        F: FnMut(Option<Oid>) -> Result<Oid>,
+        F: FnMut(Option<Oid>) -> Result<Option<Oid>>,
     {
         self.commit_with_retry_n(refname, DEFAULT_MAX_RETRIES, build)
     }
 
     /// Advance `refname` with optimistic retry. `build` is called with the
     /// current tip (the parent to build on, `None` if the branch is unborn) and
-    /// must return a commit oid built on that tip. If the CAS loses to a
-    /// concurrent advance, the tip is re-read and `build` is called again on the
-    /// new tip, up to `max_retries` rebuilds.
+    /// returns `Some(commit)` to CAS onto that tip, or `None` to signal a
+    /// **no-op** — there is nothing to commit (e.g. the resulting tree is
+    /// identical to the base), so the ref is left untouched and the method
+    /// returns `Ok(None)`. If the CAS loses to a concurrent advance, the tip is
+    /// re-read and `build` is called again on the new tip, up to `max_retries`
+    /// rebuilds.
     ///
     /// The builder owns conflict policy: on a rebuild it re-validates its
     /// per-file preconditions against the new tip (GWS.4) and may itself return
@@ -79,15 +82,20 @@ impl VaultRepo {
         refname: &str,
         max_retries: u32,
         mut build: F,
-    ) -> Result<Oid>
+    ) -> Result<Option<Oid>>
     where
-        F: FnMut(Option<Oid>) -> Result<Oid>,
+        F: FnMut(Option<Oid>) -> Result<Option<Oid>>,
     {
         for _ in 0..=max_retries {
             let tip = self.git().refname_to_id(refname).ok();
-            let new = build(tip)?;
+            // `None` from the builder = no-op (e.g. an identity tree): nothing
+            // to commit, so skip the CAS and leave the ref where it is.
+            let new = match build(tip)? {
+                Some(oid) => oid,
+                None => return Ok(None),
+            };
             match self.cas_ref(refname, tip, new) {
-                Ok(()) => return Ok(new),
+                Ok(()) => return Ok(Some(new)),
                 // Lost the race: the ref moved between our read and the lock.
                 // Re-read the tip and rebuild on it.
                 Err(Error::CasConflict { .. }) => continue,
@@ -182,8 +190,9 @@ mod tests {
         vr.cas_ref(MAIN, None, c0).unwrap();
 
         let got = vr
-            .commit_with_retry(MAIN, |tip| Ok(build_on(&vr, tip, "b.md", "b")))
-            .unwrap();
+            .commit_with_retry(MAIN, |tip| Ok(Some(build_on(&vr, tip, "b.md", "b"))))
+            .unwrap()
+            .expect("a commit was produced");
         assert_eq!(vr.head_oid(), Some(got));
     }
 
@@ -204,9 +213,10 @@ mod tests {
                     let concurrent = build_on(&vr, Some(tip), "concurrent.md", "x");
                     vr.cas_ref(MAIN, Some(tip), concurrent).unwrap();
                 }
-                Ok(build_on(&vr, Some(tip), "mine.md", "m"))
+                Ok(Some(build_on(&vr, Some(tip), "mine.md", "m")))
             })
-            .unwrap();
+            .unwrap()
+            .expect("a commit was produced");
 
         assert_eq!(calls.get(), 2, "exactly one rebuild after the conflict");
         assert_eq!(vr.head_oid(), Some(got));
