@@ -245,6 +245,54 @@ impl WriteTools {
         }
     }
 
+    /// turbovault-oz6: list inbound backlinks for a path. Both backends
+    /// resolve via the same in-memory link graph (kept coherent by the
+    /// substrate's CommitHook + drainer / external-ref listener for git;
+    /// kept manually-coherent by VaultManager mutators for legacy).
+    pub async fn list_inbound_backlinks(&self, path: &str) -> Result<Vec<String>> {
+        match self {
+            Self::Git(g) => g.list_inbound_backlinks(path).await,
+            Self::Legacy { files, .. } => {
+                let bls = files
+                    .manager
+                    .get_backlinks(std::path::Path::new(path))
+                    .await?;
+                let vault_root = files.manager.vault_path().clone();
+                let mut out = Vec::new();
+                for full in bls {
+                    let rel = full
+                        .strip_prefix(&vault_root)
+                        .map(|p| p.to_path_buf())
+                        .unwrap_or_else(|_| full.clone());
+                    if let Some(s) = rel.to_str() {
+                        out.push(s.to_string());
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// turbovault-oz6: atomic delete + inbound-wikilink wrap-as-stale.
+    /// **Git backend only** — legacy refuses loudly (no atomic multi-file
+    /// primitive).
+    pub async fn delete_file_with_link_rewrite_to_stale(
+        &self,
+        path: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<MoveWithLinksResult> {
+        match self {
+            Self::Legacy { .. } => Err(Error::config_error(
+                "Atomic delete + wikilink wrap-as-stale requires write_backend=git. The legacy backend has no multi-file atomic primitive; use force=true on the legacy delete (rename-only — links will dangle) or switch to git.",
+            )),
+            Self::Git(g) => {
+                g.delete_file_with_link_rewrite_to_stale(path, expected_hash, message)
+                    .await
+            }
+        }
+    }
+
     /// turbovault-lqr: atomic move + inbound-wikilink rewrite.
     /// **Git backend only** — legacy refuses loudly (no atomic multi-file
     /// primitive; the substrate's killer feature that the legacy path

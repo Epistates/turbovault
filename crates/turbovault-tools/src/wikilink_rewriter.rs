@@ -52,6 +52,66 @@ fn rewrite_target_form(content: &str, old: &str, new: &str) -> String {
     .into_owned()
 }
 
+/// turbovault-oz6: wrap every wikilink in `content` targeting
+/// `deleted_vault_path` in `~~strikethrough~~` markdown, marking it as
+/// a dead reference to a deleted page. Uses the same anchored regex
+/// shape as [`rewrite_wikilinks`] so the same forms (basename,
+/// path-prefix, alias, section, block, embed) are all wrapped without
+/// false positives.
+///
+/// Returns the rewritten content. Idempotent: a link already wrapped
+/// (`~~[[old]]~~`) won't be double-wrapped because the strikethrough
+/// brackets sit outside the match window.
+pub fn wrap_wikilinks_as_stale(content: &str, deleted_vault_path: &str) -> String {
+    let old_path = strip_md(deleted_vault_path);
+    let old_base = basename(&old_path);
+
+    let after_path = if old_path != old_base {
+        wrap_target_form(content, &old_path)
+    } else {
+        content.to_string()
+    };
+    wrap_target_form(&after_path, &old_base)
+}
+
+/// Wrap a SINGLE target form in `~~ ~~` strikethrough. Skips occurrences
+/// already preceded by `~~` (idempotent for re-applied deletes).
+fn wrap_target_form(content: &str, target: &str) -> String {
+    // Match the FULL link (including the optional `!` embed marker and
+    // the alias/section/empty-closer tail). The trailing group captures
+    // the link's full body so we can re-emit it untouched.
+    let pattern = format!(
+        r"(?P<lead>(?:^|[^~])\s*?)(?P<link>!?\[\[{}(?:[|#][^\]]*)?\]\])",
+        regex::escape(target)
+    );
+    // Above is brittle because it requires a leading non-`~` char or
+    // start-of-string before the link to avoid re-wrapping. Simpler:
+    // just rewrite all matches but check for ~~ on either side.
+    let _ = pattern; // unused — we use the simpler loop below.
+
+    let link_pat = format!(r"!?\[\[{}(?:[|#][^\]]*)?\]\]", regex::escape(target));
+    let re = Regex::new(&link_pat).expect("wrap regex compile");
+    let mut out = String::with_capacity(content.len());
+    let mut cursor = 0;
+    for m in re.find_iter(content) {
+        // Skip already-wrapped: previous 2 chars are `~~` AND following 2
+        // chars are `~~`.
+        let already_wrapped =
+            content[..m.start()].ends_with("~~") && content[m.end()..].starts_with("~~");
+        out.push_str(&content[cursor..m.start()]);
+        if already_wrapped {
+            out.push_str(m.as_str());
+        } else {
+            out.push_str("~~");
+            out.push_str(m.as_str());
+            out.push_str("~~");
+        }
+        cursor = m.end();
+    }
+    out.push_str(&content[cursor..]);
+    out
+}
+
 fn strip_md(p: &str) -> String {
     p.strip_suffix(".md").unwrap_or(p).to_string()
 }
@@ -162,5 +222,72 @@ mod tests {
         // escaped before being inserted into the rewrite regex.
         let out = rewrite_wikilinks("see [[c++]]", "c++.md", "rust.md");
         assert_eq!(out, "see [[rust]]");
+    }
+
+    // -------- turbovault-oz6: stale-callout wrapper --------
+
+    #[test]
+    fn wrap_stale_bare_basename() {
+        let out = wrap_wikilinks_as_stale("see [[old]] here", "old.md");
+        assert_eq!(out, "see ~~[[old]]~~ here");
+    }
+
+    #[test]
+    fn wrap_stale_with_alias() {
+        let out = wrap_wikilinks_as_stale("see [[old|My Alias]] here", "old.md");
+        assert_eq!(out, "see ~~[[old|My Alias]]~~ here");
+    }
+
+    #[test]
+    fn wrap_stale_with_section() {
+        let out = wrap_wikilinks_as_stale("see [[old#Header]] here", "old.md");
+        assert_eq!(out, "see ~~[[old#Header]]~~ here");
+    }
+
+    #[test]
+    fn wrap_stale_embed() {
+        let out = wrap_wikilinks_as_stale("![[old]]", "old.md");
+        assert_eq!(out, "~~![[old]]~~");
+    }
+
+    #[test]
+    fn wrap_stale_path_prefix() {
+        let out = wrap_wikilinks_as_stale("see [[wiki/old]]", "wiki/old.md");
+        // Path-form wrapped; basename pass does NOT re-wrap because the
+        // already-wrapped guard fires on the inner `old` match (its prefix
+        // is now `/` plus our `~~`).
+        assert!(out.contains("~~[[wiki/old]]~~"));
+    }
+
+    #[test]
+    fn wrap_stale_idempotent() {
+        let already = "see ~~[[old]]~~ here";
+        let out = wrap_wikilinks_as_stale(already, "old.md");
+        assert_eq!(out, already, "already-wrapped links must not double-wrap");
+    }
+
+    #[test]
+    fn wrap_stale_skips_partial_basename_match() {
+        let out = wrap_wikilinks_as_stale("see [[older]] and [[old]]", "old.md");
+        assert_eq!(out, "see [[older]] and ~~[[old]]~~");
+    }
+
+    #[test]
+    fn wrap_stale_multiple_links() {
+        let out = wrap_wikilinks_as_stale(
+            "first [[old]] then [[old|alias]] then ![[old#Sec]]",
+            "old.md",
+        );
+        assert_eq!(
+            out,
+            "first ~~[[old]]~~ then ~~[[old|alias]]~~ then ~~![[old#Sec]]~~"
+        );
+    }
+
+    #[test]
+    fn wrap_stale_no_matches_passes_through() {
+        let original = "no wikilinks here";
+        let out = wrap_wikilinks_as_stale(original, "old.md");
+        assert_eq!(out, original);
     }
 }

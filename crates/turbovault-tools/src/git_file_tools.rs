@@ -368,6 +368,106 @@ impl GitFileTools {
         self.apply_txn(&txn).await
     }
 
+    /// turbovault-oz6: atomic delete + inbound-wikilink wrap-as-stale.
+    /// Removes `path` AND rewrites every backlinking source's wikilinks
+    /// targeting it as `~~[[old]]~~` strikethrough (signaling a dead
+    /// reference) — all in **one substrate transaction**.
+    ///
+    /// Each source carries an `expect_blob` precondition; a concurrent
+    /// edit to ANY source aborts the whole delete with
+    /// `ConcurrencyError`. `expected_hash` (optional, blob OID hex)
+    /// guards the target page itself.
+    ///
+    /// Returns the list of source paths whose content was rewritten so
+    /// the caller can surface what changed.
+    pub async fn delete_file_with_link_rewrite_to_stale(
+        &self,
+        path: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<MoveWithLinksResult> {
+        use crate::wikilink_rewriter::wrap_wikilinks_as_stale;
+
+        let expected_target = parse_blob_oid(expected_hash)?;
+
+        let backlink_paths = {
+            let lg = self.manager.link_graph();
+            let graph = lg.read().await;
+            graph
+                .backlinks(&self.manager.vault_path().join(path))
+                .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
+                .into_iter()
+                .map(|(p, _links)| p)
+                .collect::<Vec<_>>()
+        };
+
+        let mut link_updates: Vec<(String, String, Oid)> = Vec::new();
+        for full_src in &backlink_paths {
+            let rel = full_src
+                .strip_prefix(self.manager.vault_path())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|_| full_src.clone());
+            let rel_str = rel
+                .to_str()
+                .ok_or_else(|| Error::config_error(format!("non-utf8 source path: {:?}", rel)))?
+                .to_string();
+            let src_content = self.read_file(&rel_str).await?;
+            let rewritten = wrap_wikilinks_as_stale(&src_content, path);
+            if rewritten == src_content {
+                continue;
+            }
+            let src_oid = VaultRepo::blob_oid_of(src_content.as_bytes())
+                .map_err(|e| Error::config_error(format!("blob_oid_of: {}", e)))?;
+            link_updates.push((rel_str, rewritten, src_oid));
+        }
+
+        let mut txn = Transaction::new(message.to_string()).remove(path);
+        if let Some(oid) = expected_target {
+            txn = txn.expect_blob(path, oid);
+        }
+        for (rel_path, rewritten, oid) in &link_updates {
+            txn = txn
+                .upsert(rel_path.clone(), rewritten.clone().into_bytes())
+                .expect_blob(rel_path.clone(), *oid);
+        }
+
+        self.apply_txn(&txn).await?;
+
+        Ok(MoveWithLinksResult {
+            from: path.to_string(),
+            to: String::new(), // No destination for a delete.
+            link_sources_updated: link_updates.into_iter().map(|(p, _, _)| p).collect(),
+        })
+    }
+
+    /// turbovault-oz6: return the list of vault-relative source paths
+    /// that have inbound wikilinks targeting `path`. Used by the MCP
+    /// layer's "refuse-if-backlinks" pre-check (option A) before
+    /// committing to a delete.
+    pub async fn list_inbound_backlinks(&self, path: &str) -> Result<Vec<String>> {
+        let backlink_paths = {
+            let lg = self.manager.link_graph();
+            let graph = lg.read().await;
+            graph
+                .backlinks(&self.manager.vault_path().join(path))
+                .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect::<Vec<_>>()
+        };
+        let mut out = Vec::new();
+        for full_src in backlink_paths {
+            let rel = full_src
+                .strip_prefix(self.manager.vault_path())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|_| full_src.clone());
+            if let Some(s) = rel.to_str() {
+                out.push(s.to_string());
+            }
+        }
+        Ok(out)
+    }
+
     /// turbovault-lqr: atomic move + inbound-wikilink rewrite. Renames
     /// `from` -> `to` AND rewrites every backlinking source's
     /// `[[from-basename]]` / `[[from-path]]` (plus alias / section /
@@ -1686,6 +1786,71 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("b.md")).unwrap(),
             "embed: ![[new]]\nsection: [[new#Header]]\n"
         );
+    }
+
+    /// turbovault-oz6: atomic delete + wrap-as-stale across multiple
+    /// linkers. One commit; target gone; sources strikethrough-wrapped.
+    #[tokio::test]
+    async fn delete_with_link_rewrite_to_stale_wraps_all_linkers() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("doomed.md", "# Doomed").await.unwrap();
+        tools
+            .write_file("a.md", "see [[doomed]] for details\n")
+            .await
+            .unwrap();
+        tools
+            .write_file("b.md", "another ref ![[doomed#Sec]]\n")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+        let head_before = head_oid(&tools).unwrap();
+
+        let result = tools
+            .delete_file_with_link_rewrite_to_stale("doomed.md", None, "kill doomed")
+            .await
+            .unwrap();
+        let mut updated = result.link_sources_updated.clone();
+        updated.sort();
+        assert_eq!(updated, vec!["a.md".to_string(), "b.md".to_string()]);
+        // Target gone.
+        assert!(!tmp.path().join("doomed.md").exists());
+        // Sources wrapped.
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.md")).unwrap(),
+            "see ~~[[doomed]]~~ for details\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.md")).unwrap(),
+            "another ref ~~![[doomed#Sec]]~~\n"
+        );
+        // Single commit.
+        let head_after = head_oid(&tools).unwrap();
+        assert_ne!(head_after, head_before);
+        let repo = git2::Repository::open(&tools.vault_path).unwrap();
+        let commit = repo.find_commit(head_after).unwrap();
+        assert_eq!(commit.parent_count(), 1);
+    }
+
+    /// turbovault-oz6: list_inbound_backlinks returns the linkers the
+    /// MCP layer uses to decide whether to refuse, rewrite-stale, or
+    /// force-delete.
+    #[tokio::test]
+    async fn list_inbound_backlinks_returns_linkers() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("doomed.md", "# Doomed").await.unwrap();
+        tools
+            .write_file("linker.md", "see [[doomed]]")
+            .await
+            .unwrap();
+        tools
+            .write_file("unrelated.md", "no links here")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+
+        let mut bls = tools.list_inbound_backlinks("doomed.md").await.unwrap();
+        bls.sort();
+        assert_eq!(bls, vec!["linker.md".to_string()]);
     }
 
     /// turbovault-lqr: a source modified between the read and the apply

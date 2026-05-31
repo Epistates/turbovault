@@ -1249,11 +1249,16 @@ impl ObsidianMcpServer {
 
     /// Delete a note (confirmation-protected)
     #[tool(
-        description = "Permanently delete a note from active vault (irreversible, confirmation-protected). Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to `delete_note <path>`.",
-        usage = "Use to remove unwanted notes. REQUIRES confirm_path parameter matching path exactly to prevent accidental deletion. Removes file from filesystem and updates link graph. Any links to this note become broken links. Use get_backlinks first to understand impact. Pass expected_hash for concurrency protection. Pass commit_message to explain WHY.",
-        performance = "Fast (<20ms typical). Includes filesystem delete and link graph update",
+        description = "Permanently delete a note from active vault (irreversible, confirmation-protected). Default-safe (turbovault-oz6): REFUSES if the target has inbound backlinks, naming the linkers and pointing at the workarounds. Pass `on_backlinks: \"rewrite-stale-callout\"` to atomically delete AND strikethrough-wrap every inbound `[[target]]` (and variants) in the SAME commit (~~[[target]]~~). Pass `force: true` to bypass the backlink check (today's blind-delete behavior; linkers become broken). Pass `commit_message` for a meaningful git commit subject.",
+        usage = "Use to remove unwanted notes. REQUIRES confirm_path parameter matching path exactly to prevent accidental deletion. By default the delete is refused if any other notes link to this one — explicit caller decision required (force vs. rewrite-stale). Pass expected_hash to guard the target against a concurrent edit.",
+        performance = "Default: O(1) backlink lookup. With on_backlinks=rewrite-stale-callout: linear in inbound-link count (each source is read + rewritten in the same atomic commit).",
         related = ["get_backlinks", "get_broken_links", "move_note"],
-        examples = ["path: drafts/old-idea.md, confirm_path: drafts/old-idea.md", "commit_message: 'remove superseded concept page'"]
+        examples = [
+            "path: drafts/old-idea.md, confirm_path: drafts/old-idea.md (refused if backlinks exist)",
+            "on_backlinks: rewrite-stale-callout — strikethrough every linker as part of the delete",
+            "force: true — delete anyway, leave linkers broken (legacy behavior)",
+            "commit_message: 'remove superseded concept page'"
+        ]
     )]
     async fn delete_note(
         &self,
@@ -1261,6 +1266,8 @@ impl ObsidianMcpServer {
         confirm_path: String,
         expected_hash: Option<String>,
         commit_message: Option<String>,
+        force: Option<bool>,
+        on_backlinks: Option<String>,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirm_path must match path exactly
         if path != confirm_path {
@@ -1274,17 +1281,74 @@ impl ObsidianMcpServer {
         let tools = self.get_active_write_tools().await?;
         // turbovault-0bh: caller-supplied or auto-derived.
         let msg = commit_message.unwrap_or_else(|| format!("delete_note {}", path));
-        tools
-            .delete_file_with_hash_and_message(&path, expected_hash.as_deref(), &msg)
-            .await
-            .map_err(to_mcp_error)?;
+        let force = force.unwrap_or(false);
+
+        // turbovault-oz6: backlink-aware refuse / rewrite logic. The
+        // graph is kept coherent by the substrate's drainer + GWS.14
+        // queue + the external-ref listener (bou).
+        let on_backlinks = on_backlinks.as_deref();
+        let (rewrite_path, _link_sources_updated): (bool, Vec<String>) = if force {
+            (false, Vec::new())
+        } else {
+            let backlinks = tools
+                .list_inbound_backlinks(&path)
+                .await
+                .map_err(to_mcp_error)?;
+            match (backlinks.is_empty(), on_backlinks) {
+                (true, _) => (false, Vec::new()),
+                (false, Some("rewrite-stale-callout")) => (true, backlinks),
+                (false, _) => {
+                    let sample = backlinks
+                        .iter()
+                        .take(5)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let more = if backlinks.len() > 5 {
+                        format!(" (+{} more)", backlinks.len() - 5)
+                    } else {
+                        String::new()
+                    };
+                    return Err(McpError::invalid_request(format!(
+                        "delete_note refused (turbovault-oz6): path '{}' has {} inbound backlink(s): [{}]{}. Either: \
+                         (a) pass on_backlinks=\"rewrite-stale-callout\" to atomically strikethrough every linker as part of the delete, or \
+                         (b) pass force=true to delete anyway and leave the linkers broken. \
+                         This prevents silently shipping broken backlinks.",
+                        path,
+                        backlinks.len(),
+                        sample,
+                        more
+                    )));
+                }
+            }
+        };
+
+        let updated_sources: Vec<String> = if rewrite_path {
+            let result = tools
+                .delete_file_with_link_rewrite_to_stale(&path, expected_hash.as_deref(), &msg)
+                .await
+                .map_err(to_mcp_error)?;
+            result.link_sources_updated
+        } else {
+            tools
+                .delete_file_with_hash_and_message(&path, expected_hash.as_deref(), &msg)
+                .await
+                .map_err(to_mcp_error)?;
+            Vec::new()
+        };
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
         StandardResponse::new(
             vault_name,
             "delete_note",
-            serde_json::json!({"path": path, "status": "deleted"}),
+            serde_json::json!({
+                "path": path,
+                "status": "deleted",
+                "force": force,
+                "on_backlinks": on_backlinks.unwrap_or("refuse"),
+                "link_sources_updated": updated_sources,
+            }),
         )
         .with_next_step("quick_health_check")
         .to_json()
