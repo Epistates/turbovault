@@ -47,6 +47,17 @@ pub struct MoveWithLinksResult {
 /// `impl Future`.
 pub type CasCollisionFlush = Arc<dyn Fn() -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
+/// turbovault-a0l (PERF-1): a per-vault cached substrate handle. `VaultRepo`
+/// wraps a `git2::Repository` which is `Send + !Sync` (libgit2 raw pointers),
+/// so it lives behind a `std::sync::Mutex`; the `Arc` lets the MCP server cache
+/// one handle per vault and hand a clone to each `GitFileTools`. Reusing it
+/// elides the ~140µs `Repository::open` (config re-parse + odb/strmap setup)
+/// that otherwise fired on every write. The `Mutex` serializes commit sections
+/// exactly where `CommitLocks` already does, so net concurrency is unchanged,
+/// and cross-process CAS stays safe (libgit2 re-reads refs under `lock_ref` —
+/// guarded by `cas::tests::reused_handle_detects_external_ref_advance_no_lost_update`).
+pub type CachedRepo = Arc<std::sync::Mutex<VaultRepo>>;
+
 /// Write-side tools backed by the git substrate.
 ///
 /// Holds the vault path + a shared `CommitLocks` registry rather than an
@@ -78,6 +89,13 @@ pub struct GitFileTools {
     /// `true` preserves pre-lri "always-write" behavior. Wired from
     /// `VaultGitConfig::include_ignored` by the MCP server.
     pub include_ignored: bool,
+    /// turbovault-a0l (PERF-1): optional cached per-vault `VaultRepo` handle.
+    /// When `Some`, `apply_txn` reuses it instead of opening a fresh repo per
+    /// call (saving the ~140µs `Repository::open`). The MCP server installs one
+    /// shared across all in-process writes to the vault. Bare `Self::new*`
+    /// leaves it `None`, falling back to per-call open (tests / migrations that
+    /// don't run the server-side cache).
+    pub cached_repo: Option<CachedRepo>,
 }
 
 impl GitFileTools {
@@ -96,6 +114,7 @@ impl GitFileTools {
             commit_hook: None,
             flush_on_collision: None,
             include_ignored: true,
+            cached_repo: None,
         }
     }
 
@@ -114,6 +133,7 @@ impl GitFileTools {
             commit_hook: Some(commit_hook),
             flush_on_collision: None,
             include_ignored: true,
+            cached_repo: None,
         }
     }
 
@@ -135,6 +155,7 @@ impl GitFileTools {
             commit_hook: Some(commit_hook),
             flush_on_collision: Some(flush_on_collision),
             include_ignored: true,
+            cached_repo: None,
         }
     }
 
@@ -144,6 +165,17 @@ impl GitFileTools {
     /// transaction if any path would be ignored. Default `true`.
     pub fn with_include_ignored(mut self, include_ignored: bool) -> Self {
         self.include_ignored = include_ignored;
+        self
+    }
+
+    /// turbovault-a0l (PERF-1): install a cached per-vault `VaultRepo` handle so
+    /// writes reuse it instead of opening a fresh repo per call. The handle must
+    /// already carry the shared `CommitLocks` + reindex `CommitHook` (the MCP
+    /// server opens it that way via `get_or_init_git_repo`). When set, `apply_txn`
+    /// ignores `commit_locks`/`commit_hook` on `self` — the cached handle owns
+    /// both.
+    pub fn with_cached_repo(mut self, cached_repo: CachedRepo) -> Self {
+        self.cached_repo = Some(cached_repo);
         self
     }
 
@@ -887,40 +919,50 @@ impl GitFileTools {
         // survives even though we open a fresh `VaultRepo` per call. The
         // optional commit hook is cloned in and installed on each per-call
         // open so the substrate fires it after a successful materialize.
-        // turbovault-bna: time the whole substrate op (open + commit machinery
-        // + materialize + collision flush) at the git chokepoint.
+        // turbovault-bna: time the whole substrate op (open-or-reuse + commit
+        // machinery + materialize) at the git chokepoint.
         let txn_start = std::time::Instant::now();
-        let path = self.vault_path.clone();
-        let locks = Arc::clone(&self.commit_locks);
-        let hook = self.commit_hook.clone();
         let txn = txn.clone();
         let include_ignored = self.include_ignored;
-        let result = tokio::task::spawn_blocking(move || -> Result<()> {
-            let repo = match hook {
-                Some(h) => VaultRepo::open_with_locks_and_hook(&path, locks, h),
-                None => VaultRepo::open_with_locks(&path, locks),
+        let result = match &self.cached_repo {
+            // turbovault-a0l (PERF-1): reuse the cached per-vault handle — no
+            // per-op `Repository::open`. Lock it on the blocking thread (the
+            // Mutex makes the `!Sync` `VaultRepo` workable and serializes the
+            // commit section, matching the CommitLocks boundary writes already
+            // pass through). Cross-process CAS stays safe (libgit2 re-reads refs
+            // under `lock_ref`).
+            Some(cached) => {
+                let cached = Arc::clone(cached);
+                tokio::task::spawn_blocking(move || -> Result<()> {
+                    let repo = cached
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    run_txn(&repo, &txn, include_ignored)
+                })
+                .await
+                .map_err(|e| Error::config_error(format!("git transaction task failed: {}", e)))?
             }
-            .map_err(git_err_to_core)?;
-            // turbovault-lri: gate the transaction on the gitignore matcher
-            // when `include_ignored = false`. Refuse loudly with a typed
-            // error so the caller knows their write was rejected by policy,
-            // NOT silently dropped. Default `true` skips this pass.
-            if !include_ignored {
-                for changed in txn.touched_paths() {
-                    if repo.is_path_ignored(&changed).map_err(git_err_to_core)? {
-                        return Err(Error::config_error(format!(
-                            "path '{}' is gitignored and include_ignored=false (turbovault-lri); enable include_ignored or add an exclusion in .gitignore",
-                            changed
-                        )));
+            // Fallback: open a fresh `VaultRepo` per call (the pre-PERF-1 path).
+            // Used by bare `Self::new*` — tests / migrations without the
+            // server-side cache. The `Arc<CommitLocks>` is shared across calls
+            // so cross-call commit-section serialization survives; the optional
+            // hook is installed on each per-call open.
+            None => {
+                let path = self.vault_path.clone();
+                let locks = Arc::clone(&self.commit_locks);
+                let hook = self.commit_hook.clone();
+                tokio::task::spawn_blocking(move || -> Result<()> {
+                    let repo = match hook {
+                        Some(h) => VaultRepo::open_with_locks_and_hook(&path, locks, h),
+                        None => VaultRepo::open_with_locks(&path, locks),
                     }
-                }
+                    .map_err(git_err_to_core)?;
+                    run_txn(&repo, &txn, include_ignored)
+                })
+                .await
+                .map_err(|e| Error::config_error(format!("git transaction task failed: {}", e)))?
             }
-            repo.apply_transaction(&txn)
-                .map(|_| ())
-                .map_err(git_err_to_core)
-        })
-        .await
-        .map_err(|e| Error::config_error(format!("git transaction task failed: {}", e)))?;
+        };
 
         // GWS.14b: on the reconsideration-domino abort, drain the reindex
         // queue BEFORE returning the error so the agent's re-read sees a
@@ -954,6 +996,26 @@ impl GitFileTools {
         metrics::counter!("turbovault_apply_transaction_total", "outcome" => outcome).increment(1);
         result
     }
+}
+
+/// Run one transaction against an already-open `repo`: the turbovault-lri
+/// gitignore gate (when `include_ignored == false`), then `apply_transaction`.
+/// Shared by `apply_txn`'s cached-handle and per-call-open paths so the policy
+/// + commit logic stays in one place.
+fn run_txn(repo: &VaultRepo, txn: &Transaction, include_ignored: bool) -> Result<()> {
+    if !include_ignored {
+        for changed in txn.touched_paths() {
+            if repo.is_path_ignored(&changed).map_err(git_err_to_core)? {
+                return Err(Error::config_error(format!(
+                    "path '{}' is gitignored and include_ignored=false (turbovault-lri); enable include_ignored or add an exclusion in .gitignore",
+                    changed
+                )));
+            }
+        }
+    }
+    repo.apply_transaction(txn)
+        .map(|_| ())
+        .map_err(git_err_to_core)
 }
 
 fn build_upsert_txn(
@@ -1099,6 +1161,21 @@ mod tests {
         (tmp, tools)
     }
 
+    /// turbovault-a0l: like `setup`, but installs a server-style CACHED
+    /// `VaultRepo` handle (the PERF-1 path) so writes reuse it instead of
+    /// opening a fresh repo per call.
+    async fn setup_cached() -> (TempDir, GitFileTools) {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
+        let locks = Arc::new(CommitLocks::new());
+        let repo = VaultRepo::open_with_locks(tmp.path(), Arc::clone(&locks)).unwrap();
+        let cached: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
+        let tools =
+            GitFileTools::new(manager, tmp.path().to_path_buf(), locks).with_cached_repo(cached);
+        (tmp, tools)
+    }
+
     fn head_oid(tools: &GitFileTools) -> Option<git2::Oid> {
         VaultRepo::open(&tools.vault_path).unwrap().head_oid()
     }
@@ -1130,6 +1207,51 @@ mod tests {
         tools.write_file("a.md", "v1").await.unwrap();
         tools.write_file("a.md", "v2").await.unwrap();
         assert_eq!(tools.read_file("a.md").await.unwrap(), "v2");
+    }
+
+    /// turbovault-a0l (PERF-1): the cached-handle path writes, reuses the
+    /// handle across calls (the cached repo sees its own prior commits, so the
+    /// parent chain advances correctly), and materializes — same observable
+    /// behavior as the per-call-open path.
+    #[tokio::test]
+    async fn cached_repo_path_writes_reuses_and_reads_back() {
+        let (tmp, tools) = setup_cached().await;
+        tools.write_file("a.md", "v1").await.unwrap();
+        tools.write_file("a.md", "v2").await.unwrap();
+        assert_eq!(tools.read_file("a.md").await.unwrap(), "v2");
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.md")).unwrap(),
+            "v2"
+        );
+        assert!(
+            head_oid(&tools).is_some(),
+            "commit landed via the cached handle"
+        );
+        // A second distinct file through the same handle also lands.
+        tools.write_file("b.md", "B").await.unwrap();
+        assert_eq!(tools.read_file("b.md").await.unwrap(), "B");
+    }
+
+    /// turbovault-a0l (PERF-1): the cached path must still enforce the blob-oid
+    /// CAS precondition — caching the handle changes nothing about correctness.
+    #[tokio::test]
+    async fn cached_repo_path_still_enforces_cas() {
+        let (_tmp, tools) = setup_cached().await;
+        tools.write_file("a.md", "v1").await.unwrap();
+        let bogus = VaultRepo::blob_oid_of(b"NOPE").unwrap();
+        let err = tools
+            .write_file_with_mode("a.md", "v2", WriteMode::Overwrite, Some(&bogus.to_string()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "got: {err:?}"
+        );
+        assert_eq!(
+            tools.read_file("a.md").await.unwrap(),
+            "v1",
+            "stale CAS did not apply"
+        );
     }
 
     #[tokio::test]

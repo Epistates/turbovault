@@ -12,7 +12,7 @@
 
 use crate::batch_tools::BatchTools;
 use crate::file_tools::{FileTools, NoteInfo, WriteMode};
-use crate::git_file_tools::{CasCollisionFlush, GitFileTools, MoveWithLinksResult};
+use crate::git_file_tools::{CachedRepo, CasCollisionFlush, GitFileTools, MoveWithLinksResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult};
@@ -100,6 +100,16 @@ impl WriteTools {
     pub fn with_include_ignored(self, include_ignored: bool) -> Self {
         match self {
             Self::Git(g) => Self::Git(g.with_include_ignored(include_ignored)),
+            other => other,
+        }
+    }
+
+    /// turbovault-a0l (PERF-1): install the cached per-vault `VaultRepo` handle
+    /// on the git arm so writes reuse it instead of opening per call. No-op on
+    /// the legacy arm (no substrate handle).
+    pub fn with_cached_repo(self, cached_repo: CachedRepo) -> Self {
+        match self {
+            Self::Git(g) => Self::Git(g.with_cached_repo(cached_repo)),
             other => other,
         }
     }
