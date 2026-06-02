@@ -847,17 +847,41 @@ impl GitFileTools {
                 transaction_id,
                 duration_ms: started.elapsed().as_millis() as u64,
             }),
-            Err(e) => Ok(BatchResult {
-                success: false,
-                executed: 0,
-                total,
-                failed_at: None,
-                changes: vec![],
-                errors: vec![e.to_string()],
-                records,
-                transaction_id,
-                duration_ms: started.elapsed().as_millis() as u64,
-            }),
+            Err(e) => {
+                let err_msg = e.to_string();
+                // turbovault-jk6 (TV-013): the per-op records were built
+                // `success: true` during the translate loop, but an apply-phase
+                // abort (a stale CAS precondition rolls the whole batch back)
+                // commits NOTHING (`executed: 0`). Re-mark every op not-applied
+                // so a caller iterating `records[]` cannot conclude any op
+                // committed. Point the error at the op whose path the failure
+                // names; the rest are rolled back.
+                for rec in records.iter_mut() {
+                    rec.success = false;
+                    rec.error = Some(
+                        if rec
+                            .affected_files
+                            .iter()
+                            .any(|f| err_msg.contains(f.as_str()))
+                        {
+                            err_msg.clone()
+                        } else {
+                            format!("rolled back (batch aborted): {err_msg}")
+                        },
+                    );
+                }
+                Ok(BatchResult {
+                    success: false,
+                    executed: 0,
+                    total,
+                    failed_at: None,
+                    changes: vec![],
+                    errors: vec![err_msg],
+                    records,
+                    transaction_id,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                })
+            }
         }
     }
 
@@ -1252,6 +1276,58 @@ mod tests {
             "v1",
             "stale CAS did not apply"
         );
+    }
+
+    /// turbovault-jk6 (TV-013): on an apply-phase abort (a stale CAS
+    /// precondition on one op rolls the whole batch back, `executed: 0`),
+    /// the per-op `records[]` must NOT report `success: true` — nothing
+    /// committed. The failing op carries the error; the rest are rolled back.
+    #[tokio::test]
+    async fn batch_abort_marks_records_not_applied() {
+        let (tmp, tools) = setup().await;
+        // Seed an existing file so a stale `expected_hash` forces a CAS abort.
+        tools.write_file("s1.md", "v1").await.unwrap();
+        let stale = VaultRepo::blob_oid_of(b"STALE").unwrap().to_string();
+        let ops = vec![
+            BatchOperation::CreateNote {
+                path: "ghost.md".to_string(),
+                content: "x".to_string(),
+                force: None,
+            },
+            BatchOperation::WriteNote {
+                path: "s1.md".to_string(),
+                content: "v2".to_string(),
+                expected_hash: Some(stale),
+            },
+        ];
+        let res = tools.batch_execute(ops).await.unwrap();
+
+        // Top-level: aborted, nothing executed.
+        assert!(!res.success, "batch must report failure");
+        assert_eq!(res.executed, 0, "nothing committed");
+        assert!(res.changes.is_empty());
+        assert!(!res.errors.is_empty(), "top-level error populated");
+
+        // Per-op records reflect the abort — the TV-013 bug was success:true here.
+        assert_eq!(res.records.len(), 2);
+        assert!(
+            res.records.iter().all(|r| !r.success),
+            "no op may claim success on an aborted batch: {:?}",
+            res.records
+        );
+        let s1 = res
+            .records
+            .iter()
+            .find(|r| r.affected_files.iter().any(|f| f == "s1.md"))
+            .expect("s1 op record present");
+        assert!(
+            s1.error.as_deref().is_some_and(|e| !e.is_empty()),
+            "failing op carries an error: {s1:?}"
+        );
+
+        // Disk: atomicity intact — ghost not created, s1 unchanged.
+        assert!(!tmp.path().join("ghost.md").exists(), "ghost not created");
+        assert_eq!(tools.read_file("s1.md").await.unwrap(), "v1");
     }
 
     #[tokio::test]
