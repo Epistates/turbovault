@@ -13,6 +13,11 @@
 //! - `move_file` — single rename.
 //! - `batch_5_creates` / `batch_50_creates` — atomic batch at two scales.
 //!
+//! `write_file_1kb`/`write_file_100kb`/`batch_*` also carry a `git_cached` arm
+//! (turbovault-a0l / PERF-1): the cached `VaultRepo` handle vs a per-op
+//! `Repository::open`. The `git` → `git_cached` delta isolates the PERF-1 win
+//! (~−16% on a single 1KB write; batch is open-amortized so the delta shrinks).
+//!
 //! Caveats:
 //! - Tempdir per iteration (high setup cost outside the measured region).
 //!   Use criterion's `iter_batched` to keep the measured closure tight.
@@ -26,7 +31,8 @@ use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use turbovault_batch::BatchOperation;
 use turbovault_core::config::{ServerConfig, VaultConfig};
-use turbovault_tools::{CommitLocks, WriteTools};
+use turbovault_git::VaultRepo;
+use turbovault_tools::{CachedRepo, CommitLocks, WriteTools};
 use turbovault_vault::VaultManager;
 
 fn rt() -> Runtime {
@@ -66,6 +72,22 @@ fn git_fixture() -> Fixture {
     Fixture { _tmp: tmp, tools }
 }
 
+/// turbovault-a0l (PERF-1): like `git_fixture`, but installs the server-style
+/// CACHED `VaultRepo` handle so writes reuse it instead of opening a fresh repo
+/// per op. The `git` vs `git_cached` delta is exactly the PERF-1 win.
+fn git_cached_fixture() -> Fixture {
+    let tmp = TempDir::new().unwrap();
+    let mut opts = git2::RepositoryInitOptions::new();
+    opts.initial_head("main");
+    git2::Repository::init_opts(tmp.path(), &opts).unwrap();
+    let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
+    let locks = Arc::new(CommitLocks::new());
+    let repo = VaultRepo::open_with_locks(tmp.path(), Arc::clone(&locks)).unwrap();
+    let cached: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
+    let tools = WriteTools::git(manager, tmp.path().to_path_buf(), locks).with_cached_repo(cached);
+    Fixture { _tmp: tmp, tools }
+}
+
 fn body(size: usize) -> String {
     "x".repeat(size)
 }
@@ -97,6 +119,17 @@ fn bench_write_file_1kb(c: &mut Criterion) {
             BatchSize::SmallInput,
         );
     });
+    g.bench_function("git_cached", |b| {
+        b.iter_batched(
+            git_cached_fixture,
+            |f| {
+                rt().block_on(async {
+                    f.tools.write_file("a.md", &content).await.unwrap();
+                });
+            },
+            BatchSize::SmallInput,
+        );
+    });
     g.finish();
 }
 
@@ -117,6 +150,17 @@ fn bench_write_file_100kb(c: &mut Criterion) {
     g.bench_function("git", |b| {
         b.iter_batched(
             git_fixture,
+            |f| {
+                rt().block_on(async {
+                    f.tools.write_file("a.md", &content).await.unwrap();
+                });
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("git_cached", |b| {
+        b.iter_batched(
+            git_cached_fixture,
             |f| {
                 rt().block_on(async {
                     f.tools.write_file("a.md", &content).await.unwrap();
@@ -293,6 +337,18 @@ fn bench_batch(c: &mut Criterion, name: &str, n: usize) {
     g.bench_function("git", |b| {
         b.iter_batched(
             git_fixture,
+            |f| {
+                rt().block_on(async {
+                    let res = f.tools.batch_execute(batch_ops(n)).await.unwrap();
+                    assert!(res.success);
+                });
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    g.bench_function("git_cached", |b| {
+        b.iter_batched(
+            git_cached_fixture,
             |f| {
                 rt().block_on(async {
                     let res = f.tools.batch_execute(batch_ops(n)).await.unwrap();
