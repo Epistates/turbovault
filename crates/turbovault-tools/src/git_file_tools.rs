@@ -2055,6 +2055,14 @@ mod tests {
             .write_file("b.md", "embed: ![[old]]\nsection: [[old#Header]]\n")
             .await
             .unwrap();
+        // turbovault-34p: a source where "old" is a SUBSTRING of unrelated words
+        // (golden, oldie) AND that also links to a page we must NOT touch
+        // ([[keeper]]). A substring/too-greedy rewrite would corrupt these; only
+        // the [[old]] wikilink may change.
+        tools
+            .write_file("c.md", "golden oldie [[old]] keep [[keeper]]\n")
+            .await
+            .unwrap();
         tools.manager.initialize().await.unwrap();
 
         let result = tools
@@ -2063,7 +2071,10 @@ mod tests {
             .unwrap();
         let mut updated = result.link_sources_updated.clone();
         updated.sort();
-        assert_eq!(updated, vec!["a.md".to_string(), "b.md".to_string()]);
+        assert_eq!(
+            updated,
+            vec!["a.md".to_string(), "b.md".to_string(), "c.md".to_string()]
+        );
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.md")).unwrap(),
             "see [[new|the page]]\n"
@@ -2071,6 +2082,11 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("b.md")).unwrap(),
             "embed: ![[new]]\nsection: [[new#Header]]\n"
+        );
+        // Only the [[old]] wikilink changed: "golden"/"oldie" + [[keeper]] intact.
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("c.md")).unwrap(),
+            "golden oldie [[new]] keep [[keeper]]\n"
         );
     }
 

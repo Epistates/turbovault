@@ -554,13 +554,27 @@ mod tests {
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
 
-        // Graph still has one node; the [[alpha]] edge no longer dangles.
+        // turbovault-34p: assert the modify actually CLEARED the stale [[alpha]]
+        // link and recorded [[beta]] — the original test asserted only
+        // node_count and would have passed even if the modify reindex did
+        // nothing at all.
         let lg = manager.link_graph();
         let graph = lg.read().await;
         assert_eq!(graph.node_count(), 1);
-        // The remove+re-add cycle replaces edges; the implementation is
-        // idempotent for repeated drains, which is what the contract
-        // requires.
+        let n_path = manager.vault_path().join("n.md");
+        let targets: Vec<String> = graph
+            .all_unresolved_links()
+            .get(&n_path)
+            .map(|links| links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default();
+        assert!(
+            targets.iter().any(|t| t == "beta"),
+            "[[beta]] must be recorded after the modify: {targets:?}"
+        );
+        assert!(
+            !targets.iter().any(|t| t == "alpha"),
+            "stale [[alpha]] must be cleared after the modify: {targets:?}"
+        );
     }
 
     // -------- turbovault-bou: HEAD-ref polling listener --------
