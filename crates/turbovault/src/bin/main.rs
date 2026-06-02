@@ -94,15 +94,6 @@ struct Args {
         action = clap::ArgAction::SetTrue
     )]
     require_read_only_tools: bool,
-
-    /// turbovault-bna: enable the Prometheus metrics exporter, binding
-    /// `127.0.0.1:<port>/metrics`. Off unless set. Exposes
-    /// `turbovault_apply_transaction_{seconds,total}` (substrate-op latency +
-    /// outcome). Requires JSON log format (stdio, or http/ws with
-    /// --output-format json) — the human-readable SimpleLogger path can't
-    /// carry the exporter.
-    #[arg(long, env = "TURBOVAULT_METRICS_PORT")]
-    metrics_port: Option<u16>,
 }
 
 #[tokio::main]
@@ -133,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // HTTP/WebSocket/TCP: Can use human-readable stdout logging
     let _observability_guard = if args.transport == "stdio" {
         // STDIO: Use TurboMCP's structured observability (JSON to stderr)
-        Some(telemetry_config(&args.profile, true, args.metrics_port).init()?)
+        Some(telemetry_config(&args.profile, true).init()?)
     } else {
         // HTTP/WebSocket/TCP: Use simple logger with configurable format
         use simple_logger::SimpleLogger;
@@ -141,19 +132,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match output_format {
             OutputFormat::Json => {
                 // JSON format for programmatic parsing (HTTP/WS can use stdout)
-                Some(telemetry_config(&args.profile, false, args.metrics_port).init()?)
+                Some(telemetry_config(&args.profile, false).init()?)
             }
             OutputFormat::Human | OutputFormat::Text => {
-                // turbovault-bna: the human/text path uses SimpleLogger, which
-                // can't carry the Prometheus exporter — warn loudly rather than
-                // silently dropping the operator's --metrics-port request.
-                if let Some(port) = args.metrics_port {
-                    log::warn!(
-                        "--metrics-port {} ignored: the {:?} output format uses SimpleLogger, which can't host the Prometheus exporter. Use --output-format json (or stdio transport) for metrics.",
-                        port,
-                        output_format
-                    );
-                }
                 // Human-readable format for terminal/stdout.
                 // turbovault-foy: honor RUST_LOG for SimpleLogger too; the
                 // env_logger-style filter strings (e.g. "info,turbo_vault=debug")
@@ -179,16 +160,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.transport,
         output_format
     );
-    // turbovault-bna: confirm the metrics endpoint when enabled (the exporter
-    // is wired into the observability guard above for the JSON-log paths).
-    if let Some(port) = args.metrics_port
-        && (args.transport == "stdio" || matches!(output_format, OutputFormat::Json))
-    {
-        log::info!(
-            "Prometheus metrics exporter enabled on http://127.0.0.1:{}/metrics",
-            port
-        );
-    }
 
     // Create vault-agnostic server instance (no vault required at startup)
     let server =
@@ -612,28 +583,17 @@ async fn shutdown_signal() {
     }
 }
 
-/// turbovault-bna: build the observability `TelemetryConfig`, optionally
-/// enabling the Prometheus metrics exporter (binds `127.0.0.1:<port>/metrics`)
-/// when `metrics_port` is `Some`. The exporter installs a `metrics`-crate
-/// recorder; the substrate emits `turbovault_apply_transaction_*` at the
-/// GitFileTools chokepoint. `init()` fails loudly if the port can't bind.
-fn telemetry_config(
-    profile: &str,
-    stderr_output: bool,
-    metrics_port: Option<u16>,
-) -> TelemetryConfig {
-    let mut builder = TelemetryConfig::builder()
+/// Build the observability `TelemetryConfig` — structured JSON logging to
+/// stderr (stdio) or stdout (http/ws json). `init()` installs the global
+/// logger and returns its guard.
+fn telemetry_config(profile: &str, stderr_output: bool) -> TelemetryConfig {
+    TelemetryConfig::builder()
         .service_name("turbovault")
         .service_version(env!("CARGO_PKG_VERSION"))
         .log_level(resolve_log_level(profile))
         .json_logs(true)
-        .stderr_output(stderr_output);
-    if let Some(port) = metrics_port {
-        builder = builder
-            .prometheus_port(port)
-            .prometheus_bind_addr(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
-    }
-    builder.build()
+        .stderr_output(stderr_output)
+        .build()
 }
 
 /// turbovault-foy: resolve the log-level filter string. Priority:

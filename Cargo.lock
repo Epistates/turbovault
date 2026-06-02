@@ -5363,7 +5363,6 @@ dependencies = [
  "futures",
  "git2",
  "log",
- "metrics",
  "regex",
  "serde",
  "serde_json",
