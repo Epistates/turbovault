@@ -2127,6 +2127,63 @@ mod tests {
         );
     }
 
+    /// Advance the branch ref + change `file`'s blob via a bare git2 commit,
+    /// WITHOUT touching the working tree — simulates another process committing.
+    fn external_commit_change(repo_path: &StdPath, file: &str, content: &str) {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        let head = repo.head().unwrap();
+        let branch = head.shorthand().unwrap().to_string();
+        let parent = head.peel_to_commit().unwrap();
+        let mut tb = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
+        let blob = repo.blob(content.as_bytes()).unwrap();
+        tb.insert(file, blob, 0o100644).unwrap();
+        let tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        let sig = git2::Signature::now("Ext", "ext@x").unwrap();
+        repo.commit(
+            Some(&format!("refs/heads/{branch}")),
+            &sig,
+            &sig,
+            "external",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    }
+
+    /// turbovault-xw4: the CACHED `VaultRepo` handle (PERF-1) must still detect
+    /// a SEPARATE-PROCESS ref advance and reject a stale-precondition write — no
+    /// lost update. Prior coverage proved this for a raw handle (cas.rs) but not
+    /// at the cached GitFileTools seam, which is the exact safety question PERF-1
+    /// raised.
+    #[tokio::test]
+    async fn cached_handle_detects_external_ref_advance() {
+        let (tmp, tools) = setup_cached().await;
+        tools.write_file("a.md", "v1").await.unwrap();
+        let v1 = VaultRepo::blob_oid_of(b"v1").unwrap().to_string();
+
+        // Another process advances the ref + rewrites a.md's blob.
+        external_commit_change(tmp.path(), "a.md", "EXTERNAL");
+
+        // The cached handle must re-read the ref under lock and REJECT the write
+        // carrying the now-stale precondition.
+        let err = tools
+            .write_file_with_mode("a.md", "v2", WriteMode::Overwrite, Some(&v1))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "stale precondition must surface ConcurrencyError, got: {err:?}"
+        );
+        // The external commit is still HEAD — our stale write did not clobber it.
+        let repo = git2::Repository::open(tmp.path()).unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(
+            head.message().unwrap(),
+            "external",
+            "external commit survived; no lost update"
+        );
+    }
+
     /// turbovault-oz6: atomic delete + wrap-as-stale across multiple
     /// linkers. One commit; target gone; sources strikethrough-wrapped.
     #[tokio::test]

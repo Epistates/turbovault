@@ -790,6 +790,66 @@ mod tests {
         );
     }
 
+    /// turbovault-xw4: a move-shaped multi-file txn (remove old + new blob + a
+    /// linker rewrite) must abort ATOMICALLY when ANY participant's precondition
+    /// is stale — here the LINKER (not the source). Prior coverage only staled
+    /// the source. Zero files change.
+    #[test]
+    fn multi_file_move_aborts_atomically_when_a_linker_is_stale() {
+        let (tmp, vr) = open_unborn();
+        vr.apply_transaction(
+            &Transaction::new("seed")
+                .create("old.md", "# Old")
+                .create("linker.md", "[[old]]"),
+        )
+        .unwrap();
+        let old_blob = crate::VaultRepo::blob_oid_of(b"# Old").unwrap();
+        let stale = crate::VaultRepo::blob_oid_of(b"DIFFERENT").unwrap();
+        let head_before = vr.head_oid().unwrap();
+
+        let txn = Transaction::new("move")
+            .remove("old.md")
+            .upsert("new.md", b"# Old".to_vec())
+            .expect_blob("old.md", old_blob)
+            .upsert("linker.md", b"[[new]]".to_vec())
+            .expect_blob("linker.md", stale); // stale linker precondition
+        assert!(
+            vr.apply_transaction(&txn).is_err(),
+            "a stale linker must abort the whole move"
+        );
+        assert_eq!(vr.head_oid(), Some(head_before), "nothing committed");
+        assert_eq!(read_wt(&vr, "old.md"), "# Old", "old.md untouched");
+        assert!(
+            !tmp.path().join("new.md").exists(),
+            "new.md must not have been created"
+        );
+    }
+
+    /// turbovault-xw4 / PERF-2: identity-tree elision is per-TREE, not
+    /// per-change. A txn mixing a no-op sub-change (rewrite a.md with identical
+    /// bytes) with a REAL change (create b.md) must still commit — never be
+    /// elided as a no-op.
+    #[test]
+    fn batch_commits_real_change_despite_an_identity_subchange() {
+        let (_tmp, vr) = open_unborn();
+        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+            .unwrap();
+        let head_before = vr.head_oid().unwrap();
+        let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
+
+        let res = vr
+            .apply_transaction(
+                &Transaction::new("mixed")
+                    .update("a.md", "v1", v1) // identity for a.md
+                    .create("b.md", "B"), // real change
+            )
+            .unwrap();
+        assert!(!res.no_op, "a txn carrying a real change is not a no-op");
+        assert_ne!(vr.head_oid(), Some(head_before), "HEAD advanced");
+        assert_eq!(read_wt(&vr, "b.md"), "B");
+        assert_eq!(read_wt(&vr, "a.md"), "v1");
+    }
+
     // -------- turbovault-4nc: identity-tree no-op short-circuit --------
 
     #[test]

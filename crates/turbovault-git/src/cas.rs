@@ -300,4 +300,53 @@ mod tests {
             "loud exhaustion error: {err}"
         );
     }
+
+    /// turbovault-xw4: real-thread contention. N threads each open their OWN
+    /// VaultRepo (sharing the CommitLocks registry) and commit a DISTINCT file
+    /// concurrently. Every commit must land — the per-worktree commit lock +
+    /// update-ref CAS serialize them with NO lost update. The whole "no lost
+    /// update under contention" thesis was previously asserted only via
+    /// sequential simulated races; this drives genuine threads.
+    #[test]
+    fn parallel_apply_transaction_lands_every_commit() {
+        let (tmp, vr0) = open_unborn();
+        vr0.apply_transaction(&crate::Transaction::new("seed").create("seed.md", "0"))
+            .unwrap();
+        let path = tmp.path().to_path_buf();
+        let locks = vr0.commit_locks();
+        drop(vr0);
+
+        let n = 8u32;
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let p = path.clone();
+                let l = std::sync::Arc::clone(&locks);
+                std::thread::spawn(move || {
+                    let vr = crate::VaultRepo::open_with_locks(&p, l).unwrap();
+                    vr.apply_transaction(
+                        &crate::Transaction::new("c").create(format!("f{i}.md"), "x"),
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Every file + the seed is in HEAD's tree — nothing lost to a race.
+        let vr = crate::VaultRepo::open_with_locks(&path, locks).unwrap();
+        let tree = vr
+            .git()
+            .find_commit(vr.head_oid().unwrap())
+            .unwrap()
+            .tree_id();
+        assert!(vr.blob_oid_at(tree, "seed.md").unwrap().is_some());
+        for i in 0..n {
+            assert!(
+                vr.blob_oid_at(tree, &format!("f{i}.md")).unwrap().is_some(),
+                "f{i}.md must have landed"
+            );
+        }
+    }
 }
