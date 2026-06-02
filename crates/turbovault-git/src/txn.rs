@@ -698,6 +698,98 @@ mod tests {
         assert!(r.is_ok());
     }
 
+    // -------- turbovault-uag: mutation-testing survivors (cargo-mutants) --------
+
+    /// `touched_paths` must list EVERY changed path (a surviving mutant replaced
+    /// it with `vec![]` / `vec![""]` — the gitignore-gate + reindex layers rely
+    /// on this).
+    #[test]
+    fn transaction_touched_paths_lists_every_changed_path() {
+        let v = crate::VaultRepo::blob_oid_of(b"old").unwrap();
+        let txn = Transaction::new("c")
+            .create("a.md", "a")
+            .update("b.md", "b", v)
+            .remove("c.md");
+        let mut p = txn.touched_paths();
+        p.sort();
+        assert_eq!(
+            p,
+            vec!["a.md".to_string(), "b.md".to_string(), "c.md".to_string()]
+        );
+    }
+
+    /// The raw escape hatches `with_change` / `with_precondition` must actually
+    /// register the change / precondition (surviving mutants dropped them).
+    #[test]
+    fn raw_with_change_and_with_precondition_take_effect() {
+        let (_tmp, vr) = open_unborn();
+        // with_change(Upsert) lands the file.
+        let txn = Transaction::new("raw").with_change(TreeChange::Upsert {
+            path: "x.md".into(),
+            content: b"hi".to_vec(),
+        });
+        assert_eq!(txn.touched_paths(), vec!["x.md".to_string()]);
+        vr.apply_transaction(&txn).unwrap();
+        assert_eq!(read_wt(&vr, "x.md"), "hi");
+        // with_precondition(expect_absent) on an EXISTING path must abort — and
+        // specifically on the PRECONDITION, not because a dropped builder left an
+        // empty txn (the txn carries a real upsert, so an empty-txn error would
+        // mean with_precondition discarded the chain).
+        let blocked = Transaction::new("b")
+            .upsert("y.md", b"y")
+            .with_precondition(Precondition::expect_absent("x.md"));
+        assert_eq!(
+            blocked.touched_paths(),
+            vec!["y.md".to_string()],
+            "with_precondition must preserve the builder chain"
+        );
+        let err = vr.apply_transaction(&blocked).unwrap_err().to_string();
+        assert!(
+            !err.contains("empty"),
+            "must abort on the precondition, not because the txn was emptied: {err}"
+        );
+    }
+
+    /// `git_commit_first_parent` must resolve the real parent chain (a survivor
+    /// replaced it with `Ok(None)`); the reindex drainer depends on it.
+    #[test]
+    fn git_commit_first_parent_resolves_chain() {
+        let (_tmp, vr) = open_unborn();
+        let r1 = vr
+            .apply_transaction(&Transaction::new("c1").create("a.md", "1"))
+            .unwrap();
+        let v1 = crate::VaultRepo::blob_oid_of(b"1").unwrap();
+        let r2 = vr
+            .apply_transaction(&Transaction::new("c2").update("a.md", "2", v1))
+            .unwrap();
+        assert_eq!(
+            vr.git_commit_first_parent(r2.commit).unwrap(),
+            Some(r1.commit),
+            "c2's first parent is c1"
+        );
+        assert_eq!(
+            vr.git_commit_first_parent(r1.commit).unwrap(),
+            None,
+            "the root commit has no parent"
+        );
+    }
+
+    /// `is_path_ignored` must honor `.gitignore` (survivors hard-coded
+    /// `Ok(false)` / `Ok(true)`); the substrate's include_ignored gate uses it.
+    #[test]
+    fn is_path_ignored_honors_gitignore() {
+        let (tmp, vr) = open_unborn();
+        std::fs::write(tmp.path().join(".gitignore"), "*.tmp\n").unwrap();
+        assert!(
+            vr.is_path_ignored("scratch.tmp").unwrap(),
+            "*.tmp must be ignored"
+        );
+        assert!(
+            !vr.is_path_ignored("note.md").unwrap(),
+            "note.md must not be ignored"
+        );
+    }
+
     // -------- turbovault-4nc: identity-tree no-op short-circuit --------
 
     #[test]
