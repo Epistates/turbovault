@@ -18,6 +18,7 @@ include = [
   "benches/",
   "resources/",
   "Cargo.toml",
+  "build.rs",
   "README.md",
 ]
 

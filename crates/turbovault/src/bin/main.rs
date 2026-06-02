@@ -13,8 +13,38 @@ use turbovault_core::cache::VaultCache;
 use turbovault_tools::OutputFormat;
 
 /// TurboVault Server - AI-powered vault management
+/// `--version` string. On debug builds it appends the build's short git SHA
+/// (best-effort, captured by `build.rs`) so a dev/dogfood binary self-identifies
+/// which commit it was built from; release builds show the bare crate version.
+#[cfg(debug_assertions)]
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("TURBOVAULT_GIT_SHA"));
+#[cfg(not(debug_assertions))]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(all(test, debug_assertions))]
+mod version_tests {
+    #[test]
+    fn debug_version_appends_git_sha() {
+        assert!(
+            super::VERSION.starts_with(env!("CARGO_PKG_VERSION")),
+            "VERSION starts with the crate version: {}",
+            super::VERSION
+        );
+        assert!(
+            super::VERSION.contains('+'),
+            "debug VERSION appends +<sha>: {}",
+            super::VERSION
+        );
+        assert!(
+            !super::VERSION.ends_with('+'),
+            "a sha must follow the +: {}",
+            super::VERSION
+        );
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 struct Args {
     /// Path to the Obsidian vault directory
     #[arg(short, long, env = "OBSIDIAN_VAULT_PATH")]
