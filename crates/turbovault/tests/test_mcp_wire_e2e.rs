@@ -222,8 +222,9 @@ async fn wire_write_note_updates_link_graph() {
 
 /// move_note + update_backlinks is one atomic commit; afterwards the inbound
 /// linker is rewritten to the new slug and the backlink follows. Regression
-/// guard for turbovault-9zr: the post-move graph reflects the rename (the move
-/// commit adds renamed.md and rewrites linker.md -> [[renamed]] in one commit).
+/// guard for turbovault-78w: move_note self-flushes its reindex queue before
+/// resolving backlinks, so a pending reindex no longer causes a silent skip —
+/// no manual pre-flush is needed here (it was required before the fix).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn wire_move_note_rewrites_links() {
@@ -242,19 +243,19 @@ async fn wire_move_note_rewrites_links() {
     )
     .await;
 
-    // Drain the reindex queue (a derived read flushes it) so the link graph
-    // knows linker->old before move_note computes the inbound links to rewrite.
-    // move_note reads the graph at write time and does NOT flush its own queue
-    // (a separate sharp edge, not 9zr); without this drain the rewrite finds
-    // nothing to rewrite.
-    call(&client, "get_backlinks", json!({ "path": "old.md" })).await;
-
-    call(
+    // No manual drain: move_note flushes its own reindex queue (turbovault-78w)
+    // so it sees linker->old and rewrites it even with the writes' reindex still
+    // pending. Before the fix this silently found nothing to rewrite.
+    let moved = call(
         &client,
         "move_note",
         json!({ "from": "old.md", "to": "renamed.md", "update_backlinks": true }),
     )
     .await;
+    assert!(
+        data_mentions(&moved, "linker"),
+        "move_note must report linker.md in link_sources_updated: {moved}"
+    );
 
     let linker = call(&client, "read_note", json!({ "path": "linker.md" })).await;
     let content = linker["data"]["content"]

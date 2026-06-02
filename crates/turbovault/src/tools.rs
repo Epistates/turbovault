@@ -1805,6 +1805,15 @@ impl ObsidianMcpServer {
         let update_backlinks = update_backlinks.unwrap_or(true);
 
         let updated_sources: Vec<String> = if update_backlinks {
+            // turbovault-78w (TV-002): drain the reindex queue BEFORE resolving
+            // backlinks. move_file_with_link_updates reads the in-memory link
+            // graph directly; with a pending reindex it sees a STALE graph,
+            // silently misses inbound links (no edge yet), and omits them from
+            // the move commit — leaving dangling links AND an incoherent
+            // post-move graph. This is the same derived-state drain the read
+            // tools perform via get_vault_pair_with_reindex.
+            self.flush_reindex_for_active_vault().await?;
+
             // turbovault-lqr: atomic rename + inbound-wikilink rewrite.
             // Returns the list of source files whose links were rewritten.
             let result = tools

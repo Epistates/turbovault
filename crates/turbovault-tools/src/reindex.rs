@@ -400,6 +400,106 @@ mod tests {
         assert_eq!(graph.edge_count(), 1, "one.md -> two.md edge should exist");
     }
 
+    /// turbovault-78w (TV-002 fail-case 1): a linker authored BEFORE its target
+    /// in a SEPARATE commit must end with a resolved backlink edge once the
+    /// target lands and drains — the 9zr promotion must fire across commits,
+    /// not just intra-commit. This is what move_note's graph resolution relies
+    /// on (an inbound link that was unresolved at author time must be a real
+    /// edge by move time).
+    #[tokio::test]
+    async fn drain_promotes_link_authored_before_target_across_commits() {
+        let (_tmp, manager, repo, queue) = setup();
+
+        // Commit 1: linker references [[target]] — target does not exist yet.
+        repo.apply_transaction(&Transaction::new("c1").create("linker.md", "see [[target]]\n"))
+            .unwrap();
+        queue.drain_through(&repo, &manager).await.unwrap();
+        {
+            let lg = manager.link_graph();
+            let graph = lg.read().await;
+            assert_eq!(
+                graph.unresolved_link_count(),
+                1,
+                "[[target]] parked unresolved while target absent"
+            );
+            assert_eq!(graph.edge_count(), 0);
+        }
+
+        // Commit 2: target.md created in a SEPARATE commit.
+        repo.apply_transaction(&Transaction::new("c2").create("target.md", "# Target\n"))
+            .unwrap();
+        queue.drain_through(&repo, &manager).await.unwrap();
+
+        let lg = manager.link_graph();
+        let graph = lg.read().await;
+        assert_eq!(graph.node_count(), 2, "both files in the graph");
+        assert_eq!(
+            graph.unresolved_link_count(),
+            0,
+            "link promoted once target landed in a later commit"
+        );
+        assert_eq!(
+            graph.edge_count(),
+            1,
+            "linker -> target edge after promotion"
+        );
+        let bl = graph
+            .backlinks(&manager.vault_path().join("target.md"))
+            .unwrap();
+        assert_eq!(bl.len(), 1, "backlinks(target) must see the linker");
+    }
+
+    /// turbovault-78w (TV-002 fail-case 2): after a move (delete old + add new
+    /// + rewrite the linker) drains, the graph must reflect the new path —
+    /// backlinks(renamed) sees the linker, forward_links(linker) sees renamed,
+    /// the old node is gone.
+    #[tokio::test]
+    async fn drain_move_keeps_backlinks_coherent() {
+        let (_tmp, manager, repo, queue) = setup();
+
+        // Establish a resolved linker -> target edge.
+        repo.apply_transaction(
+            &Transaction::new("c1")
+                .create("linker.md", "see [[target]]\n")
+                .create("target.md", "# T\n"),
+        )
+        .unwrap();
+        queue.drain_through(&repo, &manager).await.unwrap();
+        assert_eq!(
+            manager.link_graph().read().await.edge_count(),
+            1,
+            "precondition: linker -> target edge exists"
+        );
+
+        // Move target.md -> target-renamed.md and rewrite the linker, one commit
+        // (the move_file_with_link_updates shape).
+        repo.apply_transaction(
+            &Transaction::new("move")
+                .remove("target.md")
+                .upsert("target-renamed.md", b"# T\n".to_vec())
+                .upsert("linker.md", b"see [[target-renamed]]\n".to_vec()),
+        )
+        .unwrap();
+        queue.drain_through(&repo, &manager).await.unwrap();
+
+        let lg = manager.link_graph();
+        let graph = lg.read().await;
+        assert_eq!(graph.node_count(), 2, "linker + renamed target");
+        assert_eq!(graph.edge_count(), 1, "linker -> renamed edge");
+        let bl = graph
+            .backlinks(&manager.vault_path().join("target-renamed.md"))
+            .unwrap();
+        assert_eq!(bl.len(), 1, "backlinks(renamed) sees the linker");
+        let fl = graph
+            .forward_links(&manager.vault_path().join("linker.md"))
+            .unwrap();
+        assert_eq!(fl.len(), 1, "forward_links(linker) sees renamed");
+        let old = graph
+            .backlinks(&manager.vault_path().join("target.md"))
+            .unwrap();
+        assert!(old.is_empty(), "old target node gone");
+    }
+
     #[tokio::test]
     async fn drain_advances_cursor_to_latest_applied_commit() {
         let (_tmp, manager, repo, queue) = setup();
