@@ -81,6 +81,23 @@ clippy-fix:
     cargo clippy --fix --allow-dirty
 
 # =============================================================================
+# MUTATION TESTING (cargo-mutants — test EFFECTIVENESS, not just coverage)
+# =============================================================================
+
+# Mutation-test the substrate crate (highest-value, fastest signal). A
+# surviving mutant = code a test runs but does NOT actually assert on.
+mutants:
+    cargo mutants -p turbovault-git
+
+# Mutation-test one crate, e.g. `just mutants-crate turbovault-tools`
+mutants-crate CRATE:
+    cargo mutants -p {{ CRATE }}
+
+# Mutation-test the whole workspace (SLOW — many minutes).
+mutants-all:
+    cargo mutants --workspace
+
+# =============================================================================
 # DOCUMENTATION
 # =============================================================================
 

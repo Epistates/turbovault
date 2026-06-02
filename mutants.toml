@@ -1,0 +1,21 @@
+# cargo-mutants config — mutation testing (test EFFECTIVENESS, not just coverage).
+# A surviving mutant = code a test executes but does not actually assert on.
+# Run via `just mutants` (substrate) / `just mutants-crate <c>` / `just mutants-all`.
+# Docs: https://mutants.rs/
+
+# Several suites spawn the server binary (wire-e2e) or do real git I/O; give
+# slow tests headroom so a mutant is judged "caught", not "timed out".
+timeout_multiplier = 3.0
+
+# Don't mutate non-logic surfaces.
+exclude_globs = [
+    "**/benches/**",
+    "**/build.rs",
+    "crates/turbovault/src/bin/main.rs",
+]
+
+# Skip pure-boilerplate impls that carry no asserted logic.
+exclude_re = [
+    "impl Debug",
+    "impl Display",
+]
