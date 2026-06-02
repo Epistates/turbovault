@@ -552,6 +552,52 @@ mod tests {
         assert_eq!(wt_read(&vr, "c.md"), "concurrent");
     }
 
+    /// turbovault-uag: a CONFLICTING same-path edit on main vs. the fanout
+    /// worktree must abort the merge-back loudly and leave main untouched —
+    /// never a silent 3-way text merge. Every prior merge test used disjoint
+    /// paths, so this conflict branch was unverified.
+    #[test]
+    fn merge_commit_aborts_on_conflicting_same_path_edit() {
+        let (_m, scratch, vr) = open_born();
+        // Seed a shared file on main so both sides edit the SAME path.
+        vr.apply_transaction(&Transaction::new("seed").create("shared.md", "base"))
+            .unwrap();
+        let base = crate::VaultRepo::blob_oid_of(b"base").unwrap();
+
+        let wt_path = scratch_path(&scratch, "conflict");
+        let fanout = vr.begin_fanout("conflict", &wt_path).unwrap();
+        // wip edits shared.md one way...
+        fanout
+            .worktree_repo()
+            .apply_transaction(&Transaction::new("wip").update("shared.md", "wip-side", base))
+            .unwrap();
+        // ...main edits the SAME path a different way (concurrent).
+        vr.apply_transaction(&Transaction::new("concurrent").update(
+            "shared.md",
+            "main-side",
+            base,
+        ))
+        .unwrap();
+        let main_after_concurrent = vr.head_oid().unwrap();
+
+        // Merge-back must ABORT — no silent text merge.
+        let res = fanout.commit_fanout(MergeStrategy::MergeCommit);
+        assert!(
+            res.is_err(),
+            "conflicting same-path edit must abort: {res:?}"
+        );
+        assert!(
+            res.unwrap_err().to_string().contains("conflict"),
+            "loud conflict error"
+        );
+        // Main never advanced past the concurrent edit (no merge landed).
+        assert_eq!(
+            vr.head_oid(),
+            Some(main_after_concurrent),
+            "main untouched by the aborted merge"
+        );
+    }
+
     #[test]
     fn abandon_leaves_main_untouched_and_cleans_up() {
         let (_m, scratch, vr) = open_born();

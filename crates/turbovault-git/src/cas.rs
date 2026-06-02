@@ -266,4 +266,38 @@ mod tests {
         );
         assert!(vr.blob_oid_at(head_tree, "mine.md").unwrap().is_some());
     }
+
+    /// turbovault-uag: relentless contention exhausts the retry budget and
+    /// surfaces a loud error (the live-lock guard) rather than spinning forever
+    /// or silently giving up. Every attempt loses the CAS because a concurrent
+    /// writer advances the ref first.
+    #[test]
+    fn commit_with_retry_exhausts_under_relentless_contention() {
+        let (_tmp, vr) = open_unborn();
+        let c0 = build_on(&vr, None, "a.md", "a");
+        vr.cas_ref(MAIN, None, c0).unwrap();
+
+        let calls = Cell::new(0u32);
+        let err = vr
+            .commit_with_retry_n(MAIN, 2, |tip| {
+                calls.set(calls.get() + 1);
+                let tip = tip.unwrap();
+                // Advance the ref behind our back BEFORE our CAS, every attempt.
+                let concurrent = build_on(&vr, Some(tip), &format!("c{}.md", calls.get()), "x");
+                vr.cas_ref(MAIN, Some(tip), concurrent).unwrap();
+                Ok(Some(build_on(&vr, Some(tip), "mine.md", "m")))
+            })
+            .unwrap_err();
+
+        // max_retries=2 -> the loop runs 0..=2 = 3 attempts, all lose.
+        assert_eq!(
+            calls.get(),
+            3,
+            "builder runs max_retries+1 times then gives up"
+        );
+        assert!(
+            err.to_string().contains("exhausted") && err.to_string().contains("contention"),
+            "loud exhaustion error: {err}"
+        );
+    }
 }
