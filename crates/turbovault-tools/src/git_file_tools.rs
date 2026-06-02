@@ -2090,6 +2090,43 @@ mod tests {
         );
     }
 
+    /// turbovault-uag: git-backend Prepend into a note WITH frontmatter inserts
+    /// AFTER the `---` block (never above it); Append goes to the end. The legacy
+    /// `test_file_tools` suite covered only the legacy path; the git-backend
+    /// resolve_write_content + find_frontmatter_end path was uncovered.
+    #[tokio::test]
+    async fn git_prepend_after_frontmatter_and_append_at_end() {
+        let (tmp, tools) = setup().await;
+        tools
+            .write_file("n.md", "---\ntitle: T\n---\n\nbody line\n")
+            .await
+            .unwrap();
+
+        // Prepend lands below the closing `---`, above the body.
+        tools
+            .write_file_with_mode("n.md", "PRE", WriteMode::Prepend, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            tools.read_file("n.md").await.unwrap(),
+            "---\ntitle: T\n---\nPRE\nbody line\n",
+            "prepend must not push above the frontmatter"
+        );
+
+        // Append lands at the very end.
+        tools
+            .write_file_with_mode("n.md", "POST", WriteMode::Append, None)
+            .await
+            .unwrap();
+        let after = tools.read_file("n.md").await.unwrap();
+        assert_eq!(after, "---\ntitle: T\n---\nPRE\nbody line\n\nPOST");
+        // Working tree == HEAD.
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("n.md")).unwrap(),
+            after
+        );
+    }
+
     /// turbovault-oz6: atomic delete + wrap-as-stale across multiple
     /// linkers. One commit; target gone; sources strikethrough-wrapped.
     #[tokio::test]
