@@ -511,3 +511,116 @@ async fn wire_fanout_begin_write_abandon_discards() {
         "ghost.md must NOT reach the base vault after abandon_transaction"
     );
 }
+
+/// turbovault-ct1: batch_execute atomic ABORT over the wire — a stale per-op CAS
+/// precondition rolls the WHOLE batch back, zero files change. Previously only
+/// the in-process e2e covered this; never the MCP wire shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn wire_batch_execute_stale_cas_aborts_atomically() {
+    let (vault, _cfg, client) = setup_wire_vault().await;
+    call(
+        &client,
+        "write_note",
+        json!({ "path": "s1.md", "content": "v1\n" }),
+    )
+    .await;
+
+    // op[1] carries a bogus (stale) expected_hash -> the whole batch must abort.
+    let _resp = call(
+        &client,
+        "batch_execute",
+        json!({
+            "operations": [
+                { "type": "CreateNote", "path": "ghost.md", "content": "x\n" },
+                { "type": "WriteNote", "path": "s1.md", "content": "v2\n",
+                  "expected_hash": "0000000000000000000000000000000000000001" }
+            ]
+        }),
+    )
+    .await;
+
+    // Atomicity over the wire: zero files change.
+    assert!(
+        !vault.path().join("ghost.md").exists(),
+        "ghost.md must not be created on a stale-CAS abort"
+    );
+    assert_eq!(
+        std::fs::read_to_string(vault.path().join("s1.md")).unwrap(),
+        "v1\n",
+        "s1.md must be unchanged"
+    );
+}
+
+/// turbovault-ct1: write_note with a STALE expected_hash surfaces a loud
+/// conflict over the wire and leaves the file untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn wire_write_note_stale_expected_hash_conflicts() {
+    let (vault, _cfg, client) = setup_wire_vault().await;
+    call(
+        &client,
+        "write_note",
+        json!({ "path": "a.md", "content": "v1\n" }),
+    )
+    .await;
+
+    let result = call_raw(
+        &client,
+        "write_note",
+        json!({ "path": "a.md", "content": "v2\n",
+                "expected_hash": "0000000000000000000000000000000000000001" }),
+    )
+    .await;
+    let errored = match &result {
+        Err(_) => true,
+        Ok(r) => r.is_error == Some(true),
+    };
+    assert!(
+        errored,
+        "a stale expected_hash must surface a loud conflict: {result:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(vault.path().join("a.md")).unwrap(),
+        "v1\n",
+        "the file must be untouched after a rejected stale write"
+    );
+}
+
+/// turbovault-uag: audit_log (and the rollback/audit family) loudly REFUSE on a
+/// git-backend vault — the deliberate "refuse, don't return a silent empty
+/// audit" contract, previously untested.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn wire_audit_log_refused_on_git_backend() {
+    let (_vault, _cfg, client) = setup_wire_vault().await;
+    let result = call_raw(&client, "audit_log", json!({})).await;
+    let errored = match &result {
+        Err(_) => true,
+        Ok(r) => r.is_error == Some(true),
+    };
+    assert!(
+        errored,
+        "audit_log must refuse on a git-backend vault: {result:?}"
+    );
+}
+
+/// turbovault-uag: rollback_preview / rollback_note also refuse on a git-backend
+/// vault (same refuse-don't-silently-empty contract as audit_log). The refusal
+/// fires before any arg use, so a dummy operation_id reaches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn wire_rollback_refused_on_git_backend() {
+    let (_vault, _cfg, client) = setup_wire_vault().await;
+    for tool in ["rollback_preview", "rollback_note"] {
+        let result = call_raw(&client, tool, json!({ "operation_id": "x" })).await;
+        let errored = match &result {
+            Err(_) => true,
+            Ok(r) => r.is_error == Some(true),
+        };
+        assert!(
+            errored,
+            "{tool} must refuse on a git-backend vault: {result:?}"
+        );
+    }
+}
