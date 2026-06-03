@@ -21,20 +21,32 @@ struct Args {
     vault: Option<PathBuf>,
 
     /// Configuration profile to use (development, production, etc.)
-    #[arg(short, long, default_value = "development")]
+    #[arg(short, long, default_value = "development", env = "TURBOVAULT_PROFILE")]
     profile: String,
 
-    /// Transport mode (stdio, http, websocket)
-    #[arg(short, long, default_value = "stdio")]
+    /// Transport mode (stdio, http, websocket, tcp, unix)
+    #[arg(short, long, default_value = "stdio", env = "TURBOVAULT_TRANSPORT")]
     transport: String,
 
-    /// HTTP server port (for http transport)
-    #[arg(long, default_value = "3000")]
+    /// Host/interface to bind for network transports (http, websocket, tcp)
+    #[arg(long, default_value = "127.0.0.1", env = "TURBOVAULT_HOST")]
+    host: String,
+
+    /// Port to bind for network transports (http, websocket, tcp)
+    #[arg(long, default_value = "3000", env = "TURBOVAULT_PORT")]
     port: u16,
+
+    /// Socket path for the unix transport
+    #[arg(
+        long,
+        default_value = "/tmp/turbovault.sock",
+        env = "TURBOVAULT_SOCKET_PATH"
+    )]
+    socket_path: String,
 
     /// Output format for non-STDIO transports (json, human, text)
     /// Note: STDIO transport always uses JSON per MCP protocol specification
-    #[arg(long, default_value = "json")]
+    #[arg(long, default_value = "json", env = "TURBOVAULT_OUTPUT_FORMAT")]
     output_format: String,
 
     /// Initialize vault on startup (scan and build graph)
@@ -335,7 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "http")]
         "http" => {
-            let addr = format!("127.0.0.1:{}", args.port);
+            let addr = format!("{}:{}", args.host, args.port);
             log::info!("Running HTTP server on {}", addr);
             log::info!("Output format: {:?}", output_format);
             server
@@ -347,7 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "websocket")]
         "websocket" => {
-            let addr = format!("127.0.0.1:{}", args.port);
+            let addr = format!("{}:{}", args.host, args.port);
             log::info!("Running WebSocket server on {}", addr);
             log::info!("Output format: {:?}", output_format);
             server
@@ -359,7 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "tcp")]
         "tcp" => {
-            let addr = format!("127.0.0.1:{}", args.port);
+            let addr = format!("{}:{}", args.host, args.port);
             log::info!("Running TCP server on {}", addr);
             log::info!("Output format: {:?}", output_format);
             server
@@ -371,13 +383,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "unix")]
         "unix" => {
-            let socket_path = "/tmp/turbovault.sock".to_string();
-            log::info!("Running Unix socket server on {}", socket_path);
+            log::info!("Running Unix socket server on {}", args.socket_path);
             log::info!("Output format: {:?}", output_format);
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
-                .transport(turbomcp::Transport::unix(&socket_path))
+                .transport(turbomcp::Transport::unix(&args.socket_path))
                 .serve()
                 .await?;
         }
