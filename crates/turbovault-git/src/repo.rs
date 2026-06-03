@@ -40,6 +40,20 @@ pub struct VaultRepo {
     pub(crate) commit_hook: Option<CommitHook>,
 }
 
+/// turbovault-y7q (PERF-3a): once per process, disable libgit2's strict
+/// object-hash verification. libgit2 otherwise re-hashes every object it loads
+/// with collision-detecting SHA-1 (`ubc_check` + `sha1_compression_states`) to
+/// catch corruption; for a TRUSTED LOCAL write substrate plain SHA-1 is
+/// sufficient, so we skip that re-verification on the object reads the write
+/// path performs (base-tree + blob loads in build_tree / materialize). We trust
+/// our own object writes. Global libgit2 flag — set once, before concurrent use.
+fn init_libgit2_opts() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        git2::opts::strict_hash_verification(false);
+    });
+}
+
 impl VaultRepo {
     /// Open the git repository whose working tree root is `vault_root`, with a
     /// **private** commit-lock registry. Use [`Self::open_with_locks`] when
@@ -55,6 +69,7 @@ impl VaultRepo {
     /// Open at `vault_root` sharing the given commit-lock registry, so handles to
     /// the same worktree serialize their commit critical sections.
     pub fn open_with_locks(vault_root: &Path, commit_locks: Arc<CommitLocks>) -> Result<Self> {
+        init_libgit2_opts();
         match Repository::open(vault_root) {
             Ok(repo) => Ok(Self {
                 repo,
