@@ -565,6 +565,199 @@ async fn test_get_metadata_value_partial_dot_key_missing() {
     assert!(result.is_err());
 }
 
+// ── cache-coherence regression tests ────────────────────────────────────────
+//
+// These tests verify that query_metadata reflects in-process mutations
+// (write_file, move_file) without requiring a full re-initialize().
+//
+// On main the implementation rescans the vault on every call, so both tests
+// pass trivially.  On the perf/mtime-validated-metadata-cache branch the cache
+// is only populated during initialize() and on explicit cache-insertion after
+// mutation.  If write_file() or move_file() forgets to reinsert the updated
+// entry the tests below will fail, which is exactly the regression the
+// maintainer flagged.
+
+/// After write_file(), query_metadata must return the newly written note
+/// without a second initialize() call.
+#[tokio::test]
+async fn test_query_metadata_visible_after_write_without_reinitialize() {
+    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_vault::VaultManager;
+
+    let temp_dir = TempDir::new().unwrap();
+    let vault_path = temp_dir.path();
+
+    let mut config = ServerConfig::new();
+    config
+        .vaults
+        .push(VaultConfig::builder("test", vault_path).build().unwrap());
+    let manager = Arc::new(VaultManager::new(config).unwrap());
+
+    // Initialize on an empty vault so the cache exists but is empty.
+    manager.initialize().await.unwrap();
+
+    // Write a note with frontmatter via the manager (simulates an MCP write).
+    manager
+        .write_file(
+            std::path::Path::new("fresh.md"),
+            "---\nstatus: \"active\"\n---\n# Fresh note",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let tools = MetadataTools::new(manager);
+
+    // Must find the file without calling initialize() again.
+    let result = tools.query_metadata(r#"status: "active""#).await.unwrap();
+
+    assert_eq!(
+        result["matched"], 1,
+        "query_metadata returned 0 matches after write_file — \
+         cache was not updated on write (regression: see maintainer feedback)"
+    );
+}
+
+/// After move_file(), query_metadata must find the note at its new path
+/// without a second initialize() call.
+#[tokio::test]
+async fn test_query_metadata_visible_at_new_path_after_move_without_reinitialize() {
+    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_vault::VaultManager;
+
+    let temp_dir = TempDir::new().unwrap();
+    let vault_path = temp_dir.path();
+
+    let mut config = ServerConfig::new();
+    config
+        .vaults
+        .push(VaultConfig::builder("test", vault_path).build().unwrap());
+    let manager = Arc::new(VaultManager::new(config).unwrap());
+
+    // Seed one note and initialize so the cache is warm.
+    tokio::fs::write(
+        vault_path.join("source.md"),
+        "---\nstatus: \"active\"\n---\n# Source",
+    )
+    .await
+    .unwrap();
+    manager.initialize().await.unwrap();
+
+    // Move the note to a new path (simulates an MCP move/rename).
+    manager
+        .move_file(
+            std::path::Path::new("source.md"),
+            std::path::Path::new("dest.md"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let tools = MetadataTools::new(manager);
+
+    // Must still find exactly one match — at the new path — without re-init.
+    let result = tools.query_metadata(r#"status: "active""#).await.unwrap();
+
+    assert_eq!(
+        result["matched"], 1,
+        "query_metadata returned 0 matches after move_file — \
+         cache was not updated for the new path (regression: see maintainer feedback)"
+    );
+}
+
+/// After delete_file(), a previously-matching note must not appear in
+/// query_metadata results without requiring a full reinitialize().
+#[tokio::test]
+async fn test_query_metadata_not_visible_after_delete() {
+    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_vault::VaultManager;
+
+    let temp_dir = TempDir::new().unwrap();
+    let vault_path = temp_dir.path();
+
+    tokio::fs::write(
+        vault_path.join("victim.md"),
+        "---\nstatus: \"delme\"\n---\n# Victim",
+    )
+    .await
+    .unwrap();
+
+    let mut config = ServerConfig::new();
+    config
+        .vaults
+        .push(VaultConfig::builder("test", vault_path).build().unwrap());
+    let manager = Arc::new(VaultManager::new(config).unwrap());
+    manager.initialize().await.unwrap();
+
+    let tools = MetadataTools::new(manager.clone());
+
+    // Confirm visible before deletion.
+    let before = tools.query_metadata(r#"status: "delme""#).await.unwrap();
+    assert_eq!(before["matched"], 1, "note must be visible before deletion");
+
+    manager
+        .delete_file(std::path::Path::new("victim.md"), None)
+        .await
+        .unwrap();
+
+    let after = tools.query_metadata(r#"status: "delme""#).await.unwrap();
+    assert_eq!(
+        after["matched"], 0,
+        "deleted note must not appear in query_metadata results"
+    );
+}
+
+/// After write_file() overwrites an existing note's frontmatter, query_metadata
+/// must reflect the new values and stop matching the old ones — no reinitialize().
+#[tokio::test]
+async fn test_query_metadata_reflects_overwrite_without_reinitialize() {
+    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_vault::VaultManager;
+
+    let temp_dir = TempDir::new().unwrap();
+    let vault_path = temp_dir.path();
+
+    tokio::fs::write(
+        vault_path.join("note.md"),
+        "---\nstatus: \"draft\"\n---\n# Note",
+    )
+    .await
+    .unwrap();
+
+    let mut config = ServerConfig::new();
+    config
+        .vaults
+        .push(VaultConfig::builder("test", vault_path).build().unwrap());
+    let manager = Arc::new(VaultManager::new(config).unwrap());
+    manager.initialize().await.unwrap();
+
+    manager
+        .write_file(
+            std::path::Path::new("note.md"),
+            "---\nstatus: \"published\"\n---\n# Note",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let tools = MetadataTools::new(manager);
+
+    let draft_results = tools.query_metadata(r#"status: "draft""#).await.unwrap();
+    let published_results = tools
+        .query_metadata(r#"status: "published""#)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        draft_results["matched"], 0,
+        "old frontmatter value must not appear after overwrite"
+    );
+    assert_eq!(
+        published_results["matched"], 1,
+        "new frontmatter value must appear after overwrite without reinitialize"
+    );
+}
+
 #[tokio::test]
 async fn test_concurrent_metadata_reads() {
     let (_temp_dir, manager) = setup_test_vault_with_metadata().await;
