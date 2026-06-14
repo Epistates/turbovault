@@ -174,7 +174,9 @@ pub mod duplicate_tools;
 pub mod export_tools;
 pub mod file_tools;
 pub mod graph_tools;
+pub mod grounding;
 pub mod metadata_tools;
+pub mod okf_tools;
 pub mod output_formatter;
 pub mod quality_tools;
 pub mod relationship_tools;
@@ -185,6 +187,7 @@ pub mod similarity_engine;
 pub mod templates;
 pub mod validation_tools;
 pub mod vault_lifecycle;
+pub mod viewer;
 
 #[cfg(feature = "sql")]
 pub mod sql_engine;
@@ -197,7 +200,11 @@ pub use duplicate_tools::{CompareResult, DuplicateGroup, DuplicateTools};
 pub use export_tools::ExportTools;
 pub use file_tools::{FileTools, NoteInfo, WriteMode, obsidian_uri};
 pub use graph_tools::{BrokenLinkInfo, GraphTools, HealthInfo};
+pub use grounding::{GroundingAnalysis, GroundingTools, UngroundedNote, UngroundedReport};
 pub use metadata_tools::MetadataTools;
+pub use okf_tools::{
+    GenerateIndexReport, GeneratedIndex, OkfConceptInfo, OkfTools, OkfValidateReport,
+};
 pub use output_formatter::{OutputFormat, ResponseFormatter};
 pub use quality_tools::{QualityScore, QualityTools, VaultQualityReport};
 pub use relationship_tools::RelationshipTools;
@@ -209,6 +216,7 @@ pub use turbovault_batch::{BatchOperation, BatchResult};
 pub use turbovault_core::prelude::*;
 pub use validation_tools::{ValidationReportInfo, ValidationTools};
 pub use vault_lifecycle::VaultLifecycleTools;
+pub use viewer::{ViewerTools, VisualizationResult};
 
 #[cfg(feature = "sql")]
 pub use sql_engine::FrontmatterSqlEngine;
