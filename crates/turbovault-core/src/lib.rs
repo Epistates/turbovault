@@ -80,6 +80,7 @@ pub mod error;
 pub mod metrics;
 pub mod models;
 pub mod multi_vault;
+pub mod okf;
 pub mod profiles;
 pub mod resilience;
 pub mod task_parser;
@@ -91,6 +92,7 @@ pub use error::{Error, Result};
 pub use metrics::{Counter, Histogram, HistogramStats, HistogramTimer, MetricsContext};
 pub use models::*;
 pub use multi_vault::{MultiVaultManager, VaultInfo};
+pub use okf::{Citation, ConceptConformance, ReservedFile, check_concept, concept_id};
 pub use profiles::ConfigProfile;
 pub use utils::{
     CSVBuilder, PathValidator, TransactionBuilder, bytes_to_lower_hex, to_json_string,
@@ -111,6 +113,7 @@ pub mod prelude {
         TaskItem, VaultFile,
     };
     pub use crate::multi_vault::{MultiVaultManager, VaultInfo};
+    pub use crate::okf::{Citation, ConceptConformance, ReservedFile, check_concept, concept_id};
     pub use crate::profiles::ConfigProfile;
     pub use crate::validation::{
         CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Severity,

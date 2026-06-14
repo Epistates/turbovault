@@ -9,6 +9,7 @@ use crate::engine::ParseEngine;
 // Individual parser modules are still available for backwards compatibility
 // and granular use cases, but the main Parser uses the unified engine.
 pub mod callouts;
+pub mod citations;
 pub mod embeds;
 pub mod frontmatter_parser;
 pub mod headings;

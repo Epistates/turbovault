@@ -137,6 +137,9 @@ pub use parsers::frontmatter_parser::extract_frontmatter;
 // Block-level parsing (for treemd integration)
 pub use blocks::{parse_blocks, parse_blocks_from_line, slugify, to_plain_text};
 
+// OKF citation parsing (`# Citations` convention)
+pub use parsers::citations::parse_citations;
+
 // Re-export core types for consumers (no need to depend on turbovault-core separately)
 pub use turbovault_core::{
     ContentBlock, InlineElement, LineIndex, LinkType, ListItem, SourcePosition, TableAlignment,
@@ -322,7 +325,7 @@ pub mod prelude {
     #[allow(deprecated)]
     pub use crate::{
         extract_frontmatter, parse_blocks, parse_blocks_from_line, parse_callouts,
-        parse_callouts_full, parse_embeds, parse_headings, parse_markdown_links, parse_tags,
-        parse_tasks, parse_wikilinks, slugify, to_plain_text,
+        parse_callouts_full, parse_citations, parse_embeds, parse_headings, parse_markdown_links,
+        parse_tags, parse_tasks, parse_wikilinks, slugify, to_plain_text,
     };
 }
