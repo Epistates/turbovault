@@ -236,12 +236,25 @@ impl LinkGraph {
         }
         self.unresolved_links.remove(source_path);
 
-        // Add edges for each internal link (wikilinks, embeds, heading refs, block refs)
+        // Add edges for each internal note link.
+        //
+        // - Obsidian wikilinks/embeds/heading-refs/block-refs are always note
+        //   references (heading-refs have no extension to test against).
+        // - OKF cross-links (spec §5) are standard markdown links; a fragment-less
+        //   `MarkdownLink` becomes an edge only when it targets a `.md` document
+        //   (`[customers](/tables/customers.md)`), so links to
+        //   images/attachments/external URLs stay out of the note graph and
+        //   broken-link reports.
         for link in &file.links {
-            if matches!(
-                link.type_,
-                LinkType::WikiLink | LinkType::Embed | LinkType::HeadingRef | LinkType::BlockRef
-            ) {
+            let is_graph_link = match link.type_ {
+                LinkType::WikiLink
+                | LinkType::Embed
+                | LinkType::BlockRef
+                | LinkType::HeadingRef => true,
+                LinkType::MarkdownLink => target_is_markdown_doc(&link.target),
+                LinkType::Anchor | LinkType::ExternalLink => false,
+            };
+            if is_graph_link {
                 // Skip same-document anchors like [[#Heading]]
                 let clean_target = link.target.split('#').next().unwrap_or("").trim();
                 if clean_target.is_empty() {
@@ -249,7 +262,12 @@ impl LinkGraph {
                 }
 
                 if let Some(target_idx) = self.resolve_link(&link.target) {
-                    self.graph.add_edge(source_idx, target_idx, link.clone());
+                    // Skip self-references (a note linking to itself) — they are
+                    // resolved, not broken, but must not become graph self-loops
+                    // (they would distort cycle detection and centrality).
+                    if target_idx != source_idx {
+                        self.graph.add_edge(source_idx, target_idx, link.clone());
+                    }
                 } else {
                     // Track unresolved links for broken link detection
                     let mut broken = link.clone();
@@ -265,38 +283,38 @@ impl LinkGraph {
         Ok(())
     }
 
-    /// Resolve a wikilink target to a file path and node index.
-    /// Resolution is case-insensitive to match Obsidian's behaviour.
+    /// Resolve a link target to a node index.
+    ///
+    /// Handles both Obsidian wikilink targets (`Note`, `Folder/Note`,
+    /// `Note#Heading`) and OKF cross-link targets (`/tables/orders.md`,
+    /// `./customers.md`). Resolution is case-insensitive to match Obsidian's
+    /// behaviour, and the `.md` suffix / leading `/` / `./` are normalized away
+    /// so both link styles share one resolution path.
     fn resolve_link(&self, target: &str) -> Option<NodeIndex> {
-        // Remove block/heading references
-        let clean_target = target.split('#').next()?.trim();
-        let clean_lower = clean_target.to_lowercase();
+        // Normalize into lowercased, `.md`-stripped path components.
+        // Returns None for external URLs, pure anchors, and empty targets.
+        let parts = turbovault_core::okf::normalize_link_target(target)?;
 
-        // Try direct stem match (case-insensitive, first-found wins)
-        if let Some(indices) = self.file_index.get(&clean_lower)
+        // Single component (`Note`, `orders.md`): try file stem first.
+        if parts.len() == 1
+            && let Some(indices) = self.file_index.get(&parts[0])
             && let Some(&idx) = indices.first()
         {
             return Some(idx);
         }
 
-        // Try alias match (case-insensitive, first-found wins)
-        if let Some(indices) = self.alias_index.get(&clean_lower)
+        // Alias match against the full target — aliases are arbitrary strings
+        // and may contain `/` (e.g. an alias literally `Projects/Roadmap`), so
+        // match the joined form, not just single-component targets.
+        let joined = parts.join("/");
+        if let Some(indices) = self.alias_index.get(&joined)
             && let Some(&idx) = indices.first()
         {
             return Some(idx);
         }
 
-        // Try path-suffix index for folder-qualified links like [[Folder/Note]]
-        let target_parts: Vec<String> = clean_target
-            .split('/')
-            .filter(|p| !p.is_empty())
-            .map(|p| p.to_lowercase())
-            .collect();
-        if target_parts.is_empty() {
-            return None;
-        }
-
-        if let Some(candidates) = self.path_suffix_index.get(&target_parts) {
+        // Folder-qualified or bundle-relative links: path-suffix match.
+        if let Some(candidates) = self.path_suffix_index.get(&parts) {
             if candidates.len() == 1 {
                 return Some(candidates[0]);
             }
@@ -553,6 +571,17 @@ impl Default for LinkGraph {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// True if a markdown-link target points at a `.md` document (case-insensitive),
+/// ignoring any `#fragment`. Keeps attachment/image/external markdown links
+/// (`.png`, `.pdf`, …) out of the note graph and broken-link reports.
+fn target_is_markdown_doc(target: &str) -> bool {
+    target
+        .split('#')
+        .next()
+        .map(|p| p.trim_end().to_ascii_lowercase().ends_with(".md"))
+        .unwrap_or(false)
 }
 
 /// Statistics about the graph
@@ -1180,5 +1209,148 @@ mod tests {
         // Now we should have 2 edges: source→target and third→source
         assert_eq!(graph.edge_count(), 2);
         assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    /// Build a file whose links are typed (for OKF markdown-link tests).
+    fn create_typed_file(path: &str, links: Vec<(LinkType, &str)>) -> VaultFile {
+        let parsed_links: Vec<Link> = links
+            .into_iter()
+            .enumerate()
+            .map(|(i, (type_, target))| Link {
+                type_,
+                source_file: PathBuf::from(path),
+                target: target.to_string(),
+                display_text: None,
+                position: SourcePosition::new(0, 0, i * 10, 10),
+                resolved_target: None,
+                is_valid: true,
+            })
+            .collect();
+
+        let mut vault_file = create_test_file(path, vec![]);
+        vault_file.links = parsed_links;
+        vault_file
+    }
+
+    #[test]
+    fn test_okf_bundle_relative_markdown_link_resolves() {
+        // OKF cross-link `[customers](/tables/customers.md)` must become an edge.
+        let mut graph = LinkGraph::new();
+        let customers = create_test_file("/vault/tables/customers.md", vec![]);
+        let orders = create_typed_file(
+            "/vault/tables/orders.md",
+            vec![(LinkType::MarkdownLink, "/tables/customers.md")],
+        );
+
+        graph.add_file(&customers).unwrap();
+        graph.add_file(&orders).unwrap();
+        graph.update_links(&orders).unwrap();
+
+        assert_eq!(graph.edge_count(), 1);
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn test_okf_relative_markdown_link_with_heading_resolves() {
+        // `[schema](./customers.md#schema)` classifies as HeadingRef and resolves.
+        let mut graph = LinkGraph::new();
+        let customers = create_test_file("/vault/tables/customers.md", vec![]);
+        let orders = create_typed_file(
+            "/vault/tables/orders.md",
+            vec![(LinkType::HeadingRef, "./customers.md#schema")],
+        );
+
+        graph.add_file(&customers).unwrap();
+        graph.add_file(&orders).unwrap();
+        graph.update_links(&orders).unwrap();
+
+        assert_eq!(graph.edge_count(), 1);
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn test_markdown_link_to_non_md_is_not_a_graph_edge() {
+        // Links to images/attachments/external resources must not pollute the
+        // note graph or broken-link reports.
+        let mut graph = LinkGraph::new();
+        let note = create_typed_file(
+            "/vault/note.md",
+            vec![
+                (LinkType::MarkdownLink, "/assets/diagram.png"),
+                (LinkType::ExternalLink, "https://example.com"),
+            ],
+        );
+
+        graph.add_file(&note).unwrap();
+        graph.update_links(&note).unwrap();
+
+        assert_eq!(graph.edge_count(), 0);
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn test_markdown_self_link_is_not_a_self_loop() {
+        // A note linking to itself (common in OKF index/log docs) must not
+        // produce a graph self-loop.
+        let mut graph = LinkGraph::new();
+        let orders = create_typed_file(
+            "/vault/tables/orders.md",
+            vec![(LinkType::MarkdownLink, "/tables/orders.md")],
+        );
+        graph.add_file(&orders).unwrap();
+        graph.update_links(&orders).unwrap();
+
+        assert_eq!(graph.edge_count(), 0);
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn test_multi_segment_alias_resolves() {
+        // An alias containing '/' (a legal frontmatter alias) must still resolve
+        // via a wikilink — regression guard for the resolve_link rewrite.
+        let mut graph = LinkGraph::new();
+
+        let mut target = create_test_file("/vault/team/roadmap.md", vec![]);
+        let mut data = std::collections::HashMap::new();
+        data.insert(
+            "aliases".to_string(),
+            serde_json::Value::Array(vec![serde_json::Value::String("Projects/Roadmap".into())]),
+        );
+        target.frontmatter = Some(turbovault_core::Frontmatter {
+            data,
+            position: SourcePosition::start(),
+        });
+
+        let linker = create_typed_file(
+            "/vault/notes/plan.md",
+            vec![(LinkType::WikiLink, "Projects/Roadmap")],
+        );
+
+        graph.add_file(&target).unwrap();
+        graph.add_file(&linker).unwrap();
+        graph.update_links(&linker).unwrap();
+
+        assert_eq!(
+            graph.edge_count(),
+            1,
+            "slash-containing alias should resolve"
+        );
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn test_okf_broken_cross_link_tracked() {
+        // A `.md` markdown link with no target file is a genuine broken link.
+        let mut graph = LinkGraph::new();
+        let note = create_typed_file(
+            "/vault/note.md",
+            vec![(LinkType::MarkdownLink, "/tables/missing.md")],
+        );
+
+        graph.add_file(&note).unwrap();
+        graph.update_links(&note).unwrap();
+
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.unresolved_link_count(), 1);
     }
 }
