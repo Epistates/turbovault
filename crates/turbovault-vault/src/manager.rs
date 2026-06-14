@@ -56,6 +56,18 @@ impl VaultManager {
         &self.vault_path
     }
 
+    /// Convert a path to a `/`-separated vault-relative string.
+    ///
+    /// Strips the vault root prefix and normalizes separators to `/` (so paths
+    /// render consistently across platforms). Falls back to the lossy full path
+    /// when `path` is not under the vault root.
+    pub fn relative_path(&self, path: &Path) -> String {
+        path.strip_prefix(&self.vault_path)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
+
     /// Set the audit log and snapshot store for operation tracking
     pub fn set_audit_log(&mut self, audit_log: Arc<AuditLog>, snapshot_store: Arc<SnapshotStore>) {
         self.audit_log = Some(audit_log);
@@ -261,11 +273,24 @@ impl VaultManager {
             }
         }
 
-        // Parse file and update graph + cache
+        // Parse file and update graph + cache — markdown only.
+        //
+        // The link graph and the note cache model *notes*; non-markdown files
+        // (e.g. an exported `viz.html`, attachments) must not be ingested as
+        // nodes/cache entries or they pollute stats, orphan detection, and
+        // note-listing tools. `move_file` already handles non-note files
+        // separately; `write_file` is the only other path that can receive one.
         //
         // We no longer pre-remove the old entry here. cache.insert() below atomically
         // overwrites it, so a pre-remove would only create a brief absence window during
         // which vault_files_validated() would silently miss this file.
+        let is_markdown = vault_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+        if !is_markdown {
+            return Ok(());
+        }
         match self.parser.parse_file(&vault_path, content) {
             Ok(vault_file) => {
                 log::debug!(
@@ -1160,6 +1185,74 @@ mod tests {
         assert_eq!(stats.total_files, 2);
         assert_eq!(stats.total_links, 0); // No links between these files
         assert_eq!(stats.orphaned_files, 2); // Both orphaned
+    }
+
+    #[tokio::test]
+    async fn test_okf_markdown_cross_link_resolves_end_to_end() {
+        // End-to-end: an OKF bundle-relative markdown cross-link
+        // `[customers](/tables/customers.md)` must resolve through the real
+        // parser -> graph pipeline (not just synthetic Link structs).
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::create_dir_all(temp_dir.path().join("tables")).unwrap();
+        std::fs::write(
+            temp_dir.path().join("tables/customers.md"),
+            "---\ntype: BigQuery Table\ntitle: Customers\n---\n# Schema\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp_dir.path().join("tables/orders.md"),
+            "---\ntype: BigQuery Table\ntitle: Orders\n---\n# Joins\n\nJoined with [customers](/tables/customers.md) on `customer_id`.\n",
+        )
+        .unwrap();
+
+        manager.initialize().await.unwrap();
+
+        // The cross-link must have produced a resolved graph edge.
+        let stats = manager.get_stats().await.unwrap();
+        assert_eq!(stats.total_files, 2);
+        assert_eq!(
+            stats.total_links, 1,
+            "OKF markdown cross-link should resolve"
+        );
+
+        // And it must surface as a backlink on the target.
+        let customers = temp_dir.path().join("tables/customers.md");
+        let backlinks = manager.get_backlinks(&customers).await.unwrap();
+        assert_eq!(backlinks.len(), 1, "customers.md should have one backlink");
+    }
+
+    #[tokio::test]
+    async fn test_write_non_markdown_file_does_not_pollute_graph() {
+        // Writing a non-markdown artifact (e.g. an exported viz.html) must not
+        // add a node to the note graph or the note cache.
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("note.md"), "# Note").unwrap();
+        manager.initialize().await.unwrap();
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
+
+        // Write a non-md file via the same path visualize() uses.
+        manager
+            .write_file(
+                std::path::Path::new("viz.html"),
+                "<html>[fake](/note.md)</html>",
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The HTML file is on disk but is NOT a graph node.
+        assert!(temp_dir.path().join("viz.html").exists());
+        assert_eq!(
+            manager.get_stats().await.unwrap().total_files,
+            1,
+            "non-markdown write must not add a graph node"
+        );
     }
 
     #[tokio::test]
