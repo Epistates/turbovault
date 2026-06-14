@@ -238,20 +238,23 @@ impl LinkGraph {
 
         // Add edges for each internal note link.
         //
-        // - Obsidian wikilinks/embeds/heading-refs/block-refs are always note
-        //   references (heading-refs have no extension to test against).
-        // - OKF cross-links (spec §5) are standard markdown links; a fragment-less
-        //   `MarkdownLink` becomes an edge only when it targets a `.md` document
-        //   (`[customers](/tables/customers.md)`), so links to
-        //   images/attachments/external URLs stay out of the note graph and
-        //   broken-link reports.
+        // A link becomes a graph edge iff its target is a *note* — i.e. not an
+        // attachment/media/data file (see `is_note_reference`). This one rule
+        // covers every link form uniformly:
+        // - Obsidian wikilinks/embeds/heading-refs/block-refs to notes
+        //   (`[[Note]]`, `[[Note#H]]`); `[[image.png]]`/`![[chart.svg]]` are
+        //   attachments and are skipped.
+        // - OKF cross-links (spec §5), which are standard markdown links to a
+        //   `.md` document (`[customers](/tables/customers.md)`); markdown links
+        //   to images/PDFs/external URLs are skipped.
+        // Skipped links never enter the note graph or broken-link reports.
         for link in &file.links {
             let is_graph_link = match link.type_ {
                 LinkType::WikiLink
                 | LinkType::Embed
                 | LinkType::BlockRef
-                | LinkType::HeadingRef => true,
-                LinkType::MarkdownLink => target_is_markdown_doc(&link.target),
+                | LinkType::HeadingRef
+                | LinkType::MarkdownLink => is_note_reference(&link.target),
                 LinkType::Anchor | LinkType::ExternalLink => false,
             };
             if is_graph_link {
@@ -573,15 +576,50 @@ impl Default for LinkGraph {
     }
 }
 
-/// True if a markdown-link target points at a `.md` document (case-insensitive),
-/// ignoring any `#fragment`. Keeps attachment/image/external markdown links
-/// (`.png`, `.pdf`, …) out of the note graph and broken-link reports.
-fn target_is_markdown_doc(target: &str) -> bool {
-    target
-        .split('#')
-        .next()
-        .map(|p| p.trim_end().to_ascii_lowercase().ends_with(".md"))
-        .unwrap_or(false)
+/// True if a link target refers to a *note* (as opposed to an attachment,
+/// image, media, or data file), ignoring any `#fragment`.
+///
+/// The discriminator is the target's file extension, which is independent of
+/// link syntax (wikilink vs markdown) and of whether the vault is an OKF
+/// bundle: a target is a note unless its final path segment carries a known
+/// non-note extension. Extension-less targets (`Note`, `Folder/Note`) and
+/// dotted note names (`Release v1.2`) are notes; `image.png`, `report.pdf`,
+/// `data.csv` are not. A fragment-only target (`#heading`) is not a note
+/// reference.
+fn is_note_reference(target: &str) -> bool {
+    let path = target.split('#').next().unwrap_or("").trim_end();
+    if path.is_empty() {
+        return false;
+    }
+    let last = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    match last.rsplit_once('.') {
+        // Has an extension with a non-empty stem → note unless it's an attachment.
+        Some((stem, ext)) if !stem.is_empty() => !is_attachment_ext(ext),
+        // No extension (or a leading-dot name) → treat as a note.
+        _ => true,
+    }
+}
+
+/// True if `ext` (any case) is a known non-note file extension — images,
+/// documents, data, web assets, media, archives, and office formats. `md`,
+/// `markdown`, and `txt` are intentionally absent (those are notes).
+fn is_attachment_ext(ext: &str) -> bool {
+    const ATTACHMENT_EXTS: &[&str] = &[
+        // images
+        "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif", "tiff", //
+        // documents / data
+        "pdf", "csv", "tsv", "json", "yaml", "yml", "xml", "parquet", "sqlite", "db", //
+        // web assets
+        "html", "htm", "css", "js", "mjs", "wasm", //
+        // media
+        "mp4", "mov", "webm", "mkv", "mp3", "wav", "ogg", "m4a", "flac", //
+        // archives
+        "zip", "tar", "gz", "tgz", "7z", "rar", //
+        // office
+        "xlsx", "docx", "pptx", "key", "numbers", "pages",
+    ];
+    let lower = ext.to_ascii_lowercase();
+    ATTACHMENT_EXTS.contains(&lower.as_str())
 }
 
 /// Statistics about the graph
@@ -1335,6 +1373,57 @@ mod tests {
             1,
             "slash-containing alias should resolve"
         );
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn test_attachment_heading_ref_is_not_a_broken_link() {
+        // A markdown link to a non-note resource with a fragment classifies as
+        // HeadingRef; it must NOT be treated as a note edge or a broken link.
+        let mut graph = LinkGraph::new();
+        let note = create_typed_file(
+            "/vault/note.md",
+            vec![
+                (LinkType::HeadingRef, "report.pdf#page=2"),
+                (LinkType::HeadingRef, "assets/diagram.svg#layer1"),
+            ],
+        );
+        graph.add_file(&note).unwrap();
+        graph.update_links(&note).unwrap();
+
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.unresolved_link_count(), 0);
+    }
+
+    #[test]
+    fn test_image_embed_is_not_a_broken_link() {
+        // `![[chart.png]]` embeds an attachment, not a note — it must not be
+        // tracked as a broken note link.
+        let mut graph = LinkGraph::new();
+        let note = create_typed_file("/vault/note.md", vec![(LinkType::Embed, "chart.png")]);
+        graph.add_file(&note).unwrap();
+        graph.update_links(&note).unwrap();
+
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.unresolved_link_count(), 0);
+    }
+
+    #[test]
+    fn test_dotted_note_name_wikilink_resolves() {
+        // A note whose name contains a dot (`Release v1.2.md`) must still
+        // resolve via a wikilink — the extension heuristic must not reject it.
+        let mut graph = LinkGraph::new();
+        let target = create_test_file("/vault/Release v1.2.md", vec![]);
+        let linker = create_typed_file(
+            "/vault/notes/plan.md",
+            vec![(LinkType::WikiLink, "Release v1.2")],
+        );
+
+        graph.add_file(&target).unwrap();
+        graph.add_file(&linker).unwrap();
+        graph.update_links(&linker).unwrap();
+
+        assert_eq!(graph.edge_count(), 1, "dotted note name should resolve");
         assert!(graph.all_unresolved_links().is_empty());
     }
 
