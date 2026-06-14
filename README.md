@@ -23,10 +23,10 @@ Build your own applications, search engines, or custom MCP servers using our mod
 - **SOTA Standards**: Fully supports Obsidian-flavored Markdown (wikilinks, embeds, callouts).
 
 ### 2. As a Ready-to-Use MCP Server (For Users)
-Transform your Obsidian vault into an intelligent knowledge system immediately. Connect TurboVault to Claude Desktop or any MCP-compatible client to gain **47 specialized tools** for your notes.
+Transform your Obsidian vault into an intelligent knowledge system immediately. Connect TurboVault to Claude Desktop or any MCP-compatible client to gain **70 specialized tools** for your notes.
 
 - **Zero Coding Required**: Install the binary and point it at your vault.
-- **47 Specialized Tools**: Searching, link analysis, SQL frontmatter queries, health checks, and more.
+- **70 Specialized Tools**: Searching, link analysis, SQL frontmatter queries, health checks, and more.
 - **Multi-Vault Support**: Switch between personal and work notes seamlessly at runtime.
 
 ---
@@ -41,7 +41,7 @@ TurboVault is a modular system composed of specialized crates. You can depend on
 | **[turbovault-parser](crates/turbovault-parser)** | High-speed .md & .ofm parser | [![Docs.rs](https://docs.rs/turbovault-parser/badge.svg)](https://docs.rs/turbovault-parser) |
 | **[turbovault-graph](crates/turbovault-graph)** | Link graph analysis & relationship discovery | [![Docs.rs](https://docs.rs/turbovault-graph/badge.svg)](https://docs.rs/turbovault-graph) |
 | **[turbovault-vault](crates/turbovault-vault)** | Vault management, file I/O & atomic writes | [![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault) |
-| **[turbovault-tools](crates/turbovault-tools)** | 47 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
+| **[turbovault-tools](crates/turbovault-tools)** | 70 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
 | **[turbovault-sql](crates/turbovault-sql)** | SQL frontmatter queries (GlueSQL) | [![Docs.rs](https://docs.rs/turbovault-sql/badge.svg)](https://docs.rs/turbovault-sql) |
 | **[turbovault-batch](crates/turbovault-batch)** | Atomic batch operations | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
 | **[turbovault-export](crates/turbovault-export)** | Export & reporting (JSON/CSV/MD) | [![Docs.rs](https://docs.rs/turbovault-export/badge.svg)](https://docs.rs/turbovault-export) |
@@ -193,14 +193,22 @@ You: "Based on my vault, what notes should I link this to?"
 Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 ```
 
-## 47 MCP Tools Organized by Category
+## 70 MCP Tools Organized by Category
 
-### File Operations (5)
+### File Operations & Batch (8)
 - `read_note` — Get note content with hash for conflict detection
 - `write_note` — Create/overwrite notes (auto-creates directories)
 - `edit_note` — Surgical edits via SEARCH/REPLACE blocks
 - `delete_note` — Safe deletion with link tracking
 - `move_note` — Rename/relocate with automatic wikilink updates
+- `move_file` — Move/rename non-note files (e.g. attachments, images)
+- `get_notes_info` — Metadata for multiple notes in a single call
+- `batch_execute` — Atomic multi-file operations (all-or-nothing transactions)
+
+### Metadata & Tags (3)
+- `update_frontmatter` — Patch frontmatter fields (merge or replace)
+- `get_metadata_value` — Extract frontmatter values (dot notation support)
+- `manage_tags` — Add, remove, or list note tags
 
 ### Link Analysis (6)
 - `get_backlinks` — All notes that link TO this note
@@ -210,14 +218,12 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `get_dead_end_notes` — Notes with incoming but no outgoing links
 - `get_isolated_clusters` — Disconnected subgraphs in your vault
 
-### Vault Health & Analysis (5)
-- `quick_health_check` — Fast 0-100 health score (<100ms)
-- `full_health_analysis` — Comprehensive vault audit with recommendations
-- `get_broken_links` — All links pointing to non-existent notes
-- `detect_cycles` — Circular reference chains (sometimes intentional)
-- `explain_vault` — Holistic overview replacing 5+ separate calls
+### Graph Metrics & Suggestions (3)
+- `suggest_links` — AI-powered link suggestions for a note
+- `get_link_strength` — Connection strength between notes (0.0–1.0)
+- `get_centrality_ranking` — Graph centrality metrics (betweenness, closeness, eigenvector)
 
-### Full-Text Search (8)
+### Search (8)
 - `search` — BM25-ranked search across all notes (<500ms on 100k notes)
 - `advanced_search` — Search with tag, frontmatter, path, and limit filters
 - `search_by_frontmatter` — Find notes by frontmatter key-value pair
@@ -227,13 +233,40 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `inspect_frontmatter` — Schema inspection for SQL queries (feature: `sql`)
 - `query_frontmatter_sql` — Arbitrary SQL against frontmatter via GlueSQL (feature: `sql`)
 
-### Templates (4)
+### Semantic & Similarity (5)
+- `semantic_search` — TF-IDF semantic search with similarity scores and shared terms
+- `find_similar_notes` — Content-similar notes to a given note
+- `find_duplicates` — Near-duplicate detection (SimHash filter + TF-IDF verify)
+- `compare_notes` — Similarity score, shared vocabulary, diff, and merge recommendation
+- `diff_notes` — Unified diff between two notes
+
+### Vault Health & Quality (10)
+- `quick_health_check` — Fast 0-100 health score (<100ms)
+- `full_health_analysis` — Comprehensive vault audit with recommendations
+- `get_broken_links` — All links pointing to non-existent notes
+- `detect_cycles` — Circular reference chains (sometimes intentional)
+- `explain_vault` — Holistic overview replacing 5+ separate calls
+- `evaluate_note_quality` — Per-note quality score with improvement recommendations
+- `vault_quality_report` — Vault-wide quality assessment (worst-N notes)
+- `find_stale_notes` — Notes not modified within a threshold of days
+- `analyze_note_grounding` — Grounding primitives for a note (claims, citations, uncited flag) to feed an external LLM judge
+- `find_ungrounded_notes` — Find hallucination-risk notes that make claims but cite no source
+
+### Open Knowledge Format (4)
+- `okf_validate` — Validate the vault as an [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog) v0.1 bundle (conformance + concept `type` vocabulary); usable as a CI/pre-publish gate
+- `generate_index` — Generate/refresh `index.md` files for progressive disclosure (idempotent)
+- `append_log_entry` — Append a dated entry to a directory's `log.md` update history (§7)
+- `visualize` — Render the concept graph as a shareable, self-contained HTML file (force-directed graph + rendered notes + backlinks)
+
+### Templates & OFM (6)
 - `list_templates` — Discover available templates
 - `get_template` — Template details and required fields
 - `create_from_template` — Render and write templated notes
+- `get_ofm_syntax_guide` — Focused Obsidian Flavored Markdown reference
+- `get_ofm_quick_ref` — Quick OFM cheat sheet
 - `get_ofm_examples` — See all Obsidian Flavored Markdown features
 
-### Vault Lifecycle (7)
+### Vault Lifecycle (8)
 - `create_vault` — Programmatically create a new vault
 - `add_vault` — Register and auto-initialize a vault at runtime
 - `remove_vault` — Unregister vault (safe, doesn't delete files)
@@ -241,20 +274,20 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `get_vault_config` — Inspect vault settings
 - `set_active_vault` — Switch context between multiple vaults
 - `get_active_vault` — Current active vault
+- `get_vault_context` — Meta-tool: single call returns vault status, available tools, OFM guide
 
-### Advanced Features (12)
-- `batch_execute` — Atomic multi-file operations (all-or-nothing transactions)
+### Audit & History (5)
+- `audit_log` — Chronological change log with operation IDs for rollback
+- `audit_stats` — Audit overview: operation breakdown + snapshot disk usage
+- `diff_note_version` — Diff a note against a past audited version
+- `rollback_preview` — Preview what a rollback would change (read-only)
+- `rollback_note` — Undo a change by operation ID (atomic, audited)
+
+### Export (4)
 - `export_health_report` — Export vault health as JSON/CSV
 - `export_broken_links` — Export broken links with fix suggestions
 - `export_vault_stats` — Statistics and metrics export
 - `export_analysis_report` — Complete audit trail
-- `get_metadata_value` — Extract frontmatter values (dot notation support)
-- `suggest_links` — AI-powered link suggestions for a note
-- `get_link_strength` — Connection strength between notes (0.0–1.0)
-- `get_centrality_ranking` — Graph centrality metrics (betweenness, closeness, eigenvector)
-- `get_ofm_syntax_guide` — Focused Obsidian Flavored Markdown reference
-- `get_ofm_quick_ref` — Quick OFM cheat sheet
-- `get_vault_context` — Meta-tool: single call returns vault status, available tools, OFM guide
 
 ## Real-World Workflows
 
@@ -433,7 +466,7 @@ turbovault-vault       — Vault operations, file I/O, atomic writes
 turbovault-batch       — Transactional batch operations
 turbovault-export      — JSON/CSV/Markdown export
 turbovault-sql         — SQL frontmatter queries (GlueSQL, feature-gated)
-turbovault-tools       — 47 MCP tool implementations
+turbovault-tools       — 70 MCP tool implementations
 turbovault (binary)    — CLI and MCP server entry point
 ```
 
