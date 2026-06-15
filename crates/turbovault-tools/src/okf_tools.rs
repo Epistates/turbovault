@@ -15,7 +15,7 @@
 //! Both operate on the existing vault model — OKF is layered semantics over
 //! markdown + frontmatter, not a separate store.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -131,27 +131,22 @@ impl OkfTools {
     /// `subtree`, when given, is a vault-relative directory; only documents
     /// under it are examined.
     pub async fn validate(&self, subtree: Option<&str>) -> Result<OkfValidateReport> {
-        let files = self.manager.scan_vault().await?;
+        // Cache-first: parsed notes validated against disk mtime, no re-scan.
+        let files = self.manager.vault_files_validated().await;
         let root = self.manager.vault_path();
         let filter_prefix = subtree.map(|s| root.join(s));
 
         let mut infos: Vec<OkfConceptInfo> = Vec::new();
         let mut type_distribution: BTreeMap<String, usize> = BTreeMap::new();
 
-        for path in &files {
+        for vault_file in &files {
+            let path = &vault_file.path;
             if let Some(prefix) = &filter_prefix
                 && !path.starts_with(prefix)
             {
                 continue;
             }
 
-            let vault_file = match self.manager.parse_file(path).await {
-                Ok(vf) => vf,
-                Err(e) => {
-                    log::warn!("OKF validate: failed to parse {}: {}", path.display(), e);
-                    continue;
-                }
-            };
             let fm = vault_file.frontmatter.as_ref();
             let conformance = okf::check_concept(fm, path);
 
@@ -174,6 +169,9 @@ impl OkfTools {
                 issues: conformance.issues,
             });
         }
+
+        // Stable, path-sorted output (cache iteration order is unspecified).
+        infos.sort_by(|a, b| a.path.cmp(&b.path));
 
         let total = infos.len();
         let conformant = infos.iter().filter(|i| i.conformant).count();
@@ -208,19 +206,38 @@ impl OkfTools {
         recursive: bool,
         dry_run: bool,
     ) -> Result<GenerateIndexReport> {
-        let files = self.manager.scan_vault().await?;
+        // Cache-first: parsed notes (validated against disk mtime) instead of a
+        // fresh scan + re-parse of every file.
+        let validated = self.manager.vault_files_validated().await;
         let root = self.manager.vault_path().clone();
         let base = match directory {
             Some(d) => root.join(d),
             None => root.clone(),
         };
 
+        // Prefetch (title, description) per concept so index rendering needs no
+        // further I/O.
+        let meta: HashMap<PathBuf, ConceptMeta> = validated
+            .iter()
+            .map(|vf| {
+                let fm = vf.frontmatter.as_ref();
+                (
+                    vf.path.clone(),
+                    ConceptMeta {
+                        title: fm.and_then(|f| f.okf_title()),
+                        description: fm.and_then(|f| f.okf_description()),
+                    },
+                )
+            })
+            .collect();
+
         // Map each directory to its direct concept files (non-reserved .md) and
         // the set of its direct subdirectories.
         let mut dir_concepts: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
         let mut dir_subdirs: BTreeMap<PathBuf, BTreeSet<PathBuf>> = BTreeMap::new();
 
-        for path in &files {
+        for vf in &validated {
+            let path = &vf.path;
             let Some(parent) = path.parent() else {
                 continue;
             };
@@ -280,7 +297,7 @@ impl OkfTools {
                 continue;
             }
 
-            let content = self.build_index(dir, &concepts, &subdirs).await?;
+            let content = Self::render_index(dir, &concepts, &subdirs, &meta);
             let entries = concepts.len() + subdirs.len();
             total_entries += entries;
 
@@ -312,13 +329,14 @@ impl OkfTools {
         })
     }
 
-    /// Render an `index.md` body for a directory (spec §6 — no frontmatter).
-    async fn build_index(
-        &self,
+    /// Render an `index.md` body for a directory (spec §6 — no frontmatter),
+    /// using prefetched concept metadata so no per-file I/O is needed.
+    fn render_index(
         dir: &Path,
         concepts: &[PathBuf],
         subdirs: &BTreeSet<PathBuf>,
-    ) -> Result<String> {
+        meta: &HashMap<PathBuf, ConceptMeta>,
+    ) -> String {
         // Heading is the directory's own name (the bundle's folder name at root).
         let heading = dir.file_name().and_then(|n| n.to_str()).unwrap_or("Index");
 
@@ -332,24 +350,18 @@ impl OkfTools {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            let (title, description) = match self.manager.parse_file(path).await {
-                Ok(vf) => {
-                    let fm = vf.frontmatter.as_ref();
-                    let title = fm.and_then(|f| f.okf_title()).unwrap_or_else(|| {
-                        path.file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or(&file_name)
-                            .to_string()
-                    });
-                    (title, fm.and_then(|f| f.okf_description()))
-                }
-                Err(_) => (
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(&file_name)
-                        .to_string(),
-                    None,
+            let stem_title = || {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&file_name)
+                    .to_string()
+            };
+            let (title, description) = match meta.get(path) {
+                Some(m) => (
+                    m.title.clone().unwrap_or_else(stem_title),
+                    m.description.clone(),
                 ),
+                None => (stem_title(), None),
             };
             concept_entries.push((title, file_name, description));
         }
@@ -386,7 +398,7 @@ impl OkfTools {
             }
         }
 
-        Ok(out)
+        out
     }
 
     /// Append an entry to a directory's `log.md` (spec §7).
@@ -446,6 +458,12 @@ impl OkfTools {
             created_section,
         })
     }
+}
+
+/// Title + description prefetched for a concept, used to render index entries.
+struct ConceptMeta {
+    title: Option<String>,
+    description: Option<String>,
 }
 
 /// Escape a string for use as markdown link text, so a `]`/`[` in a title

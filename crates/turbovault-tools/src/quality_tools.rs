@@ -118,14 +118,22 @@ impl QualityTools {
 
     /// Evaluate quality of a single note
     pub async fn evaluate_note(&self, path: &str) -> Result<QualityScore> {
-        let file_path = PathBuf::from(path);
-        let vault_file = self.manager.parse_file(&file_path).await?;
+        let vault_file = self.manager.parse_file(&PathBuf::from(path)).await?;
+        Ok(self.evaluate_with_file(&vault_file, path).await)
+    }
+
+    /// Score an already-parsed note. `rel_path` is the vault-relative path used
+    /// both for graph lookups (backlinks / forward links) and in the result, so
+    /// callers that already hold a parsed `VaultFile` (e.g. vault-wide scans)
+    /// avoid re-reading and re-parsing it.
+    async fn evaluate_with_file(&self, vault_file: &VaultFile, rel_path: &str) -> QualityScore {
+        let file_path = PathBuf::from(rel_path);
         let plain_content = to_plain_text(&vault_file.content);
 
         let readability = compute_readability(&plain_content);
-        let structure = compute_structure(&vault_file);
-        let completeness = compute_completeness(&vault_file, &self.manager, &file_path).await;
-        let staleness = compute_staleness(&vault_file, &self.manager, &file_path).await;
+        let structure = compute_structure(vault_file);
+        let completeness = compute_completeness(vault_file, &self.manager, &file_path).await;
+        let staleness = compute_staleness(vault_file, &self.manager, &file_path).await;
 
         let overall = weighted_score(
             readability.score,
@@ -137,37 +145,27 @@ impl QualityTools {
         let recommendations =
             generate_recommendations(&readability, &structure, &completeness, &staleness);
 
-        Ok(QualityScore {
-            path: path.to_string(),
+        QualityScore {
+            path: rel_path.to_string(),
             overall_score: overall,
             readability,
             structure,
             completeness,
             staleness,
             recommendations,
-        })
+        }
     }
 
     /// Generate vault-wide quality report
     pub async fn vault_quality_report(&self, bottom_n: usize) -> Result<VaultQualityReport> {
-        let files = self.manager.scan_vault().await?;
-        let vault_path = self.manager.vault_path();
+        // Cache-first: parsed notes validated against disk mtime, no re-scan.
+        let files = self.manager.vault_files_validated().await;
 
         let mut scores: Vec<QualityScore> = Vec::with_capacity(files.len());
 
-        for file_path in &files {
-            let rel_path = file_path
-                .strip_prefix(vault_path)
-                .unwrap_or(file_path)
-                .to_string_lossy()
-                .to_string();
-
-            match self.evaluate_note(&rel_path).await {
-                Ok(score) => scores.push(score),
-                Err(e) => {
-                    log::warn!("Failed to evaluate {}: {}", rel_path, e);
-                }
-            }
+        for vault_file in &files {
+            let rel_path = self.manager.relative_path(&vault_file.path);
+            scores.push(self.evaluate_with_file(vault_file, &rel_path).await);
         }
 
         let total_notes = scores.len();
@@ -284,20 +282,14 @@ impl QualityTools {
         threshold_days: u64,
         limit: usize,
     ) -> Result<Vec<QualityScore>> {
-        let files = self.manager.scan_vault().await?;
-        let vault_path = self.manager.vault_path();
+        // Cache-first: parsed notes validated against disk mtime, no re-scan.
+        let files = self.manager.vault_files_validated().await;
         let mut stale: Vec<QualityScore> = Vec::new();
 
-        for file_path in &files {
-            let rel_path = file_path
-                .strip_prefix(vault_path)
-                .unwrap_or(file_path)
-                .to_string_lossy()
-                .to_string();
-
-            if let Ok(score) = self.evaluate_note(&rel_path).await
-                && score.staleness.days_since_modified >= threshold_days
-            {
+        for vault_file in &files {
+            let rel_path = self.manager.relative_path(&vault_file.path);
+            let score = self.evaluate_with_file(vault_file, &rel_path).await;
+            if score.staleness.days_since_modified >= threshold_days {
                 stale.push(score);
             }
         }

@@ -94,16 +94,15 @@ impl ValidationTools {
 
     /// Validate entire vault (batch validation)
     pub async fn validate_vault(&self) -> Result<ValidationReportInfo> {
-        let files = self.manager.scan_vault().await?;
+        // Cache-first: parsed notes validated against disk mtime, no re-scan.
+        let files = self.manager.vault_files_validated().await;
 
         let validator = CompositeValidator::default_rules();
         let mut combined_report = ValidationReport::new();
 
-        for file_path in files {
-            if let Ok(vault_file) = self.manager.parse_file(&file_path).await {
-                let report = validator.validate(&vault_file);
-                combined_report.merge(report);
-            }
+        for vault_file in &files {
+            let report = validator.validate(vault_file);
+            combined_report.merge(report);
         }
 
         Ok(Self::convert_report(combined_report))
@@ -111,21 +110,19 @@ impl ValidationTools {
 
     /// Validate vault with issue limit (for large vaults)
     pub async fn validate_vault_quick(&self, max_issues: usize) -> Result<ValidationReportInfo> {
-        let files = self.manager.scan_vault().await?;
+        // Cache-first: parsed notes validated against disk mtime, no re-scan.
+        let files = self.manager.vault_files_validated().await;
 
         let validator = CompositeValidator::default_rules();
         let mut combined_report = ValidationReport::new();
 
-        for file_path in files {
+        for vault_file in &files {
             // Stop if we've hit the max issues
             if combined_report.total_issues() >= max_issues {
                 break;
             }
-
-            if let Ok(vault_file) = self.manager.parse_file(&file_path).await {
-                let report = validator.validate(&vault_file);
-                combined_report.merge(report);
-            }
+            let report = validator.validate(vault_file);
+            combined_report.merge(report);
         }
 
         Ok(Self::convert_report(combined_report))

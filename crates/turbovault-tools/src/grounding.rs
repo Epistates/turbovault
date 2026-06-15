@@ -143,25 +143,19 @@ impl GroundingTools {
 
     /// Scan the vault for notes that make claims but cite no source.
     pub async fn find_ungrounded_notes(&self, limit: usize) -> Result<UngroundedReport> {
-        let files = self.manager.scan_vault().await?;
+        // Cache-first: parsed notes validated against disk mtime, no re-scan.
+        let files = self.manager.vault_files_validated().await;
         let mut total_notes = 0usize;
         let mut ungrounded: Vec<UngroundedNote> = Vec::new();
 
-        for path in &files {
-            let vault_file = match self.manager.parse_file(path).await {
-                Ok(vf) => vf,
-                Err(e) => {
-                    log::warn!("grounding: failed to parse {}: {}", path.display(), e);
-                    continue;
-                }
-            };
+        for vault_file in &files {
             total_notes += 1;
             let body = &vault_file.content;
             if parse_citations(body).is_empty() {
                 let claim_count = extract_claims(body).len();
                 if claim_count > 0 {
                     ungrounded.push(UngroundedNote {
-                        path: self.rel(path),
+                        path: self.rel(&vault_file.path),
                         claim_count,
                     });
                 }

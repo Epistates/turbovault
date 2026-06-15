@@ -94,62 +94,48 @@ impl ViewerTools {
             })
             .unwrap_or_else(|| "Vault".to_string());
 
-        let files = self.manager.scan_vault().await?;
+        // Cache-first: parsed notes validated against disk mtime, no re-scan.
+        let files = self.manager.vault_files_validated().await;
 
         // Build nodes, and a path -> concept_id map for edge resolution.
         let mut nodes = Vec::with_capacity(files.len());
         let mut id_by_path: HashMap<std::path::PathBuf, String> = HashMap::new();
 
-        for path in &files {
+        for vf in &files {
+            let path = &vf.path;
             let cid = okf::concept_id(&root, path);
             id_by_path.insert(path.clone(), cid.clone());
 
-            let (label, type_, description, resource, body) =
-                match self.manager.parse_file(path).await {
-                    Ok(vf) => {
-                        let fm = vf.frontmatter.as_ref();
-                        let label = fm.and_then(|f| f.okf_title()).unwrap_or_else(|| {
-                            path.file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or(&cid)
-                                .to_string()
-                        });
-                        let type_ = fm
-                            .and_then(|f| f.okf_type())
-                            .unwrap_or_else(|| "note".to_string());
-                        (
-                            label,
-                            type_,
-                            fm.and_then(|f| f.okf_description()).unwrap_or_default(),
-                            fm.and_then(|f| f.okf_resource()).unwrap_or_default(),
-                            vf.content,
-                        )
-                    }
-                    Err(_) => (
-                        cid.clone(),
-                        "note".to_string(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                    ),
-                };
+            let fm = vf.frontmatter.as_ref();
+            let label = fm.and_then(|f| f.okf_title()).unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&cid)
+                    .to_string()
+            });
+            let type_ = fm
+                .and_then(|f| f.okf_type())
+                .unwrap_or_else(|| "note".to_string());
 
             nodes.push(VizNode {
                 id: cid,
                 label,
                 type_,
-                description,
-                resource,
-                body,
+                description: fm.and_then(|f| f.okf_description()).unwrap_or_default(),
+                resource: fm.and_then(|f| f.okf_resource()).unwrap_or_default(),
+                body: vf.content.clone(),
                 path: self.manager.relative_path(path),
             });
         }
+        // Stable node order (cache iteration order is unspecified).
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
 
         // Resolved edges from the link graph (covers OKF + wikilinks).
         let graph = self.manager.link_graph();
         let graph = graph.read().await;
         let mut edges = Vec::new();
-        for path in &files {
+        for vf in &files {
+            let path = &vf.path;
             let Some(source_id) = id_by_path.get(path) else {
                 continue;
             };
@@ -168,6 +154,8 @@ impl ViewerTools {
             }
         }
         drop(graph);
+        // Stable edge order for reproducible output.
+        edges.sort_by(|a, b| a.source.cmp(&b.source).then(a.target.cmp(&b.target)));
 
         let summary_nodes = nodes.len();
         let summary_edges = edges.len();
