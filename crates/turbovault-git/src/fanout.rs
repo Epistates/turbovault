@@ -104,9 +104,20 @@ impl<'a> FanoutTransaction<'a> {
         name = "git_commit_fanout"
     )]
     pub fn commit_fanout(self, strategy: MergeStrategy) -> Result<MergeBackResult> {
+        self.commit_fanout_with_message(strategy, None)
+    }
+
+    /// turbovault-b1q: like [`Self::commit_fanout`] but with a caller-supplied
+    /// merge-commit subject (used by the MCP `commit_transaction` tool's
+    /// `commit_message`). `None` falls back to the auto-derived message.
+    pub fn commit_fanout_with_message(
+        self,
+        strategy: MergeStrategy,
+        message: Option<&str>,
+    ) -> Result<MergeBackResult> {
         // Delegate to the stateless API so behavior is identical to the
         // MCP path. `main.merge_fanout_back` does the lock + merge + cleanup.
-        self.main.merge_fanout_back(&self.info, strategy)
+        self.main.merge_fanout_back(&self.info, strategy, message)
     }
 
     /// Discard the fan-out: nothing lands on main; scratch worktree + wip
@@ -252,8 +263,9 @@ impl VaultRepo {
         &self,
         info: &FanoutInfo,
         strategy: MergeStrategy,
+        message: Option<&str>,
     ) -> Result<MergeBackResult> {
-        let result = self.with_commit_lock(|| merge_inner(self, info, strategy));
+        let result = self.with_commit_lock(|| merge_inner(self, info, strategy, message));
         let _ = cleanup_inner(
             self,
             &info.wip_branch,
@@ -327,6 +339,7 @@ fn merge_inner(
     main: &VaultRepo,
     info: &FanoutInfo,
     strategy: MergeStrategy,
+    message: Option<&str>,
 ) -> Result<MergeBackResult> {
     let repo = main.git();
     let wip_ref = format!("refs/heads/{}", info.wip_branch);
@@ -379,10 +392,15 @@ fn merge_inner(
                 )));
             }
             let merged_tree_oid = idx.write_tree_to(repo)?;
-            let message = format!(
-                "merge fan-out {} into {}",
-                info.wip_branch, info.main_branch
-            );
+            // turbovault-b1q: caller-supplied merge-commit subject (the fanout
+            // merge-back is a mutation that produces a commit); fall back to the
+            // auto-derived message when none is given.
+            let message = message.map(str::to_string).unwrap_or_else(|| {
+                format!(
+                    "merge fan-out {} into {}",
+                    info.wip_branch, info.main_branch
+                )
+            });
             let merge_commit_oid =
                 main.commit_tree(merged_tree_oid, &[main_tip_before, wip_tip], &message)?;
             main.cas_ref(&info.main_branch, Some(main_tip_before), merge_commit_oid)?;
@@ -663,11 +681,39 @@ mod tests {
             .unwrap();
 
         let res = vr
-            .merge_fanout_back(&info, MergeStrategy::MergeCommit)
+            .merge_fanout_back(&info, MergeStrategy::MergeCommit, None)
             .unwrap();
         assert!(res.merge_commit.is_some(), "merge commit landed");
         assert_eq!(wt_read(&vr, "page.md"), "PAGE");
         assert!(!wt_path.exists(), "scratch worktree cleaned up");
+    }
+
+    /// turbovault-b1q: a caller-supplied merge message becomes the merge-commit
+    /// subject; `None` falls back to the auto-derived message.
+    #[test]
+    fn merge_fanout_back_uses_caller_supplied_message() {
+        let (_m, scratch, vr) = open_born();
+        let wt_path = scratch_path(&scratch, "msg-1");
+        let info = vr.open_fanout_worktree("msg-1", &wt_path).unwrap();
+        let wt = VaultRepo::open_with_locks(&wt_path, vr.commit_locks()).unwrap();
+        wt.apply_transaction(&Transaction::new("c").create("page.md", "PAGE"))
+            .unwrap();
+
+        let res = vr
+            .merge_fanout_back(&info, MergeStrategy::MergeCommit, Some("ingest source X"))
+            .unwrap();
+        let oid = res.merge_commit.expect("merge commit");
+        let msg = vr
+            .git()
+            .find_commit(oid)
+            .unwrap()
+            .message()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            msg, "ingest source X",
+            "caller message is the merge subject"
+        );
     }
 
     #[test]
@@ -699,7 +745,7 @@ mod tests {
         let info = vr.open_fanout_worktree("stateless-4", &wt_path).unwrap();
         // No writes through wt — merge_back should be a no-op.
         let res = vr
-            .merge_fanout_back(&info, MergeStrategy::MergeCommit)
+            .merge_fanout_back(&info, MergeStrategy::MergeCommit, None)
             .unwrap();
         assert!(res.merge_commit.is_none());
         assert_eq!(res.tip_after, main_tip);

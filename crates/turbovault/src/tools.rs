@@ -3094,14 +3094,15 @@ impl ObsidianMcpServer {
     /// Commit (merge back) the active fanout transaction.
     #[tool(
         description = "Merge the active fanout's wip branch back into the base vault's main branch (turbovault-61k / TV-012: this is worktree merge-back, NOT atomic-commit-of-a-transactional batch; if you wanted batch atomicity, use `batch_execute` instead). One merge-commit by default; configurable. Cleans up the scratch worktree + wip branch + deregisters the fanout vault. Caller may call this with the base vault OR the fanout vault active — both resolve to the same transaction.",
-        usage = "Pair with `begin_transaction`. `merge_strategy` overrides the vault config default at commit time; pass 'fast-forward' if you want main to advance directly to the wip tip (fails if main moved since begin).",
+        usage = "Pair with `begin_transaction`. `merge_strategy` overrides the vault config default at commit time; pass 'fast-forward' if you want main to advance directly to the wip tip (fails if main moved since begin). Pass `commit_message` to set the merge-commit subject (turbovault-b1q); defaults to an auto-derived 'merge fan-out ...' message. (Ignored for fast-forward, which creates no merge commit.)",
         performance = "Dominated by the merge (one tree merge + one materialize). Typical ~10-30ms.",
         related = ["begin_transaction", "abandon_transaction", "batch_execute"],
-        examples = ["commit_transaction()", "commit_transaction(merge_strategy: \"fast-forward\")"]
+        examples = ["commit_transaction()", "commit_transaction(merge_strategy: \"fast-forward\")", "commit_transaction(commit_message: 'ingest source X: merge 12 concept pages')"]
     )]
     async fn commit_transaction(
         &self,
         merge_strategy: Option<String>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (base_vault, record) = self.resolve_active_fanout().await.ok_or_else(|| {
             McpError::invalid_request(
@@ -3134,7 +3135,7 @@ impl ObsidianMcpServer {
         let merge_result = tokio::task::spawn_blocking(move || -> McpResult<_> {
             let repo = VaultRepo::open_with_locks(&base_path, locks)
                 .map_err(|e| McpError::internal(format!("open base vault: {}", e)))?;
-            repo.merge_fanout_back(&info, strategy)
+            repo.merge_fanout_back(&info, strategy, commit_message.as_deref())
                 .map_err(|e| McpError::internal(format!("merge_fanout_back: {}", e)))
         })
         .await
