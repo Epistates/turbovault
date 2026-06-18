@@ -101,6 +101,7 @@
 //! let delete = BatchOperation::DeleteNote {
 //!     path: "file.md".to_string(),
 //!     expected_hash: None,
+//!     on_backlinks: None,
 //! };
 //!
 //! assert!(write.conflicts_with(&delete));
