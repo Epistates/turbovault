@@ -791,6 +791,26 @@ impl GitFileTools {
                 }
                 t
             }
+            BatchOperation::CreateFromTemplate {
+                template_id,
+                path,
+                fields,
+                force,
+            } => {
+                // turbovault-0g4.4: render via TemplateEngine::compute_from_template
+                // (validates required fields + substitutes), then create the note
+                // as part of the batch commit. Default is a strict create
+                // (`expect_absent`); force=true is a blind upsert (overwrite).
+                let engine = crate::TemplateEngine::new(Arc::clone(&self.manager));
+                let (content, _info) = engine
+                    .compute_from_template(template_id, path, fields.clone())
+                    .await?;
+                if force.unwrap_or(false) {
+                    txn.upsert(path, content.into_bytes())
+                } else {
+                    txn.create(path, content.into_bytes())
+                }
+            }
         })
     }
 
@@ -1183,6 +1203,9 @@ fn describe_op(op: &BatchOperation) -> String {
         BatchOperation::ManageTags {
             path, operation, ..
         } => format!("{} tags in {}", operation, path),
+        BatchOperation::CreateFromTemplate {
+            template_id, path, ..
+        } => format!("created {} from template {}", path, template_id),
     }
 }
 
@@ -1646,6 +1669,59 @@ mod tests {
         }];
         let res = tools.batch_execute(ops).await.unwrap();
         assert!(!res.success, "list must be rejected inside a batch");
+    }
+
+    /// turbovault-0g4.4: CreateFromTemplate renders a built-in template and
+    /// creates the note as part of the batch commit (fields substituted,
+    /// template frontmatter present).
+    #[tokio::test]
+    async fn batch_create_from_template_in_one_commit() {
+        let (_tmp, tools) = setup().await;
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("title".to_string(), "Auth".to_string());
+        fields.insert("summary".to_string(), "How auth works".to_string());
+        let ops = vec![BatchOperation::CreateFromTemplate {
+            template_id: "doc".to_string(),
+            path: "notes/auth.md".to_string(),
+            fields,
+            force: None,
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "template batch failed: {:?}", res.errors);
+        let content = tools.read_file("notes/auth.md").await.unwrap();
+        assert!(content.contains("# Auth"), "title substituted: {content}");
+        assert!(
+            content.contains("How auth works"),
+            "summary substituted: {content}"
+        );
+        assert!(
+            content.contains("type: documentation"),
+            "template frontmatter present: {content}"
+        );
+    }
+
+    /// turbovault-0g4.4: default (force=None) is a strict create — a colliding
+    /// path aborts the whole batch (expect_absent), leaving the occupant intact.
+    #[tokio::test]
+    async fn batch_create_from_template_strict_create_aborts_on_collision() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("dup.md", "occupied").await.unwrap();
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("title".to_string(), "X".to_string());
+        fields.insert("summary".to_string(), "Y".to_string());
+        let ops = vec![BatchOperation::CreateFromTemplate {
+            template_id: "doc".to_string(),
+            path: "dup.md".to_string(),
+            fields,
+            force: None,
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(!res.success, "strict create must abort on an existing path");
+        assert_eq!(
+            tools.read_file("dup.md").await.unwrap(),
+            "occupied",
+            "occupant unchanged"
+        );
     }
 
     #[tokio::test]

@@ -249,6 +249,19 @@ pub enum BatchOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
+
+    /// turbovault-0g4.4: render a template and create a note as part of the
+    /// atomic batch commit (the batch equivalent of `create_from_template`).
+    /// `force` (default false) → strict create (`expect_absent`, aborts if the
+    /// path exists); true → blind upsert. **Git backend only**.
+    #[serde(rename = "CreateFromTemplate")]
+    CreateFromTemplate {
+        template_id: String,
+        path: String,
+        fields: std::collections::HashMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
 }
 
 impl BatchOperation {
@@ -270,6 +283,7 @@ impl BatchOperation {
             Self::EditNote { path, .. } => vec![path.clone()],
             Self::UpdateFrontmatter { path, .. } => vec![path.clone()],
             Self::ManageTags { path, .. } => vec![path.clone()],
+            Self::CreateFromTemplate { path, .. } => vec![path.clone()],
         }
     }
 
@@ -283,6 +297,7 @@ impl BatchOperation {
             Self::EditNote { .. } => Some("EditNote"),
             Self::UpdateFrontmatter { .. } => Some("UpdateFrontmatter"),
             Self::ManageTags { .. } => Some("ManageTags"),
+            Self::CreateFromTemplate { .. } => Some("CreateFromTemplate"),
             _ => None,
         }
     }
