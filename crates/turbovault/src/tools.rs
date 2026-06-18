@@ -2929,6 +2929,25 @@ impl ObsidianMcpServer {
             .map(|c| c.write_backend)
             .unwrap_or(WriteBackend::Legacy);
         let tools = self.get_active_write_tools().await?;
+
+        // turbovault-0g4.6: a backlink-rewriting MoveNote resolves inbound
+        // links from the in-memory graph; on the git backend, drain any pending
+        // reindex first so the graph is coherent (mirrors what move_note does
+        // for the single-op path — turbovault-78w). A stale graph would silently
+        // miss inbound links and leave them dangling. Cheap no-op when the queue
+        // is empty / the batch has no backlink-aware move.
+        let needs_backlink_graph = matches!(backend, WriteBackend::Git)
+            && operations.iter().any(|op| {
+                matches!(
+                    op,
+                    BatchOperation::MoveNote { update_backlinks, .. }
+                        if update_backlinks.unwrap_or(true)
+                )
+            });
+        if needs_backlink_graph {
+            self.flush_reindex_for_active_vault().await?;
+        }
+
         // turbovault-0bh: caller-supplied or op-tally derivation.
         let msg = commit_message.unwrap_or_else(|| derive_batch_message(&operations));
         let result = tools

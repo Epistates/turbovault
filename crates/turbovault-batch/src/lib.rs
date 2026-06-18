@@ -186,12 +186,22 @@ pub enum BatchOperation {
     /// Move/rename a note. `expected_hash` guards the SOURCE against
     /// concurrent modification (the destination always carries
     /// `expect_absent`, refusing to clobber).
+    ///
+    /// turbovault-0g4.6: on the **git backend**, `update_backlinks` (default
+    /// true) atomically rewrites every inbound wikilink — `[[from]]`,
+    /// `[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and
+    /// path-prefix forms — to the new target in the SAME commit, with per-source
+    /// `expect_blob` preconditions. Set it false for a rename-only move (inbound
+    /// links dangle — the pre-0g4.6 behavior). The legacy backend ignores this
+    /// field and is always rename-only (it has no atomic multi-file primitive).
     #[serde(rename = "MoveNote", alias = "MoveFile")]
     MoveNote {
         from: String,
         to: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_backlinks: Option<bool>,
     },
 
     /// Update links in a note (find and replace link target).
@@ -585,6 +595,7 @@ mod tests {
             from: "a.md".to_string(),
             to: "b.md".to_string(),
             expected_hash: None,
+            update_backlinks: None,
         };
         let affected = op.affected_files();
         assert_eq!(affected.len(), 2);
@@ -716,6 +727,7 @@ mod tests {
                 from: "source.md".to_string(),
                 to: "destination.md".to_string(),
                 expected_hash: None,
+                update_backlinks: None,
             }])
             .await
             .unwrap();

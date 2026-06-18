@@ -543,14 +543,42 @@ impl GitFileTools {
         expected_hash: Option<&str>,
         message: &str,
     ) -> Result<MoveWithLinksResult> {
-        use crate::wikilink_rewriter::rewrite_wikilinks;
-        use std::path::Path as StdPath;
-
         let expected_from = parse_blob_oid(expected_hash)?;
+        let txn = Transaction::new(message.to_string());
+        let (txn, link_sources_updated) = self
+            .fold_move_with_links(txn, from, to, expected_from)
+            .await?;
+        self.apply_txn(&txn).await?;
+        Ok(MoveWithLinksResult {
+            from: from.to_string(),
+            to: to.to_string(),
+            link_sources_updated,
+        })
+    }
+
+    /// turbovault-0g4.6: fold an atomic move + inbound-wikilink rewrite onto an
+    /// existing transaction. Resolves backlinks via the in-memory link graph,
+    /// rewrites each source (OFM-aware), and chains `remove(from)` +
+    /// `upsert(to)` + `expect_absent(to)` (+ optional `expect_blob(from)`) +
+    /// each source's `upsert`/`expect_blob`. Returns the augmented transaction
+    /// and the list of rewritten source paths.
+    ///
+    /// Shared by the single-op [`Self::move_file_with_link_updates`] and the
+    /// batch `MoveNote` arm so both produce identical commits. Resolves against
+    /// the link graph, so the caller must ensure it is coherent: the MCP layer
+    /// drains the reindex queue before a backlink-aware move; unit tests call
+    /// `manager.initialize()`.
+    async fn fold_move_with_links(
+        &self,
+        txn: Transaction,
+        from: &str,
+        to: &str,
+        expected_from: Option<Oid>,
+    ) -> Result<(Transaction, Vec<String>)> {
+        use crate::wikilink_rewriter::rewrite_wikilinks;
+
         let content = self.read_file(from).await?;
 
-        // Resolve backlinks via the in-memory link graph (kept coherent
-        // by the substrate's CommitHook + drainer / external-listener).
         // Source paths are vault-relative PathBuf.
         let backlink_paths = {
             let lg = self.manager.link_graph();
@@ -563,13 +591,11 @@ impl GitFileTools {
                 .collect::<Vec<_>>()
         };
 
-        // Read each source, rewrite, capture blob OID for the
-        // precondition. Skip sources whose rewritten content equals
-        // the original (no actual link change — e.g. the source's
-        // `[[from]]` literal sits in a code fence the parser missed).
+        // Read each source, rewrite, capture blob OID for the precondition.
+        // Skip sources whose rewritten content equals the original (no actual
+        // link change — e.g. the `[[from]]` literal sits in a code fence).
         let mut link_updates: Vec<(String, String, Oid)> = Vec::new();
         for full_src in &backlink_paths {
-            // Strip the vault prefix to get the substrate-relative path.
             let rel = full_src
                 .strip_prefix(self.manager.vault_path())
                 .map(|p| p.to_path_buf())
@@ -588,11 +614,8 @@ impl GitFileTools {
             link_updates.push((rel_str, rewritten, src_oid));
         }
 
-        // Build the atomic transaction: source rename + each link
-        // source's rewrite, with their preconditions.
-        let mut txn = Transaction::new(message.to_string())
-            .remove(from)
-            .upsert(to, content.into_bytes());
+        // Source rename + each link source's rewrite, with preconditions.
+        let mut txn = txn.remove(from).upsert(to, content.into_bytes());
         if let Some(oid) = expected_from {
             txn = txn.expect_blob(from, oid);
         }
@@ -603,16 +626,8 @@ impl GitFileTools {
                 .expect_blob(rel_path.clone(), *oid);
         }
 
-        self.apply_txn(&txn).await?;
-
-        // Mark the destination's directory as moved-from-known if we
-        // need it later; for now we just report the diff.
-        let _ = StdPath::new(to); // (no-op; reserved)
-        Ok(MoveWithLinksResult {
-            from: from.to_string(),
-            to: to.to_string(),
-            link_sources_updated: link_updates.into_iter().map(|(p, _, _)| p).collect(),
-        })
+        let updated = link_updates.into_iter().map(|(p, _, _)| p).collect();
+        Ok((txn, updated))
     }
 
     /// Copy a file — read source, commit target (no source change). One
@@ -698,16 +713,29 @@ impl GitFileTools {
                 from,
                 to,
                 expected_hash,
+                update_backlinks,
             } => {
-                let content = self.read_file(from).await?;
-                let mut t = txn.remove(from).upsert(to, content.into_bytes());
-                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
-                    t = t.expect_blob(from, oid);
+                let expected_from = parse_blob_oid(expected_hash.as_deref())?;
+                if update_backlinks.unwrap_or(true) {
+                    // turbovault-0g4.6: atomic OFM-aware inbound-wikilink rewrite
+                    // folded into the batch commit — parity with the standalone
+                    // move_note. Backlink sources ride the same commit with their
+                    // own expect_blob preconditions; a concurrent edit to any
+                    // source aborts the whole batch.
+                    self.fold_move_with_links(txn, from, to, expected_from)
+                        .await?
+                        .0
+                } else {
+                    // Rename-only (the pre-0g4.6 behavior): no backlink rewrite,
+                    // inbound links dangle. Destination always carries
+                    // expect_absent — single-op move_file does the same.
+                    let content = self.read_file(from).await?;
+                    let mut t = txn.remove(from).upsert(to, content.into_bytes());
+                    if let Some(oid) = expected_from {
+                        t = t.expect_blob(from, oid);
+                    }
+                    t.expect_absent(to)
                 }
-                // Destination always carries expect_absent — single-op
-                // move_file does the same.
-                t = t.expect_absent(to);
-                t
             }
             BatchOperation::UpdateLinks {
                 file,
@@ -1505,6 +1533,7 @@ mod tests {
                 from: "src.md".to_string(),
                 to: "dest.md".to_string(),
                 expected_hash: None,
+                update_backlinks: None,
             },
         ];
         let res = tools.batch_execute(ops).await.unwrap();
@@ -1721,6 +1750,69 @@ mod tests {
             tools.read_file("dup.md").await.unwrap(),
             "occupied",
             "occupant unchanged"
+        );
+    }
+
+    /// turbovault-0g4.6: a batch MoveNote rewrites inbound wikilinks atomically
+    /// by default (parity with the standalone move_note) — the rename and the
+    /// backlink source land in ONE commit.
+    #[tokio::test]
+    async fn batch_move_note_rewrites_backlinks_by_default() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("old.md", "# Old\n").await.unwrap();
+        tools
+            .write_file("linker.md", "see [[old]] here\n")
+            .await
+            .unwrap();
+        // Populate the link graph so backlinks resolve (the MCP layer drains
+        // the reindex queue; the unit test initializes directly).
+        tools.manager.initialize().await.unwrap();
+        let before = head_oid(&tools);
+        let ops = vec![BatchOperation::MoveNote {
+            from: "old.md".to_string(),
+            to: "new.md".to_string(),
+            expected_hash: None,
+            update_backlinks: None, // default → rewrite
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "move batch failed: {:?}", res.errors);
+        assert!(!tmp.path().join("old.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("new.md")).unwrap(),
+            "# Old\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("linker.md")).unwrap(),
+            "see [[new]] here\n",
+            "inbound wikilink rewritten in the same commit"
+        );
+        assert_ne!(head_oid(&tools), before, "one new commit");
+    }
+
+    /// turbovault-0g4.6: update_backlinks=false keeps the pre-0g4.6 rename-only
+    /// behavior — inbound links are left dangling.
+    #[tokio::test]
+    async fn batch_move_note_rename_only_when_backlinks_disabled() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("old.md", "# Old\n").await.unwrap();
+        tools
+            .write_file("linker.md", "see [[old]] here\n")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+        let ops = vec![BatchOperation::MoveNote {
+            from: "old.md".to_string(),
+            to: "new.md".to_string(),
+            expected_hash: None,
+            update_backlinks: Some(false),
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "rename-only batch failed: {:?}", res.errors);
+        assert!(tmp.path().join("new.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("linker.md")).unwrap(),
+            "see [[old]] here\n",
+            "rename-only leaves the inbound link dangling"
         );
     }
 
@@ -2037,6 +2129,7 @@ mod tests {
                 from: "seed_mv.md".into(),
                 to: "moved.md".into(),
                 expected_hash: None,
+                update_backlinks: None,
             },
             BatchOperation::UpdateLinks {
                 file: "links.md".into(),

@@ -693,6 +693,7 @@ mod tests {
                     from: "missing.md".into(),
                     to: "anywhere.md".into(),
                     expected_hash: None,
+                    update_backlinks: None,
                 },
                 BatchOperation::WriteNote {
                     path: "third.md".into(),
