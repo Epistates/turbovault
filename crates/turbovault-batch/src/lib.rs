@@ -206,6 +206,20 @@ pub enum BatchOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
+
+    /// turbovault-0g4.1: apply SEARCH/REPLACE blocks to an existing note as
+    /// part of the atomic batch commit (the batch equivalent of `edit_note`).
+    /// `edits` uses the same block grammar as the tool; multiple blocks edit
+    /// multiple locations in the one file. `expected_hash` (git blob OID hex)
+    /// carries an `expect_blob` precondition — a stale pre-image aborts the
+    /// whole batch. **Git backend only**; the legacy executor refuses it.
+    #[serde(rename = "EditNote", alias = "EditFile")]
+    EditNote {
+        path: String,
+        edits: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
 }
 
 impl BatchOperation {
@@ -224,6 +238,19 @@ impl BatchOperation {
             } => {
                 vec![file.clone(), old_target.clone(), new_target.clone()]
             }
+            Self::EditNote { path, .. } => vec![path.clone()],
+        }
+    }
+
+    /// turbovault-0g4: the variant name if this op is git-substrate-only (has
+    /// no legacy `BatchExecutor` equivalent), else `None`. The legacy executor
+    /// uses this to refuse such ops upfront in [`BatchExecutor::validate`], so
+    /// a user on `write_backend=legacy` sees a clear error instead of a partial
+    /// apply. Extended as each git-only op is added (turbovault-0g4.*).
+    pub fn git_only_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::EditNote { .. } => Some("EditNote"),
+            _ => None,
         }
     }
 
@@ -303,6 +330,17 @@ impl BatchExecutor {
     pub async fn validate(&self, ops: &[BatchOperation]) -> Result<()> {
         if ops.is_empty() {
             return Err(Error::config_error("Batch cannot be empty".to_string()));
+        }
+
+        // turbovault-0g4: refuse git-substrate-only ops on the legacy executor
+        // upfront (zero side effects) rather than writing earlier ops then
+        // failing mid-batch. Keeps `write_backend=legacy` behavior unchanged:
+        // these ops never existed there, so a clear refusal is the only correct
+        // outcome.
+        for (i, op) in ops.iter().enumerate() {
+            if let Some(kind) = op.git_only_kind() {
+                return Err(git_only_err(i, kind));
+            }
         }
 
         // Check for conflicts (operations on same file)
@@ -408,6 +446,12 @@ impl BatchExecutor {
         // turbovault-6fo.16). `WriteTools::Legacy::batch_execute` refuses
         // batches that carry preconditions, so reaching this code path with
         // a precondition set is a bug elsewhere.
+        //
+        // turbovault-0g4: git-substrate-only ops have no legacy equivalent.
+        // `validate()` rejects them upfront; this is a defensive backstop.
+        if let Some(kind) = op.git_only_kind() {
+            return Err(git_only_err(0, kind));
+        }
         match op {
             BatchOperation::CreateNote { path, content, .. } => {
                 let path_buf = PathBuf::from(path);
@@ -461,8 +505,24 @@ impl BatchExecutor {
                     ))
                 }
             }
+            // turbovault-0g4: git-substrate-only ops return early above; this
+            // arm keeps the match exhaustive without pinning it to the legacy
+            // op set, and defensively refuses any unhandled variant.
+            other => Err(git_only_err(
+                0,
+                other.git_only_kind().unwrap_or("operation"),
+            )),
         }
     }
+}
+
+/// turbovault-0g4: error for a git-substrate-only [`BatchOperation`] reaching
+/// the legacy executor. `index` is the op's position in the batch (use `0`
+/// when the position is not meaningful, e.g. the defensive backstop).
+fn git_only_err(index: usize, kind: &str) -> Error {
+    Error::config_error(format!(
+        "operation {index} (BatchOperation::{kind}) requires write_backend=git; the legacy batch executor has no equivalent. Switch the vault to the git backend to use it."
+    ))
 }
 
 #[cfg(test)]

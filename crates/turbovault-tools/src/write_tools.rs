@@ -345,12 +345,7 @@ impl WriteTools {
     ) -> Result<BatchResult> {
         match self {
             Self::Legacy { batch, .. } => {
-                if let Some(idx) = first_op_with_precondition(&operations) {
-                    return Err(Error::config_error(format!(
-                        "BatchOperation at index {} carries a per-op CAS precondition (expected_hash), but write_backend=legacy has no batch-level CAS. Use write_backend=git for per-op CAS, or drop the precondition.",
-                        idx
-                    )));
-                }
+                legacy_batch_refusal(&operations)?;
                 // Legacy doesn't commit; message ignored.
                 batch.batch_execute(operations).await
             }
@@ -420,16 +415,11 @@ impl WriteTools {
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
         match self {
             Self::Legacy { batch, .. } => {
-                // turbovault-c0e: legacy backend has no per-op CAS primitive
-                // on the batch path (per the legacy-stays direction in
-                // turbovault-6fo.16). Refuse loudly rather than silently
-                // dropping the precondition the caller declared.
-                if let Some(idx) = first_op_with_precondition(&operations) {
-                    return Err(Error::config_error(format!(
-                        "BatchOperation at index {} carries a per-op CAS precondition (expected_hash), but write_backend=legacy has no batch-level CAS. Use write_backend=git for per-op CAS, or drop the precondition.",
-                        idx
-                    )));
-                }
+                // turbovault-c0e / 0g4: legacy backend has no per-op CAS
+                // primitive and no git-only ops (per the legacy-stays direction
+                // in turbovault-6fo.16). Refuse loudly rather than silently
+                // dropping the precondition or partially applying.
+                legacy_batch_refusal(&operations)?;
                 batch.batch_execute(operations).await
             }
             Self::Git(g) => g.batch_execute(operations).await,
@@ -481,12 +471,7 @@ impl WriteTools {
                         "read_set preconditions require write_backend=git",
                     ));
                 }
-                if let Some(idx) = first_op_with_precondition(&operations) {
-                    return Err(Error::config_error(format!(
-                        "BatchOperation at index {} carries a per-op CAS precondition (expected_hash), but write_backend=legacy has no batch-level CAS. Use write_backend=git for per-op CAS, or drop the precondition.",
-                        idx
-                    )));
-                }
+                legacy_batch_refusal(&operations)?;
                 batch.batch_execute(operations).await
             }
         }
@@ -508,7 +493,44 @@ fn first_op_with_precondition(operations: &[BatchOperation]) -> Option<usize> {
         | BatchOperation::DeleteNote { expected_hash, .. }
         | BatchOperation::MoveNote { expected_hash, .. }
         | BatchOperation::UpdateLinks { expected_hash, .. } => expected_hash.is_some(),
+        // turbovault-0g4: git-substrate-only ops (EditNote, …) are refused by
+        // `legacy_batch_refusal`'s git-only check (which runs first); don't
+        // preempt that clearer message with a precondition error here.
+        _ => false,
     })
+}
+
+/// turbovault-0g4: index + name of the first git-substrate-only op in a batch
+/// (one with no legacy executor equivalent — see
+/// [`turbovault_batch::BatchOperation::git_only_kind`]), or `None` if every op
+/// is legacy-capable.
+fn first_git_only_op(operations: &[BatchOperation]) -> Option<(usize, &'static str)> {
+    operations
+        .iter()
+        .enumerate()
+        .find_map(|(i, op)| op.git_only_kind().map(|kind| (i, kind)))
+}
+
+/// turbovault-0g4 + c0e: the two refusals the legacy batch dispatch performs
+/// upfront (zero side effects), in priority order:
+/// 1. git-substrate-only ops (no legacy equivalent), then
+/// 2. per-op CAS preconditions (no legacy batch-level CAS).
+///
+/// Refusing here — rather than letting the executor partially apply or return
+/// a softer `BatchResult { success: false }` — keeps `write_backend=legacy`
+/// behavior unchanged and the error shape consistent across both refusals.
+fn legacy_batch_refusal(operations: &[BatchOperation]) -> Result<()> {
+    if let Some((idx, kind)) = first_git_only_op(operations) {
+        return Err(Error::config_error(format!(
+            "BatchOperation at index {idx} ({kind}) requires write_backend=git; the legacy batch executor has no equivalent. Switch the vault to the git backend to use it."
+        )));
+    }
+    if let Some(idx) = first_op_with_precondition(operations) {
+        return Err(Error::config_error(format!(
+            "BatchOperation at index {idx} carries a per-op CAS precondition (expected_hash), but write_backend=legacy has no batch-level CAS. Use write_backend=git for per-op CAS, or drop the precondition."
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -591,6 +613,39 @@ mod tests {
         assert!(
             msg.contains("write_backend=legacy") && msg.contains("CAS"),
             "expected legacy-refuse error, got: {msg}"
+        );
+    }
+
+    /// turbovault-0g4.1: a git-substrate-only op (EditNote) in a legacy batch
+    /// is refused with a clear write_backend=git message, and NO earlier op is
+    /// applied (validate() rejects upfront, zero side effects). Keeps the
+    /// legacy backend's behavior unchanged for users who never had these ops.
+    #[tokio::test]
+    async fn legacy_batch_refuses_git_only_edit_note() {
+        let tmp = TempDir::new().unwrap();
+        let tools = legacy_tools(&tmp).await;
+        let ops = vec![
+            BatchOperation::WriteNote {
+                path: "kept.md".into(),
+                content: "v".into(),
+                expected_hash: None,
+            },
+            BatchOperation::EditNote {
+                path: "kept.md".into(),
+                edits: "<<<<<<< SEARCH\nv\n=======\nw\n>>>>>>> REPLACE".into(),
+                expected_hash: None,
+            },
+        ];
+        let err = tools.batch_execute(ops).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("write_backend=git") && msg.contains("EditNote"),
+            "expected git-only refusal, got: {msg}"
+        );
+        // validate() refuses upfront: the earlier WriteNote never landed.
+        assert!(
+            !tmp.path().join("kept.md").exists(),
+            "no op applied on a refused legacy batch"
         );
     }
 

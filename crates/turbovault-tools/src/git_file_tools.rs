@@ -723,6 +723,26 @@ impl GitFileTools {
                 }
                 t
             }
+            BatchOperation::EditNote {
+                path,
+                edits,
+                expected_hash,
+            } => {
+                // turbovault-0g4.1: SEARCH/REPLACE blocks folded into the batch
+                // commit. Reads working-tree bytes, applies the blocks in
+                // memory (multiple blocks → multiple edited locations), and
+                // upserts the result — the same EditEngine path `edit_file`
+                // uses, minus the dry-run/hash reporting a batch doesn't need.
+                let current = self.read_file(path).await?;
+                let engine = EditEngine::new();
+                let blocks = engine.parse_blocks(edits)?;
+                let (_result, new_content) = engine.apply_edits(&current, &blocks, false)?;
+                let mut t = txn.upsert(path, new_content.into_bytes());
+                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
+                    t = t.expect_blob(path, oid);
+                }
+                t
+            }
         })
     }
 
@@ -1108,6 +1128,7 @@ fn describe_op(op: &BatchOperation) -> String {
         BatchOperation::DeleteNote { path, .. } => format!("deleted {}", path),
         BatchOperation::MoveNote { from, to, .. } => format!("moved {} -> {}", from, to),
         BatchOperation::UpdateLinks { file, .. } => format!("updated links in {}", file),
+        BatchOperation::EditNote { path, .. } => format!("edited {}", path),
     }
 }
 
@@ -1446,6 +1467,59 @@ mod tests {
             std::fs::read_to_string(tmp.path().join("b.md")).unwrap(),
             "B"
         );
+    }
+
+    /// turbovault-0g4.1: EditNote folds SEARCH/REPLACE blocks into the batch
+    /// commit; multiple blocks edit multiple locations in the one file, and a
+    /// sibling op rides the same atomic commit.
+    #[tokio::test]
+    async fn batch_edit_note_multi_block_in_one_commit() {
+        let (_tmp, tools) = setup().await;
+        tools
+            .write_file("doc.md", "alpha\nbeta\ngamma\n")
+            .await
+            .unwrap();
+        let before = head_oid(&tools);
+        let edits = "<<<<<<< SEARCH\nalpha\n=======\nALPHA\n>>>>>>> REPLACE\n\
+                     <<<<<<< SEARCH\ngamma\n=======\nGAMMA\n>>>>>>> REPLACE";
+        let ops = vec![
+            BatchOperation::EditNote {
+                path: "doc.md".to_string(),
+                edits: edits.to_string(),
+                expected_hash: None,
+            },
+            BatchOperation::WriteNote {
+                path: "sibling.md".to_string(),
+                content: "S".to_string(),
+                expected_hash: None,
+            },
+        ];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "edit batch failed: {:?}", res.errors);
+        assert_eq!(res.executed, 2);
+        assert_eq!(
+            tools.read_file("doc.md").await.unwrap(),
+            "ALPHA\nbeta\nGAMMA\n"
+        );
+        assert_eq!(tools.read_file("sibling.md").await.unwrap(), "S");
+        assert_ne!(head_oid(&tools), before, "one new commit for the batch");
+    }
+
+    /// turbovault-0g4.1: a stale `expected_hash` on an EditNote aborts the
+    /// whole batch atomically — the file is untouched.
+    #[tokio::test]
+    async fn batch_edit_note_stale_hash_aborts() {
+        let (_tmp, tools) = setup().await;
+        tools.write_file("doc.md", "x\n").await.unwrap();
+        let stale = VaultRepo::blob_oid_of(b"STALE").unwrap().to_string();
+        let ops = vec![BatchOperation::EditNote {
+            path: "doc.md".to_string(),
+            edits: "<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE".to_string(),
+            expected_hash: Some(stale),
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(!res.success);
+        assert_eq!(tools.read_file("doc.md").await.unwrap(), "x\n", "unchanged");
     }
 
     #[tokio::test]
