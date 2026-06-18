@@ -220,6 +220,21 @@ pub enum BatchOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
+
+    /// turbovault-0g4.2: set/merge frontmatter keys on a note as part of the
+    /// atomic batch commit (the batch equivalent of `update_frontmatter`).
+    /// `merge` defaults to true (deep-merge into existing frontmatter); false
+    /// replaces the frontmatter wholesale. `expected_hash` (git blob OID hex)
+    /// carries an `expect_blob` precondition. **Git backend only**.
+    #[serde(rename = "UpdateFrontmatter")]
+    UpdateFrontmatter {
+        path: String,
+        frontmatter: std::collections::HashMap<String, serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
 }
 
 impl BatchOperation {
@@ -239,6 +254,7 @@ impl BatchOperation {
                 vec![file.clone(), old_target.clone(), new_target.clone()]
             }
             Self::EditNote { path, .. } => vec![path.clone()],
+            Self::UpdateFrontmatter { path, .. } => vec![path.clone()],
         }
     }
 
@@ -250,6 +266,7 @@ impl BatchOperation {
     pub fn git_only_kind(&self) -> Option<&'static str> {
         match self {
             Self::EditNote { .. } => Some("EditNote"),
+            Self::UpdateFrontmatter { .. } => Some("UpdateFrontmatter"),
             _ => None,
         }
     }

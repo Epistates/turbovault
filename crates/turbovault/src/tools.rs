@@ -59,6 +59,7 @@ fn derive_batch_message(operations: &[turbovault_tools::BatchOperation]) -> Stri
     let mut moves = 0u32;
     let mut link_updates = 0u32;
     let mut edits = 0u32;
+    let mut fm_updates = 0u32;
     for op in operations {
         match op {
             BatchOperation::CreateNote { .. } => creates += 1,
@@ -67,6 +68,7 @@ fn derive_batch_message(operations: &[turbovault_tools::BatchOperation]) -> Stri
             BatchOperation::MoveNote { .. } => moves += 1,
             BatchOperation::UpdateLinks { .. } => link_updates += 1,
             BatchOperation::EditNote { .. } => edits += 1,
+            BatchOperation::UpdateFrontmatter { .. } => fm_updates += 1,
         }
     }
     let pluralize = |n: u32, word: &str| -> String {
@@ -94,6 +96,9 @@ fn derive_batch_message(operations: &[turbovault_tools::BatchOperation]) -> Stri
     }
     if edits > 0 {
         parts.push(pluralize(edits, "edit"));
+    }
+    if fm_updates > 0 {
+        parts.push(pluralize(fm_updates, "frontmatter update"));
     }
     if parts.is_empty() {
         // Should be unreachable — empty batches are rejected upstream.

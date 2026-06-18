@@ -743,6 +743,29 @@ impl GitFileTools {
                 }
                 t
             }
+            BatchOperation::UpdateFrontmatter {
+                path,
+                frontmatter,
+                merge,
+                expected_hash,
+            } => {
+                // turbovault-0g4.2: reuse the pure compute helper the
+                // `update_frontmatter` tool uses (read + merge in memory), then
+                // fold the resulting full content into the batch commit. The
+                // helper reads via VaultManager (a read — invariant-safe); the
+                // write rides the substrate transaction.
+                let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
+                let fm_map: serde_json::Map<String, serde_json::Value> =
+                    frontmatter.clone().into_iter().collect();
+                let (new_content, _info) = mt
+                    .compute_update_frontmatter(path, fm_map, merge.unwrap_or(true))
+                    .await?;
+                let mut t = txn.upsert(path, new_content.into_bytes());
+                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
+                    t = t.expect_blob(path, oid);
+                }
+                t
+            }
         })
     }
 
@@ -1129,6 +1152,9 @@ fn describe_op(op: &BatchOperation) -> String {
         BatchOperation::MoveNote { from, to, .. } => format!("moved {} -> {}", from, to),
         BatchOperation::UpdateLinks { file, .. } => format!("updated links in {}", file),
         BatchOperation::EditNote { path, .. } => format!("edited {}", path),
+        BatchOperation::UpdateFrontmatter { path, .. } => {
+            format!("updated frontmatter in {}", path)
+        }
     }
 }
 
@@ -1520,6 +1546,37 @@ mod tests {
         let res = tools.batch_execute(ops).await.unwrap();
         assert!(!res.success);
         assert_eq!(tools.read_file("doc.md").await.unwrap(), "x\n", "unchanged");
+    }
+
+    /// turbovault-0g4.2: UpdateFrontmatter merges keys into an existing note's
+    /// frontmatter as part of the batch commit (existing keys + body preserved).
+    #[tokio::test]
+    async fn batch_update_frontmatter_merges_in_one_commit() {
+        let (_tmp, tools) = setup().await;
+        tools
+            .write_file("n.md", "---\ntitle: T\n---\nbody\n")
+            .await
+            .unwrap();
+        let mut fm = std::collections::HashMap::new();
+        fm.insert("status".to_string(), serde_json::json!("active"));
+        let ops = vec![BatchOperation::UpdateFrontmatter {
+            path: "n.md".to_string(),
+            frontmatter: fm,
+            merge: Some(true),
+            expected_hash: None,
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "frontmatter batch failed: {:?}", res.errors);
+        let content = tools.read_file("n.md").await.unwrap();
+        assert!(
+            content.contains("title: T"),
+            "existing key preserved: {content}"
+        );
+        assert!(
+            content.contains("status: active"),
+            "new key merged: {content}"
+        );
+        assert!(content.contains("body"), "body preserved: {content}");
     }
 
     #[tokio::test]
