@@ -209,6 +209,7 @@ async fn test_batch_tools_partial_failure_rollback() {
         BatchOperation::DeleteNote {
             path: "nonexistent_file_for_failure.md".to_string(),
             expected_hash: None,
+            on_backlinks: None,
         },
         BatchOperation::WriteNote {
             path: "file3.md".to_string(),

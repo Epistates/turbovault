@@ -87,6 +87,7 @@ async fn test_batch_execute_delete() {
     let ops = vec![BatchOperation::DeleteNote {
         path: "existing.md".to_string(),
         expected_hash: None,
+        on_backlinks: None,
     }];
 
     let result = tools.batch_execute(ops).await;
@@ -167,6 +168,7 @@ async fn test_batch_execute_rollback_on_error() {
         BatchOperation::DeleteNote {
             path: "nonexistent.md".to_string(), // This will fail,
             expected_hash: None,
+            on_backlinks: None,
         },
         BatchOperation::WriteNote {
             path: "success2.md".to_string(),
@@ -252,6 +254,7 @@ async fn test_batch_execute_atomic_guarantees() {
         BatchOperation::DeleteNote {
             path: "nonexistent_for_atomic_test.md".to_string(),
             expected_hash: None,
+            on_backlinks: None,
         },
     ];
 

@@ -176,11 +176,25 @@ pub enum BatchOperation {
 
     /// Delete a note. `expected_hash` guards the delete against a
     /// concurrent modification of the target.
+    ///
+    /// turbovault-0g4.7: on the **git backend**, `on_backlinks` controls inbound
+    /// wikilinks (parity with the standalone `delete_note`):
+    /// - `"refuse"` (default) — abort the batch if the note has inbound
+    ///   backlinks (prevents silently shipping broken links);
+    /// - `"rewrite-stale-callout"` — atomically `~~[[strikethrough]]~~` every
+    ///   linker in the same commit;
+    /// - `"force"` — delete and leave inbound links dangling (the pre-0g4.7
+    ///   behavior).
+    ///
+    /// The legacy backend ignores this field and always does a bare delete (no
+    /// atomic multi-file primitive).
     #[serde(rename = "DeleteNote", alias = "DeleteFile")]
     DeleteNote {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_backlinks: Option<String>,
     },
 
     /// Move/rename a note. `expected_hash` guards the SOURCE against
@@ -613,6 +627,7 @@ mod tests {
         let op2 = BatchOperation::DeleteNote {
             path: "file.md".to_string(),
             expected_hash: None,
+            on_backlinks: None,
         };
 
         assert!(op1.conflicts_with(&op2));
@@ -708,6 +723,7 @@ mod tests {
             .execute(vec![BatchOperation::DeleteNote {
                 path: "to_delete.md".to_string(),
                 expected_hash: None,
+                on_backlinks: None,
             }])
             .await
             .unwrap();
@@ -796,6 +812,7 @@ mod tests {
             BatchOperation::DeleteNote {
                 path: "nonexistent.md".to_string(),
                 expected_hash: None,
+                on_backlinks: None,
             },
         ];
 

@@ -436,9 +436,35 @@ impl GitFileTools {
         expected_hash: Option<&str>,
         message: &str,
     ) -> Result<MoveWithLinksResult> {
-        use crate::wikilink_rewriter::wrap_wikilinks_as_stale;
-
         let expected_target = parse_blob_oid(expected_hash)?;
+        let txn = Transaction::new(message.to_string());
+        let (txn, link_sources_updated) = self
+            .fold_delete_with_stale_links(txn, path, expected_target)
+            .await?;
+        self.apply_txn(&txn).await?;
+        Ok(MoveWithLinksResult {
+            from: path.to_string(),
+            to: String::new(), // No destination for a delete.
+            link_sources_updated,
+        })
+    }
+
+    /// turbovault-0g4.7: fold a delete + inbound-wikilink stale-wrap onto an
+    /// existing transaction. Resolves backlinks via the link graph, wraps each
+    /// linker's references to `path` as `~~[[old]]~~` strikethrough, and chains
+    /// `remove(path)` (+ optional `expect_blob(path)`) + each source's
+    /// `upsert`/`expect_blob`. Returns the augmented transaction and the list of
+    /// rewritten source paths. Shared by the single-op
+    /// [`Self::delete_file_with_link_rewrite_to_stale`] and the batch `DeleteNote`
+    /// arm so both produce identical commits. Same link-graph coherence caveat
+    /// as [`Self::fold_move_with_links`].
+    async fn fold_delete_with_stale_links(
+        &self,
+        txn: Transaction,
+        path: &str,
+        expected_target: Option<Oid>,
+    ) -> Result<(Transaction, Vec<String>)> {
+        use crate::wikilink_rewriter::wrap_wikilinks_as_stale;
 
         let backlink_paths = {
             let lg = self.manager.link_graph();
@@ -471,7 +497,7 @@ impl GitFileTools {
             link_updates.push((rel_str, rewritten, src_oid));
         }
 
-        let mut txn = Transaction::new(message.to_string()).remove(path);
+        let mut txn = txn.remove(path);
         if let Some(oid) = expected_target {
             txn = txn.expect_blob(path, oid);
         }
@@ -481,13 +507,8 @@ impl GitFileTools {
                 .expect_blob(rel_path.clone(), *oid);
         }
 
-        self.apply_txn(&txn).await?;
-
-        Ok(MoveWithLinksResult {
-            from: path.to_string(),
-            to: String::new(), // No destination for a delete.
-            link_sources_updated: link_updates.into_iter().map(|(p, _, _)| p).collect(),
-        })
+        let updated = link_updates.into_iter().map(|(p, _, _)| p).collect();
+        Ok((txn, updated))
     }
 
     /// turbovault-oz6: return the list of vault-relative source paths
@@ -702,12 +723,52 @@ impl GitFileTools {
             BatchOperation::DeleteNote {
                 path,
                 expected_hash,
+                on_backlinks,
             } => {
-                let mut t = txn.remove(path);
-                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
-                    t = t.expect_blob(path, oid);
+                let expected = parse_blob_oid(expected_hash.as_deref())?;
+                // turbovault-0g4.7: backlink-aware delete (parity with the
+                // standalone delete_note). Default "refuse" prevents silently
+                // shipping broken backlinks.
+                match on_backlinks.as_deref().unwrap_or("refuse") {
+                    "force" => {
+                        // Bare delete — leave inbound links dangling (the
+                        // pre-0g4.7 batch behavior).
+                        let mut t = txn.remove(path);
+                        if let Some(oid) = expected {
+                            t = t.expect_blob(path, oid);
+                        }
+                        t
+                    }
+                    "rewrite-stale-callout" => {
+                        // Atomically strikethrough every linker in the same
+                        // commit.
+                        self.fold_delete_with_stale_links(txn, path, expected)
+                            .await?
+                            .0
+                    }
+                    "refuse" => {
+                        let backlinks = self.list_inbound_backlinks(path).await?;
+                        if !backlinks.is_empty() {
+                            return Err(Error::config_error(format!(
+                                "DeleteNote refused (turbovault-0g4.7): '{}' has {} inbound backlink(s) [{}]. Pass on_backlinks=\"rewrite-stale-callout\" to strikethrough every linker in the same commit, or \"force\" to delete and leave them broken.",
+                                path,
+                                backlinks.len(),
+                                backlinks.join(", ")
+                            )));
+                        }
+                        let mut t = txn.remove(path);
+                        if let Some(oid) = expected {
+                            t = t.expect_blob(path, oid);
+                        }
+                        t
+                    }
+                    other => {
+                        return Err(Error::config_error(format!(
+                            "DeleteNote: unknown on_backlinks mode '{}' (expected refuse|rewrite-stale-callout|force)",
+                            other
+                        )));
+                    }
                 }
-                t
             }
             BatchOperation::MoveNote {
                 from,
@@ -1816,6 +1877,86 @@ mod tests {
         );
     }
 
+    /// turbovault-0g4.7: a batch DeleteNote of a backlinked note is REFUSED by
+    /// default, aborting the batch — prevents silently shipping broken links.
+    #[tokio::test]
+    async fn batch_delete_note_refuses_backlinked_by_default() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("doomed.md", "# Doomed\n").await.unwrap();
+        tools
+            .write_file("linker.md", "see [[doomed]]\n")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+        let ops = vec![BatchOperation::DeleteNote {
+            path: "doomed.md".to_string(),
+            expected_hash: None,
+            on_backlinks: None, // default → refuse
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(!res.success, "refuse must abort the batch");
+        assert!(
+            res.errors
+                .iter()
+                .any(|e| e.contains("linker.md") && e.to_lowercase().contains("backlink")),
+            "error names the linker: {:?}",
+            res.errors
+        );
+        assert!(tmp.path().join("doomed.md").exists(), "nothing deleted");
+    }
+
+    /// turbovault-0g4.7: on_backlinks="rewrite-stale-callout" strikethroughs
+    /// every linker in the SAME commit as the delete.
+    #[tokio::test]
+    async fn batch_delete_note_rewrite_stale_wraps_linkers() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("doomed.md", "# Doomed\n").await.unwrap();
+        tools
+            .write_file("linker.md", "see [[doomed]] here\n")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+        let ops = vec![BatchOperation::DeleteNote {
+            path: "doomed.md".to_string(),
+            expected_hash: None,
+            on_backlinks: Some("rewrite-stale-callout".to_string()),
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "stale-wrap batch failed: {:?}", res.errors);
+        assert!(!tmp.path().join("doomed.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("linker.md")).unwrap(),
+            "see ~~[[doomed]]~~ here\n",
+            "linker strikethrough-wrapped in the delete commit"
+        );
+    }
+
+    /// turbovault-0g4.7: on_backlinks="force" deletes and leaves linkers broken
+    /// (the pre-0g4.7 bare-delete behavior).
+    #[tokio::test]
+    async fn batch_delete_note_force_leaves_linkers_broken() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("doomed.md", "# Doomed\n").await.unwrap();
+        tools
+            .write_file("linker.md", "see [[doomed]] here\n")
+            .await
+            .unwrap();
+        tools.manager.initialize().await.unwrap();
+        let ops = vec![BatchOperation::DeleteNote {
+            path: "doomed.md".to_string(),
+            expected_hash: None,
+            on_backlinks: Some("force".to_string()),
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "force batch failed: {:?}", res.errors);
+        assert!(!tmp.path().join("doomed.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("linker.md")).unwrap(),
+            "see [[doomed]] here\n",
+            "force leaves the inbound link dangling"
+        );
+    }
+
     #[tokio::test]
     async fn write_file_with_stale_blob_oid_aborts_concurrency_error() {
         let (_tmp, tools) = setup().await;
@@ -2124,6 +2265,7 @@ mod tests {
             BatchOperation::DeleteNote {
                 path: "seed_del.md".into(),
                 expected_hash: None,
+                on_backlinks: None,
             },
             BatchOperation::MoveNote {
                 from: "seed_mv.md".into(),
