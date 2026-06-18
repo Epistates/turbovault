@@ -766,6 +766,31 @@ impl GitFileTools {
                 }
                 t
             }
+            BatchOperation::ManageTags {
+                path,
+                operation,
+                tags,
+                expected_hash,
+            } => {
+                // turbovault-0g4.3: reuse compute_manage_tags. It returns None
+                // for "list" (read-only) — inside a batch there is no write to
+                // fold, so reject loudly; "add"/"remove" return the new content.
+                let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
+                let (maybe, _info) = mt
+                    .compute_manage_tags(path, operation, Some(tags.as_slice()))
+                    .await?;
+                let new_content = maybe.ok_or_else(|| {
+                    Error::config_error(format!(
+                        "ManageTags operation '{}' produces no write; only 'add'/'remove' are valid in a batch ('list' is read-only)",
+                        operation
+                    ))
+                })?;
+                let mut t = txn.upsert(path, new_content.into_bytes());
+                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
+                    t = t.expect_blob(path, oid);
+                }
+                t
+            }
         })
     }
 
@@ -1155,6 +1180,9 @@ fn describe_op(op: &BatchOperation) -> String {
         BatchOperation::UpdateFrontmatter { path, .. } => {
             format!("updated frontmatter in {}", path)
         }
+        BatchOperation::ManageTags {
+            path, operation, ..
+        } => format!("{} tags in {}", operation, path),
     }
 }
 
@@ -1577,6 +1605,47 @@ mod tests {
             "new key merged: {content}"
         );
         assert!(content.contains("body"), "body preserved: {content}");
+    }
+
+    /// turbovault-0g4.3: ManageTags "add" folds new frontmatter tags into the
+    /// batch commit.
+    #[tokio::test]
+    async fn batch_manage_tags_add_in_one_commit() {
+        let (_tmp, tools) = setup().await;
+        tools
+            .write_file("t.md", "---\ntitle: T\n---\nbody\n")
+            .await
+            .unwrap();
+        let ops = vec![BatchOperation::ManageTags {
+            path: "t.md".to_string(),
+            operation: "add".to_string(),
+            tags: vec!["work".to_string(), "urgent".to_string()],
+            expected_hash: None,
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success, "manage_tags batch failed: {:?}", res.errors);
+        let content = tools.read_file("t.md").await.unwrap();
+        assert!(content.contains("work"), "tag added: {content}");
+        assert!(content.contains("urgent"), "tag added: {content}");
+    }
+
+    /// turbovault-0g4.3: a "list" ManageTags op in a batch is rejected — it is
+    /// read-only, so there is no write to fold into the commit.
+    #[tokio::test]
+    async fn batch_manage_tags_list_is_rejected() {
+        let (_tmp, tools) = setup().await;
+        tools
+            .write_file("t.md", "---\ntags: [a]\n---\n")
+            .await
+            .unwrap();
+        let ops = vec![BatchOperation::ManageTags {
+            path: "t.md".to_string(),
+            operation: "list".to_string(),
+            tags: vec![],
+            expected_hash: None,
+        }];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(!res.success, "list must be rejected inside a batch");
     }
 
     #[tokio::test]

@@ -235,6 +235,20 @@ pub enum BatchOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
+
+    /// turbovault-0g4.3: add or remove frontmatter tags on a note as part of
+    /// the atomic batch commit (the batch equivalent of `manage_tags`
+    /// add/remove). `operation` is `"add"` or `"remove"`; `"list"` is
+    /// read-only and not a batch op (rejected). `expected_hash` carries an
+    /// `expect_blob` precondition. **Git backend only**.
+    #[serde(rename = "ManageTags")]
+    ManageTags {
+        path: String,
+        operation: String,
+        tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
 }
 
 impl BatchOperation {
@@ -255,6 +269,7 @@ impl BatchOperation {
             }
             Self::EditNote { path, .. } => vec![path.clone()],
             Self::UpdateFrontmatter { path, .. } => vec![path.clone()],
+            Self::ManageTags { path, .. } => vec![path.clone()],
         }
     }
 
@@ -267,6 +282,7 @@ impl BatchOperation {
         match self {
             Self::EditNote { .. } => Some("EditNote"),
             Self::UpdateFrontmatter { .. } => Some("UpdateFrontmatter"),
+            Self::ManageTags { .. } => Some("ManageTags"),
             _ => None,
         }
     }
