@@ -795,13 +795,56 @@ impl GitFileTools {
         let mut txn = Transaction::new(commit_msg);
         let mut changes = Vec::with_capacity(total);
         let mut records = Vec::with_capacity(total);
+        // turbovault-0g4.5: intra-batch same-path conflict policy. The git
+        // path skips the legacy `validate()`/`conflicts_with()` O(n²) check;
+        // the substrate DOES reject a transaction with duplicate change paths
+        // (`apply_transaction` → "duplicate change for path …"), but only at
+        // apply time and with a message that names neither the offending op
+        // index nor that the cause is a *batch* overlap. Detect the collision
+        // here instead — as each op folds into the shared transaction, any path
+        // it newly writes that an earlier op already wrote aborts the batch with
+        // a clear, op-indexed error. Reject-overlap (not coalesce): a path may
+        // be mutated by at most one op per batch.
+        let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for (idx, op) in operations.iter().enumerate() {
             let operation_desc = format!("{:?}", op);
             let affected = op.affected_files();
+            // Paths already folded into `txn` before this op runs; anything
+            // appended past this index is what THIS op contributes.
+            let before = txn.touched_paths().len();
             match self.translate_op(txn, op).await {
                 Ok(next) => {
                     txn = next;
+                    if let Some(dup) = txn
+                        .touched_paths()
+                        .into_iter()
+                        .skip(before)
+                        .find(|p| !seen_paths.insert(p.clone()))
+                    {
+                        let err_msg = format!(
+                            "intra-batch path collision (turbovault-0g4.5): operation {} writes '{}', which an earlier operation in this batch already writes. A path may be mutated by at most one operation per batch — split the conflicting writes across separate batches.",
+                            idx, dup
+                        );
+                        records.push(OperationRecord {
+                            operation_index: idx,
+                            operation: operation_desc,
+                            success: false,
+                            error: Some(err_msg.clone()),
+                            affected_files: affected,
+                        });
+                        return Ok(BatchResult {
+                            success: false,
+                            executed: idx,
+                            total,
+                            failed_at: Some(idx),
+                            changes,
+                            errors: vec![err_msg],
+                            records,
+                            transaction_id,
+                            duration_ms: started.elapsed().as_millis() as u64,
+                        });
+                    }
                     changes.push(describe_op(op));
                     records.push(OperationRecord {
                         operation_index: idx,
@@ -1311,6 +1354,98 @@ mod tests {
         // Disk: atomicity intact — ghost not created, s1 unchanged.
         assert!(!tmp.path().join("ghost.md").exists(), "ghost not created");
         assert_eq!(tools.read_file("s1.md").await.unwrap(), "v1");
+    }
+
+    /// turbovault-0g4.5: two ops in one batch writing the SAME path are
+    /// rejected with a clear, op-indexed collision error (not the substrate's
+    /// cryptic apply-time "duplicate change for path" abort), and NOTHING
+    /// commits.
+    #[tokio::test]
+    async fn batch_same_path_collision_is_loud_and_atomic() {
+        let (tmp, tools) = setup().await;
+        let ops = vec![
+            BatchOperation::WriteNote {
+                path: "dup.md".to_string(),
+                content: "first".to_string(),
+                expected_hash: None,
+            },
+            BatchOperation::WriteNote {
+                path: "dup.md".to_string(),
+                content: "second".to_string(),
+                expected_hash: None,
+            },
+        ];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(!res.success, "same-path collision must fail the batch");
+        assert_eq!(res.failed_at, Some(1), "the second op is the collision");
+        assert!(
+            res.errors
+                .iter()
+                .any(|e| e.contains("dup.md") && e.to_lowercase().contains("collision")),
+            "error names the colliding path: {:?}",
+            res.errors
+        );
+        assert!(
+            !tmp.path().join("dup.md").exists(),
+            "atomic: nothing committed on collision"
+        );
+    }
+
+    /// turbovault-0g4.5: a MoveNote's two endpoints colliding with a sibling
+    /// write is caught (the `to` path is already written by an earlier op).
+    #[tokio::test]
+    async fn batch_move_dest_collision_with_prior_write_is_caught() {
+        let (tmp, tools) = setup().await;
+        tools.write_file("src.md", "body").await.unwrap();
+        let ops = vec![
+            BatchOperation::WriteNote {
+                path: "dest.md".to_string(),
+                content: "occupant".to_string(),
+                expected_hash: None,
+            },
+            BatchOperation::MoveNote {
+                from: "src.md".to_string(),
+                to: "dest.md".to_string(),
+                expected_hash: None,
+            },
+        ];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(!res.success);
+        assert_eq!(res.failed_at, Some(1));
+        assert!(res.errors.iter().any(|e| e.contains("dest.md")));
+        // src untouched, dest never created.
+        assert_eq!(tools.read_file("src.md").await.unwrap(), "body");
+        assert!(!tmp.path().join("dest.md").exists());
+    }
+
+    /// turbovault-0g4.5: a disjoint multi-op batch still succeeds — the guard
+    /// only fires on genuine same-path overlap.
+    #[tokio::test]
+    async fn batch_disjoint_paths_still_succeed() {
+        let (tmp, tools) = setup().await;
+        let ops = vec![
+            BatchOperation::WriteNote {
+                path: "a.md".to_string(),
+                content: "A".to_string(),
+                expected_hash: None,
+            },
+            BatchOperation::WriteNote {
+                path: "b.md".to_string(),
+                content: "B".to_string(),
+                expected_hash: None,
+            },
+        ];
+        let res = tools.batch_execute(ops).await.unwrap();
+        assert!(res.success);
+        assert_eq!(res.executed, 2);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("a.md")).unwrap(),
+            "A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("b.md")).unwrap(),
+            "B"
+        );
     }
 
     #[tokio::test]
