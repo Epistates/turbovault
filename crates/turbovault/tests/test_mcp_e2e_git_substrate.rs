@@ -104,6 +104,80 @@ async fn e2e_write_note_commits_to_git_with_tool_name_verb() {
     );
 }
 
+/// turbovault-5nn: with `git.require_commit_message = true`, a mutation called
+/// WITHOUT a caller message (or with a blank one) is refused; a real message is
+/// accepted (trimmed).
+#[tokio::test]
+#[serial_test::serial]
+async fn e2e_require_commit_message_gate() {
+    let tmp = TempDir::new().unwrap();
+    let mut opts = git2::RepositoryInitOptions::new();
+    opts.initial_head("main");
+    let repo = git2::Repository::init_opts(tmp.path(), &opts).unwrap();
+    {
+        let mut idx = repo.index().unwrap();
+        let tree_oid = idx.write_tree().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = git2::Signature::now("Init", "init@example").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+    }
+    let git_cfg = VaultGitConfig {
+        require_commit_message: true,
+        ..VaultGitConfig::default()
+    };
+    let vault_config = VaultConfig::builder("req", tmp.path())
+        .write_backend(WriteBackend::Git)
+        .git(git_cfg)
+        .build()
+        .unwrap();
+    let server = ObsidianMcpServer::new().unwrap();
+    server.multi_vault().add_vault(vault_config).await.unwrap();
+    server.multi_vault().set_active_vault("req").await.unwrap();
+
+    // Missing message → refused.
+    let err = server
+        .resolve_commit_message_test(None, "write_note x.md".to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("commit message"),
+        "expected require-commit-message refusal, got: {err:?}"
+    );
+
+    // Blank / whitespace-only message → also refused.
+    assert!(
+        server
+            .resolve_commit_message_test(Some("   ".to_string()), "fallback".to_string())
+            .await
+            .is_err(),
+        "whitespace-only message must be treated as missing"
+    );
+
+    // Real message → accepted, trimmed.
+    let msg = server
+        .resolve_commit_message_test(Some("  real subject  ".to_string()), "fallback".to_string())
+        .await
+        .unwrap();
+    assert_eq!(msg, "real subject");
+}
+
+/// turbovault-5nn: a vault with the default (require_commit_message = false)
+/// auto-derives the fallback subject when no message is given.
+#[tokio::test]
+#[serial_test::serial]
+async fn e2e_commit_message_optional_by_default() {
+    let (_tmp, _name, server) = setup_git_vault().await;
+    let msg = server
+        .resolve_commit_message_test(None, "write_note x.md".to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        msg, "write_note x.md",
+        "default vault auto-derives the subject"
+    );
+}
+
 /// turbovault-6fo.18: move with link updates is one atomic commit.
 /// HEAD advances by exactly one commit; the rename + every linker
 /// rewrite land together.

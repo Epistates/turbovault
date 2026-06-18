@@ -79,6 +79,14 @@ pub struct VaultGitConfig {
     /// client accidentally committing them.
     #[serde(default = "default_include_ignored")]
     pub include_ignored: bool,
+    /// turbovault-5nn: when `true`, every git-backend mutation MUST carry a
+    /// caller-supplied commit message — a tool called without one (or with a
+    /// blank/whitespace-only one) is refused loudly instead of falling back to
+    /// the auto-derived subject (`write_note <path>`, etc.). Default `false`
+    /// preserves the auto-derive behavior. Only meaningful on the git backend
+    /// (the legacy backend produces no commits, so a message is moot).
+    #[serde(default)]
+    pub require_commit_message: bool,
 }
 
 fn default_include_ignored() -> bool {
@@ -95,6 +103,7 @@ impl Default for VaultGitConfig {
             author: None,
             merge_strategy: GitMergeStrategy::default(),
             include_ignored: default_include_ignored(),
+            require_commit_message: false,
         }
     }
 }
@@ -456,6 +465,7 @@ mod tests {
                 }),
                 merge_strategy: GitMergeStrategy::FastForward,
                 include_ignored: false,
+                require_commit_message: false,
             })
             .build()
             .unwrap();

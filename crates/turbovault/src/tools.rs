@@ -761,6 +761,47 @@ impl ObsidianMcpServer {
         Ok(vault_name)
     }
 
+    /// turbovault-5nn: true when the active vault is on the git backend AND has
+    /// `git.require_commit_message = true`. Only meaningful on git (the legacy
+    /// backend produces no commits).
+    async fn active_vault_requires_commit_message(&self) -> bool {
+        self.multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map(|c| {
+                matches!(c.write_backend, WriteBackend::Git)
+                    && c.git
+                        .as_ref()
+                        .map(|g| g.require_commit_message)
+                        .unwrap_or(false)
+            })
+            .unwrap_or(false)
+    }
+
+    /// turbovault-5nn: resolve a mutation's commit subject. A caller-supplied
+    /// message (trimmed; whitespace-only counts as missing) always wins. When
+    /// none is given, the active vault's `git.require_commit_message` decides:
+    /// `true` → refuse loudly so nothing is auto-derived; `false` → use
+    /// `fallback` (the historical auto-derived subject).
+    async fn resolve_commit_message(
+        &self,
+        commit_message: Option<String>,
+        fallback: impl FnOnce() -> String,
+    ) -> McpResult<String> {
+        let provided = commit_message
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        match provided {
+            Some(m) => Ok(m),
+            None if self.active_vault_requires_commit_message().await => {
+                Err(McpError::invalid_request(
+                    "this vault requires an explicit commit message (git.require_commit_message = true); pass a non-empty `commit_message` for this operation".to_string(),
+                ))
+            }
+            None => Ok(fallback()),
+        }
+    }
+
     /// Helper to get both vault name and manager (eliminates 31 repeated preambles)
     /// This is the most common pattern across all tools
     async fn get_vault_pair(&self) -> McpResult<(String, Arc<VaultManager>)> {
@@ -923,6 +964,17 @@ impl ObsidianMcpServer {
     /// every derived-state read uses.
     pub async fn flush_reindex_for_active_vault_test(&self) -> McpResult<()> {
         self.flush_reindex_for_active_vault().await
+    }
+
+    /// turbovault-5nn test-only: resolve a commit subject through the same
+    /// require_commit_message gate the mutation tools use (eager `fallback`).
+    pub async fn resolve_commit_message_test(
+        &self,
+        commit_message: Option<String>,
+        fallback: String,
+    ) -> McpResult<String> {
+        self.resolve_commit_message(commit_message, || fallback)
+            .await
     }
 
     /// Test-only: spawn a HEAD-ref listener with a CUSTOM polling
@@ -1598,7 +1650,9 @@ impl ObsidianMcpServer {
         let force = force.unwrap_or(false);
         // turbovault-0bh: caller-supplied or auto-derived commit message
         // (verb=tool_name per TV-008).
-        let msg = commit_message.unwrap_or_else(|| format!("write_note {}", path));
+        let msg = self
+            .resolve_commit_message(commit_message, || format!("write_note {}", path))
+            .await?;
 
         // ---- turbovault-947: CAS-by-default for `mode: overwrite` ----
         //
@@ -1678,7 +1732,9 @@ impl ObsidianMcpServer {
         let tools = self.get_active_write_tools().await?;
         let dry_run = dry_run.unwrap_or(false);
         // turbovault-0bh: caller-supplied or auto-derived.
-        let msg = commit_message.unwrap_or_else(|| format!("edit_note {}", path));
+        let msg = self
+            .resolve_commit_message(commit_message, || format!("edit_note {}", path))
+            .await?;
         let result = tools
             .edit_file_with_message(&path, &edits, expected_hash.as_deref(), dry_run, &msg)
             .await
@@ -1728,7 +1784,9 @@ impl ObsidianMcpServer {
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
         // turbovault-0bh: caller-supplied or auto-derived.
-        let msg = commit_message.unwrap_or_else(|| format!("delete_note {}", path));
+        let msg = self
+            .resolve_commit_message(commit_message, || format!("delete_note {}", path))
+            .await?;
         let force = force.unwrap_or(false);
 
         // turbovault-oz6: backlink-aware refuse / rewrite logic. The
@@ -1821,7 +1879,9 @@ impl ObsidianMcpServer {
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
         // turbovault-0bh: caller-supplied or auto-derived.
-        let msg = commit_message.unwrap_or_else(|| format!("move_note {} -> {}", from, to));
+        let msg = self
+            .resolve_commit_message(commit_message, || format!("move_note {} -> {}", from, to))
+            .await?;
         let update_backlinks = update_backlinks.unwrap_or(true);
 
         let updated_sources: Vec<String> = if update_backlinks {
@@ -2556,8 +2616,11 @@ impl ObsidianMcpServer {
         // the git backend records the template-rendered note as a commit
         // instead of bypassing the substrate via VaultManager.
         let write_tools = self.get_active_write_tools().await?;
-        let msg = commit_message
-            .unwrap_or_else(|| format!("create_from_template {} -> {}", template_id, file_path));
+        let msg = self
+            .resolve_commit_message(commit_message, || {
+                format!("create_from_template {} -> {}", template_id, file_path)
+            })
+            .await?;
         write_tools
             .create_file_with_message(&file_path, &full_content, &msg)
             .await
@@ -2951,7 +3014,9 @@ impl ObsidianMcpServer {
         }
 
         // turbovault-0bh: caller-supplied or op-tally derivation.
-        let msg = commit_message.unwrap_or_else(|| derive_batch_message(&operations));
+        let msg = self
+            .resolve_commit_message(commit_message, || derive_batch_message(&operations))
+            .await?;
         let result = tools
             .batch_execute_with_message(operations, &msg)
             .await
@@ -3469,7 +3534,9 @@ impl ObsidianMcpServer {
         // behavior is preserved (WriteTools::Legacy still calls
         // VaultManager directly).
         let write_tools = self.get_active_write_tools().await?;
-        let msg = commit_message.unwrap_or_else(|| format!("update_frontmatter {}", path));
+        let msg = self
+            .resolve_commit_message(commit_message, || format!("update_frontmatter {}", path))
+            .await?;
         write_tools
             .write_file_with_mode_and_message(&path, &new_content, WriteMode::Overwrite, None, &msg)
             .await
@@ -3514,8 +3581,11 @@ impl ObsidianMcpServer {
         // `maybe_write` is `None` — and skips the write path entirely.
         if let Some(new_content) = maybe_write {
             let write_tools = self.get_active_write_tools().await?;
-            let msg =
-                commit_message.unwrap_or_else(|| format!("manage_tags {} {}", operation, path));
+            let msg = self
+                .resolve_commit_message(commit_message, || {
+                    format!("manage_tags {} {}", operation, path)
+                })
+                .await?;
             write_tools
                 .write_file_with_mode_and_message(
                     &path,
@@ -3597,7 +3667,9 @@ impl ObsidianMcpServer {
         let vault_name = self.get_active_vault_name().await?;
         let tools = self.get_active_write_tools().await?;
         // turbovault-0bh: caller-supplied or auto-derived.
-        let msg = commit_message.unwrap_or_else(|| format!("move_file {} -> {}", from, to));
+        let msg = self
+            .resolve_commit_message(commit_message, || format!("move_file {} -> {}", from, to))
+            .await?;
         tools
             .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &msg)
             .await
