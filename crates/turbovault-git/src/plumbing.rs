@@ -3,7 +3,7 @@
 //!
 //! The substrate stages from the batch's own bytes (not the working tree) into
 //! an ephemeral `git2::Index` that is never bound to `.git/index`, seeds it from
-//! a parent tree, applies the transaction's changes, and writes the tree +
+//! a parent tree, applies the changeset's changes, and writes the tree +
 //! commit to the object DB. Advancing a ref (CAS) and materializing the working
 //! tree are separate, later steps (GWS.3, GWS.5).
 
@@ -97,7 +97,7 @@ impl VaultRepo {
     }
 
     /// The blob oid at `path` in `tree`, or `None` if absent. This is the value
-    /// a transaction reads as its CAS pre-image (GWS.4) and what materialization
+    /// a changeset reads as its CAS pre-image (GWS.4) and what materialization
     /// resolves to working-tree bytes (GWS.5).
     pub fn blob_oid_at(&self, tree: Oid, path: &str) -> Result<Option<Oid>> {
         let tree = self.git().find_tree(tree)?;

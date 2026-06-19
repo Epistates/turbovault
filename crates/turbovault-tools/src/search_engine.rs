@@ -245,7 +245,7 @@ impl SearchEngine {
     /// - `present=true`  → delete the existing doc for this path (no-op if
     ///   absent), re-parse the working-tree bytes, add the new doc.
     /// - `present=false` → delete the doc for this path.
-    /// All changes commit in one writer transaction.
+    /// All changes commit in one writer changeset.
     ///
     /// Reads from the working tree (working-tree == HEAD invariant during
     /// the substrate's commit lock). Parse errors are logged + skipped per

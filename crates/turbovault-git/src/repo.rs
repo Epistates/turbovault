@@ -36,7 +36,7 @@ pub struct VaultRepo {
     /// worktree must share one registry to serialize the commit critical section.
     commit_locks: Arc<CommitLocks>,
     /// Optional post-commit hook fired inside the commit lock after the
-    /// transaction is materialized. Plumbed for GWS.14 lazy GSU.
+    /// changeset is materialized. Plumbed for GWS.14 lazy GSU.
     pub(crate) commit_hook: Option<CommitHook>,
 }
 
@@ -88,7 +88,7 @@ impl VaultRepo {
     /// the commit lock, after materialization (GWS.14 plumbing).
     ///
     /// Multiple `VaultRepo` handles to the same worktree may install
-    /// different hooks; each handle's hook fires only for transactions
+    /// different hooks; each handle's hook fires only for changesets
     /// applied through THAT handle. The server-side pattern is to install
     /// the same hook on every cached handle for a given vault.
     pub fn open_with_locks_and_hook(

@@ -1,11 +1,11 @@
 //! Per-file optimistic-concurrency precondition (GWS.4) — the multi-file CAS /
 //! "reconsideration domino".
 //!
-//! A transaction reads each target path and remembers the **blob oid** it saw
+//! A changeset reads each target path and remembers the **blob oid** it saw
 //! (the version token: `blob_oid_of(bytes)` for working-tree bytes the agent
 //! read). Before committing, [`VaultRepo::check_preconditions`] re-resolves each
 //! path against the base tree it is building on and confirms the blob oid still
-//! matches. If **any** path changed underneath the transaction, the whole batch
+//! matches. If **any** path changed underneath the changeset, the whole batch
 //! aborts with [`Error::PreconditionFailed`] and nothing is applied — so the
 //! agent re-reads the affected paths and re-decides rather than silently
 //! overwriting a concurrent change.
@@ -54,10 +54,10 @@ impl VaultRepo {
         Ok(Oid::hash_object(ObjectType::Blob, content)?)
     }
 
-    /// Validate every precondition against `base_tree` (the tree the transaction
+    /// Validate every precondition against `base_tree` (the tree the changeset
     /// is building on; `None` = an empty/unborn base where nothing exists).
     /// Returns `Ok(())` only if **all** match; the first mismatch aborts with
-    /// [`Error::PreconditionFailed`] (the whole transaction fails, nothing
+    /// [`Error::PreconditionFailed`] (the whole changeset fails, nothing
     /// applied).
     #[instrument(
         skip(self, preconditions),

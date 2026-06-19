@@ -15,7 +15,7 @@ pub enum Error {
     NotARepo(PathBuf),
 
     /// A compare-and-swap on a ref failed: the ref moved since we read it.
-    /// The transaction applied nothing; the caller should re-read and retry or
+    /// The changeset applied nothing; the caller should re-read and retry or
     /// surface a conflict (the reconsideration domino).
     #[error("ref CAS conflict on {refname}: expected {expected:?}, found {found:?}")]
     CasConflict {
@@ -25,8 +25,8 @@ pub enum Error {
     },
 
     /// A per-file precondition failed: the blob at `path` in the base tree is not
-    /// what the caller read (it changed underneath the transaction). The whole
-    /// transaction aborts with **nothing applied** — the multi-file CAS / the
+    /// what the caller read (it changed underneath the changeset). The whole
+    /// changeset aborts with **nothing applied** — the multi-file CAS / the
     /// reconsideration domino. The caller re-reads the affected paths and
     /// re-decides.
     #[error("precondition failed for {path}: expected {expected:?}, found {found:?}")]

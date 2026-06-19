@@ -170,7 +170,7 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
     .unwrap();
 
     // Writer A now tries a batch that touches three OTHER files but pinned
-    // to "watched.md" being unchanged via a manually-constructed transaction
+    // to "watched.md" being unchanged via a manually-constructed changeset
     // through the bare substrate. (The MCP-level batch API doesn't yet
     // expose read-set preconditions; this exercises the substrate's
     // reconsideration domino, which is what derived-state preconditions
@@ -234,7 +234,7 @@ async fn move_with_link_updates_lands_as_one_commit() {
         r.head_oid()
     };
 
-    // Drive a single transaction directly through the substrate (the
+    // Drive a single changeset directly through the substrate (the
     // move-with-links composition isn't yet wrapped by GitFileTools — the
     // batch surface gets close, but doesn't accept preconditions yet).
     use turbovault_git::Changeset;

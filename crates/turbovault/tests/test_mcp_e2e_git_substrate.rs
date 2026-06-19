@@ -302,7 +302,7 @@ async fn e2e_batch_execute_per_op_cas_aborts_atomically() {
 }
 
 /// turbovault-6fo.18: batch_execute with all-matching preconditions
-/// lands as ONE commit (architecture §5.4: "1 transaction = 1 commit").
+/// lands as ONE commit (architecture §5.4: "1 changeset = 1 commit").
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_batch_execute_lands_as_one_commit() {
@@ -522,7 +522,7 @@ async fn e2e_remove_vault_blocked_while_fanout_active() {
     let tools = server.get_active_write_tools_test().await.unwrap();
     tools.write_file("seed.md", "seed\n").await.unwrap();
 
-    // Open a fanout transaction directly through the substrate-side
+    // Open a fanout worktree directly through the substrate-side
     // path so the e2e test doesn't depend on the full
     // `begin_fanout` MCP wire shape (which is exercised
     // separately). We need active_fanouts populated.

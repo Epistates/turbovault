@@ -7,17 +7,17 @@
 //! 1. acquire the per-worktree commit lock (GWS.6);
 //! 2. `commit_with_retry` on the current branch ref (GWS.3): each attempt
 //!    resolves the tip to its base tree, **checks preconditions** against that
-//!    base (GWS.4) — a mismatch aborts the whole transaction (the
+//!    base (GWS.4) — a mismatch aborts the whole changeset (the
 //!    reconsideration domino), no retry — then builds the new tree in an
 //!    isolated index (GWS.2) and `commit-tree`s on the tip. On a ref CAS loss
 //!    the tip is re-read and the attempt retried, which re-checks preconditions
-//!    on the new base, so a concurrent change to one of the transaction's own
+//!    on the new base, so a concurrent change to one of the changeset's own
 //!    paths surfaces as an abort, not a silent overwrite;
 //! 3. **materialize** the committed paths into the working tree (GWS.5);
 //! 4. release the lock.
 //!
-//! Single-file writes are a degenerate one-change transaction; batches and
-//! move+link-updates are multi-change transactions — all atomic, one commit.
+//! Single-file writes are a degenerate one-change changeset; batches and
+//! move+link-updates are multi-change changesets — all atomic, one commit.
 
 use crate::error::{Error, Result};
 use crate::occ::Precondition;
@@ -36,7 +36,7 @@ pub struct Changeset {
 }
 
 impl Changeset {
-    /// Start a transaction with a commit message.
+    /// Start a changeset with a commit message.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
@@ -79,7 +79,7 @@ impl Changeset {
     }
 
     /// Add an arbitrary [`Precondition`] (e.g. over a page read but not written,
-    /// extending the multi-file CAS to the transaction's read set).
+    /// extending the multi-file CAS to the changeset's read set).
     pub fn with_precondition(mut self, precondition: Precondition) -> Self {
         self.preconditions.push(precondition);
         self
@@ -91,7 +91,7 @@ impl Changeset {
     // for the raw builders only when you explicitly want a blind write.
 
     /// Create a new file. Precondition: `path` must currently be absent.
-    /// Aborts the transaction if the path exists.
+    /// Aborts the changeset if the path exists.
     pub fn create(mut self, path: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
         let path = path.into();
         self.changes.push(TreeChange::Upsert {
@@ -104,7 +104,7 @@ impl Changeset {
 
     /// Update an existing file. Precondition: `path` must currently hold
     /// `expected` (the version token the caller read). Protects against lost
-    /// updates — a concurrent change to `path` aborts the transaction.
+    /// updates — a concurrent change to `path` aborts the changeset.
     pub fn update(
         mut self,
         path: impl Into<String>,
@@ -158,12 +158,12 @@ impl Changeset {
         self
     }
 
-    /// The distinct paths this transaction mutates (the materialization set).
+    /// The distinct paths this changeset mutates (the materialization set).
     fn changed_paths(&self) -> Vec<String> {
         self.changes.iter().map(|c| c.path().to_string()).collect()
     }
 
-    /// turbovault-lri: enumerate the paths this transaction mutates so
+    /// turbovault-lri: enumerate the paths this changeset mutates so
     /// higher layers can apply policies like the `include_ignored`
     /// gitignore-refusal check before submission. Same content as the
     /// private `changed_paths` helper; exposed for consumers in
@@ -173,15 +173,15 @@ impl Changeset {
     }
 }
 
-/// Outcome of a committed transaction.
+/// Outcome of a committed changeset.
 #[derive(Debug, Clone)]
 pub struct ChangesetResult {
-    /// The commit the branch points at. For a no-op transaction
+    /// The commit the branch points at. For a no-op changeset
     /// (`no_op == true`) this is the *unchanged* HEAD — nothing was committed.
     pub commit: Oid,
     /// The paths materialized into the working tree. Empty when `no_op`.
     pub paths: Vec<String>,
-    /// turbovault-4nc: `true` when the transaction's changes produced a tree
+    /// turbovault-4nc: `true` when the changeset's changes produced a tree
     /// identical to the parent's (an idempotent / no-effect write). The
     /// substrate skipped the commit, ref CAS, materialize, and reindex hook —
     /// the working tree already matched HEAD. Preconditions are still checked
@@ -194,7 +194,7 @@ impl VaultRepo {
     ///
     /// Aborts with [`Error::PreconditionFailed`] if any precondition is stale
     /// (nothing committed, working tree untouched) and with [`Error::Other`] for
-    /// an empty transaction or duplicate change paths.
+    /// an empty changeset or duplicate change paths.
     #[instrument(
         skip(self, txn),
         fields(
@@ -206,14 +206,14 @@ impl VaultRepo {
     )]
     pub fn commit_changeset(&self, txn: &Changeset) -> Result<ChangesetResult> {
         if txn.changes.is_empty() {
-            return Err(Error::Other("empty transaction (no changes)".to_string()));
+            return Err(Error::Other("empty changeset (no changes)".to_string()));
         }
-        // A path mutated twice in one transaction is ambiguous — reject it.
+        // A path mutated twice in one changeset is ambiguous — reject it.
         let mut seen = BTreeSet::new();
         for c in &txn.changes {
             if !seen.insert(c.path()) {
                 return Err(Error::Other(format!(
-                    "duplicate change for path {} in one transaction",
+                    "duplicate change for path {} in one changeset",
                     c.path()
                 )));
             }
@@ -235,7 +235,7 @@ impl VaultRepo {
                     Some(c) => Some(self.git().find_commit(c)?.tree_id()),
                     None => None,
                 };
-                // Abort the whole transaction if any precondition is stale.
+                // Abort the whole changeset if any precondition is stale.
                 // This MUST run before the identity-tree short-circuit below: a
                 // stale read aborts loudly (the reconsideration domino) even
                 // when the resulting tree would be identical, because the read

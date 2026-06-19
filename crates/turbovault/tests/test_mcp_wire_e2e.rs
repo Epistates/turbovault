@@ -456,7 +456,7 @@ async fn wire_edit_note_rejects_ambiguous_divider_tv006() {
     );
 }
 
-/// turbovault-cuy: the fanout transaction lifecycle over the WIRE —
+/// turbovault-cuy: the fanout lifecycle over the WIRE —
 /// begin_fanout -> set_active_vault(fanout) -> write_note -> commit_fanout
 /// -> the write merges back into the base vault's working tree. Previously only
 /// the substrate-side open_fanout_worktree + the refuse path were tested; the

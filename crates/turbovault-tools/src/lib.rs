@@ -50,7 +50,7 @@
 //!
 //! [`batch_tools::BatchTools`] - Atomic operations:
 //! - Execute multi-file operations
-//! - Atomic transactions
+//! - Atomic changesets
 //! - Conflict detection
 //! - Result tracking
 //!
@@ -136,7 +136,7 @@
 //! - File access and modification
 //! - Error handling and validation
 //! - Thread-safe operations
-//! - Atomic transactions
+//! - Atomic changesets
 //!
 //! ## Example Usage
 //!

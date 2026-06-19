@@ -15,11 +15,12 @@
 //! - [`TreeChange`] + `build_tree`/`commit_tree` — object-DB plumbing (GWS.2).
 //! - `cas_ref`/`commit_with_retry` — ref compare-and-swap + optimistic
 //!   rebuild-on-conflict (GWS.3).
-//! - (next) per-file precondition, materialization, transactions (GWS.4+).
+//! - (next) per-file precondition, materialization, changesets (GWS.4+).
 
 #![forbid(unsafe_code)]
 
 mod cas;
+mod changeset;
 mod error;
 mod fanout;
 mod locks;
@@ -28,15 +29,14 @@ mod occ;
 mod plumbing;
 mod repo;
 mod restore;
-mod txn;
 
+pub use changeset::{Changeset, ChangesetResult};
 pub use error::{Error, Result};
 pub use fanout::{FanoutInfo, FanoutWorktree, MergeBackResult, MergeStrategy, OrphanFanout};
 pub use locks::CommitLocks;
 pub use occ::Precondition;
 pub use plumbing::TreeChange;
 pub use repo::{CommitHook, VaultRepo};
-pub use txn::{Changeset, ChangesetResult};
 
 /// Re-exported so substrate consumers (e.g. `turbovault-tools`) can talk about
 /// blob/commit oids without taking a direct `git2` dep — preserves the

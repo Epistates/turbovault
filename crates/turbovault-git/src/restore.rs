@@ -4,7 +4,7 @@
 //! the object DB, content-addressed. The substrate doesn't compensate after a
 //! partial apply (atomic-commit: the ref either advances or it doesn't; orphan
 //! blobs GC away), so "rollback" in this model is **forward**: build a new
-//! transaction that restores the affected paths to their state at some target
+//! changeset that restores the affected paths to their state at some target
 //! commit, and apply it as a normal commit.
 //!
 //! Primitives:
@@ -19,11 +19,11 @@
 //!
 //! The tool layer's `rollback_note(operation_id)` composes these: locate the
 //! commit for `operation_id`, take its parent as the target, list the paths
-//! it touched, and apply the restore transaction.
+//! it touched, and apply the restore changeset.
 
+use crate::changeset::Changeset;
 use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
-use crate::txn::Changeset;
 use git2::Oid;
 use std::path::Path;
 use tracing::instrument;
@@ -105,7 +105,7 @@ impl VaultRepo {
         Ok(out)
     }
 
-    /// Build a transaction that restores `paths` to their state at
+    /// Build a changeset that restores `paths` to their state at
     /// `target_commit`, with a precondition on each path's current blob at
     /// HEAD (so a concurrent write since the restore was requested aborts the
     /// whole thing loudly).

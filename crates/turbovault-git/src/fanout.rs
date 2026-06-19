@@ -1,7 +1,7 @@
-//! Worktree-as-transaction / fan-out mode (GWS.9).
+//! Fan-out worktree mode (GWS.9).
 //!
 //! `begin_fanout` opens a **scratch git worktree** on a `wip/<id>` branch
-//! forked from main's current tip. All transactions applied through that
+//! forked from main's current tip. All changesets applied through that
 //! worktree's [`VaultRepo`] commit to the wip branch — they share the parent's
 //! object DB but use a separate working tree + index. Obsidian, pointed at
 //! main's working tree, stays stable for the whole fan-out.
@@ -11,7 +11,7 @@
 //! `abandon_fanout` discards the fan-out (no commits land on main).
 //!
 //! The fan-out's worktree gets a separate per-worktree commit mutex (it's a
-//! different worktree key), so transactions inside the fan-out never contend
+//! different worktree key), so changesets inside the fan-out never contend
 //! with main's commit mutex.
 
 use crate::error::{Error, Result};
@@ -24,7 +24,7 @@ use tracing::instrument;
 #[derive(Debug, Clone, Copy)]
 pub enum MergeStrategy {
     /// `git merge --no-ff` — a merge commit on main with main's tip and the
-    /// wip tip as parents. Preserves the wip branch's per-transaction commits
+    /// wip tip as parents. Preserves the wip branch's per-changeset commits
     /// (no squash). The default.
     MergeCommit,
     /// Advance main's ref directly to the wip tip — fails if main has moved
@@ -70,7 +70,7 @@ pub struct FanoutWorktree<'a> {
 }
 
 impl<'a> FanoutWorktree<'a> {
-    /// The substrate handle for transactions inside the fan-out.
+    /// The substrate handle for changesets inside the fan-out.
     pub fn worktree_repo(&self) -> &VaultRepo {
         &self.worktree_repo
     }
@@ -247,7 +247,7 @@ impl VaultRepo {
     }
 
     /// Stateless merge-back. Mirrors [`FanoutWorktree::commit_fanout`] but
-    /// takes the info handle instead of consuming a borrowed transaction.
+    /// takes the info handle instead of consuming a borrowed `FanoutWorktree`.
     /// Holds main's commit lock for the critical section and ALWAYS attempts
     /// cleanup (worktree + wip branch) — even on merge error.
     #[instrument(

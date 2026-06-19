@@ -94,7 +94,7 @@ impl WriteTools {
     /// [`GitFileTools::include_ignored`] policy. No-op on the legacy arm
     /// (the legacy backend doesn't consult `.gitignore` at all). When
     /// `false`, every mutation pre-checks each touched path against the
-    /// worktree's `.gitignore` matcher and refuses the transaction with
+    /// worktree's `.gitignore` matcher and refuses the changeset with
     /// a typed error if any path would be ignored. Default `true`.
     pub fn with_include_ignored(self, include_ignored: bool) -> Self {
         match self {

@@ -9,7 +9,7 @@
 //! tip, CAS the ref; if a concurrent writer advanced it first, re-read the tip,
 //! rebuild on the new tip, and retry. The caller's builder re-runs its per-file
 //! preconditions (GWS.4) on each rebuild, so a conflicting change to one of the
-//! transaction's own paths surfaces as an abort rather than a silent overwrite.
+//! changeset's own paths surfaces as an abort rather than a silent overwrite.
 
 use crate::error::{Error, Result};
 use crate::repo::VaultRepo;

@@ -84,7 +84,7 @@ pub struct GitFileTools {
     pub flush_on_collision: Option<CasCollisionFlush>,
     /// turbovault-lri: when `false`, every mutation pre-checks each
     /// touched path against the worktree's `.gitignore` matcher and
-    /// refuses the transaction if any path would be ignored. Default
+    /// refuses the changeset if any path would be ignored. Default
     /// `true` preserves pre-lri "always-write" behavior. Wired from
     /// `VaultGitConfig::include_ignored` by the MCP server.
     pub include_ignored: bool,
@@ -161,7 +161,7 @@ impl GitFileTools {
     /// turbovault-lri: builder-style override for `include_ignored`.
     /// `false` makes every subsequent mutation pre-check each touched
     /// path against the worktree's `.gitignore` matcher and refuse the
-    /// transaction if any path would be ignored. Default `true`.
+    /// changeset if any path would be ignored. Default `true`.
     pub fn with_include_ignored(mut self, include_ignored: bool) -> Self {
         self.include_ignored = include_ignored;
         self
@@ -273,7 +273,7 @@ impl GitFileTools {
 
     /// Edit a file via SEARCH/REPLACE blocks. Reads working-tree bytes,
     /// applies the blocks in memory, and commits the result as one
-    /// transaction. `dry_run = true` returns the preview without committing.
+    /// changeset. `dry_run = true` returns the preview without committing.
     pub async fn edit_file(
         &self,
         path: &str,
@@ -427,7 +427,7 @@ impl GitFileTools {
     /// turbovault-oz6: atomic delete + inbound-wikilink wrap-as-stale.
     /// Removes `path` AND rewrites every backlinking source's wikilinks
     /// targeting it as `~~[[old]]~~` strikethrough (signaling a dead
-    /// reference) — all in **one substrate transaction**.
+    /// reference) — all in **one substrate changeset**.
     ///
     /// Each source carries an `expect_blob` precondition; a concurrent
     /// edit to ANY source aborts the whole delete with
@@ -456,10 +456,10 @@ impl GitFileTools {
     }
 
     /// turbovault-0g4.7: fold a delete + inbound-wikilink stale-wrap onto an
-    /// existing transaction. Resolves backlinks via the link graph, wraps each
+    /// existing changeset. Resolves backlinks via the link graph, wraps each
     /// linker's references to `path` as `~~[[old]]~~` strikethrough, and chains
     /// `remove(path)` (+ optional `expect_blob(path)`) + each source's
-    /// `upsert`/`expect_blob`. Returns the augmented transaction and the list of
+    /// `upsert`/`expect_blob`. Returns the augmented changeset and the list of
     /// rewritten source paths. Shared by the single-op
     /// [`Self::delete_file_with_link_rewrite_to_stale`] and the batch `DeleteNote`
     /// arm so both produce identical commits. Same link-graph coherence caveat
@@ -549,11 +549,11 @@ impl GitFileTools {
     /// `from` -> `to` AND rewrites every backlinking source's
     /// `[[from-basename]]` / `[[from-path]]` (plus alias / section /
     /// block-anchor / embed forms) to point at the new target, all in
-    /// **one substrate transaction**.
+    /// **one substrate changeset**.
     ///
     /// Per-source CAS: each rewritten source carries an `expect_blob`
     /// precondition. If ANY source's blob OID changed between the
-    /// read-modify and the substrate apply, the WHOLE transaction
+    /// read-modify and the substrate apply, the WHOLE changeset
     /// aborts (architecture §6.3 reconsideration domino). The
     /// destination always carries `expect_absent` (no clobber).
     ///
@@ -584,10 +584,10 @@ impl GitFileTools {
     }
 
     /// turbovault-0g4.6: fold an atomic move + inbound-wikilink rewrite onto an
-    /// existing transaction. Resolves backlinks via the in-memory link graph,
+    /// existing changeset. Resolves backlinks via the in-memory link graph,
     /// rewrites each source (OFM-aware), and chains `remove(from)` +
     /// `upsert(to)` + `expect_absent(to)` (+ optional `expect_blob(from)`) +
-    /// each source's `upsert`/`expect_blob`. Returns the augmented transaction
+    /// each source's `upsert`/`expect_blob`. Returns the augmented changeset
     /// and the list of rewritten source paths.
     ///
     /// Shared by the single-op [`Self::move_file_with_link_updates`] and the
@@ -847,7 +847,7 @@ impl GitFileTools {
                 // `update_frontmatter` tool uses (read + merge in memory), then
                 // fold the resulting full content into the batch commit. The
                 // helper reads via VaultManager (a read — invariant-safe); the
-                // write rides the substrate transaction.
+                // write rides the substrate changeset.
                 let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
                 let fm_map: serde_json::Map<String, serde_json::Value> =
                     frontmatter.clone().into_iter().collect();
@@ -942,11 +942,11 @@ impl GitFileTools {
         let mut records = Vec::with_capacity(total);
         // turbovault-0g4.5: intra-batch same-path conflict policy. The git
         // path skips the legacy `validate()`/`conflicts_with()` O(n²) check;
-        // the substrate DOES reject a transaction with duplicate change paths
+        // the substrate DOES reject a changeset with duplicate change paths
         // (`commit_changeset` → "duplicate change for path …"), but only at
         // apply time and with a message that names neither the offending op
         // index nor that the cause is a *batch* overlap. Detect the collision
-        // here instead — as each op folds into the shared transaction, any path
+        // here instead — as each op folds into the shared changeset, any path
         // it newly writes that an earlier op already wrote aborts the batch with
         // a clear, op-indexed error. Reject-overlap (not coalesce): a path may
         // be mutated by at most one op per batch.
@@ -1133,7 +1133,7 @@ impl GitFileTools {
                     run_txn(&repo, &txn, include_ignored)
                 })
                 .await
-                .map_err(|e| Error::config_error(format!("git transaction task failed: {}", e)))?
+                .map_err(|e| Error::config_error(format!("git changeset task failed: {}", e)))?
             }
             // Fallback: open a fresh `VaultRepo` per call (the pre-PERF-1 path).
             // Used by bare `Self::new*` — tests / migrations without the
@@ -1153,7 +1153,7 @@ impl GitFileTools {
                     run_txn(&repo, &txn, include_ignored)
                 })
                 .await
-                .map_err(|e| Error::config_error(format!("git transaction task failed: {}", e)))?
+                .map_err(|e| Error::config_error(format!("git changeset task failed: {}", e)))?
             }
         };
 
@@ -1177,7 +1177,7 @@ impl GitFileTools {
     }
 }
 
-/// Run one transaction against an already-open `repo`: the turbovault-lri
+/// Run one changeset against an already-open `repo`: the turbovault-lri
 /// gitignore gate (when `include_ignored == false`), then `commit_changeset`.
 /// Shared by `apply_txn`'s cached-handle and per-call-open paths so the policy
 /// + commit logic stays in one place.
