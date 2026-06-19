@@ -46,6 +46,33 @@ fn extract_count(value: &serde_json::Value) -> usize {
     }
 }
 
+/// Render the OKF orientation block for `get_vault_context`: a compact signal
+/// telling the agent whether this vault is an OKF bundle, where the
+/// progressive-disclosure entry point is, and what its type vocabulary looks
+/// like. Returns `null` when the vault is not an OKF bundle.
+fn okf_context_block(bundle: &turbovault_core::okf::BundleInfo) -> serde_json::Value {
+    if !bundle.is_okf_bundle {
+        return serde_json::Value::Null;
+    }
+    serde_json::json!({
+        "is_okf_bundle": true,
+        "concept_docs": bundle.concept_docs,
+        "concept_ratio": (bundle.concept_ratio * 100.0).round() / 100.0,
+        "entry_point": bundle.has_root_index.then_some("index.md"),
+        "has_root_log": bundle.has_root_log,
+        "top_types": bundle.top_types.iter()
+            .take(8)
+            .map(|(t, n)| serde_json::json!({ "type": t, "count": n }))
+            .collect::<Vec<_>>(),
+        "guidance": if bundle.has_root_index {
+            "This vault is an OKF bundle. Read index.md first and follow its links (progressive disclosure, OKF §6) instead of blind search."
+        } else {
+            "This vault is an OKF bundle but has no root index.md. Run generate_index to create progressive-disclosure entry points (OKF §6)."
+        },
+        "tools": ["okf_validate", "generate_index", "append_log_entry"],
+    })
+}
+
 /// Standardized response envelope for all tools (LLMX improvement)
 /// Generic, non-cumbersome, forward-looking design
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -441,16 +468,18 @@ impl ObsidianMcpServer {
             .await
             .map_err(|e| McpError::internal(format!("Failed to list vaults: {}", e)))?;
 
-        let current_stats = if !active_vault.is_empty() {
+        let (current_stats, okf_block) = if !active_vault.is_empty() {
             let manager = self.get_active_vault_manager().await?;
-            let tools = GraphTools::new(manager);
-            let health = tools
+            let health = GraphTools::new(manager.clone())
                 .quick_health_check()
                 .await
                 .map_err(|e| McpError::internal(e.to_string()))?;
-            Some(health)
+            // OKF orientation: tell the agent whether to navigate via index.md
+            // (progressive disclosure) rather than blind search.
+            let bundle = OkfTools::new(manager).bundle_info().await;
+            (Some(health), Some(okf_context_block(&bundle)))
         } else {
-            None
+            (None, None)
         };
 
         let context = serde_json::json!({
@@ -461,6 +490,7 @@ impl ObsidianMcpServer {
                 "is_default": v.is_default,
             })).collect::<Vec<_>>(),
             "current_stats": current_stats,
+            "okf": okf_block,
             "ready": !active_vault.is_empty(),
             "markdown_dialect": {
                 "name": "Obsidian Flavored Markdown (OFM)",

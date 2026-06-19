@@ -126,6 +126,16 @@ impl OkfTools {
         self.manager.relative_path(path)
     }
 
+    /// Bundle-level OKF orientation signals: is this an OKF bundle, where is the
+    /// progressive-disclosure entry point, and what is its type vocabulary.
+    ///
+    /// Cache-first (parsed notes validated against disk mtime, no re-scan) so it
+    /// is cheap enough to fold into a first-contact discovery call.
+    pub async fn bundle_info(&self) -> okf::BundleInfo {
+        let files = self.manager.vault_files_validated().await;
+        okf::detect_bundle(self.manager.vault_path().as_path(), &files)
+    }
+
     /// Validate the vault (or a subtree) for OKF v0.1 conformance.
     ///
     /// `subtree`, when given, is a vault-relative directory; only documents
@@ -759,6 +769,33 @@ mod tests {
         let written = std::fs::read_to_string(temp.path().join("log.md")).unwrap();
         assert_eq!(written.matches("## 2026-06-13").count(), 1);
         assert!(written.contains("* **Update**: Refined."));
+    }
+
+    #[tokio::test]
+    async fn bundle_info_detects_okf_bundle_end_to_end() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join("tables")).unwrap();
+        std::fs::write(
+            temp.path().join("tables/orders.md"),
+            "---\ntype: BigQuery Table\n---\n# x\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("tables/customers.md"),
+            "---\ntype: BigQuery Table\n---\n# y\n",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join("index.md"), "# Index\n").unwrap();
+
+        let manager = make_manager(temp.path());
+        manager.initialize().await.unwrap();
+        let tools = OkfTools::new(manager);
+
+        let info = tools.bundle_info().await;
+        assert!(info.is_okf_bundle);
+        assert_eq!(info.concept_docs, 2);
+        assert!(info.has_root_index);
+        assert_eq!(info.top_types, vec![("BigQuery Table".to_string(), 2)]);
     }
 
     #[tokio::test]

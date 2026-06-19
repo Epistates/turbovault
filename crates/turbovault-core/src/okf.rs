@@ -27,7 +27,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::models::Frontmatter;
+use crate::models::{Frontmatter, VaultFile};
 
 /// OKF frontmatter accessors layered over the generic [`Frontmatter`] map.
 ///
@@ -251,6 +251,101 @@ pub fn check_concept(frontmatter: Option<&Frontmatter>, path: &Path) -> ConceptC
     }
 }
 
+/// Minimum fraction of non-reserved documents that must carry a `type` for a
+/// vault to be flagged an OKF bundle on metadata alone (a root `index.md` also
+/// qualifies it — see [`detect_bundle`]).
+const BUNDLE_CONCEPT_RATIO_THRESHOLD: f64 = 0.5;
+
+/// Bundle-level OKF signals — orientation for a consumer landing in a vault.
+///
+/// This answers an agent's first questions on connecting: *is this an OKF
+/// bundle, and where do I start?* It is a cheap heuristic over already-parsed
+/// frontmatter, not a conformance verdict — use [`check_concept`] /
+/// `okf_validate` for that.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BundleInfo {
+    /// Heuristic: is this vault shaped like an OKF bundle? True when it has at
+    /// least one concept document and either a root `index.md` or a majority of
+    /// non-reserved documents carry a `type`.
+    pub is_okf_bundle: bool,
+    /// Total markdown documents considered.
+    pub total_docs: usize,
+    /// Non-reserved documents carrying a non-empty OKF `type` (concepts).
+    pub concept_docs: usize,
+    /// Reserved files (`index.md` / `log.md`) anywhere in the bundle.
+    pub reserved_files: usize,
+    /// Fraction of non-reserved documents that are OKF concepts (0.0–1.0).
+    pub concept_ratio: f64,
+    /// Whether the bundle root has an `index.md` — the progressive-disclosure
+    /// entry point (§6). This is the path a consumer should read first.
+    pub has_root_index: bool,
+    /// Whether the bundle root has a `log.md` (§7).
+    pub has_root_log: bool,
+    /// Concept `type` vocabulary, most-common first (ties broken by name).
+    pub top_types: Vec<(String, usize)>,
+}
+
+/// Detect whether a vault is an OKF bundle and surface orientation signals.
+///
+/// `root` is the vault/bundle root; `files` are its already-parsed documents
+/// (typically the cache-validated set). Reserved files (`index.md`/`log.md`)
+/// are excluded from the concept ratio — they are structural, not concepts.
+pub fn detect_bundle(root: &Path, files: &[VaultFile]) -> BundleInfo {
+    let total_docs = files.len();
+    let mut reserved_files = 0usize;
+    let mut non_reserved = 0usize;
+    let mut concept_docs = 0usize;
+    let mut has_root_index = false;
+    let mut has_root_log = false;
+    let mut type_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+
+    for vf in files {
+        match reserved_file(&vf.path) {
+            Some(kind) => {
+                reserved_files += 1;
+                if vf.path.parent() == Some(root) {
+                    match kind {
+                        ReservedFile::Index => has_root_index = true,
+                        ReservedFile::Log => has_root_log = true,
+                    }
+                }
+            }
+            None => {
+                non_reserved += 1;
+                if let Some(t) = vf.frontmatter.as_ref().and_then(Frontmatter::okf_type) {
+                    concept_docs += 1;
+                    *type_counts.entry(t).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    let concept_ratio = if non_reserved == 0 {
+        0.0
+    } else {
+        concept_docs as f64 / non_reserved as f64
+    };
+
+    let is_okf_bundle =
+        concept_docs >= 1 && (concept_ratio >= BUNDLE_CONCEPT_RATIO_THRESHOLD || has_root_index);
+
+    // Most-common type first; ties broken alphabetically (BTreeMap key order).
+    let mut top_types: Vec<(String, usize)> = type_counts.into_iter().collect();
+    top_types.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    BundleInfo {
+        is_okf_bundle,
+        total_docs,
+        concept_docs,
+        reserved_files,
+        concept_ratio,
+        has_root_index,
+        has_root_log,
+        top_types,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +471,97 @@ mod tests {
         assert!(idx.conformant);
         assert_eq!(idx.reserved, Some(ReservedFile::Index));
         assert!(idx.issues.is_empty());
+    }
+
+    fn vfile(path: &str, type_: Option<&str>) -> VaultFile {
+        use crate::models::FileMetadata;
+        let p = PathBuf::from(path);
+        let meta = FileMetadata {
+            path: p.clone(),
+            size: 0,
+            created_at: 0.0,
+            modified_at: 0.0,
+            checksum: String::new(),
+            is_attachment: false,
+        };
+        let mut vf = VaultFile::new(p, String::new(), meta);
+        vf.frontmatter = type_.map(|t| fm(&[("type", serde_json::json!(t))]));
+        vf
+    }
+
+    #[test]
+    fn detect_bundle_flags_a_typed_vault() {
+        let root = PathBuf::from("/v");
+        let files = vec![
+            vfile("/v/tables/orders.md", Some("BigQuery Table")),
+            vfile("/v/tables/customers.md", Some("BigQuery Table")),
+            vfile("/v/playbooks/etl.md", Some("Playbook")),
+            vfile("/v/index.md", None),
+            vfile("/v/log.md", None),
+        ];
+        let info = detect_bundle(&root, &files);
+        assert!(info.is_okf_bundle);
+        assert_eq!(info.total_docs, 5);
+        assert_eq!(info.concept_docs, 3);
+        assert_eq!(info.reserved_files, 2);
+        assert_eq!(info.concept_ratio, 1.0);
+        assert!(info.has_root_index);
+        assert!(info.has_root_log);
+        // Most-common type first; ties broken alphabetically.
+        assert_eq!(
+            info.top_types,
+            vec![
+                ("BigQuery Table".to_string(), 2),
+                ("Playbook".to_string(), 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn detect_bundle_ignores_plain_obsidian_vault() {
+        let root = PathBuf::from("/v");
+        // Untyped notes, even with a stray index.md, are not an OKF bundle.
+        let files = vec![
+            vfile("/v/daily/monday.md", None),
+            vfile("/v/ideas.md", None),
+            vfile("/v/index.md", None),
+        ];
+        let info = detect_bundle(&root, &files);
+        assert!(!info.is_okf_bundle);
+        assert_eq!(info.concept_docs, 0);
+        assert_eq!(info.concept_ratio, 0.0);
+        assert!(info.has_root_index);
+        assert!(info.top_types.is_empty());
+    }
+
+    #[test]
+    fn detect_bundle_root_index_qualifies_below_ratio() {
+        let root = PathBuf::from("/v");
+        // One typed concept out of three (ratio 0.33 < 0.5), but a root index.md
+        // present plus at least one concept → still a bundle.
+        let files = vec![
+            vfile("/v/orders.md", Some("Table")),
+            vfile("/v/notes.md", None),
+            vfile("/v/scratch.md", None),
+            vfile("/v/index.md", None),
+        ];
+        let info = detect_bundle(&root, &files);
+        assert!(info.concept_ratio < BUNDLE_CONCEPT_RATIO_THRESHOLD);
+        assert!(info.has_root_index);
+        assert!(info.is_okf_bundle);
+    }
+
+    #[test]
+    fn detect_bundle_nested_reserved_not_counted_as_root() {
+        let root = PathBuf::from("/v");
+        let files = vec![
+            vfile("/v/tables/orders.md", Some("Table")),
+            vfile("/v/tables/index.md", None), // nested index, not root
+        ];
+        let info = detect_bundle(&root, &files);
+        assert!(!info.has_root_index);
+        assert_eq!(info.reserved_files, 1);
+        // Ratio is 1.0 (one concept, one reserved excluded) → still a bundle.
+        assert!(info.is_okf_bundle);
     }
 }
