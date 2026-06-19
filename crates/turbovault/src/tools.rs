@@ -1629,7 +1629,7 @@ impl ObsidianMcpServer {
 
     /// Write or update a note with optional mode (overwrite, append, prepend)
     #[tool(
-        description = "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. CAS-by-default (turbovault-947): on `mode: overwrite`, writing to an EXISTING file requires either `expected_hash` (from read_note) or `force: true` — without one of those, the call is refused loudly to prevent silent clobber. Writing to an ABSENT path implicitly carries an expect-absent precondition that fails the loser of a concurrent-create race. Pass `commit_message` to set a meaningful git commit subject (turbovault-0bh); defaults to `write_note <path>`.",
+        description = "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. CAS-by-default (turbovault-947): on `mode: overwrite`, writing to an EXISTING file requires either `expected_hash` (from read_note) or `force: true` — without one of those, the call is refused loudly to prevent silent clobber. Writing to an ABSENT path implicitly carries an expect-absent precondition that fails the loser of a concurrent-create race. Pass `commit_message` to set a meaningful git commit subject (turbovault-0bh); defaults to `write_note <path>`. On vaults with `git.require_commit_message=true` a non-empty `commit_message` is REQUIRED (the call is refused without one — check `list_vaults` to see which vaults require it).",
         usage = "Use for creating new notes or replacing existing ones (with CAS proof) or appending/prepending. Default safety on overwrite: pass expected_hash from a prior read_note OR pass force=true to acknowledge blind overwrite. Append/prepend modes preserve historical behavior for now. Pass commit_message to explain WHY the write was made; first line is the subject, double-newline starts a body.",
         performance = "Moderate (<50ms typical). Includes filesystem write and link graph update",
         related = ["read_note", "edit_note", "create_from_template"],
@@ -2954,14 +2954,15 @@ impl ObsidianMcpServer {
 
     /// Execute batch file operations atomically
     #[tool(
-        description = "Execute multiple file operations as ONE atomic substrate commit (turbovault-61k / TV-012: THIS is the all-or-nothing primitive. `begin_fanout` is worktree isolation for fanout, NOT atomic-batch — don't confuse them.) On git backend: every op carries optional per-op `expected_hash` (CAS), CreateNote implicitly carries `expect_absent`; a mismatch on ANY op aborts the whole batch and ZERO files change. Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to an op-tally summary like `batch: 5 creates, 2 updates, 1 delete`.",
-        usage = "Use for multi-file workflows requiring all-or-nothing. Substrate atomicity holds: zero ops commit if any op fails. Not idempotent. Pass commit_message to explain the batch's WHY. For parallel-subagent isolation (without atomicity), use `begin_fanout` instead.",
-        performance = "Depends on operation count and types. Transactions add ~10-50ms overhead.",
-        related = ["write_note", "delete_note", "move_note"],
+        description = "Execute multiple file operations as ONE atomic substrate commit (turbovault-61k / TV-012: THIS is the all-or-nothing primitive. `begin_fanout` is worktree isolation for fanout, NOT atomic-batch — don't confuse them.) Each operation is a JSON object with a `type` discriminator. Op types: `CreateNote` {path, content, force?} (strict create — fails if the path exists unless force:true), `WriteNote` {path, content, expected_hash?} (create-or-overwrite), `DeleteNote` {path, expected_hash?, on_backlinks?} (on_backlinks: \"refuse\"(default)|\"rewrite-stale-callout\"|\"force\"), `MoveNote` {from, to, expected_hash?, update_backlinks?} (rewrites inbound wikilinks atomically by default), `UpdateLinks` {file, old_target, new_target}, and — GIT BACKEND ONLY — `EditNote` {path, edits} (SEARCH/REPLACE blocks), `UpdateFrontmatter` {path, frontmatter, merge?}, `ManageTags` {path, operation, tags}, `CreateFromTemplate` {template_id, path, fields, force?}. The 4 git-only ops are refused on legacy vaults. On git backend: every op carries optional per-op `expected_hash` (CAS); a mismatch on ANY op aborts the whole batch and ZERO files change. Two ops may not write the same path in one batch (loud collision error). Pass `commit_message` for a meaningful git commit subject (turbovault-0bh; may be REQUIRED on vaults with git.require_commit_message=true — see list_vaults); defaults to an op-tally summary.",
+        usage = "Use for multi-file workflows requiring all-or-nothing. Substrate atomicity holds: zero ops commit if any op fails. Not idempotent. The `type` value is the exact variant name (e.g. \"WriteNote\", not \"write\"); the *File aliases (WriteFile/DeleteFile/MoveFile/CreateFile/EditFile) also work. Pass commit_message to explain the batch's WHY. For parallel-subagent isolation (without atomicity), use `begin_fanout` instead.",
+        performance = "Depends on operation count and types. Each batch is one commit; ~10-50ms overhead.",
+        related = ["write_note", "delete_note", "move_note", "edit_note", "list_vaults"],
         examples = [
-            r#"[{"type":"write","path":"note1.md","content":"..."}]"#,
-            r#"[{"type":"delete","path":"old.md"},{"type":"write","path":"new.md","content":"..."}]"#,
-            r#"[{"type":"move","from":"a.md","to":"b.md"},{"type":"write","path":"index.md","content":"..."}]"#,
+            r#"[{"type":"WriteNote","path":"note1.md","content":"Note 1 body"}]"#,
+            r#"[{"type":"DeleteNote","path":"old.md"},{"type":"CreateNote","path":"new.md","content":"New body"}]"#,
+            r#"[{"type":"MoveNote","from":"a.md","to":"b.md"}]  // inbound wikilinks rewritten atomically"#,
+            r#"[{"type":"EditNote","path":"a.md","edits":"<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"},{"type":"UpdateFrontmatter","path":"b.md","frontmatter":{"status":"done"}}]  // git backend only"#,
             r#"commit_message: 'ingest source X: 3 concept pages + 1 entity update'"#
         ]
     )]
