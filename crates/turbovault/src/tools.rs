@@ -2856,8 +2856,8 @@ impl ObsidianMcpServer {
 
     /// List all registered vaults
     #[tool(
-        description = "List all vaults registered with the MCP server",
-        usage = "Use to discover available vaults before setting active vault. Empty list means call add_vault first",
+        description = "List all vaults registered with the MCP server. Each entry surfaces `write_backend` (\"legacy\" | \"git\") and `require_commit_message` (bool) at the top level (turbovault-17q) so you can tell which vaults are on the git substrate (GWS) and which require an explicit commit_message on mutations — without calling get_vault_config per vault.",
+        usage = "Use to discover available vaults before setting active vault, and to learn each vault's write backend + commit-message requirement up front. Empty list means call add_vault first",
         performance = "Instant (<1ms), reads from in-memory registry",
         related = ["get_active_vault", "add_vault", "set_active_vault"],
         examples = ["Show all vaults", "Check available options", "Verify vault registration"]
