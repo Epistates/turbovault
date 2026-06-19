@@ -15,7 +15,6 @@
 //! /`move_file`). All mutations route through [`VaultRepo::apply_transaction`].
 
 use crate::file_tools::{NoteInfo, WriteMode};
-use crate::read_set::{ReadSet, apply_read_set_to_transaction};
 use futures::future::BoxFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -210,8 +209,15 @@ impl GitFileTools {
         mode: WriteMode,
         expected_hash: Option<&str>,
     ) -> Result<()> {
-        self.write_file_with_read_set(path, content, mode, expected_hash, None)
-            .await
+        let final_content = self.resolve_write_content(path, content, mode).await?;
+        let expected = parse_blob_oid(expected_hash)?;
+        let txn = build_upsert_txn(
+            format!("write_file {}", path),
+            path,
+            &final_content,
+            expected,
+        );
+        self.apply_txn(&txn).await
     }
 
     /// turbovault-0bh: caller-supplied commit message variant of
@@ -669,7 +675,7 @@ impl GitFileTools {
     /// actually delivered (the legacy path stopped at `failed_at` and left
     /// partial state on disk).
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
-        self.batch_execute_with_read_set(operations, None).await
+        self.batch_execute_inner(operations, None).await
     }
 
     /// turbovault-0bh: caller-supplied commit message variant of
@@ -680,8 +686,7 @@ impl GitFileTools {
         operations: Vec<BatchOperation>,
         message: &str,
     ) -> Result<BatchResult> {
-        self.batch_execute_inner(operations, None, Some(message))
-            .await
+        self.batch_execute_inner(operations, Some(message)).await
     }
 
     // -------- internals --------
@@ -903,49 +908,12 @@ impl GitFileTools {
         })
     }
 
-    /// GWS.5fm: write with an optional read-set precondition. Equivalent
-    /// to [`Self::write_file_with_mode`] when `read_set` is `None`. When
-    /// `Some`, every `(path, oid)` in the read-set becomes an additional
-    /// `expect_blob` precondition on the same transaction — a concurrent
-    /// change to any of those source files aborts the write loudly
-    /// (`ConcurrencyError`) so the agent re-reads + re-decides.
-    pub async fn write_file_with_read_set(
-        &self,
-        path: &str,
-        content: &str,
-        mode: WriteMode,
-        expected_hash: Option<&str>,
-        read_set: Option<&ReadSet>,
-    ) -> Result<()> {
-        let final_content = self.resolve_write_content(path, content, mode).await?;
-        let expected = parse_blob_oid(expected_hash)?;
-        let txn = build_upsert_txn(
-            format!("write_file {}", path),
-            path,
-            &final_content,
-            expected,
-        );
-        self.apply_txn_augmented(txn, read_set).await
-    }
-
-    /// GWS.5fm: batch with an optional read-set precondition. The read-set's
-    /// preconditions ride alongside the per-op preconditions, so the whole
-    /// batch aborts atomically if any read-set source file changed.
-    pub async fn batch_execute_with_read_set(
-        &self,
-        operations: Vec<BatchOperation>,
-        read_set: Option<&ReadSet>,
-    ) -> Result<BatchResult> {
-        self.batch_execute_inner(operations, read_set, None).await
-    }
-
     /// turbovault-0bh internal: full batch implementation accepting an
     /// optional caller-supplied commit message. `None` falls back to the
     /// auto-derived `batch_execute (N ops)` subject (existing behavior).
     async fn batch_execute_inner(
         &self,
         operations: Vec<BatchOperation>,
-        read_set: Option<&ReadSet>,
         message: Option<&str>,
     ) -> Result<BatchResult> {
         let started = std::time::Instant::now();
@@ -1055,7 +1023,7 @@ impl GitFileTools {
             }
         }
 
-        match self.apply_txn_augmented(txn, read_set).await {
+        match self.apply_txn(&txn).await {
             Ok(()) => Ok(BatchResult {
                 success: true,
                 executed: total,
@@ -1105,23 +1073,7 @@ impl GitFileTools {
         }
     }
 
-    /// Internal helper used by every commit path. Applies `txn` after
-    /// optionally augmenting it with `read_set` preconditions.
-    async fn apply_txn_augmented(
-        &self,
-        txn: Transaction,
-        read_set: Option<&ReadSet>,
-    ) -> Result<()> {
-        let txn = match read_set {
-            Some(rs) => apply_read_set_to_transaction(txn, rs)?,
-            None => txn,
-        };
-        self.apply_txn(&txn).await
-    }
-
-    /// Compute the bytes to write given mode + path. Extracted so
-    /// `write_file_with_mode` and `write_file_with_read_set` share one
-    /// implementation.
+    /// Compute the bytes to write given mode + path.
     async fn resolve_write_content(
         &self,
         path: &str,

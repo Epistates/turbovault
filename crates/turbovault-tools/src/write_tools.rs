@@ -19,7 +19,6 @@ use turbovault_batch::{BatchOperation, BatchResult};
 use turbovault_core::prelude::*;
 use turbovault_git::{CommitHook, CommitLocks};
 
-use crate::read_set::ReadSet;
 use turbovault_vault::{EditResult, VaultManager};
 
 /// Per-vault write surface. One dispatch site per method; the MCP layer is
@@ -423,57 +422,6 @@ impl WriteTools {
                 batch.batch_execute(operations).await
             }
             Self::Git(g) => g.batch_execute(operations).await,
-        }
-    }
-
-    /// GWS.5fm: write with an optional `ReadSet` precondition (git backend
-    /// only). The legacy backend doesn't support read-set preconditions —
-    /// passing `Some(_)` returns a `ConfigError` so the caller switches
-    /// loudly rather than silently dropping CAS protection.
-    pub async fn write_file_with_read_set(
-        &self,
-        path: &str,
-        content: &str,
-        mode: WriteMode,
-        expected_hash: Option<&str>,
-        read_set: Option<&ReadSet>,
-    ) -> Result<()> {
-        match self {
-            Self::Git(g) => {
-                g.write_file_with_read_set(path, content, mode, expected_hash, read_set)
-                    .await
-            }
-            Self::Legacy { files, .. } => {
-                if read_set.is_some() {
-                    return Err(Error::config_error(
-                        "read_set preconditions require write_backend=git",
-                    ));
-                }
-                files
-                    .write_file_with_mode(path, content, mode, expected_hash)
-                    .await
-            }
-        }
-    }
-
-    /// GWS.5fm: batch with an optional `ReadSet`. Same legacy-backend
-    /// restriction as `write_file_with_read_set`.
-    pub async fn batch_execute_with_read_set(
-        &self,
-        operations: Vec<BatchOperation>,
-        read_set: Option<&ReadSet>,
-    ) -> Result<BatchResult> {
-        match self {
-            Self::Git(g) => g.batch_execute_with_read_set(operations, read_set).await,
-            Self::Legacy { batch, .. } => {
-                if read_set.is_some() {
-                    return Err(Error::config_error(
-                        "read_set preconditions require write_backend=git",
-                    ));
-                }
-                legacy_batch_refusal(&operations)?;
-                batch.batch_execute(operations).await
-            }
         }
     }
 }
