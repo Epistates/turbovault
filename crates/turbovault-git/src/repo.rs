@@ -15,7 +15,7 @@ use git2::{Oid, Repository};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Callback fired by [`VaultRepo::apply_transaction`] after a successful
+/// Callback fired by [`VaultRepo::commit_changeset`] after a successful
 /// commit + materialize, **inside** the commit lock. Arguments are the
 /// commit's first-parent oid (or `None` for the initial commit on an
 /// unborn branch) and the new commit oid.
@@ -84,7 +84,7 @@ impl VaultRepo {
     }
 
     /// Open the repo with both a shared commit-lock registry AND a post-commit
-    /// hook. The hook fires once per successful `apply_transaction`, inside
+    /// hook. The hook fires once per successful `commit_changeset`, inside
     /// the commit lock, after materialization (GWS.14 plumbing).
     ///
     /// Multiple `VaultRepo` handles to the same worktree may install

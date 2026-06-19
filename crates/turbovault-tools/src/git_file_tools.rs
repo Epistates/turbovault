@@ -2,7 +2,7 @@
 //!
 //! Mirrors the mutating surface of [`crate::FileTools`] + [`crate::BatchTools`]
 //! but routes every change through the git substrate's
-//! [`turbovault_git::VaultRepo::apply_transaction`]. Reads still go through the
+//! [`turbovault_git::VaultRepo::commit_changeset`]. Reads still go through the
 //! shared [`VaultManager`] — working tree == HEAD, so working-tree reads agree
 //! with the git tip.
 //!
@@ -12,7 +12,7 @@
 //!
 //! **Discipline (do not violate):** `GitFileTools` reads from `VaultManager`
 //! but must **never** call its mutators (`write_file`/`edit_file`/`delete_file`
-//! /`move_file`). All mutations route through [`VaultRepo::apply_transaction`].
+//! /`move_file`). All mutations route through [`VaultRepo::commit_changeset`].
 
 use crate::file_tools::{NoteInfo, WriteMode};
 use futures::future::BoxFuture;
@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult, OperationRecord};
 use turbovault_core::prelude::*;
-use turbovault_git::{CommitHook, CommitLocks, Oid, Transaction, VaultRepo};
+use turbovault_git::{Changeset, CommitHook, CommitLocks, Oid, VaultRepo};
 use turbovault_vault::{EditEngine, EditResult, VaultManager};
 
 /// turbovault-lqr: result of an atomic `move_file_with_link_updates`. The
@@ -267,7 +267,7 @@ impl GitFileTools {
         content: &str,
         message: &str,
     ) -> Result<()> {
-        let txn = Transaction::new(message.to_string()).create(path, content.as_bytes().to_vec());
+        let txn = Changeset::new(message.to_string()).create(path, content.as_bytes().to_vec());
         self.apply_txn(&txn).await
     }
 
@@ -357,7 +357,7 @@ impl GitFileTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         let expected = parse_blob_oid(expected_hash)?;
-        let mut txn = Transaction::new(format!("delete_file {}", path)).remove(path);
+        let mut txn = Changeset::new(format!("delete_file {}", path)).remove(path);
         if let Some(oid) = expected {
             txn = txn.expect_blob(path, oid);
         }
@@ -373,7 +373,7 @@ impl GitFileTools {
         message: &str,
     ) -> Result<()> {
         let expected = parse_blob_oid(expected_hash)?;
-        let mut txn = Transaction::new(message.to_string()).remove(path);
+        let mut txn = Changeset::new(message.to_string()).remove(path);
         if let Some(oid) = expected {
             txn = txn.expect_blob(path, oid);
         }
@@ -413,7 +413,7 @@ impl GitFileTools {
         let expected_from = parse_blob_oid(expected_hash)?;
         let content = self.read_file(from).await?;
 
-        let mut txn = Transaction::new(message.to_string())
+        let mut txn = Changeset::new(message.to_string())
             .remove(from)
             .upsert(to, content.into_bytes());
         if let Some(oid) = expected_from {
@@ -443,7 +443,7 @@ impl GitFileTools {
         message: &str,
     ) -> Result<MoveWithLinksResult> {
         let expected_target = parse_blob_oid(expected_hash)?;
-        let txn = Transaction::new(message.to_string());
+        let txn = Changeset::new(message.to_string());
         let (txn, link_sources_updated) = self
             .fold_delete_with_stale_links(txn, path, expected_target)
             .await?;
@@ -466,10 +466,10 @@ impl GitFileTools {
     /// as [`Self::fold_move_with_links`].
     async fn fold_delete_with_stale_links(
         &self,
-        txn: Transaction,
+        txn: Changeset,
         path: &str,
         expected_target: Option<Oid>,
-    ) -> Result<(Transaction, Vec<String>)> {
+    ) -> Result<(Changeset, Vec<String>)> {
         use crate::wikilink_rewriter::wrap_wikilinks_as_stale;
 
         let backlink_paths = {
@@ -571,7 +571,7 @@ impl GitFileTools {
         message: &str,
     ) -> Result<MoveWithLinksResult> {
         let expected_from = parse_blob_oid(expected_hash)?;
-        let txn = Transaction::new(message.to_string());
+        let txn = Changeset::new(message.to_string());
         let (txn, link_sources_updated) = self
             .fold_move_with_links(txn, from, to, expected_from)
             .await?;
@@ -597,11 +597,11 @@ impl GitFileTools {
     /// `manager.initialize()`.
     async fn fold_move_with_links(
         &self,
-        txn: Transaction,
+        txn: Changeset,
         from: &str,
         to: &str,
         expected_from: Option<Oid>,
-    ) -> Result<(Transaction, Vec<String>)> {
+    ) -> Result<(Changeset, Vec<String>)> {
         use crate::wikilink_rewriter::rewrite_wikilinks;
 
         let content = self.read_file(from).await?;
@@ -661,7 +661,7 @@ impl GitFileTools {
     /// commit. Same expect-absent guard on the destination as `move_file`.
     pub async fn copy_file(&self, from: &str, to: &str) -> Result<()> {
         let content = self.read_file(from).await?;
-        let txn = Transaction::new(format!("copy_file {} -> {}", from, to))
+        let txn = Changeset::new(format!("copy_file {} -> {}", from, to))
             .upsert(to, content.into_bytes())
             .expect_absent(to);
         self.apply_txn(&txn).await
@@ -669,7 +669,7 @@ impl GitFileTools {
 
     // -------- Batch (the atomicity win) --------
 
-    /// Translate every [`BatchOperation`] to a single [`Transaction`] and
+    /// Translate every [`BatchOperation`] to a single [`Changeset`] and
     /// commit as **one atomic commit** — either every op lands or none do.
     /// This is the spec-promised behavior the legacy [`BatchTools`] never
     /// actually delivered (the legacy path stopped at `failed_at` and left
@@ -691,7 +691,7 @@ impl GitFileTools {
 
     // -------- internals --------
 
-    async fn translate_op(&self, txn: Transaction, op: &BatchOperation) -> Result<Transaction> {
+    async fn translate_op(&self, txn: Changeset, op: &BatchOperation) -> Result<Changeset> {
         // Per-op preconditions (turbovault-c0e). Every variant that touches
         // an existing target accepts `expected_hash` (git blob OID hex on
         // git backend); `CreateNote` carries an implicit `expect_absent`
@@ -937,13 +937,13 @@ impl GitFileTools {
         let commit_msg = message
             .map(String::from)
             .unwrap_or_else(|| format!("batch_execute ({} ops)", total));
-        let mut txn = Transaction::new(commit_msg);
+        let mut txn = Changeset::new(commit_msg);
         let mut changes = Vec::with_capacity(total);
         let mut records = Vec::with_capacity(total);
         // turbovault-0g4.5: intra-batch same-path conflict policy. The git
         // path skips the legacy `validate()`/`conflicts_with()` O(n²) check;
         // the substrate DOES reject a transaction with duplicate change paths
-        // (`apply_transaction` → "duplicate change for path …"), but only at
+        // (`commit_changeset` → "duplicate change for path …"), but only at
         // apply time and with a message that names neither the offending op
         // index nor that the cause is a *batch* overlap. Detect the collision
         // here instead — as each op folds into the shared transaction, any path
@@ -1108,7 +1108,7 @@ impl GitFileTools {
         })
     }
 
-    async fn apply_txn(&self, txn: &Transaction) -> Result<()> {
+    async fn apply_txn(&self, txn: &Changeset) -> Result<()> {
         // `VaultRepo` is `Send` but `!Sync`; the substrate work is blocking
         // libgit2. Move it to the blocking pool. The `Arc<CommitLocks>` is
         // shared across calls so cross-call commit-section serialization
@@ -1178,10 +1178,10 @@ impl GitFileTools {
 }
 
 /// Run one transaction against an already-open `repo`: the turbovault-lri
-/// gitignore gate (when `include_ignored == false`), then `apply_transaction`.
+/// gitignore gate (when `include_ignored == false`), then `commit_changeset`.
 /// Shared by `apply_txn`'s cached-handle and per-call-open paths so the policy
 /// + commit logic stays in one place.
-fn run_txn(repo: &VaultRepo, txn: &Transaction, include_ignored: bool) -> Result<()> {
+fn run_txn(repo: &VaultRepo, txn: &Changeset, include_ignored: bool) -> Result<()> {
     if !include_ignored {
         for changed in txn.touched_paths() {
             if repo.is_path_ignored(&changed).map_err(git_err_to_core)? {
@@ -1192,7 +1192,7 @@ fn run_txn(repo: &VaultRepo, txn: &Transaction, include_ignored: bool) -> Result
             }
         }
     }
-    repo.apply_transaction(txn)
+    repo.commit_changeset(txn)
         .map(|_| ())
         .map_err(git_err_to_core)
 }
@@ -1202,8 +1202,8 @@ fn build_upsert_txn(
     path: &str,
     content: &str,
     expected: Option<Oid>,
-) -> Transaction {
-    let mut txn = Transaction::new(message).upsert(path, content.as_bytes().to_vec());
+) -> Changeset {
+    let mut txn = Changeset::new(message).upsert(path, content.as_bytes().to_vec());
     if let Some(oid) = expected {
         txn = txn.expect_blob(path, oid);
     }

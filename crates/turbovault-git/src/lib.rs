@@ -31,12 +31,12 @@ mod restore;
 mod txn;
 
 pub use error::{Error, Result};
-pub use fanout::{FanoutInfo, FanoutTransaction, MergeBackResult, MergeStrategy, OrphanFanout};
+pub use fanout::{FanoutInfo, FanoutWorktree, MergeBackResult, MergeStrategy, OrphanFanout};
 pub use locks::CommitLocks;
 pub use occ::Precondition;
 pub use plumbing::TreeChange;
 pub use repo::{CommitHook, VaultRepo};
-pub use txn::{Transaction, TransactionResult};
+pub use txn::{Changeset, ChangesetResult};
 
 /// Re-exported so substrate consumers (e.g. `turbovault-tools`) can talk about
 /// blob/commit oids without taking a direct `git2` dep — preserves the

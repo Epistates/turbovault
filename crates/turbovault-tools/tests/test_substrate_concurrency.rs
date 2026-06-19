@@ -1,7 +1,7 @@
 //! GWS.16 — Concurrency / isolation integration tests for the git substrate.
 //!
 //! Exercises end-to-end scenarios that span the `WriteTools` dispatch layer +
-//! `GitFileTools` + the bare substrate (`VaultRepo::apply_transaction`) +
+//! `GitFileTools` + the bare substrate (`VaultRepo::commit_changeset`) +
 //! `ReindexQueue`. The substrate's unit tests live in `turbovault-git/src/`
 //! and exercise the primitives directly; this file proves the same
 //! correctness guarantees survive the trip through the tool layer that the
@@ -175,14 +175,14 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
     // expose read-set preconditions; this exercises the substrate's
     // reconsideration domino, which is what derived-state preconditions
     // (turbovault-5fm) will eventually surface.)
-    use turbovault_git::Transaction;
-    let txn = Transaction::new("write a/b/c, guard watched")
+    use turbovault_git::Changeset;
+    let txn = Changeset::new("write a/b/c, guard watched")
         .upsert("a.md", "AA")
         .upsert("b.md", "BB")
         .upsert("c.md", "CC")
         .expect_blob("watched.md", watched_v1);
     let repo = VaultRepo::open_with_locks(tmp.path(), Arc::new(CommitLocks::new())).unwrap();
-    let res = repo.apply_transaction(&txn);
+    let res = repo.commit_changeset(&txn);
     assert!(
         matches!(
             res,
@@ -237,11 +237,11 @@ async fn move_with_link_updates_lands_as_one_commit() {
     // Drive a single transaction directly through the substrate (the
     // move-with-links composition isn't yet wrapped by GitFileTools — the
     // batch surface gets close, but doesn't accept preconditions yet).
-    use turbovault_git::Transaction;
+    use turbovault_git::Changeset;
     let body_blob = VaultRepo::blob_oid_of(b"body").unwrap();
     let l1_blob = VaultRepo::blob_oid_of(b"see [[old]]").unwrap();
     let l2_blob = VaultRepo::blob_oid_of(b"ref [[old]] here").unwrap();
-    let txn = Transaction::new("mv old->new + fix links")
+    let txn = Changeset::new("mv old->new + fix links")
         .rename("old.md", "new.md", "body", body_blob)
         .update("link1.md", "see [[new]]", l1_blob)
         .update("link2.md", "ref [[new]] here", l2_blob);
@@ -251,7 +251,7 @@ async fn move_with_link_updates_lands_as_one_commit() {
         Arc::new(move |_p, c| Arc::clone(&queue).push(c)),
     )
     .unwrap();
-    let _res = repo.apply_transaction(&txn).unwrap();
+    let _res = repo.commit_changeset(&txn).unwrap();
 
     // HEAD advanced exactly ONCE for all four file changes (rename = remove
     // + upsert, plus 2 link updates).

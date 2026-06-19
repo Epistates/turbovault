@@ -285,7 +285,7 @@ pub struct ObsidianMcpServer {
     git_ref_listeners: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// GWS.13 active fanout transactions, keyed by **base vault name**
     /// (the original vault, NOT the auto-registered fanout vault). At most
-    /// one active fanout per base vault — `begin_transaction` errors loudly
+    /// one active fanout per base vault — `begin_fanout` errors loudly
     /// on a second concurrent attempt.
     active_fanouts: Arc<RwLock<HashMap<String, ActiveFanoutRecord>>>,
 }
@@ -293,9 +293,9 @@ pub struct ObsidianMcpServer {
 /// One row of `ObsidianMcpServer.active_fanouts`.
 #[derive(Debug, Clone)]
 struct ActiveFanoutRecord {
-    tx_id: String,
+    fanout_id: String,
     info: FanoutInfo,
-    /// Auto-registered transient vault name (e.g. `<base>-fanout-<tx_id>`)
+    /// Auto-registered transient vault name (e.g. `<base>-fanout-<fanout_id>`)
     /// that subagents `set_active_vault` to during the transaction.
     fanout_vault_name: String,
 }
@@ -497,13 +497,13 @@ impl ObsidianMcpServer {
             .await;
             match join {
                 Ok(Ok(())) => log::info!(
-                    "shutdown: abandoned fanout tx_id={} on base vault {}",
-                    record.tx_id,
+                    "shutdown: abandoned fanout fanout_id={} on base vault {}",
+                    record.fanout_id,
                     base_vault
                 ),
                 Ok(Err(e)) => log::warn!(
-                    "shutdown: failed to abandon fanout tx_id={} on {}: {}",
-                    record.tx_id,
+                    "shutdown: failed to abandon fanout fanout_id={} on {}: {}",
+                    record.fanout_id,
                     base_vault,
                     e
                 ),
@@ -1037,16 +1037,16 @@ impl ObsidianMcpServer {
 
     /// Test-only: install an `active_fanouts` entry so tests can
     /// observe the remove_vault refusal without driving the full
-    /// `begin_transaction` MCP wire path. Used by turbovault-1ne.
+    /// `begin_fanout` MCP wire path. Used by turbovault-1ne.
     pub async fn register_active_fanout_test(
         &self,
         base_vault: &str,
-        tx_id: &str,
+        fanout_id: &str,
         info: FanoutInfo,
         fanout_vault_name: &str,
     ) {
         let rec = ActiveFanoutRecord {
-            tx_id: tx_id.to_string(),
+            fanout_id: fanout_id.to_string(),
             info,
             fanout_vault_name: fanout_vault_name.to_string(),
         };
@@ -1282,11 +1282,11 @@ impl ObsidianMcpServer {
     /// Where on disk to put a fanout's scratch worktree. Must live OUTSIDE
     /// any existing vault's working tree (git refuses nested worktrees).
     /// The per-process pid disambiguates concurrent servers on the same box.
-    fn fanout_scratch_path(tx_id: &str) -> PathBuf {
+    fn fanout_scratch_path(fanout_id: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "turbovault-fanout-{}-{}",
             std::process::id(),
-            tx_id
+            fanout_id
         ))
     }
 
@@ -2779,21 +2779,21 @@ impl ObsidianMcpServer {
     async fn remove_vault(&self, name: String) -> McpResult<serde_json::Value> {
         // turbovault-1ne: refuse if the vault has an active fanout (as
         // base) OR IS itself a fanout vault — symmetric with the
-        // `begin_transaction` nested-fanout refusal. Operator must
-        // `abandon_transaction` first to clean state.
+        // `begin_fanout` nested-fanout refusal. Operator must
+        // `abandon_fanout` first to clean state.
         {
             let fanouts = self.active_fanouts.read().await;
             if let Some(rec) = fanouts.get(&name) {
                 return Err(McpError::invalid_request(format!(
-                    "vault {} has an active fanout transaction (tx_id={}); abandon_transaction first",
-                    name, rec.tx_id
+                    "vault {} has an active fanout transaction (fanout_id={}); abandon_fanout first",
+                    name, rec.fanout_id
                 )));
             }
             for rec in fanouts.values() {
                 if rec.fanout_vault_name == name {
                     return Err(McpError::invalid_request(format!(
-                        "vault {} is a fanout transaction's worktree (tx_id={}); abandon_transaction on the base vault first",
-                        name, rec.tx_id
+                        "vault {} is a fanout transaction's worktree (fanout_id={}); abandon_fanout on the base vault first",
+                        name, rec.fanout_id
                     )));
                 }
             }
@@ -2954,8 +2954,8 @@ impl ObsidianMcpServer {
 
     /// Execute batch file operations atomically
     #[tool(
-        description = "Execute multiple file operations as ONE atomic substrate commit (turbovault-61k / TV-012: THIS is the all-or-nothing primitive. `begin_transaction` is worktree isolation for fanout, NOT atomic-batch — don't confuse them.) On git backend: every op carries optional per-op `expected_hash` (CAS), CreateNote implicitly carries `expect_absent`; a mismatch on ANY op aborts the whole batch and ZERO files change. Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to an op-tally summary like `batch: 5 creates, 2 updates, 1 delete`.",
-        usage = "Use for multi-file workflows requiring all-or-nothing. Substrate atomicity holds: zero ops commit if any op fails. Not idempotent. Pass commit_message to explain the batch's WHY. For parallel-subagent isolation (without atomicity), use `begin_transaction` instead.",
+        description = "Execute multiple file operations as ONE atomic substrate commit (turbovault-61k / TV-012: THIS is the all-or-nothing primitive. `begin_fanout` is worktree isolation for fanout, NOT atomic-batch — don't confuse them.) On git backend: every op carries optional per-op `expected_hash` (CAS), CreateNote implicitly carries `expect_absent`; a mismatch on ANY op aborts the whole batch and ZERO files change. Pass `commit_message` for a meaningful git commit subject (turbovault-0bh); defaults to an op-tally summary like `batch: 5 creates, 2 updates, 1 delete`.",
+        usage = "Use for multi-file workflows requiring all-or-nothing. Substrate atomicity holds: zero ops commit if any op fails. Not idempotent. Pass commit_message to explain the batch's WHY. For parallel-subagent isolation (without atomicity), use `begin_fanout` instead.",
         performance = "Depends on operation count and types. Transactions add ~10-50ms overhead.",
         related = ["write_note", "delete_note", "move_note"],
         examples = [
@@ -2979,7 +2979,7 @@ impl ObsidianMcpServer {
         }
 
         let op_count = operations.len();
-        // turbovault-rxx: backend-aware `transactional` meta. Git
+        // turbovault-rxx: backend-aware `atomic` meta. Git
         // substrate is genuinely atomic (`batch_execute_failure_leaves_
         // no_partial_state` covers it). Legacy `BatchExecutor` is NOT
         // atomic and never was (the historic #213 "lie"); on legacy,
@@ -3024,7 +3024,7 @@ impl ObsidianMcpServer {
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
-        let transactional = match backend {
+        let atomic = match backend {
             WriteBackend::Git => true,
             WriteBackend::Legacy => result.success,
         };
@@ -3034,7 +3034,7 @@ impl ObsidianMcpServer {
             serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
         )
         .with_count(op_count)
-        .with_meta("transactional", serde_json::json!(transactional))
+        .with_meta("atomic", serde_json::json!(atomic))
         .with_meta(
             "backend",
             serde_json::json!(match backend {
@@ -3051,16 +3051,13 @@ impl ObsidianMcpServer {
 
     /// Begin a fanout transaction on the active vault.
     #[tool(
-        description = "ISOLATION ONLY — NOT atomic-rollback (turbovault-61k / TV-012). Opens a scratch git worktree on a `wip/<tx_id>` branch for the active git-backend vault and auto-registers a temporary vault pointing at it. N subagents `set_active_vault` to the fanout vault and write freely; their commits go to the wip branch without disturbing the base vault's working tree. A failed write INSIDE the fanout does NOT abort the rest — for all-or-nothing semantics use `batch_execute`. `commit_transaction` merges the wip branch back; `abandon_transaction` discards it.",
+        description = "ISOLATION ONLY — NOT atomic-rollback (turbovault-61k / TV-012). Opens a scratch git worktree on a `wip/<fanout_id>` branch for the active git-backend vault and auto-registers a temporary vault pointing at it. N subagents `set_active_vault` to the fanout vault and write freely; their commits go to the wip branch without disturbing the base vault's working tree. A failed write INSIDE the fanout does NOT abort the rest — for all-or-nothing semantics use `batch_execute`. `commit_fanout` merges the wip branch back; `abandon_fanout` discards it.",
         usage = "Use to fan out subagent writes (e.g. parallel ingest of N sources) into a single visible reveal at merge-back. NOT a substitute for batch_execute's atomicity — fanout is git-worktree isolation, batch_execute is multi-file CAS. Default merge strategy comes from the vault's `git.merge_strategy` config (override at commit time).",
         performance = "Cheap (~5-10ms): one branch create + one git worktree add. Worktree shares the object DB with main; the working-tree files materialize into the scratch dir.",
-        related = ["commit_transaction", "abandon_transaction", "batch_execute", "set_active_vault"],
-        examples = ["begin_transaction() — open fanout for subagent ingest", "begin_transaction(merge_strategy: \"merge-commit\")", "(for atomic multi-op: prefer batch_execute, NOT begin_transaction)"]
+        related = ["commit_fanout", "abandon_fanout", "batch_execute", "set_active_vault"],
+        examples = ["begin_fanout() — open fanout for subagent ingest", "begin_fanout(merge_strategy: \"merge-commit\")", "(for atomic multi-op: prefer batch_execute, NOT begin_fanout)"]
     )]
-    async fn begin_transaction(
-        &self,
-        merge_strategy: Option<String>,
-    ) -> McpResult<serde_json::Value> {
+    async fn begin_fanout(&self, merge_strategy: Option<String>) -> McpResult<serde_json::Value> {
         let base_vault = self.get_active_vault_name().await?;
         let base_cfg = self
             .multi_vault_mgr
@@ -3083,8 +3080,8 @@ impl ObsidianMcpServer {
             let fanouts = self.active_fanouts.read().await;
             if fanouts.contains_key(&base_vault) {
                 return Err(McpError::invalid_request(format!(
-                    "vault {} already has an active fanout (tx_id={}); commit_transaction or abandon_transaction first",
-                    base_vault, fanouts[&base_vault].tx_id
+                    "vault {} already has an active fanout (fanout_id={}); commit_fanout or abandon_fanout first",
+                    base_vault, fanouts[&base_vault].fanout_id
                 )));
             }
             // Refuse if the active vault is itself a fanout vault (nested).
@@ -3098,26 +3095,26 @@ impl ObsidianMcpServer {
             }
         }
 
-        let tx_id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-        let scratch_path = Self::fanout_scratch_path(&tx_id);
+        let fanout_id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
+        let scratch_path = Self::fanout_scratch_path(&fanout_id);
 
         // Open VaultRepo on the base vault path (with its shared lock
         // registry) and call the stateless open_fanout_worktree.
         let locks = self.get_or_init_git_locks(&base_vault).await;
         let base_path = base_cfg.path.clone();
         let info_path = scratch_path.clone();
-        let tx_id_for_blocking = tx_id.clone();
+        let fanout_id_for_blocking = fanout_id.clone();
         let info = tokio::task::spawn_blocking(move || -> McpResult<FanoutInfo> {
             let repo = VaultRepo::open_with_locks(&base_path, locks)
                 .map_err(|e| McpError::internal(format!("open base vault: {}", e)))?;
-            repo.open_fanout_worktree(&tx_id_for_blocking, &info_path)
+            repo.open_fanout_worktree(&fanout_id_for_blocking, &info_path)
                 .map_err(|e| McpError::internal(format!("open_fanout_worktree: {}", e)))
         })
         .await
-        .map_err(|e| McpError::internal(format!("begin_transaction task: {}", e)))??;
+        .map_err(|e| McpError::internal(format!("begin_fanout task: {}", e)))??;
 
         // Auto-register the fanout vault.
-        let fanout_vault_name = format!("{}-fanout-{}", base_vault, tx_id);
+        let fanout_vault_name = format!("{}-fanout-{}", base_vault, fanout_id);
         let fanout_cfg = VaultConfig::builder(&fanout_vault_name, scratch_path.clone())
             .write_backend(WriteBackend::Git)
             .build()
@@ -3131,7 +3128,7 @@ impl ObsidianMcpServer {
         self.active_fanouts.write().await.insert(
             base_vault.clone(),
             ActiveFanoutRecord {
-                tx_id: tx_id.clone(),
+                fanout_id: fanout_id.clone(),
                 info,
                 fanout_vault_name: fanout_vault_name.clone(),
             },
@@ -3139,39 +3136,35 @@ impl ObsidianMcpServer {
 
         StandardResponse::new(
             base_vault.clone(),
-            "begin_transaction",
+            "begin_fanout",
             serde_json::json!({
-                "tx_id": tx_id,
+                "fanout_id": fanout_id,
                 "base_vault": base_vault,
                 "fanout_vault": fanout_vault_name,
                 "worktree_path": scratch_path.to_string_lossy(),
-                "wip_branch": format!("wip/{}", tx_id),
+                "wip_branch": format!("wip/{}", fanout_id),
             }),
         )
-        .with_next_steps(&[
-            "set_active_vault",
-            "commit_transaction",
-            "abandon_transaction",
-        ])
+        .with_next_steps(&["set_active_vault", "commit_fanout", "abandon_fanout"])
         .to_json()
     }
 
     /// Commit (merge back) the active fanout transaction.
     #[tool(
         description = "Merge the active fanout's wip branch back into the base vault's main branch (turbovault-61k / TV-012: this is worktree merge-back, NOT atomic-commit-of-a-transactional batch; if you wanted batch atomicity, use `batch_execute` instead). One merge-commit by default; configurable. Cleans up the scratch worktree + wip branch + deregisters the fanout vault. Caller may call this with the base vault OR the fanout vault active — both resolve to the same transaction.",
-        usage = "Pair with `begin_transaction`. `merge_strategy` overrides the vault config default at commit time; pass 'fast-forward' if you want main to advance directly to the wip tip (fails if main moved since begin). Pass `commit_message` to set the merge-commit subject (turbovault-b1q); defaults to an auto-derived 'merge fan-out ...' message. (Ignored for fast-forward, which creates no merge commit.)",
+        usage = "Pair with `begin_fanout`. `merge_strategy` overrides the vault config default at commit time; pass 'fast-forward' if you want main to advance directly to the wip tip (fails if main moved since begin). Pass `commit_message` to set the merge-commit subject (turbovault-b1q); defaults to an auto-derived 'merge fan-out ...' message. (Ignored for fast-forward, which creates no merge commit.)",
         performance = "Dominated by the merge (one tree merge + one materialize). Typical ~10-30ms.",
-        related = ["begin_transaction", "abandon_transaction", "batch_execute"],
-        examples = ["commit_transaction()", "commit_transaction(merge_strategy: \"fast-forward\")", "commit_transaction(commit_message: 'ingest source X: merge 12 concept pages')"]
+        related = ["begin_fanout", "abandon_fanout", "batch_execute"],
+        examples = ["commit_fanout()", "commit_fanout(merge_strategy: \"fast-forward\")", "commit_fanout(commit_message: 'ingest source X: merge 12 concept pages')"]
     )]
-    async fn commit_transaction(
+    async fn commit_fanout(
         &self,
         merge_strategy: Option<String>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (base_vault, record) = self.resolve_active_fanout().await.ok_or_else(|| {
             McpError::invalid_request(
-                "no active fanout transaction (call begin_transaction first)".to_string(),
+                "no active fanout transaction (call begin_fanout first)".to_string(),
             )
         })?;
         let base_cfg = self
@@ -3204,7 +3197,7 @@ impl ObsidianMcpServer {
                 .map_err(|e| McpError::internal(format!("merge_fanout_back: {}", e)))
         })
         .await
-        .map_err(|e| McpError::internal(format!("commit_transaction task: {}", e)))??;
+        .map_err(|e| McpError::internal(format!("commit_fanout task: {}", e)))??;
 
         // Deregister fanout vault + clear record. On error in either step we
         // keep going so we don't leave the server's in-memory state in a
@@ -3215,7 +3208,7 @@ impl ObsidianMcpServer {
             .await
         {
             log::warn!(
-                "commit_transaction: failed to deregister fanout vault {}: {}",
+                "commit_fanout: failed to deregister fanout vault {}: {}",
                 record.fanout_vault_name,
                 e
             );
@@ -3224,9 +3217,9 @@ impl ObsidianMcpServer {
 
         StandardResponse::new(
             base_vault,
-            "commit_transaction",
+            "commit_fanout",
             serde_json::json!({
-                "tx_id": record.tx_id,
+                "fanout_id": record.fanout_id,
                 "merge_commit": merge_result.merge_commit.map(|o| o.to_string()),
                 "tip_before": merge_result.tip_before.to_string(),
                 "tip_after": merge_result.tip_after.to_string(),
@@ -3239,16 +3232,16 @@ impl ObsidianMcpServer {
     /// Abandon (discard) the active fanout transaction.
     #[tool(
         description = "Discard the active fanout (turbovault-61k / TV-012: this is a worktree-discard, NOT a transactional-rollback of an atomic batch — `batch_execute` is the atomic primitive). Nothing lands on the base vault; the scratch worktree + wip branch are removed; the auto-registered fanout vault is deregistered. Safe no-op if there's no active fanout (returns ok with `was_active: false`).",
-        usage = "Use to bail out of a fanout that no longer makes sense (subagent error, user cancel, conflicting plan). Symmetric counterpart to `commit_transaction`.",
+        usage = "Use to bail out of a fanout that no longer makes sense (subagent error, user cancel, conflicting plan). Symmetric counterpart to `commit_fanout`.",
         performance = "Fast: a few filesystem + git ref cleanups.",
-        related = ["begin_transaction", "commit_transaction", "batch_execute"],
-        examples = ["abandon_transaction()"]
+        related = ["begin_fanout", "commit_fanout", "batch_execute"],
+        examples = ["abandon_fanout()"]
     )]
-    async fn abandon_transaction(&self) -> McpResult<serde_json::Value> {
+    async fn abandon_fanout(&self) -> McpResult<serde_json::Value> {
         let Some((base_vault, record)) = self.resolve_active_fanout().await else {
             return StandardResponse::new(
                 self.get_active_vault_name().await.unwrap_or_default(),
-                "abandon_transaction",
+                "abandon_fanout",
                 serde_json::json!({ "was_active": false }),
             )
             .to_json();
@@ -3274,7 +3267,7 @@ impl ObsidianMcpServer {
                 .map_err(|e| McpError::internal(format!("abandon_fanout_by_info: {}", e)))
         })
         .await
-        .map_err(|e| McpError::internal(format!("abandon_transaction task: {}", e)))??;
+        .map_err(|e| McpError::internal(format!("abandon_fanout task: {}", e)))??;
 
         if let Err(e) = self
             .multi_vault_mgr
@@ -3282,7 +3275,7 @@ impl ObsidianMcpServer {
             .await
         {
             log::warn!(
-                "abandon_transaction: failed to deregister fanout vault {}: {}",
+                "abandon_fanout: failed to deregister fanout vault {}: {}",
                 record.fanout_vault_name,
                 e
             );
@@ -3291,10 +3284,10 @@ impl ObsidianMcpServer {
 
         StandardResponse::new(
             base_vault,
-            "abandon_transaction",
+            "abandon_fanout",
             serde_json::json!({
                 "was_active": true,
-                "tx_id": record.tx_id,
+                "fanout_id": record.fanout_id,
             }),
         )
         .to_json()
@@ -3302,10 +3295,10 @@ impl ObsidianMcpServer {
 
     /// turbovault-84k: enumerate fanout artifacts from prior sessions.
     #[tool(
-        description = "List orphan fanout `wip-*` worktrees this server didn't open. Detects worktrees left behind by a crashed predecessor or by `commit/abandon_transaction` cleanup failures. Pure read; never mutates. Operator-driven cleanup: `git worktree remove <name>` + `git branch -D wip/<id>` from the vault root.",
-        usage = "Diagnostic. Use after a server restart, or when `begin_transaction` errors with 'vault already has an active fanout' but no `commit/abandon_transaction` works.",
+        description = "List orphan fanout `wip-*` worktrees this server didn't open. Detects worktrees left behind by a crashed predecessor or by `commit/abandon_fanout` cleanup failures. Pure read; never mutates. Operator-driven cleanup: `git worktree remove <name>` + `git branch -D wip/<id>` from the vault root.",
+        usage = "Diagnostic. Use after a server restart, or when `begin_fanout` errors with 'vault already has an active fanout' but no `commit/abandon_fanout` works.",
         performance = "Fast (~1-2ms per git-backend vault).",
-        related = ["begin_transaction", "abandon_transaction"],
+        related = ["begin_fanout", "abandon_fanout"],
         examples = ["list_orphan_fanouts()", "list_orphan_fanouts(vault: \"my-vault\")"]
     )]
     async fn list_orphan_fanouts(&self, vault: Option<String>) -> McpResult<serde_json::Value> {

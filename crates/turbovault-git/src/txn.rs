@@ -1,7 +1,7 @@
-//! Transaction = one commit (GWS.7).
+//! Changeset = one commit (GWS.7).
 //!
-//! A [`Transaction`] is a set of tree changes plus per-file preconditions and a
-//! commit message. [`VaultRepo::apply_transaction`] runs the full pipeline as
+//! A [`Changeset`] is a set of tree changes plus per-file preconditions and a
+//! commit message. [`VaultRepo::commit_changeset`] runs the full pipeline as
 //! **one commit**, under the worktree commit lock:
 //!
 //! 1. acquire the per-worktree commit lock (GWS.6);
@@ -29,13 +29,13 @@ use tracing::instrument;
 
 /// A unit of change applied as a single commit.
 #[derive(Debug, Clone, Default)]
-pub struct Transaction {
+pub struct Changeset {
     message: String,
     changes: Vec<TreeChange>,
     preconditions: Vec<Precondition>,
 }
 
-impl Transaction {
+impl Changeset {
     /// Start a transaction with a commit message.
     pub fn new(message: impl Into<String>) -> Self {
         Self {
@@ -175,7 +175,7 @@ impl Transaction {
 
 /// Outcome of a committed transaction.
 #[derive(Debug, Clone)]
-pub struct TransactionResult {
+pub struct ChangesetResult {
     /// The commit the branch points at. For a no-op transaction
     /// (`no_op == true`) this is the *unchanged* HEAD — nothing was committed.
     pub commit: Oid,
@@ -202,9 +202,9 @@ impl VaultRepo {
             n_changes = txn.changes.len(),
             n_preconditions = txn.preconditions.len(),
         ),
-        name = "git_apply_transaction"
+        name = "git_commit_changeset"
     )]
-    pub fn apply_transaction(&self, txn: &Transaction) -> Result<TransactionResult> {
+    pub fn commit_changeset(&self, txn: &Changeset) -> Result<ChangesetResult> {
         if txn.changes.is_empty() {
             return Err(Error::Other("empty transaction (no changes)".to_string()));
         }
@@ -267,7 +267,7 @@ impl VaultRepo {
                         hook(parent_at_apply, commit);
                     }
 
-                    Ok(TransactionResult {
+                    Ok(ChangesetResult {
                         commit,
                         paths: changed,
                         no_op: false,
@@ -283,7 +283,7 @@ impl VaultRepo {
                             "identity-tree no-op on an unborn branch is impossible".to_string(),
                         )
                     })?;
-                    Ok(TransactionResult {
+                    Ok(ChangesetResult {
                         commit,
                         paths: Vec::new(),
                         no_op: true,
@@ -320,10 +320,10 @@ mod tests {
     #[test]
     fn create_on_unborn_makes_initial_commit() {
         let (_tmp, vr) = open_unborn();
-        let txn = Transaction::new("create a")
+        let txn = Changeset::new("create a")
             .upsert("a.md", "alpha")
             .expect_absent("a.md");
-        let res = vr.apply_transaction(&txn).unwrap();
+        let res = vr.commit_changeset(&txn).unwrap();
 
         assert_eq!(
             vr.head_oid(),
@@ -340,31 +340,31 @@ mod tests {
     #[test]
     fn update_with_correct_precondition_succeeds() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("c").upsert("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("c").upsert("a.md", "v1"))
             .unwrap();
 
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        let txn = Transaction::new("update a")
+        let txn = Changeset::new("update a")
             .upsert("a.md", "v2")
             .expect_blob("a.md", v1);
-        vr.apply_transaction(&txn).unwrap();
+        vr.commit_changeset(&txn).unwrap();
         assert_eq!(read_wt(&vr, "a.md"), "v2");
     }
 
     #[test]
     fn stale_precondition_aborts_nothing_applied() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("c").upsert("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("c").upsert("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
         // Caller thinks a.md still holds "stale" content.
         let stale = VaultRepo::blob_oid_of(b"stale").unwrap();
-        let txn = Transaction::new("bad update")
+        let txn = Changeset::new("bad update")
             .upsert("a.md", "v2")
             .expect_blob("a.md", stale);
         assert!(matches!(
-            vr.apply_transaction(&txn),
+            vr.commit_changeset(&txn),
             Err(Error::PreconditionFailed { .. })
         ));
 
@@ -379,11 +379,11 @@ mod tests {
     #[test]
     fn multi_file_batch_is_one_atomic_commit() {
         let (_tmp, vr) = open_unborn();
-        let txn = Transaction::new("batch")
+        let txn = Changeset::new("batch")
             .upsert("a.md", "A")
             .upsert("dir/b.md", "B")
             .remove("ghost.md"); // remove of absent path is a no-op in the tree
-        let res = vr.apply_transaction(&txn).unwrap();
+        let res = vr.commit_changeset(&txn).unwrap();
 
         // Exactly one commit; both writes present.
         let commit = vr.git().find_commit(res.commit).unwrap();
@@ -402,16 +402,16 @@ mod tests {
         // b.md is unchanged. If b.md moved, the whole batch aborts even though we
         // never write b.md.
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").upsert("b.md", "B1"))
+        vr.commit_changeset(&Changeset::new("seed").upsert("b.md", "B1"))
             .unwrap();
         let head_before = vr.head_oid();
 
         let stale_b = VaultRepo::blob_oid_of(b"B-OLD").unwrap();
-        let txn = Transaction::new("write a, guard b")
+        let txn = Changeset::new("write a, guard b")
             .upsert("a.md", "A")
             .expect_blob("b.md", stale_b);
         assert!(matches!(
-            vr.apply_transaction(&txn),
+            vr.commit_changeset(&txn),
             Err(Error::PreconditionFailed { path, .. }) if path == "b.md"
         ));
         assert_eq!(vr.head_oid(), head_before, "nothing committed");
@@ -419,10 +419,10 @@ mod tests {
     }
 
     #[test]
-    fn empty_transaction_rejected() {
+    fn empty_changeset_rejected() {
         let (_tmp, vr) = open_unborn();
         assert!(matches!(
-            vr.apply_transaction(&Transaction::new("empty")),
+            vr.commit_changeset(&Changeset::new("empty")),
             Err(Error::Other(_))
         ));
     }
@@ -430,10 +430,10 @@ mod tests {
     #[test]
     fn duplicate_change_path_rejected() {
         let (_tmp, vr) = open_unborn();
-        let txn = Transaction::new("dup")
+        let txn = Changeset::new("dup")
             .upsert("a.md", "x")
             .upsert("a.md", "y");
-        assert!(matches!(vr.apply_transaction(&txn), Err(Error::Other(_))));
+        assert!(matches!(vr.commit_changeset(&txn), Err(Error::Other(_))));
     }
 
     #[test]
@@ -441,13 +441,13 @@ mod tests {
         // The move+links shape (GWS.8 will build these): remove old + add new in
         // one atomic commit.
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").upsert("old.md", "body"))
+        vr.commit_changeset(&Changeset::new("seed").upsert("old.md", "body"))
             .unwrap();
 
-        let txn = Transaction::new("move old->new")
+        let txn = Changeset::new("move old->new")
             .remove("old.md")
             .upsert("new.md", "body");
-        let res = vr.apply_transaction(&txn).unwrap();
+        let res = vr.commit_changeset(&txn).unwrap();
 
         assert!(!workfile(&vr, "old.md").exists(), "old path removed");
         assert_eq!(read_wt(&vr, "new.md"), "body", "new path written");
@@ -463,12 +463,12 @@ mod tests {
     fn create_on_absent_succeeds_create_on_existing_fails() {
         let (_tmp, vr) = open_unborn();
         // create succeeds when path is absent.
-        vr.apply_transaction(&Transaction::new("c").create("a.md", "alpha"))
+        vr.commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
             .unwrap();
         assert_eq!(read_wt(&vr, "a.md"), "alpha");
 
         // create on an existing path fails (expect_absent precondition).
-        let res = vr.apply_transaction(&Transaction::new("c2").create("a.md", "again"));
+        let res = vr.commit_changeset(&Changeset::new("c2").create("a.md", "again"));
         assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
         assert_eq!(
             read_wt(&vr, "a.md"),
@@ -480,16 +480,16 @@ mod tests {
     #[test]
     fn update_requires_correct_expected_blob() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
             .unwrap();
 
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        vr.apply_transaction(&Transaction::new("u").update("a.md", "v2", v1))
+        vr.commit_changeset(&Changeset::new("u").update("a.md", "v2", v1))
             .unwrap();
         assert_eq!(read_wt(&vr, "a.md"), "v2");
 
         // Update with stale expected (still v1, but file is now v2) aborts.
-        let res = vr.apply_transaction(&Transaction::new("u-stale").update("a.md", "v3", v1));
+        let res = vr.commit_changeset(&Changeset::new("u-stale").update("a.md", "v3", v1));
         assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
         assert_eq!(read_wt(&vr, "a.md"), "v2", "stale update did not apply");
     }
@@ -497,18 +497,18 @@ mod tests {
     #[test]
     fn delete_requires_correct_expected_blob() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
             .unwrap();
 
         // Stale expected -> abort, file still there.
         let stale = VaultRepo::blob_oid_of(b"OLD").unwrap();
-        let res = vr.apply_transaction(&Transaction::new("d-stale").delete("a.md", stale));
+        let res = vr.commit_changeset(&Changeset::new("d-stale").delete("a.md", stale));
         assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
         assert!(workfile(&vr, "a.md").exists(), "stale delete did not apply");
 
         // Correct expected -> file gone.
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        vr.apply_transaction(&Transaction::new("d").delete("a.md", v1))
+        vr.commit_changeset(&Changeset::new("d").delete("a.md", v1))
             .unwrap();
         assert!(!workfile(&vr, "a.md").exists());
     }
@@ -516,14 +516,12 @@ mod tests {
     #[test]
     fn rename_atomically_with_endpoint_preconditions() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("old.md", "body"))
+        vr.commit_changeset(&Changeset::new("seed").create("old.md", "body"))
             .unwrap();
 
         let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
         let res = vr
-            .apply_transaction(
-                &Transaction::new("rn").rename("old.md", "new.md", "body", from_blob),
-            )
+            .commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", from_blob))
             .unwrap();
 
         assert!(!workfile(&vr, "old.md").exists(), "source removed");
@@ -536,12 +534,12 @@ mod tests {
     #[test]
     fn rename_aborts_on_stale_source() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("old.md", "body"))
+        vr.commit_changeset(&Changeset::new("seed").create("old.md", "body"))
             .unwrap();
 
         let stale = VaultRepo::blob_oid_of(b"different").unwrap();
         let res =
-            vr.apply_transaction(&Transaction::new("rn").rename("old.md", "new.md", "body", stale));
+            vr.commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", stale));
         assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "old.md"));
         assert!(workfile(&vr, "old.md").exists(), "source kept on abort");
         assert!(
@@ -553,17 +551,16 @@ mod tests {
     #[test]
     fn rename_aborts_when_destination_exists() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(
-            &Transaction::new("seed")
+        vr.commit_changeset(
+            &Changeset::new("seed")
                 .create("old.md", "body")
                 .create("new.md", "occupied"),
         )
         .unwrap();
 
         let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
-        let res = vr.apply_transaction(
-            &Transaction::new("rn").rename("old.md", "new.md", "body", from_blob),
-        );
+        let res = vr
+            .commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", from_blob));
         assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "new.md"));
         assert!(workfile(&vr, "old.md").exists());
         assert_eq!(read_wt(&vr, "new.md"), "occupied", "destination untouched");
@@ -574,8 +571,8 @@ mod tests {
         // Move + update-links: rename old->new AND fix link targets in two other
         // files, all in one atomic commit (the case the legacy batch couldn't).
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(
-            &Transaction::new("seed")
+        vr.commit_changeset(
+            &Changeset::new("seed")
                 .create("old.md", "body")
                 .create("link1.md", "see [[old]]")
                 .create("link2.md", "ref [[old]] here"),
@@ -586,8 +583,8 @@ mod tests {
         let l1_blob = VaultRepo::blob_oid_of(b"see [[old]]").unwrap();
         let l2_blob = VaultRepo::blob_oid_of(b"ref [[old]] here").unwrap();
         let res = vr
-            .apply_transaction(
-                &Transaction::new("mv+links")
+            .commit_changeset(
+                &Changeset::new("mv+links")
                     .rename("old.md", "new.md", "body", body_blob)
                     .update("link1.md", "see [[new]]", l1_blob)
                     .update("link2.md", "ref [[new]] here", l2_blob),
@@ -631,7 +628,7 @@ mod tests {
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
         let res = vr
-            .apply_transaction(&Transaction::new("c").create("a.md", "alpha"))
+            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
             .unwrap();
 
         let calls = calls.lock().unwrap();
@@ -650,11 +647,11 @@ mod tests {
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
         let r1 = vr
-            .apply_transaction(&Transaction::new("c1").create("a.md", "v1"))
+            .commit_changeset(&Changeset::new("c1").create("a.md", "v1"))
             .unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
         let r2 = vr
-            .apply_transaction(&Transaction::new("c2").update("a.md", "v2", v1))
+            .commit_changeset(&Changeset::new("c2").update("a.md", "v2", v1))
             .unwrap();
 
         let calls = calls.lock().unwrap();
@@ -676,13 +673,13 @@ mod tests {
         });
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
-        vr.apply_transaction(&Transaction::new("c").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("c").create("a.md", "v1"))
             .unwrap();
 
         // Stale precondition -> reconsideration domino -> no commit.
         let stale = crate::VaultRepo::blob_oid_of(b"OLD").unwrap();
         assert!(
-            vr.apply_transaction(&Transaction::new("u").update("a.md", "v2", stale))
+            vr.commit_changeset(&Changeset::new("u").update("a.md", "v2", stale))
                 .is_err()
         );
 
@@ -694,7 +691,7 @@ mod tests {
     fn vault_repo_without_hook_is_silent() {
         // Sanity: open_with_locks (no hook) still applies cleanly.
         let (_tmp, vr) = open_unborn();
-        let r = vr.apply_transaction(&Transaction::new("c").create("a.md", "x"));
+        let r = vr.commit_changeset(&Changeset::new("c").create("a.md", "x"));
         assert!(r.is_ok());
     }
 
@@ -704,9 +701,9 @@ mod tests {
     /// it with `vec![]` / `vec![""]` — the gitignore-gate + reindex layers rely
     /// on this).
     #[test]
-    fn transaction_touched_paths_lists_every_changed_path() {
+    fn changeset_touched_paths_lists_every_changed_path() {
         let v = crate::VaultRepo::blob_oid_of(b"old").unwrap();
-        let txn = Transaction::new("c")
+        let txn = Changeset::new("c")
             .create("a.md", "a")
             .update("b.md", "b", v)
             .remove("c.md");
@@ -724,18 +721,18 @@ mod tests {
     fn raw_with_change_and_with_precondition_take_effect() {
         let (_tmp, vr) = open_unborn();
         // with_change(Upsert) lands the file.
-        let txn = Transaction::new("raw").with_change(TreeChange::Upsert {
+        let txn = Changeset::new("raw").with_change(TreeChange::Upsert {
             path: "x.md".into(),
             content: b"hi".to_vec(),
         });
         assert_eq!(txn.touched_paths(), vec!["x.md".to_string()]);
-        vr.apply_transaction(&txn).unwrap();
+        vr.commit_changeset(&txn).unwrap();
         assert_eq!(read_wt(&vr, "x.md"), "hi");
         // with_precondition(expect_absent) on an EXISTING path must abort — and
         // specifically on the PRECONDITION, not because a dropped builder left an
         // empty txn (the txn carries a real upsert, so an empty-txn error would
         // mean with_precondition discarded the chain).
-        let blocked = Transaction::new("b")
+        let blocked = Changeset::new("b")
             .upsert("y.md", b"y")
             .with_precondition(Precondition::expect_absent("x.md"));
         assert_eq!(
@@ -743,7 +740,7 @@ mod tests {
             vec!["y.md".to_string()],
             "with_precondition must preserve the builder chain"
         );
-        let err = vr.apply_transaction(&blocked).unwrap_err().to_string();
+        let err = vr.commit_changeset(&blocked).unwrap_err().to_string();
         assert!(
             !err.contains("empty"),
             "must abort on the precondition, not because the txn was emptied: {err}"
@@ -756,11 +753,11 @@ mod tests {
     fn git_commit_first_parent_resolves_chain() {
         let (_tmp, vr) = open_unborn();
         let r1 = vr
-            .apply_transaction(&Transaction::new("c1").create("a.md", "1"))
+            .commit_changeset(&Changeset::new("c1").create("a.md", "1"))
             .unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"1").unwrap();
         let r2 = vr
-            .apply_transaction(&Transaction::new("c2").update("a.md", "2", v1))
+            .commit_changeset(&Changeset::new("c2").update("a.md", "2", v1))
             .unwrap();
         assert_eq!(
             vr.git_commit_first_parent(r2.commit).unwrap(),
@@ -797,8 +794,8 @@ mod tests {
     #[test]
     fn multi_file_move_aborts_atomically_when_a_linker_is_stale() {
         let (tmp, vr) = open_unborn();
-        vr.apply_transaction(
-            &Transaction::new("seed")
+        vr.commit_changeset(
+            &Changeset::new("seed")
                 .create("old.md", "# Old")
                 .create("linker.md", "[[old]]"),
         )
@@ -807,14 +804,14 @@ mod tests {
         let stale = crate::VaultRepo::blob_oid_of(b"DIFFERENT").unwrap();
         let head_before = vr.head_oid().unwrap();
 
-        let txn = Transaction::new("move")
+        let txn = Changeset::new("move")
             .remove("old.md")
             .upsert("new.md", b"# Old".to_vec())
             .expect_blob("old.md", old_blob)
             .upsert("linker.md", b"[[new]]".to_vec())
             .expect_blob("linker.md", stale); // stale linker precondition
         assert!(
-            vr.apply_transaction(&txn).is_err(),
+            vr.commit_changeset(&txn).is_err(),
             "a stale linker must abort the whole move"
         );
         assert_eq!(vr.head_oid(), Some(head_before), "nothing committed");
@@ -832,14 +829,14 @@ mod tests {
     #[test]
     fn batch_commits_real_change_despite_an_identity_subchange() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid().unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
 
         let res = vr
-            .apply_transaction(
-                &Transaction::new("mixed")
+            .commit_changeset(
+                &Changeset::new("mixed")
                     .update("a.md", "v1", v1) // identity for a.md
                     .create("b.md", "B"), // real change
             )
@@ -855,7 +852,7 @@ mod tests {
     #[test]
     fn identity_tree_write_is_noop() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
@@ -863,7 +860,7 @@ mod tests {
         // resulting tree is identical to the base -> no-op.
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
         let res = vr
-            .apply_transaction(&Transaction::new("idempotent").update("a.md", "v1", v1))
+            .commit_changeset(&Changeset::new("idempotent").update("a.md", "v1", v1))
             .unwrap();
 
         assert!(res.no_op, "identity rewrite is a no-op");
@@ -886,11 +883,11 @@ mod tests {
         });
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
-        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
             .unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
         let res = vr
-            .apply_transaction(&Transaction::new("idempotent").update("a.md", "v1", v1))
+            .commit_changeset(&Changeset::new("idempotent").update("a.md", "v1", v1))
             .unwrap();
 
         assert!(res.no_op);
@@ -905,7 +902,7 @@ mod tests {
     #[test]
     fn stale_precondition_aborts_before_identity_shortcircuit() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
@@ -913,9 +910,8 @@ mod tests {
         // the abort must win — preconditions are checked before the identity
         // short-circuit, so a stale read never silently passes as a no-op.
         let stale = VaultRepo::blob_oid_of(b"WRONG").unwrap();
-        let res = vr.apply_transaction(
-            &Transaction::new("idempotent-but-stale").update("a.md", "v1", stale),
-        );
+        let res = vr
+            .commit_changeset(&Changeset::new("idempotent-but-stale").update("a.md", "v1", stale));
         assert!(
             matches!(res, Err(Error::PreconditionFailed { ref path, .. }) if path == "a.md"),
             "stale precondition aborts even when the tree would be identical: {res:?}"
@@ -926,13 +922,13 @@ mod tests {
     #[test]
     fn remove_absent_path_alone_is_noop() {
         let (_tmp, vr) = open_unborn();
-        vr.apply_transaction(&Transaction::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
         // Removing a path that isn't in the tree leaves the tree unchanged.
         let res = vr
-            .apply_transaction(&Transaction::new("rm ghost").remove("ghost.md"))
+            .commit_changeset(&Changeset::new("rm ghost").remove("ghost.md"))
             .unwrap();
         assert!(res.no_op, "removing an absent path is a no-op");
         assert!(res.paths.is_empty());

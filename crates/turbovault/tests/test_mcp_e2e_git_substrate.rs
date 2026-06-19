@@ -457,7 +457,7 @@ async fn e2e_reindex_queue_drains_after_substrate_writes() {
 }
 
 /// turbovault-1ne: remove_vault refuses while a fanout is active
-/// (symmetric with begin_transaction's nested-fanout refusal), and
+/// (symmetric with begin_fanout's nested-fanout refusal), and
 /// cleanly aborts the drainer + ref-listener tasks + drops the
 /// lock/queue entries when allowed.
 #[tokio::test]
@@ -511,8 +511,8 @@ async fn e2e_remove_vault_cleans_up_git_backend_state() {
 }
 
 /// turbovault-1ne: remove_vault is refused while a fanout is active.
-/// Caller must abandon_transaction first. Symmetric with the
-/// nested-fanout refusal in begin_transaction.
+/// Caller must abandon_fanout first. Symmetric with the
+/// nested-fanout refusal in begin_fanout.
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_remove_vault_blocked_while_fanout_active() {
@@ -524,7 +524,7 @@ async fn e2e_remove_vault_blocked_while_fanout_active() {
 
     // Open a fanout transaction directly through the substrate-side
     // path so the e2e test doesn't depend on the full
-    // `begin_transaction` MCP wire shape (which is exercised
+    // `begin_fanout` MCP wire shape (which is exercised
     // separately). We need active_fanouts populated.
     let cfg = server.multi_vault().get_vault_config(name).await.unwrap();
     let locks = server.get_or_init_git_locks_test(name).await;
@@ -548,8 +548,8 @@ async fn e2e_remove_vault_blocked_while_fanout_active() {
     let err = server.remove_vault_test(name).await.unwrap_err();
     let msg = format!("{}", err);
     assert!(
-        msg.contains("active fanout") && msg.contains("abandon_transaction"),
-        "expected refuse-message mentioning fanout + abandon_transaction, got: {}",
+        msg.contains("active fanout") && msg.contains("abandon_fanout"),
+        "expected refuse-message mentioning fanout + abandon_fanout, got: {}",
         msg
     );
 

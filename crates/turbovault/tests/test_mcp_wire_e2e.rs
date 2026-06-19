@@ -457,7 +457,7 @@ async fn wire_edit_note_rejects_ambiguous_divider_tv006() {
 }
 
 /// turbovault-cuy: the fanout transaction lifecycle over the WIRE —
-/// begin_transaction -> set_active_vault(fanout) -> write_note -> commit_transaction
+/// begin_fanout -> set_active_vault(fanout) -> write_note -> commit_fanout
 /// -> the write merges back into the base vault's working tree. Previously only
 /// the substrate-side open_fanout_worktree + the refuse path were tested; the
 /// full MCP round-trip (the substrate's headline feature) had ZERO wire coverage.
@@ -466,10 +466,10 @@ async fn wire_edit_note_rejects_ambiguous_divider_tv006() {
 async fn wire_fanout_begin_write_commit_lands_on_base() {
     let (vault, _cfg, client) = setup_wire_vault().await;
 
-    let begun = call(&client, "begin_transaction", json!({})).await;
+    let begun = call(&client, "begin_fanout", json!({})).await;
     let fanout_vault = begun["data"]["fanout_vault"]
         .as_str()
-        .expect("begin_transaction returns data.fanout_vault")
+        .expect("begin_fanout returns data.fanout_vault")
         .to_string();
 
     call(&client, "set_active_vault", json!({ "name": fanout_vault })).await;
@@ -479,22 +479,22 @@ async fn wire_fanout_begin_write_commit_lands_on_base() {
         json!({ "path": "fan.md", "content": "# In fanout\n" }),
     )
     .await;
-    call(&client, "commit_transaction", json!({})).await;
+    call(&client, "commit_fanout", json!({})).await;
 
     // Merge-back materialized fan.md into the BASE vault's working tree.
     let on_disk = std::fs::read_to_string(vault.path().join("fan.md"))
-        .expect("fan.md must be merged into the base working tree after commit_transaction");
+        .expect("fan.md must be merged into the base working tree after commit_fanout");
     assert!(on_disk.contains("In fanout"), "got: {on_disk:?}");
 }
 
-/// turbovault-cuy: abandon_transaction discards the fanout — a write made inside
+/// turbovault-cuy: abandon_fanout discards the fanout — a write made inside
 /// the fanout never reaches the base vault.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn wire_fanout_begin_write_abandon_discards() {
     let (vault, _cfg, client) = setup_wire_vault().await;
 
-    let begun = call(&client, "begin_transaction", json!({})).await;
+    let begun = call(&client, "begin_fanout", json!({})).await;
     let fanout_vault = begun["data"]["fanout_vault"].as_str().unwrap().to_string();
 
     call(&client, "set_active_vault", json!({ "name": fanout_vault })).await;
@@ -504,11 +504,11 @@ async fn wire_fanout_begin_write_abandon_discards() {
         json!({ "path": "ghost.md", "content": "discarded\n" }),
     )
     .await;
-    call(&client, "abandon_transaction", json!({})).await;
+    call(&client, "abandon_fanout", json!({})).await;
 
     assert!(
         !vault.path().join("ghost.md").exists(),
-        "ghost.md must NOT reach the base vault after abandon_transaction"
+        "ghost.md must NOT reach the base vault after abandon_fanout"
     );
 }
 

@@ -308,9 +308,9 @@ mod tests {
     /// update under contention" thesis was previously asserted only via
     /// sequential simulated races; this drives genuine threads.
     #[test]
-    fn parallel_apply_transaction_lands_every_commit() {
+    fn parallel_commit_changeset_lands_every_commit() {
         let (tmp, vr0) = open_unborn();
-        vr0.apply_transaction(&crate::Transaction::new("seed").create("seed.md", "0"))
+        vr0.commit_changeset(&crate::Changeset::new("seed").create("seed.md", "0"))
             .unwrap();
         let path = tmp.path().to_path_buf();
         let locks = vr0.commit_locks();
@@ -323,8 +323,8 @@ mod tests {
                 let l = std::sync::Arc::clone(&locks);
                 std::thread::spawn(move || {
                     let vr = crate::VaultRepo::open_with_locks(&p, l).unwrap();
-                    vr.apply_transaction(
-                        &crate::Transaction::new("c").create(format!("f{i}.md"), "x"),
+                    vr.commit_changeset(
+                        &crate::Changeset::new("c").create(format!("f{i}.md"), "x"),
                     )
                     .unwrap();
                 })
