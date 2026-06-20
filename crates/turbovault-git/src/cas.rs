@@ -37,7 +37,15 @@ impl VaultRepo {
         let mut tx = repo.transaction()?;
         tx.lock_ref(refname)?;
         // Read the current value *under the lock* — this is the CAS comparison.
-        let current = repo.refname_to_id(refname).ok();
+        // tlx.9: discriminate "ref absent" (NotFound) from a real read error.
+        // `.ok()` would flatten an I/O/corruption error into `None`, which on
+        // the initial-commit path (expected_old == None) could be misread as
+        // "ref doesn't exist yet" and let a blind advance through.
+        let current = match repo.refname_to_id(refname) {
+            Ok(oid) => Some(oid),
+            Err(e) if e.code() == git2::ErrorCode::NotFound => None,
+            Err(e) => return Err(Error::Git(e)),
+        };
         if current != expected_old {
             // Dropping `tx` here releases the lock without committing.
             return Err(Error::CasConflict {
@@ -87,7 +95,14 @@ impl VaultRepo {
         F: FnMut(Option<Oid>) -> Result<Option<Oid>>,
     {
         for _ in 0..=max_retries {
-            let tip = self.git().refname_to_id(refname).ok();
+            // tlx.9: same NotFound-vs-real-error discrimination as cas_ref — an
+            // unborn ref is `None`, but a real read error must surface, not
+            // masquerade as "branch has no commits yet".
+            let tip = match self.git().refname_to_id(refname) {
+                Ok(oid) => Some(oid),
+                Err(e) if e.code() == git2::ErrorCode::NotFound => None,
+                Err(e) => return Err(Error::Git(e)),
+            };
             // `None` from the builder = no-op (e.g. an identity tree): nothing
             // to commit, so skip the CAS and leave the ref where it is.
             let new = match build(tip)? {
