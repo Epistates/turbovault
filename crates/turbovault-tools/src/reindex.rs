@@ -122,9 +122,26 @@ impl ReindexQueue {
         let _flush_guard = self.lock_flush().await;
         let mut applied = 0usize;
         while let Some(commit) = self.pop_front() {
-            let parent = repo
-                .git_commit_first_parent(commit)
-                .map_err(|e| Error::config_error(format!("git first-parent lookup: {}", e)))?;
+            let parent = match repo.git_commit_first_parent(commit) {
+                Ok(parent) => parent,
+                Err(e) => {
+                    // tlx.1: the commit is already popped. A first-parent
+                    // lookup failure (e.g. the ref-watcher enqueued an oid that
+                    // is no longer reachable after a GC / non-ff ref move) must
+                    // NOT propagate — that would lose this work item AND brick
+                    // every commit still queued behind it. Log, advance the
+                    // cursor, keep draining — exactly like the apply_commit_diff
+                    // error path below.
+                    log::warn!(
+                        "reindex: skipping commit {} after first-parent lookup error: {}",
+                        commit,
+                        e
+                    );
+                    self.advance_cursor(commit);
+                    applied += 1;
+                    continue;
+                }
+            };
             if let Err(e) = apply_commit_diff(repo, parent, commit, manager).await {
                 log::warn!("reindex: skipping commit {} after error: {}", commit, e);
             }
@@ -370,6 +387,34 @@ mod tests {
         let n = queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(n, 3);
         assert_eq!(manager.link_graph().read().await.node_count(), 3);
+    }
+
+    /// tlx.1: a commit oid the ref-watcher enqueued may no longer be reachable
+    /// (GC'd / non-ff ref move), so its first-parent lookup fails. The drain
+    /// must SKIP it — log, advance the cursor, keep going — not propagate the
+    /// error and lose both that work item and every commit queued behind it.
+    #[tokio::test]
+    async fn drain_skips_commit_with_failed_first_parent_lookup() {
+        let (_tmp, manager, repo, queue) = setup();
+
+        // A bogus (unreachable) oid AHEAD of a real commit in the queue.
+        let bogus = Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        queue.push(bogus);
+        let real = repo
+            .commit_changeset(&Changeset::new("c").create("a.md", "A"))
+            .unwrap();
+        assert_eq!(queue.pending_count(), 2, "[bogus, real] queued");
+
+        // Before tlx.1 this returned Err and the real commit never applied.
+        let n = queue.drain_through(&repo, &manager).await.unwrap();
+        assert_eq!(n, 2, "both the bogus and the real commit are drained");
+        assert_eq!(queue.pending_count(), 0);
+        assert_eq!(
+            manager.link_graph().read().await.node_count(),
+            1,
+            "the real commit applied despite the bogus one ahead of it"
+        );
+        assert_eq!(queue.cursor(), Some(real.commit));
     }
 
     /// turbovault-9zr: a single commit that adds a file AND a file linking to it
