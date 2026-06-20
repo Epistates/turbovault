@@ -42,14 +42,19 @@ pub fn rewrite_wikilinks(content: &str, old_vault_path: &str, new_vault_path: &s
 }
 
 /// Rewrite a SINGLE target form (either basename or path-prefix). Anchors
-/// on `[[` / `![[` left and `|` / `#` / `]]` right.
+/// on `[[` / `![[` left and `|` / `#` / `]]` right. tlx.3: applies only
+/// OUTSIDE fenced/inline code so wikilink-looking text in code examples is
+/// left untouched.
 fn rewrite_target_form(content: &str, old: &str, new: &str) -> String {
     let pattern = format!(r"(!?\[\[){}(\||#|\]\])", regex::escape(old));
     let re = Regex::new(&pattern).expect("wikilink rewrite regex compile");
-    re.replace_all(content, |caps: &regex::Captures| {
-        format!("{}{}{}", &caps[1], new, &caps[2])
-    })
-    .into_owned()
+    let apply = |text: &str| {
+        re.replace_all(text, |caps: &regex::Captures| {
+            format!("{}{}{}", &caps[1], new, &caps[2])
+        })
+        .into_owned()
+    };
+    map_outside_code(content, &apply)
 }
 
 /// turbovault-oz6: wrap every wikilink in `content` targeting
@@ -75,41 +80,32 @@ pub fn wrap_wikilinks_as_stale(content: &str, deleted_vault_path: &str) -> Strin
 }
 
 /// Wrap a SINGLE target form in `~~ ~~` strikethrough. Skips occurrences
-/// already preceded by `~~` (idempotent for re-applied deletes).
+/// already preceded by `~~` (idempotent for re-applied deletes). tlx.3:
+/// applies only OUTSIDE fenced/inline code.
 fn wrap_target_form(content: &str, target: &str) -> String {
-    // Match the FULL link (including the optional `!` embed marker and
-    // the alias/section/empty-closer tail). The trailing group captures
-    // the link's full body so we can re-emit it untouched.
-    let pattern = format!(
-        r"(?P<lead>(?:^|[^~])\s*?)(?P<link>!?\[\[{}(?:[|#][^\]]*)?\]\])",
-        regex::escape(target)
-    );
-    // Above is brittle because it requires a leading non-`~` char or
-    // start-of-string before the link to avoid re-wrapping. Simpler:
-    // just rewrite all matches but check for ~~ on either side.
-    let _ = pattern; // unused — we use the simpler loop below.
-
     let link_pat = format!(r"!?\[\[{}(?:[|#][^\]]*)?\]\]", regex::escape(target));
     let re = Regex::new(&link_pat).expect("wrap regex compile");
-    let mut out = String::with_capacity(content.len());
-    let mut cursor = 0;
-    for m in re.find_iter(content) {
-        // Skip already-wrapped: previous 2 chars are `~~` AND following 2
-        // chars are `~~`.
-        let already_wrapped =
-            content[..m.start()].ends_with("~~") && content[m.end()..].starts_with("~~");
-        out.push_str(&content[cursor..m.start()]);
-        if already_wrapped {
-            out.push_str(m.as_str());
-        } else {
-            out.push_str("~~");
-            out.push_str(m.as_str());
-            out.push_str("~~");
+    let wrap_one = |text: &str| -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut cursor = 0;
+        for m in re.find_iter(text) {
+            // Skip already-wrapped: the 2 chars on each side are `~~`.
+            let already_wrapped =
+                text[..m.start()].ends_with("~~") && text[m.end()..].starts_with("~~");
+            out.push_str(&text[cursor..m.start()]);
+            if already_wrapped {
+                out.push_str(m.as_str());
+            } else {
+                out.push_str("~~");
+                out.push_str(m.as_str());
+                out.push_str("~~");
+            }
+            cursor = m.end();
         }
-        cursor = m.end();
-    }
-    out.push_str(&content[cursor..]);
-    out
+        out.push_str(&text[cursor..]);
+        out
+    };
+    map_outside_code(content, &wrap_one)
 }
 
 fn strip_md(p: &str) -> String {
@@ -125,6 +121,109 @@ fn strip_md(p: &str) -> String {
 
 fn basename(p: &str) -> String {
     p.rsplit('/').next().unwrap_or(p).to_string()
+}
+
+// ---- tlx.3: code-aware masking ----
+//
+// The rewrite/wrap regexes must not touch wikilink-looking text inside code.
+// We split `content` into code vs non-code and apply the transform only to the
+// non-code parts. Not a full CommonMark parser: fenced blocks (``` / ~~~) and
+// inline backtick spans are handled (the common cases). 4-space indented code
+// blocks and exotic nested-backtick forms are not — those are rare and the
+// failure is cosmetic, not corrupting.
+
+/// Apply `f` to every region of `content` that is NOT inside a fenced code
+/// block or an inline code span; emit code regions verbatim.
+fn map_outside_code(content: &str, f: &dyn Fn(&str) -> String) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut fence: Option<(char, usize)> = None;
+    for line in content.split_inclusive('\n') {
+        let marker = fence_marker(line);
+        match fence {
+            Some((fc, flen)) => {
+                out.push_str(line); // inside a fence: verbatim
+                // A matching, long-enough run closes the fence.
+                if let Some((mc, mlen)) = marker
+                    && mc == fc
+                    && mlen >= flen
+                {
+                    fence = None;
+                }
+            }
+            None => match marker {
+                Some((mc, mlen)) => {
+                    out.push_str(line); // opening fence: verbatim
+                    fence = Some((mc, mlen));
+                }
+                None => out.push_str(&map_outside_inline_code(line, f)),
+            },
+        }
+    }
+    out
+}
+
+/// If `line` (ignoring leading whitespace) is a code fence, return its marker
+/// char and run length (a run of >= 3 backticks or tildes).
+fn fence_marker(line: &str) -> Option<(char, usize)> {
+    let trimmed = line.trim_start();
+    let first = trimmed.chars().next()?;
+    if first != '`' && first != '~' {
+        return None;
+    }
+    let run = trimmed.chars().take_while(|&c| c == first).count();
+    (run >= 3).then_some((first, run))
+}
+
+/// Apply `f` to the parts of `line` outside inline backtick code spans.
+fn map_outside_inline_code(line: &str, f: &dyn Fn(&str) -> String) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    let mut plain_start = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let run_start = i;
+            let mut n = 0;
+            while i < bytes.len() && bytes[i] == b'`' {
+                n += 1;
+                i += 1;
+            }
+            // A code span closes on the next run of EXACTLY n backticks.
+            if let Some(close_start) = find_backtick_run(bytes, i, n) {
+                out.push_str(&f(&line[plain_start..run_start]));
+                let code_end = close_start + n;
+                out.push_str(&line[run_start..code_end]); // span verbatim
+                i = code_end;
+                plain_start = code_end;
+            }
+            // No closing run: the backticks are literal text; keep scanning.
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&f(&line[plain_start..]));
+    out
+}
+
+/// Byte index of the next run of EXACTLY `n` backticks at or after `from`.
+fn find_backtick_run(bytes: &[u8], from: usize, n: usize) -> Option<usize> {
+    let mut i = from;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let start = i;
+            let mut run = 0;
+            while i < bytes.len() && bytes[i] == b'`' {
+                run += 1;
+                i += 1;
+            }
+            if run == n {
+                return Some(start);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -237,6 +336,38 @@ mod tests {
         // escaped before being inserted into the rewrite regex.
         let out = rewrite_wikilinks("see [[c++]]", "c++.md", "rust.md");
         assert_eq!(out, "see [[rust]]");
+    }
+
+    // -------- tlx.3: code-aware masking --------
+
+    #[test]
+    fn does_not_rewrite_inside_fenced_code() {
+        let input = "before [[old]]\n```\nexample [[old]] in code\n```\nafter [[old]]";
+        let out = rewrite_wikilinks(input, "old.md", "new.md");
+        assert_eq!(
+            out,
+            "before [[new]]\n```\nexample [[old]] in code\n```\nafter [[new]]"
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_inside_inline_code() {
+        let out = rewrite_wikilinks("real [[old]] but `[[old]]` literal", "old.md", "new.md");
+        assert_eq!(out, "real [[new]] but `[[old]]` literal");
+    }
+
+    #[test]
+    fn does_not_rewrite_tilde_fenced_code() {
+        let input = "~~~\n[[old]]\n~~~\nplain [[old]]";
+        let out = rewrite_wikilinks(input, "old.md", "new.md");
+        assert_eq!(out, "~~~\n[[old]]\n~~~\nplain [[new]]");
+    }
+
+    #[test]
+    fn wrap_stale_skips_fenced_code() {
+        let input = "see [[old]]\n```\ncode [[old]]\n```";
+        let out = wrap_wikilinks_as_stale(input, "old.md");
+        assert_eq!(out, "see ~~[[old]]~~\n```\ncode [[old]]\n```");
     }
 
     // -------- turbovault-oz6: stale-callout wrapper --------
