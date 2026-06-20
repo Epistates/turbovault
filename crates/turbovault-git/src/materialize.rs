@@ -52,8 +52,18 @@ impl VaultRepo {
                         return Err(Error::Io(e));
                     }
                     if let Err(e) = std::fs::rename(&tmp, &target) {
-                        let _ = std::fs::remove_file(&tmp);
-                        return Err(Error::Io(e));
+                        // tlx.6: a path that was a DIRECTORY in a prior working-
+                        // tree state but is a FILE in this commit — rename onto a
+                        // dir fails. Remove the stale dir and retry once. The
+                        // is_dir check runs only on this (rare) failure path, so
+                        // the common case pays no extra stat.
+                        let recovered = target.is_dir()
+                            && std::fs::remove_dir_all(&target).is_ok()
+                            && std::fs::rename(&tmp, &target).is_ok();
+                        if !recovered {
+                            let _ = std::fs::remove_file(&tmp);
+                            return Err(Error::Io(e));
+                        }
                     }
                 }
                 Err(e) if e.code() == git2::ErrorCode::NotFound => {
@@ -123,6 +133,24 @@ mod tests {
 
     fn workfile(vr: &VaultRepo, rel: &str) -> std::path::PathBuf {
         vr.git().workdir().unwrap().join(rel)
+    }
+
+    /// tlx.6: a path that is a DIRECTORY in the working tree but a FILE in the
+    /// commit must materialize as the file (the dir->file transition that would
+    /// otherwise fail the rename).
+    #[test]
+    fn materialize_replaces_directory_with_file() {
+        let (_tmp, vr) = open_unborn();
+        let c = commit(&vr, &[upsert("x", "i am a file")]);
+        // Simulate a prior working-tree state where `x` was a non-empty dir.
+        let target = workfile(&vr, "x");
+        std::fs::create_dir_all(target.join("child")).unwrap();
+        std::fs::write(target.join("child/leaf"), "stale").unwrap();
+
+        vr.materialize(c, &["x".into()]).unwrap();
+
+        assert!(target.is_file(), "x is now a file, not a directory");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "i am a file");
     }
 
     #[test]
