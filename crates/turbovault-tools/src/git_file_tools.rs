@@ -702,62 +702,19 @@ impl GitFileTools {
                 path,
                 content,
                 expected_hash,
-            } => {
-                let mut t = txn.upsert(path, content.as_bytes());
-                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
-                    t = t.expect_blob(path, oid);
-                }
-                t
-            }
+            } => upsert_expecting(
+                txn,
+                path,
+                content.as_bytes().to_vec(),
+                expected_hash.as_deref(),
+            )?,
             BatchOperation::DeleteNote {
                 path,
                 expected_hash,
                 on_backlinks,
             } => {
-                let expected = parse_blob_oid(expected_hash.as_deref())?;
-                // turbovault-0g4.7: backlink-aware delete (parity with the
-                // standalone delete_note). Default "refuse" prevents silently
-                // shipping broken backlinks.
-                match on_backlinks.as_deref().unwrap_or("refuse") {
-                    "force" => {
-                        // Bare delete — leave inbound links dangling (the
-                        // pre-0g4.7 batch behavior).
-                        let mut t = txn.remove(path);
-                        if let Some(oid) = expected {
-                            t = t.expect_blob(path, oid);
-                        }
-                        t
-                    }
-                    "rewrite-stale-callout" => {
-                        // Atomically strikethrough every linker in the same
-                        // commit.
-                        self.fold_delete_with_stale_links(txn, path, expected)
-                            .await?
-                            .0
-                    }
-                    "refuse" => {
-                        let backlinks = self.list_inbound_backlinks(path).await?;
-                        if !backlinks.is_empty() {
-                            return Err(Error::config_error(format!(
-                                "DeleteNote refused (turbovault-0g4.7): '{}' has {} inbound backlink(s) [{}]. Pass on_backlinks=\"rewrite-stale-callout\" to strikethrough every linker in the same commit, or \"force\" to delete and leave them broken.",
-                                path,
-                                backlinks.len(),
-                                backlinks.join(", ")
-                            )));
-                        }
-                        let mut t = txn.remove(path);
-                        if let Some(oid) = expected {
-                            t = t.expect_blob(path, oid);
-                        }
-                        t
-                    }
-                    other => {
-                        return Err(Error::config_error(format!(
-                            "DeleteNote: unknown on_backlinks mode '{}' (expected refuse|rewrite-stale-callout|force)",
-                            other
-                        )));
-                    }
-                }
+                self.fold_delete_note(txn, path, expected_hash.as_deref(), on_backlinks.as_deref())
+                    .await?
             }
             BatchOperation::MoveNote {
                 from,
@@ -765,27 +722,8 @@ impl GitFileTools {
                 expected_hash,
                 update_backlinks,
             } => {
-                let expected_from = parse_blob_oid(expected_hash.as_deref())?;
-                if update_backlinks.unwrap_or(true) {
-                    // turbovault-0g4.6: atomic OFM-aware inbound-wikilink rewrite
-                    // folded into the batch commit — parity with the standalone
-                    // move_note. Backlink sources ride the same commit with their
-                    // own expect_blob preconditions; a concurrent edit to any
-                    // source aborts the whole batch.
-                    self.fold_move_with_links(txn, from, to, expected_from)
-                        .await?
-                        .0
-                } else {
-                    // Rename-only (the pre-0g4.6 behavior): no backlink rewrite,
-                    // inbound links dangle. Destination always carries
-                    // expect_absent — single-op move_file does the same.
-                    let content = self.read_file(from).await?;
-                    let mut t = txn.remove(from).upsert(to, content.into_bytes());
-                    if let Some(oid) = expected_from {
-                        t = t.expect_blob(from, oid);
-                    }
-                    t.expect_absent(to)
-                }
+                self.fold_move_note(txn, from, to, expected_hash.as_deref(), *update_backlinks)
+                    .await?
             }
             BatchOperation::UpdateLinks {
                 file,
@@ -795,31 +733,15 @@ impl GitFileTools {
             } => {
                 let current = self.read_file(file).await?;
                 let updated = current.replace(old_target, new_target);
-                let mut t = txn.upsert(file, updated.into_bytes());
-                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
-                    t = t.expect_blob(file, oid);
-                }
-                t
+                upsert_expecting(txn, file, updated.into_bytes(), expected_hash.as_deref())?
             }
             BatchOperation::EditNote {
                 path,
                 edits,
                 expected_hash,
             } => {
-                // turbovault-0g4.1: SEARCH/REPLACE blocks folded into the batch
-                // commit. Reads working-tree bytes, applies the blocks in
-                // memory (multiple blocks → multiple edited locations), and
-                // upserts the result — the same EditEngine path `edit_file`
-                // uses, minus the dry-run/hash reporting a batch doesn't need.
-                let current = self.read_file(path).await?;
-                let engine = EditEngine::new();
-                let blocks = engine.parse_blocks(edits)?;
-                let (_result, new_content) = engine.apply_edits(&current, &blocks, false)?;
-                let mut t = txn.upsert(path, new_content.into_bytes());
-                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
-                    t = t.expect_blob(path, oid);
-                }
-                t
+                self.fold_edit_note(txn, path, edits, expected_hash.as_deref())
+                    .await?
             }
             BatchOperation::UpdateFrontmatter {
                 path,
@@ -827,22 +749,14 @@ impl GitFileTools {
                 merge,
                 expected_hash,
             } => {
-                // turbovault-0g4.2: reuse the pure compute helper the
-                // `update_frontmatter` tool uses (read + merge in memory), then
-                // fold the resulting full content into the batch commit. The
-                // helper reads via VaultManager (a read — invariant-safe); the
-                // write rides the substrate changeset.
-                let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
-                let fm_map: serde_json::Map<String, serde_json::Value> =
-                    frontmatter.clone().into_iter().collect();
-                let (new_content, _info) = mt
-                    .compute_update_frontmatter(path, fm_map, merge.unwrap_or(true))
-                    .await?;
-                let mut t = txn.upsert(path, new_content.into_bytes());
-                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
-                    t = t.expect_blob(path, oid);
-                }
-                t
+                self.fold_update_frontmatter(
+                    txn,
+                    path,
+                    frontmatter,
+                    *merge,
+                    expected_hash.as_deref(),
+                )
+                .await?
             }
             BatchOperation::ManageTags {
                 path,
@@ -850,24 +764,8 @@ impl GitFileTools {
                 tags,
                 expected_hash,
             } => {
-                // turbovault-0g4.3: reuse compute_manage_tags. It returns None
-                // for "list" (read-only) — inside a batch there is no write to
-                // fold, so reject loudly; "add"/"remove" return the new content.
-                let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
-                let (maybe, _info) = mt
-                    .compute_manage_tags(path, operation, Some(tags.as_slice()))
-                    .await?;
-                let new_content = maybe.ok_or_else(|| {
-                    Error::config_error(format!(
-                        "ManageTags operation '{}' produces no write; only 'add'/'remove' are valid in a batch ('list' is read-only)",
-                        operation
-                    ))
-                })?;
-                let mut t = txn.upsert(path, new_content.into_bytes());
-                if let Some(oid) = parse_blob_oid(expected_hash.as_deref())? {
-                    t = t.expect_blob(path, oid);
-                }
-                t
+                self.fold_manage_tags(txn, path, operation, tags, expected_hash.as_deref())
+                    .await?
             }
             BatchOperation::CreateFromTemplate {
                 template_id,
@@ -875,20 +773,158 @@ impl GitFileTools {
                 fields,
                 force,
             } => {
-                // turbovault-0g4.4: render via TemplateEngine::compute_from_template
-                // (validates required fields + substitutes), then create the note
-                // as part of the batch commit. Default is a strict create
-                // (`expect_absent`); force=true is a blind upsert (overwrite).
-                let engine = crate::TemplateEngine::new(Arc::clone(&self.manager));
-                let (content, _info) = engine
-                    .compute_from_template(template_id, path, fields.clone())
-                    .await?;
-                if force.unwrap_or(false) {
-                    txn.upsert(path, content.into_bytes())
-                } else {
-                    txn.create(path, content.into_bytes())
-                }
+                self.fold_create_from_template(txn, template_id, path, fields, *force)
+                    .await?
             }
+        })
+    }
+
+    /// v3b.2: DeleteNote arm (turbovault-0g4.7) — backlink-aware delete:
+    /// refuse (default) / rewrite-stale-callout / force. Extracted from
+    /// translate_op to keep that dispatcher flat.
+    async fn fold_delete_note(
+        &self,
+        txn: Changeset,
+        path: &str,
+        expected_hash: Option<&str>,
+        on_backlinks: Option<&str>,
+    ) -> Result<Changeset> {
+        let expected = parse_blob_oid(expected_hash)?;
+        Ok(match on_backlinks.unwrap_or("refuse") {
+            // Bare delete — leave inbound links dangling (pre-0g4.7 behavior).
+            "force" => remove_expecting(txn, path, expected),
+            // Atomically strikethrough every linker in the same commit.
+            "rewrite-stale-callout" => {
+                self.fold_delete_with_stale_links(txn, path, expected)
+                    .await?
+                    .0
+            }
+            "refuse" => {
+                let backlinks = self.list_inbound_backlinks(path).await?;
+                if !backlinks.is_empty() {
+                    return Err(Error::config_error(format!(
+                        "DeleteNote refused (turbovault-0g4.7): '{}' has {} inbound backlink(s) [{}]. Pass on_backlinks=\"rewrite-stale-callout\" to strikethrough every linker in the same commit, or \"force\" to delete and leave them broken.",
+                        path,
+                        backlinks.len(),
+                        backlinks.join(", ")
+                    )));
+                }
+                remove_expecting(txn, path, expected)
+            }
+            other => {
+                return Err(Error::config_error(format!(
+                    "DeleteNote: unknown on_backlinks mode '{}' (expected refuse|rewrite-stale-callout|force)",
+                    other
+                )));
+            }
+        })
+    }
+
+    /// v3b.2: MoveNote arm (turbovault-0g4.6) — default rewrites inbound
+    /// wikilinks in the same commit; update_backlinks=false is rename-only.
+    async fn fold_move_note(
+        &self,
+        txn: Changeset,
+        from: &str,
+        to: &str,
+        expected_hash: Option<&str>,
+        update_backlinks: Option<bool>,
+    ) -> Result<Changeset> {
+        let expected_from = parse_blob_oid(expected_hash)?;
+        if update_backlinks.unwrap_or(true) {
+            Ok(self
+                .fold_move_with_links(txn, from, to, expected_from)
+                .await?
+                .0)
+        } else {
+            // Rename-only: no backlink rewrite, inbound links dangle. The
+            // destination always carries expect_absent (refuses to clobber).
+            let content = self.read_file(from).await?;
+            let mut t = txn.remove(from).upsert(to, content.into_bytes());
+            if let Some(oid) = expected_from {
+                t = t.expect_blob(from, oid);
+            }
+            Ok(t.expect_absent(to))
+        }
+    }
+
+    /// v3b.2: EditNote arm (turbovault-0g4.1) — SEARCH/REPLACE blocks folded
+    /// into the batch commit (the same EditEngine path edit_file uses, minus
+    /// the dry-run/hash reporting a batch doesn't need).
+    async fn fold_edit_note(
+        &self,
+        txn: Changeset,
+        path: &str,
+        edits: &str,
+        expected_hash: Option<&str>,
+    ) -> Result<Changeset> {
+        let current = self.read_file(path).await?;
+        let engine = EditEngine::new();
+        let blocks = engine.parse_blocks(edits)?;
+        let (_result, new_content) = engine.apply_edits(&current, &blocks, false)?;
+        upsert_expecting(txn, path, new_content.into_bytes(), expected_hash)
+    }
+
+    /// v3b.2: UpdateFrontmatter arm (turbovault-0g4.2) — reuse the pure
+    /// compute_update_frontmatter helper (read + merge in memory), fold the
+    /// resulting content into the batch commit.
+    async fn fold_update_frontmatter(
+        &self,
+        txn: Changeset,
+        path: &str,
+        frontmatter: &std::collections::HashMap<String, serde_json::Value>,
+        merge: Option<bool>,
+        expected_hash: Option<&str>,
+    ) -> Result<Changeset> {
+        let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
+        let fm_map: serde_json::Map<String, serde_json::Value> =
+            frontmatter.clone().into_iter().collect();
+        let (new_content, _info) = mt
+            .compute_update_frontmatter(path, fm_map, merge.unwrap_or(true))
+            .await?;
+        upsert_expecting(txn, path, new_content.into_bytes(), expected_hash)
+    }
+
+    /// v3b.2: ManageTags arm (turbovault-0g4.3) — reuse compute_manage_tags;
+    /// "list" is read-only (returns None) and rejected inside a batch.
+    async fn fold_manage_tags(
+        &self,
+        txn: Changeset,
+        path: &str,
+        operation: &str,
+        tags: &[String],
+        expected_hash: Option<&str>,
+    ) -> Result<Changeset> {
+        let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
+        let (maybe, _info) = mt.compute_manage_tags(path, operation, Some(tags)).await?;
+        let new_content = maybe.ok_or_else(|| {
+            Error::config_error(format!(
+                "ManageTags operation '{}' produces no write; only 'add'/'remove' are valid in a batch ('list' is read-only)",
+                operation
+            ))
+        })?;
+        upsert_expecting(txn, path, new_content.into_bytes(), expected_hash)
+    }
+
+    /// v3b.2: CreateFromTemplate arm (turbovault-0g4.4) — render via
+    /// TemplateEngine, then strict-create (default, expect_absent) or
+    /// force-upsert (overwrite).
+    async fn fold_create_from_template(
+        &self,
+        txn: Changeset,
+        template_id: &str,
+        path: &str,
+        fields: &std::collections::HashMap<String, String>,
+        force: Option<bool>,
+    ) -> Result<Changeset> {
+        let engine = crate::TemplateEngine::new(Arc::clone(&self.manager));
+        let (content, _info) = engine
+            .compute_from_template(template_id, path, fields.clone())
+            .await?;
+        Ok(if force.unwrap_or(false) {
+            txn.upsert(path, content.into_bytes())
+        } else {
+            txn.create(path, content.into_bytes())
         })
     }
 
@@ -1192,6 +1228,33 @@ fn build_upsert_txn(
         txn = txn.expect_blob(path, oid);
     }
     txn
+}
+
+/// v3b.2: fold `upsert(path, bytes)` plus an optional `expect_blob` CAS
+/// precondition (parsed from a blob-OID hex string) into `txn`. The shared tail
+/// of every content-replacing batch op (WriteNote / UpdateLinks / EditNote /
+/// UpdateFrontmatter / ManageTags).
+fn upsert_expecting(
+    txn: Changeset,
+    path: &str,
+    bytes: Vec<u8>,
+    expected_hash: Option<&str>,
+) -> Result<Changeset> {
+    let mut t = txn.upsert(path, bytes);
+    if let Some(oid) = parse_blob_oid(expected_hash)? {
+        t = t.expect_blob(path, oid);
+    }
+    Ok(t)
+}
+
+/// v3b.2: fold `remove(path)` plus an already-parsed optional `expect_blob`
+/// precondition into `txn` — the shared tail of the bare-delete branches.
+fn remove_expecting(txn: Changeset, path: &str, expected: Option<Oid>) -> Changeset {
+    let mut t = txn.remove(path);
+    if let Some(oid) = expected {
+        t = t.expect_blob(path, oid);
+    }
+    t
 }
 
 fn parse_blob_oid(s: Option<&str>) -> Result<Option<Oid>> {

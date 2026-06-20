@@ -1396,30 +1396,9 @@ impl ObsidianMcpServer {
             // Per-iteration clones are MOVED into spawn_blocking; the
             // outer `queue`/`locks`/`path` bindings stay valid for
             // subsequent iterations and for the post-blocking work.
-            let path_for_blocking = path.clone();
-            let locks_for_blocking = Arc::clone(&locks);
-            let queue_for_blocking = Arc::clone(&queue);
-            let drained = tokio::task::spawn_blocking(move || {
-                // Open the repo locally so its !Sync handle never escapes
-                // this thread. Drain the diff bookkeeping (sync); the
-                // graph apply runs back in the async task.
-                let repo = VaultRepo::open_with_locks(&path_for_blocking, locks_for_blocking)
-                    .map_err(|e| McpError::internal(format!("flush_reindex open repo: {}", e)))?;
-                let mut batches = Vec::new();
-                while let Some(commit) = queue_for_blocking.pop_front() {
-                    let parent = repo.git_commit_first_parent(commit).map_err(|e| {
-                        McpError::internal(format!("flush_reindex first-parent: {}", e))
-                    })?;
-                    let changes = repo
-                        .diff_path_statuses(parent, commit)
-                        .map_err(|e| McpError::internal(format!("flush_reindex diff: {}", e)))?;
-                    batches.push((commit, changes));
-                }
-                drop(repo);
-                Ok::<_, McpError>(batches)
-            })
-            .await
-            .map_err(|e| McpError::internal(format!("flush_reindex task: {}", e)))??;
+            let drained =
+                Self::drain_pending_diffs(path.clone(), Arc::clone(&locks), Arc::clone(&queue))
+                    .await?;
             if drained.is_empty() {
                 break;
             }
@@ -1430,62 +1409,107 @@ impl ObsidianMcpServer {
             let mut collapsed_for_search: HashMap<String, bool> = HashMap::new();
 
             for (commit, changes) in drained {
-                let vault_root = manager.vault_path().clone();
-                let graph_handle = manager.link_graph();
                 for (rel_path, present) in changes {
                     collapsed_for_search.insert(rel_path.clone(), present);
-                    let full_path = vault_root.join(&rel_path);
-                    if present {
-                        match manager.parse_file(std::path::Path::new(&rel_path)).await {
-                            Ok(vf) => {
-                                let mut graph = graph_handle.write().await;
-                                let _ = graph.remove_file(&full_path);
-                                if let Err(e) = graph.add_file(&vf) {
-                                    log::warn!("flush_reindex add_file({}): {}", rel_path, e);
-                                }
-                                if let Err(e) = graph.update_links(&vf) {
-                                    log::warn!("flush_reindex update_links({}): {}", rel_path, e);
-                                }
-                            }
-                            Err(e) => {
-                                log::debug!("flush_reindex parse_file({}) skip: {}", rel_path, e);
-                            }
-                        }
-                    } else {
-                        let mut graph = graph_handle.write().await;
-                        let _ = graph.remove_file(&full_path);
-                    }
+                    Self::apply_one_path(&manager, &rel_path, present).await;
                 }
                 queue.advance_cursor(commit);
             }
 
-            // GWS.14c: incrementally update the cached SearchEngine if any.
-            // Skip if not cached — the first query will build fresh from
-            // current state (same outcome, simpler reasoning).
-            if !collapsed_for_search.is_empty() {
-                let cached = {
-                    let engines = self.search_engines.read().await;
-                    engines.get(vault_name).cloned()
-                };
-                if let Some(engine) = cached {
-                    let change_vec: Vec<(String, bool)> =
-                        collapsed_for_search.into_iter().collect();
-                    if let Err(e) = engine.apply_changes(change_vec).await {
-                        log::warn!(
-                            "GWS.14c search incremental apply failed; falling back to evict: {}",
-                            e
-                        );
-                        self.invalidate_search_cache().await;
-                    }
-                }
-            }
-            // Similarity engine stays cache-evict for now — incremental
-            // TF-IDF lives in a follow-up if needed (the corpus IDF table
-            // is corpus-wide, so per-doc add/remove without recomputing
-            // IDF drifts the scores).
+            // GWS.14c: incrementally update the cached SearchEngine, then evict
+            // the similarity cache (incremental TF-IDF is a follow-up — the
+            // corpus-wide IDF table drifts under per-doc add/remove).
+            self.apply_collapsed_to_search(vault_name, collapsed_for_search)
+                .await;
             self.invalidate_similarity_cache().await;
         }
         Ok(())
+    }
+
+    /// v3b.2: drain the pending reindex queue into per-commit diffs inside
+    /// `spawn_blocking` — the `VaultRepo` handle is `!Sync`, so it must never
+    /// cross an await. Returns one `(commit, [(path, present)])` entry per
+    /// drained commit. Extracted from `flush_reindex_for_vault`.
+    async fn drain_pending_diffs(
+        path: PathBuf,
+        locks: Arc<CommitLocks>,
+        queue: Arc<ReindexQueue>,
+    ) -> McpResult<Vec<(turbovault_tools::Oid, Vec<(String, bool)>)>> {
+        tokio::task::spawn_blocking(move || {
+            // Open the repo locally so its !Sync handle never escapes this
+            // thread. Drain the diff bookkeeping (sync); the graph apply runs
+            // back in the async caller.
+            let repo = VaultRepo::open_with_locks(&path, locks)
+                .map_err(|e| McpError::internal(format!("flush_reindex open repo: {}", e)))?;
+            let mut batches = Vec::new();
+            while let Some(commit) = queue.pop_front() {
+                let parent = repo.git_commit_first_parent(commit).map_err(|e| {
+                    McpError::internal(format!("flush_reindex first-parent: {}", e))
+                })?;
+                let changes = repo
+                    .diff_path_statuses(parent, commit)
+                    .map_err(|e| McpError::internal(format!("flush_reindex diff: {}", e)))?;
+                batches.push((commit, changes));
+            }
+            drop(repo);
+            Ok::<_, McpError>(batches)
+        })
+        .await
+        .map_err(|e| McpError::internal(format!("flush_reindex task: {}", e)))?
+    }
+
+    /// v3b.2: apply one `(path, present)` change to the link graph — extracted
+    /// from `flush_reindex_for_vault`'s inner loop to flatten its nesting. A
+    /// present path is re-parsed and its node/links rebuilt; an absent path is
+    /// removed. Parse failures are logged and skipped (a later commit may have
+    /// deleted the file).
+    async fn apply_one_path(manager: &Arc<VaultManager>, rel_path: &str, present: bool) {
+        let full_path = manager.vault_path().join(rel_path);
+        let graph_handle = manager.link_graph();
+        if present {
+            match manager.parse_file(std::path::Path::new(rel_path)).await {
+                Ok(vf) => {
+                    let mut graph = graph_handle.write().await;
+                    let _ = graph.remove_file(&full_path);
+                    if let Err(e) = graph.add_file(&vf) {
+                        log::warn!("flush_reindex add_file({}): {}", rel_path, e);
+                    }
+                    if let Err(e) = graph.update_links(&vf) {
+                        log::warn!("flush_reindex update_links({}): {}", rel_path, e);
+                    }
+                }
+                Err(e) => {
+                    log::debug!("flush_reindex parse_file({}) skip: {}", rel_path, e);
+                }
+            }
+        } else {
+            let mut graph = graph_handle.write().await;
+            let _ = graph.remove_file(&full_path);
+        }
+    }
+
+    /// v3b.2: GWS.14c incremental search update for one drain pass. Skips when
+    /// no `SearchEngine` is cached (next query builds fresh); on apply error
+    /// falls back to a full cache evict. Extracted from
+    /// `flush_reindex_for_vault`.
+    async fn apply_collapsed_to_search(&self, vault_name: &str, collapsed: HashMap<String, bool>) {
+        if collapsed.is_empty() {
+            return;
+        }
+        let cached = {
+            let engines = self.search_engines.read().await;
+            engines.get(vault_name).cloned()
+        };
+        if let Some(engine) = cached {
+            let change_vec: Vec<(String, bool)> = collapsed.into_iter().collect();
+            if let Err(e) = engine.apply_changes(change_vec).await {
+                log::warn!(
+                    "GWS.14c search incremental apply failed; falling back to evict: {}",
+                    e
+                );
+                self.invalidate_search_cache().await;
+            }
+        }
     }
 
     // ==================== Vault Context (LLM Discovery) ====================
