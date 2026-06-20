@@ -35,11 +35,18 @@ use turbovault_git::VaultRepo;
 use turbovault_tools::{CachedRepo, CommitLocks, WriteTools};
 use turbovault_vault::VaultManager;
 
-fn rt() -> Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
+/// tlx.10/[12]: one process-wide runtime, built once and reused, so
+/// `rt().block_on(...)` inside the measured `iter_batched` closures no longer
+/// pays runtime startup/teardown on every sample. Returning `&'static Runtime`
+/// keeps all 21 call sites unchanged (`block_on` takes `&self`).
+fn rt() -> &'static Runtime {
+    static RT: std::sync::OnceLock<Runtime> = std::sync::OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    })
 }
 
 fn test_server_config(vault_dir: &std::path::Path) -> ServerConfig {

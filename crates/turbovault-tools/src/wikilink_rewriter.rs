@@ -113,7 +113,14 @@ fn wrap_target_form(content: &str, target: &str) -> String {
 }
 
 fn strip_md(p: &str) -> String {
-    p.strip_suffix(".md").unwrap_or(p).to_string()
+    // tlx.10/[17]: case-insensitive — a path ending in `.MD`/`.Md` must still
+    // strip to the bare stem, else moving `Foo.MD` looks for `[[Foo.MD]]` and
+    // leaves backlinks unrewritten. `get(..)` keeps the slice on a char
+    // boundary; a matched ascii `.md` suffix guarantees `len - 3` is one too.
+    match p.get(p.len().saturating_sub(3)..) {
+        Some(suffix) if suffix.eq_ignore_ascii_case(".md") => p[..p.len() - 3].to_string(),
+        _ => p.to_string(),
+    }
 }
 
 fn basename(p: &str) -> String {
@@ -214,6 +221,14 @@ mod tests {
         // Source uses `wiki/old`; the rewrite produces `concepts/new`.
         let out = rewrite_wikilinks("use [[wiki/old]] here", "wiki/old.md", "concepts/new.md");
         assert_eq!(out, "use [[concepts/new]] here");
+    }
+
+    #[test]
+    fn rewrites_uppercase_md_extension() {
+        // tlx.10/[17]: moving `Foo.MD` must still target the bare `[[Foo]]`
+        // link, not look for a non-existent `[[Foo.MD]]`.
+        let out = rewrite_wikilinks("see [[Foo]] here", "Foo.MD", "Bar.md");
+        assert_eq!(out, "see [[Bar]] here");
     }
 
     #[test]

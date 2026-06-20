@@ -47,6 +47,13 @@ pub struct VaultRepo {
 /// sufficient, so we skip that re-verification on the object reads the write
 /// path performs (base-tree + blob loads in build_tree / materialize). We trust
 /// our own object writes. Global libgit2 flag — set once, before concurrent use.
+///
+/// tlx.10/[10]: this is **process-global**, not scoped to this `VaultRepo`. For
+/// the `turbovault` server process that is the whole world, so it's fine. SDK
+/// embedders that link `turbovault-git` into a larger process should know it
+/// disables strict hash verification for *every* libgit2 repo in that process;
+/// the perf win (PERF-3a) was judged worth it for the substrate's trusted-local
+/// use case.
 fn init_libgit2_opts() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {

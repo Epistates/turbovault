@@ -18,10 +18,11 @@
 #   On parse error of --config, the server exits nonzero — no silent
 #   fallback to cache recovery.
 #
-# NOTE: ServerConfig::load_vaults expects the file to be a top-level YAML
-# array of vault entries (matching `Vec<VaultConfig>`). The keyed
-# `vaults:` shape shown below is the future target; current loader reads
-# the array directly. Track this in a follow-up ticket.
+# NOTE: the config loader (TurboVaultConfigFile, read via --config /
+# TURBOVAULT_CONFIG) expects the KEYED shape shown below — a top-level
+# `vaults:` list plus an optional `tool_visibility:` section. This is the
+# canonical format (turbovault-xj8 unification); the older bare top-level
+# array of vault entries is no longer what the loader reads.
 #
 # ==============================================================================
 
