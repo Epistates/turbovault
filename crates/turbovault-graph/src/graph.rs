@@ -95,11 +95,13 @@ impl LinkGraph {
         // Register aliases from frontmatter (lowercased for case-insensitive resolution).
         // Guard against duplicates: add_file may be called multiple times for the
         // same path (e.g. on every write_file), so only push if not already present.
+        let mut alias_added = false;
         if let Some(fm) = &file.frontmatter {
             for alias in fm.aliases() {
                 let entries = self.alias_index.entry(alias.to_lowercase()).or_default();
                 if !entries.contains(&node_idx) {
                     entries.push(node_idx);
+                    alias_added = true;
                 }
             }
         }
@@ -110,7 +112,13 @@ impl LinkGraph {
         // exist, promote any dangling links that resolve to it. Without this,
         // multi-file commits — and any source-before-target ordering — leave the
         // link graph permanently stale (the bug this fixes).
-        if is_new {
+        //
+        // tlx.8: also promote when an EXISTING node gains a NEW alias on a
+        // re-write — links parked against that alias were never reconsidered
+        // under the old is_new-only gate, leaving the backlink stale until
+        // restart. Gated on `alias_added` (not merely a non-empty unresolved
+        // set) so the common no-alias re-write stays a cheap no-op.
+        if is_new || alias_added {
             self.resolve_dangling_links_to(node_idx);
         }
 
@@ -637,6 +645,44 @@ mod tests {
         );
         vault_file.links = parsed_links;
         vault_file
+    }
+
+    /// tlx.8: an existing file that gains a new alias on re-write must promote
+    /// links parked against that alias. Under the old is_new-only gate the
+    /// backlink stayed stale until a server restart.
+    #[test]
+    fn add_file_promotes_dangling_link_when_existing_file_gains_alias() {
+        let mut graph = LinkGraph::new();
+
+        // b.md exists, no alias yet.
+        graph.add_file(&create_test_file("b.md", vec![])).unwrap();
+
+        // a.md links [[Project Home]] — unresolvable (nothing carries that name).
+        let a = create_test_file("a.md", vec!["Project Home"]);
+        graph.add_file(&a).unwrap();
+        graph.update_links(&a).unwrap();
+        assert_eq!(
+            graph.unresolved_link_count(),
+            1,
+            "[[Project Home]] parked while no node carries that name/alias"
+        );
+
+        // Re-add b.md, now WITH alias "Project Home".
+        let mut b2 = create_test_file("b.md", vec![]);
+        let mut data = std::collections::HashMap::new();
+        data.insert("aliases".to_string(), serde_json::json!(["Project Home"]));
+        b2.frontmatter = Some(Frontmatter {
+            data,
+            position: SourcePosition::new(0, 0, 0, 0),
+        });
+        graph.add_file(&b2).unwrap();
+
+        assert_eq!(
+            graph.unresolved_link_count(),
+            0,
+            "the parked link is promoted once b.md aliases Project Home"
+        );
+        assert_eq!(graph.edge_count(), 1, "a.md -> b.md edge now exists");
     }
 
     #[test]
