@@ -272,6 +272,15 @@ impl SearchEngine {
             writer.delete_term(term);
 
             if present {
+                // tlx.7: mirror SearchEngine::new's markdown-only filter. The
+                // initial build indexes only `.md`; without this guard a
+                // committed non-markdown path that `parse_file` accepts would
+                // be searchable incrementally but vanish on the next cold
+                // rebuild — a divergent index. The unconditional delete_term
+                // above still runs, so a path that flips type is removed.
+                if !rel_path.to_lowercase().ends_with(".md") {
+                    continue;
+                }
                 match self
                     .manager
                     .parse_file(std::path::Path::new(&rel_path))
@@ -753,6 +762,38 @@ mod tests {
             engine.search("alphaword").await.unwrap().len(),
             0,
             "old doc replaced, not duplicated"
+        );
+    }
+
+    /// tlx.7: apply_changes must mirror SearchEngine::new's markdown-only
+    /// filter. A committed non-.md file that parse_file would accept must NOT
+    /// be indexed incrementally — otherwise it is searchable until the next
+    /// cold rebuild (which only indexes .md) silently drops it.
+    #[tokio::test]
+    async fn apply_changes_skips_non_markdown_paths() {
+        use tempfile::TempDir;
+        use turbovault_core::config::{ServerConfig, VaultConfig};
+
+        let tmp = TempDir::new().unwrap();
+        // A real, parseable file on disk, so it's the .md guard — not a parse
+        // failure — that keeps it out of the index.
+        std::fs::write(tmp.path().join("note.txt"), "# T\n\ngammaword content\n").unwrap();
+
+        let mut cfg = ServerConfig::new();
+        cfg.vaults
+            .push(VaultConfig::builder("v", tmp.path()).build().unwrap());
+        let manager = Arc::new(VaultManager::new(cfg).unwrap());
+
+        let engine = SearchEngine::new(Arc::clone(&manager)).await.unwrap();
+        engine
+            .apply_changes(vec![("note.txt".to_string(), true)])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine.search("gammaword").await.unwrap().len(),
+            0,
+            "non-.md path not indexed incrementally, matching cold-rebuild behavior"
         );
     }
 
