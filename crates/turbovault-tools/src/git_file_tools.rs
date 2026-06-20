@@ -209,15 +209,16 @@ impl GitFileTools {
         mode: WriteMode,
         expected_hash: Option<&str>,
     ) -> Result<()> {
-        let final_content = self.resolve_write_content(path, content, mode).await?;
-        let expected = parse_blob_oid(expected_hash)?;
-        let txn = build_upsert_txn(
-            format!("write_file {}", path),
+        // v3b.1: delegate to the _with_message variant with the auto-derived
+        // subject rather than duplicating the body.
+        self.write_file_with_mode_and_message(
             path,
-            &final_content,
-            expected,
-        );
-        self.apply_txn(&txn).await
+            content,
+            mode,
+            expected_hash,
+            &format!("write_file {}", path),
+        )
+        .await
     }
 
     /// turbovault-0bh: caller-supplied commit message variant of
@@ -281,35 +282,16 @@ impl GitFileTools {
         expected_hash: Option<&str>,
         dry_run: bool,
     ) -> Result<EditResult> {
-        let expected = parse_blob_oid(expected_hash)?;
-
-        // Read current bytes from the working tree.
-        let current = self.read_file(path).await?;
-
-        // Apply SEARCH/REPLACE blocks.
-        let engine = EditEngine::new();
-        let blocks = engine.parse_blocks(edits)?;
-        let (mut result, new_content) = engine.apply_edits(&current, &blocks, dry_run)?;
-
-        // turbovault-6sj / TV-011: overwrite the SHA-256s that EditEngine
-        // computed with git blob OIDs so the returned `old_hash`/`new_hash`
-        // round-trip via `expected_hash` against the substrate's
-        // `expect_blob` precondition. Same in the dry-run path so callers
-        // can use a preview's `new_hash` as the next `expected_hash`.
-        result.old_hash = VaultRepo::blob_oid_of(current.as_bytes())
-            .map_err(|e| Error::config_error(format!("blob_oid_of(current): {}", e)))?
-            .to_string();
-        result.new_hash = VaultRepo::blob_oid_of(new_content.as_bytes())
-            .map_err(|e| Error::config_error(format!("blob_oid_of(new): {}", e)))?
-            .to_string();
-
-        if dry_run {
-            return Ok(result);
-        }
-
-        let txn = build_upsert_txn(format!("edit_file {}", path), path, &new_content, expected);
-        self.apply_txn(&txn).await?;
-        Ok(result)
+        // v3b.1: delegate to the _with_message variant with the auto-derived
+        // subject rather than duplicating the read/parse/apply/hash body.
+        self.edit_file_with_message(
+            path,
+            edits,
+            expected_hash,
+            dry_run,
+            &format!("edit_file {}", path),
+        )
+        .await
     }
 
     /// turbovault-0bh: caller-supplied commit message variant of
@@ -356,12 +338,14 @@ impl GitFileTools {
         path: &str,
         expected_hash: Option<&str>,
     ) -> Result<()> {
-        let expected = parse_blob_oid(expected_hash)?;
-        let mut txn = Changeset::new(format!("delete_file {}", path)).remove(path);
-        if let Some(oid) = expected {
-            txn = txn.expect_blob(path, oid);
-        }
-        self.apply_txn(&txn).await
+        // v3b.1: delegate to the _with_message variant with the auto-derived
+        // subject rather than duplicating the body.
+        self.delete_file_with_hash_and_message(
+            path,
+            expected_hash,
+            &format!("delete_file {}", path),
+        )
+        .await
     }
 
     /// turbovault-0bh: caller-supplied commit message variant of
