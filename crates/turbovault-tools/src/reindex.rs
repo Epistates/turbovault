@@ -192,11 +192,38 @@ pub async fn watch_ref_changes(
         let current = read_head_oid(&vault_path).await;
         if current != last_oid {
             if let Some(new) = current {
-                queue.push(new);
+                // tlx.5: enqueue the whole first-parent range last_oid..new so a
+                // multi-commit jump (e.g. `git pull` of N commits) applies every
+                // intermediate diff, not just the tip. A non-ff move has no clean
+                // range — fall back to the tip alone (best-effort; the §8.4
+                // limitation, full coherence needs a restart).
+                for oid in first_parent_range_or_tip(&vault_path, last_oid, new).await {
+                    queue.push(oid);
+                }
             }
             last_oid = current;
         }
     }
+}
+
+/// Resolve the first-parent range `(stop, tip]` (oldest-first) via libgit2 in
+/// `spawn_blocking` (the `VaultRepo` handle is `!Sync`). Falls back to `[tip]`
+/// on a non-ff move, an error, or an empty range — the same best-effort
+/// tip-only behavior the listener had before tlx.5.
+async fn first_parent_range_or_tip(
+    vault_path: &std::path::Path,
+    stop: Option<Oid>,
+    tip: Oid,
+) -> Vec<Oid> {
+    let path = vault_path.to_path_buf();
+    let range = tokio::task::spawn_blocking(move || {
+        let repo = VaultRepo::open(&path).ok()?;
+        repo.first_parent_range(stop, tip).ok().flatten()
+    })
+    .await
+    .ok()
+    .flatten();
+    range.filter(|r| !r.is_empty()).unwrap_or_else(|| vec![tip])
 }
 
 /// Read HEAD's oid via libgit2 inside `spawn_blocking` (libgit2 is

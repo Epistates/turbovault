@@ -184,6 +184,44 @@ impl VaultRepo {
         Ok(c.parent_ids().next())
     }
 
+    /// First-parent commits in `(stop_exclusive, tip]`, oldest-first.
+    ///
+    /// tlx.5: the out-of-band ref listener uses this to enqueue EVERY commit a
+    /// multi-commit jump introduced (e.g. a `git pull` of N commits) instead of
+    /// only the new tip — otherwise the drainer diffs the tip against its first
+    /// parent and silently skips the intermediate commits' changes.
+    ///
+    /// Returns `Ok(None)` when `stop_exclusive` is set but is NOT an ancestor of
+    /// `tip` — a non-fast-forward move (force-push, branch switch, history
+    /// rewrite) has no clean first-parent range, so the caller falls back to
+    /// best-effort (full coherence needs a restart; the §8.4 limitation). With
+    /// `stop_exclusive == None`, walks the whole chain from `tip` to root.
+    pub fn first_parent_range(
+        &self,
+        stop_exclusive: Option<Oid>,
+        tip: Oid,
+    ) -> Result<Option<Vec<Oid>>> {
+        if let Some(stop) = stop_exclusive {
+            if stop == tip {
+                return Ok(Some(Vec::new()));
+            }
+            if !self.repo.graph_descendant_of(tip, stop)? {
+                return Ok(None);
+            }
+        }
+        let mut chain = Vec::new();
+        let mut cur = Some(tip);
+        while let Some(c) = cur {
+            if Some(c) == stop_exclusive {
+                break;
+            }
+            chain.push(c);
+            cur = self.git_commit_first_parent(c)?;
+        }
+        chain.reverse();
+        Ok(Some(chain))
+    }
+
     /// turbovault-lri: whether `path` (repo-root-relative) is excluded by
     /// any active `.gitignore`. Thin wrapper over libgit2's
     /// `is_path_ignored`. Used by the substrate's `include_ignored`

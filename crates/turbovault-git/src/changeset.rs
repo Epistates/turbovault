@@ -771,6 +771,44 @@ mod tests {
         );
     }
 
+    /// tlx.5: `first_parent_range` must return EVERY commit a multi-commit jump
+    /// introduced (oldest-first), and `None` on a non-fast-forward target so the
+    /// ref listener falls back to tip-only.
+    #[test]
+    fn first_parent_range_walks_the_chain() {
+        let (_tmp, vr) = open_unborn();
+        let c1 = vr
+            .commit_changeset(&Changeset::new("c1").create("a.md", "1"))
+            .unwrap()
+            .commit;
+        let v1 = crate::VaultRepo::blob_oid_of(b"1").unwrap();
+        let c2 = vr
+            .commit_changeset(&Changeset::new("c2").update("a.md", "2", v1))
+            .unwrap()
+            .commit;
+        let v2 = crate::VaultRepo::blob_oid_of(b"2").unwrap();
+        let c3 = vr
+            .commit_changeset(&Changeset::new("c3").update("a.md", "3", v2))
+            .unwrap()
+            .commit;
+
+        // (c1, c3] = [c2, c3], oldest-first.
+        assert_eq!(
+            vr.first_parent_range(Some(c1), c3).unwrap(),
+            Some(vec![c2, c3])
+        );
+        // No stop = the whole chain back to root.
+        assert_eq!(
+            vr.first_parent_range(None, c3).unwrap(),
+            Some(vec![c1, c2, c3])
+        );
+        // stop == tip = empty range (nothing new).
+        assert_eq!(vr.first_parent_range(Some(c3), c3).unwrap(), Some(vec![]));
+        // Non-ff: a stop that does NOT precede the tip (c1 doesn't descend from
+        // c3) has no clean range -> None -> caller falls back to tip-only.
+        assert_eq!(vr.first_parent_range(Some(c3), c1).unwrap(), None);
+    }
+
     /// `is_path_ignored` must honor `.gitignore` (survivors hard-coded
     /// `Ok(false)` / `Ok(true)`); the substrate's include_ignored gate uses it.
     #[test]
