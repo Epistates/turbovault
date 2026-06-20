@@ -437,13 +437,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
                 .serve();
-            tokio::select! {
-                res = serve_fut => res?,
-                _ = shutdown_signal() => {
-                    log::info!("Shutdown signal received; abandoning active fanouts...");
-                    shutdown_handle.shutdown_fanouts_best_effort().await;
-                }
-            }
+            run_until_shutdown(serve_fut, &shutdown_handle).await?;
         }
         #[cfg(feature = "http")]
         "http" => {
@@ -455,13 +449,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::http(&addr))
                 .serve();
-            tokio::select! {
-                res = serve_fut => res?,
-                _ = shutdown_signal() => {
-                    log::info!("Shutdown signal received; abandoning active fanouts...");
-                    shutdown_handle.shutdown_fanouts_best_effort().await;
-                }
-            }
+            run_until_shutdown(serve_fut, &shutdown_handle).await?;
         }
         #[cfg(feature = "websocket")]
         "websocket" => {
@@ -473,13 +461,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::websocket(&addr))
                 .serve();
-            tokio::select! {
-                res = serve_fut => res?,
-                _ = shutdown_signal() => {
-                    log::info!("Shutdown signal received; abandoning active fanouts...");
-                    shutdown_handle.shutdown_fanouts_best_effort().await;
-                }
-            }
+            run_until_shutdown(serve_fut, &shutdown_handle).await?;
         }
         #[cfg(feature = "tcp")]
         "tcp" => {
@@ -491,13 +473,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::tcp(&addr))
                 .serve();
-            tokio::select! {
-                res = serve_fut => res?,
-                _ = shutdown_signal() => {
-                    log::info!("Shutdown signal received; abandoning active fanouts...");
-                    shutdown_handle.shutdown_fanouts_best_effort().await;
-                }
-            }
+            run_until_shutdown(serve_fut, &shutdown_handle).await?;
         }
         #[cfg(feature = "unix")]
         "unix" => {
@@ -509,13 +485,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_protocol(ProtocolConfig::multi_version())
                 .transport(turbomcp::Transport::unix(&socket_path))
                 .serve();
-            tokio::select! {
-                res = serve_fut => res?,
-                _ = shutdown_signal() => {
-                    log::info!("Shutdown signal received; abandoning active fanouts...");
-                    shutdown_handle.shutdown_fanouts_best_effort().await;
-                }
-            }
+            run_until_shutdown(serve_fut, &shutdown_handle).await?;
         }
         transport => {
             #[cfg(not(feature = "http"))]
@@ -559,6 +529,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// turbovault-84k: wait for SIGINT (Ctrl-C) or SIGTERM (kill / process
 /// supervisor stop). On non-unix platforms only Ctrl-C is honored.
+/// Run a transport's serve future until either it completes (e.g. stdio EOF or
+/// a transport shutdown) OR a shutdown signal arrives, abandoning active
+/// fanouts in BOTH cases.
+///
+/// tlx.2: previously each transport arm inlined a `tokio::select!` that only
+/// ran `shutdown_fanouts_best_effort()` on the signal branch — so the common
+/// stdio-EOF exit (serve future finishing first) skipped cleanup and leaked
+/// `wip-*` fanout worktrees/branches. Generic over the serve future's output so
+/// all five transport arms share one implementation instead of copy-pasting it.
+async fn run_until_shutdown<F, E>(
+    serve_fut: F,
+    shutdown_handle: &ObsidianMcpServer,
+) -> Result<(), E>
+where
+    F: std::future::Future<Output = Result<(), E>>,
+{
+    tokio::select! {
+        res = serve_fut => {
+            log::info!("Server stopped; abandoning active fanouts...");
+            shutdown_handle.shutdown_fanouts_best_effort().await;
+            res
+        }
+        _ = shutdown_signal() => {
+            log::info!("Shutdown signal received; abandoning active fanouts...");
+            shutdown_handle.shutdown_fanouts_best_effort().await;
+            Ok(())
+        }
+    }
+}
+
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
