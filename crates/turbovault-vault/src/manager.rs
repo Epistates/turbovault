@@ -339,17 +339,20 @@ impl VaultManager {
             .await
             .map_err(Error::io)?;
 
+        // Hash of the content we actually read and are editing against. This is
+        // the authoritative pre-image for the write below.
+        let validated_hash = compute_hash(&current_content);
+
         // Validate expected hash if provided
-        if let Some(expected) = expected_hash {
-            let actual = compute_hash(&current_content);
-            if actual != expected {
-                return Err(Error::ConcurrencyError {
-                    reason: format!(
-                        "File modified since read. Expected hash: {}, actual: {}. Re-read the file and try again.",
-                        expected, actual
-                    ),
-                });
-            }
+        if let Some(expected) = expected_hash
+            && validated_hash != expected
+        {
+            return Err(Error::ConcurrencyError {
+                reason: format!(
+                    "File modified since read. Expected hash: {}, actual: {}. Re-read the file and try again.",
+                    expected, validated_hash
+                ),
+            });
         }
 
         // Parse and apply edits
@@ -366,8 +369,14 @@ impl VaultManager {
         // Release cache guard before write (avoid deadlock)
         drop(_cache_guard);
 
-        // Write atomically (hash already validated above, pass None)
-        self.write_file(&vault_path, &new_content, None).await?;
+        // Write atomically, re-checking that the file still holds the exact
+        // content we applied edits to. Passing `validated_hash` (rather than
+        // `None`) closes the TOCTOU window between the read above and the
+        // atomic rename: if another writer changed the file in between, the
+        // write fails with a ConcurrencyError instead of silently
+        // clobbering their change.
+        self.write_file(&vault_path, &new_content, Some(&validated_hash))
+            .await?;
 
         Ok(edit_result)
     }
@@ -1729,5 +1738,163 @@ mod tests {
             0,
             "deleted file must be evicted from cache"
         );
+    }
+
+    /// A stale `expected_hash` on write_file must surface a `ConcurrencyError`
+    /// and leave the existing content in place.
+    #[tokio::test]
+    async fn test_write_file_stale_hash_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        let path = Path::new("note.md");
+        manager.write_file(path, "v1", None).await.unwrap();
+
+        // Caller thinks the file still holds some other content.
+        let err = manager
+            .write_file(path, "v2", Some("deadbeef"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "expected ConcurrencyError, got {err:?}"
+        );
+        // The write must not have happened.
+        assert_eq!(manager.read_file(path).await.unwrap(), "v1");
+    }
+
+    /// When `expected_hash` references a file that no longer exists, the write
+    /// is rejected with a `ConcurrencyError` explaining the file is gone.
+    #[tokio::test]
+    async fn test_write_file_expected_hash_on_missing_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        let err = manager
+            .write_file(Path::new("ghost.md"), "x", Some("deadbeef"))
+            .await
+            .unwrap_err();
+
+        match err {
+            Error::ConcurrencyError { reason } => {
+                assert!(
+                    reason.contains("does not exist"),
+                    "reason should explain the file is gone: {reason}"
+                );
+            }
+            other => panic!("expected ConcurrencyError, got {other:?}"),
+        }
+    }
+
+    /// edit_file with a stale `expected_hash` must fail with a `ConcurrencyError`
+    /// and leave the file untouched.
+    #[tokio::test]
+    async fn test_edit_file_stale_hash_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        let path = Path::new("note.md");
+        manager.write_file(path, "hello world", None).await.unwrap();
+
+        let edits = "<<<<<<< SEARCH\nhello world\n=======\ngoodbye world\n>>>>>>> REPLACE";
+        let err = manager
+            .edit_file(path, edits, Some("staleHASH"), false)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "expected ConcurrencyError, got {err:?}"
+        );
+        assert_eq!(manager.read_file(path).await.unwrap(), "hello world");
+    }
+
+    /// edit_file closes the TOCTOU window by re-checking the file's content
+    /// hash at write time. If the file is changed out from under the engine
+    /// between its read and the atomic rename, the edit must fail rather than
+    /// clobber the change.
+    ///
+    /// We simulate the interleaving deterministically by hand: read the
+    /// pre-image hash the engine would compute, mutate the file externally,
+    /// then drive `write_file` with that now-stale pre-image hash — which is
+    /// exactly the value edit_file forwards internally.
+    #[tokio::test]
+    async fn test_edit_file_toctou_rechecks_at_write() {
+        use crate::edit::compute_hash;
+
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        let path = Path::new("note.md");
+        manager.write_file(path, "original", None).await.unwrap();
+        let preimage_hash = compute_hash("original");
+
+        // Another writer changes the file after the engine read it.
+        manager.write_file(path, "intervening", None).await.unwrap();
+
+        // The write edit_file would perform, carrying the pre-image hash, must
+        // now be rejected instead of overwriting "intervening".
+        let err = manager
+            .write_file(path, "edited", Some(&preimage_hash))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "expected ConcurrencyError, got {err:?}"
+        );
+        assert_eq!(manager.read_file(path).await.unwrap(), "intervening");
+    }
+
+    /// delete_file with a stale `expected_hash` must fail with a
+    /// `ConcurrencyError` and leave the file in place.
+    #[tokio::test]
+    async fn test_delete_file_stale_hash_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        let path = Path::new("note.md");
+        manager.write_file(path, "keep me", None).await.unwrap();
+
+        let err = manager
+            .delete_file(path, Some("staleHASH"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "expected ConcurrencyError, got {err:?}"
+        );
+        assert_eq!(manager.read_file(path).await.unwrap(), "keep me");
+    }
+
+    /// move_file with a stale `expected_hash` (on the source) must fail with a
+    /// `ConcurrencyError` and leave the source in place.
+    #[tokio::test]
+    async fn test_move_file_stale_hash_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        let from = Path::new("from.md");
+        let to = Path::new("to.md");
+        manager.write_file(from, "payload", None).await.unwrap();
+
+        let err = manager
+            .move_file(from, to, Some("staleHASH"))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "expected ConcurrencyError, got {err:?}"
+        );
+        assert_eq!(manager.read_file(from).await.unwrap(), "payload");
+        assert!(manager.read_file(to).await.is_err(), "dest must not exist");
     }
 }

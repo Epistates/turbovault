@@ -1729,14 +1729,15 @@ impl ObsidianMcpServer {
 
     /// Execute batch file operations atomically
     #[tool(
-        description = "Execute multiple file operations atomically (all-or-nothing transaction)",
-        usage = "Use for complex multi-file workflows requiring consistency. If any operation fails, all changes are rolled back. Not idempotent.",
+        description = "Execute multiple file operations atomically (all-or-nothing transaction). write/delete/move operations accept an optional expected_hash (from read_note) for optimistic concurrency: all preconditions are checked before any operation runs, so a stale hash fails the whole batch without applying anything.",
+        usage = "Use for complex multi-file workflows requiring consistency. If any operation fails, the batch stops. Pass expected_hash on write/delete/move to guard against concurrent modifications. Not idempotent.",
         performance = "Depends on operation count and types. Transactions add ~10-50ms overhead.",
         related = ["write_note", "delete_note", "move_note"],
         examples = [
             r#"[{"type":"write","path":"note1.md","content":"..."}]"#,
             r#"[{"type":"delete","path":"old.md"},{"type":"write","path":"new.md","content":"..."}]"#,
-            r#"[{"type":"move","from":"a.md","to":"b.md"},{"type":"write","path":"index.md","content":"..."}]"#
+            r#"[{"type":"move","from":"a.md","to":"b.md"},{"type":"write","path":"index.md","content":"..."}]"#,
+            r#"[{"type":"write","path":"note1.md","content":"...","expected_hash":"<hash from read_note>"}]"#
         ],
         tags = ["write", "batch"],
         destructive = true,

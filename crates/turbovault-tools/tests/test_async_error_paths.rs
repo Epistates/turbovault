@@ -199,17 +199,21 @@ async fn test_batch_tools_partial_failure_rollback() {
         BatchOperation::WriteNote {
             path: "file1.md".to_string(),
             content: "Content 1".to_string(),
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "file2.md".to_string(),
             content: "Content 2".to_string(),
+            expected_hash: None,
         },
         BatchOperation::DeleteNote {
             path: "nonexistent_file_for_failure.md".to_string(),
+            expected_hash: None,
         },
         BatchOperation::WriteNote {
             path: "file3.md".to_string(),
             content: "Content 3".to_string(),
+            expected_hash: None,
         },
     ];
 
@@ -240,6 +244,7 @@ async fn test_batch_tools_concurrent_batch_conflicts() {
         let ops = vec![BatchOperation::WriteNote {
             path: "conflict.md".to_string(),
             content: "Content from batch 1".to_string(),
+            expected_hash: None,
         }];
         tools1.batch_execute(ops).await
     });
@@ -248,6 +253,7 @@ async fn test_batch_tools_concurrent_batch_conflicts() {
         let ops = vec![BatchOperation::WriteNote {
             path: "conflict.md".to_string(),
             content: "Content from batch 2".to_string(),
+            expected_hash: None,
         }];
         tools2.batch_execute(ops).await
     });
