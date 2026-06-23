@@ -41,6 +41,12 @@ impl VaultRepo {
         // `.ok()` would flatten an I/O/corruption error into `None`, which on
         // the initial-commit path (expected_old == None) could be misread as
         // "ref doesn't exist yet" and let a blind advance through.
+        //
+        // hq8: the non-NotFound arm here is irreducible-defensive — `lock_ref`
+        // above already validated + read the ref, so a corrupt ref aborts at
+        // the lock, never reaching this read. The same guard in
+        // `commit_with_retry_n` (which has NO prior lock) IS reachable and is
+        // killed by `corrupt_ref_surfaces_error_instead_of_silent_absent`.
         let current = match repo.refname_to_id(refname) {
             Ok(oid) => Some(oid),
             Err(e) if e.code() == git2::ErrorCode::NotFound => None,
@@ -168,6 +174,47 @@ mod tests {
         let c1 = build_on(&vr, Some(c0), "b.md", "b");
         vr.cas_ref(MAIN, Some(c0), c1).expect("advance c0 -> c1");
         assert_eq!(vr.head_oid(), Some(c1));
+    }
+
+    /// hq8 (tlx.9 follow-up): real fault injection — corrupt a throwaway `.git`
+    /// loose ref so `refname_to_id` fails with a NON-NotFound error, and assert
+    /// `cas_ref` / `commit_with_retry` SURFACE it instead of swallowing to
+    /// `None` (a blind "ref absent"). This is what `.ok()` used to do; it kills
+    /// the NotFound-match-guard mutation survivors without mocking the git2 API.
+    #[test]
+    fn corrupt_ref_surfaces_error_instead_of_silent_absent() {
+        let (tmp, vr) = open_unborn();
+        let c0 = build_on(&vr, None, "a.md", "a");
+        vr.cas_ref(MAIN, None, c0).unwrap();
+        drop(vr); // release the handle before corrupting the ref on disk
+
+        // Malformed oid in the loose ref → libgit2 parse error (not NotFound).
+        std::fs::write(tmp.path().join(".git/refs/heads/main"), "not-a-valid-oid\n").unwrap();
+        let vr = VaultRepo::open(tmp.path()).unwrap();
+
+        // Precondition: the corruption really yields a non-NotFound error — else
+        // the guard would legitimately map it to None and this proves nothing.
+        let code = vr.git().refname_to_id(MAIN).unwrap_err().code();
+        assert_ne!(
+            code,
+            git2::ErrorCode::NotFound,
+            "corruption must produce a non-NotFound error; got {code:?}"
+        );
+
+        // commit_with_retry resolves the tip via refname_to_id first, so a
+        // non-NotFound error must abort, not be treated as an unborn branch.
+        let res = vr.commit_with_retry_n(MAIN, 0, |_tip| Ok(None));
+        assert!(
+            res.is_err(),
+            "commit_with_retry must surface the ref-read error, not swallow to None"
+        );
+
+        // cas_ref's read-under-lock must do the same.
+        let some = Oid::from_str("0000000000000000000000000000000000000001").unwrap();
+        assert!(
+            vr.cas_ref(MAIN, None, some).is_err(),
+            "cas_ref must surface the ref-read error, not blind-write a 'new' ref"
+        );
     }
 
     #[test]

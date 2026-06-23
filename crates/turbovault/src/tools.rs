@@ -1443,13 +1443,31 @@ impl ObsidianMcpServer {
                 .map_err(|e| McpError::internal(format!("flush_reindex open repo: {}", e)))?;
             let mut batches = Vec::new();
             while let Some(commit) = queue.pop_front() {
-                let parent = repo.git_commit_first_parent(commit).map_err(|e| {
-                    McpError::internal(format!("flush_reindex first-parent: {}", e))
-                })?;
-                let changes = repo
-                    .diff_path_statuses(parent, commit)
-                    .map_err(|e| McpError::internal(format!("flush_reindex diff: {}", e)))?;
-                batches.push((commit, changes));
+                // hq8: unify with ReindexQueue::drain_through (tlx.1) — a commit
+                // the ref-watcher enqueued may no longer be reachable. A
+                // first-parent (or diff) failure must SKIP that commit, not
+                // propagate and brick the whole read-path flush.
+                let parent = match repo.git_commit_first_parent(commit) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!(
+                            "flush_reindex: skipping commit {} after first-parent error: {}",
+                            commit,
+                            e
+                        );
+                        continue;
+                    }
+                };
+                match repo.diff_path_statuses(parent, commit) {
+                    Ok(changes) => batches.push((commit, changes)),
+                    Err(e) => {
+                        log::warn!(
+                            "flush_reindex: skipping commit {} after diff error: {}",
+                            commit,
+                            e
+                        );
+                    }
+                }
             }
             drop(repo);
             Ok::<_, McpError>(batches)

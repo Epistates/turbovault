@@ -191,35 +191,41 @@ impl VaultRepo {
     /// only the new tip — otherwise the drainer diffs the tip against its first
     /// parent and silently skips the intermediate commits' changes.
     ///
-    /// Returns `Ok(None)` when `stop_exclusive` is set but is NOT an ancestor of
-    /// `tip` — a non-fast-forward move (force-push, branch switch, history
-    /// rewrite) has no clean first-parent range, so the caller falls back to
-    /// best-effort (full coherence needs a restart; the §8.4 limitation). With
-    /// `stop_exclusive == None`, walks the whole chain from `tip` to root.
+    /// Returns `Ok(None)` when `stop_exclusive` is set but is NOT on `tip`'s
+    /// FIRST-PARENT chain — a non-ff move (force-push, branch switch) OR a stop
+    /// reachable only through a merge's second parent has no clean range, so the
+    /// caller falls back to best-effort (full coherence needs a restart; the
+    /// §8.4 limitation). With `stop_exclusive == None`, walks the whole
+    /// first-parent chain from `tip` to root.
     pub fn first_parent_range(
         &self,
         stop_exclusive: Option<Oid>,
         tip: Oid,
     ) -> Result<Option<Vec<Oid>>> {
-        if let Some(stop) = stop_exclusive {
-            if stop == tip {
-                return Ok(Some(Vec::new()));
-            }
-            if !self.repo.graph_descendant_of(tip, stop)? {
-                return Ok(None);
-            }
-        }
+        // Walk ONLY first parents. `graph_descendant_of` is the wrong test: it
+        // is true when `stop` is reachable through a merge's SECOND parent, but
+        // the drainer diffs each commit against its first parent, so a `stop` on
+        // a side branch is not a clean range — the walk would run past it to
+        // root and re-enqueue all of history. Reaching root without hitting
+        // `stop` => fall back (None); hitting it => the bounded range.
         let mut chain = Vec::new();
         let mut cur = Some(tip);
         while let Some(c) = cur {
             if Some(c) == stop_exclusive {
-                break;
+                chain.reverse();
+                return Ok(Some(chain));
             }
             chain.push(c);
             cur = self.git_commit_first_parent(c)?;
         }
-        chain.reverse();
-        Ok(Some(chain))
+        match stop_exclusive {
+            None => {
+                chain.reverse();
+                Ok(Some(chain))
+            }
+            // `stop` is not on tip's first-parent chain — no clean range.
+            Some(_) => Ok(None),
+        }
     }
 
     /// turbovault-lri: whether `path` (repo-root-relative) is excluded by

@@ -809,6 +809,39 @@ mod tests {
         assert_eq!(vr.first_parent_range(Some(c3), c1).unwrap(), None);
     }
 
+    /// hq8: a `stop` reachable from `tip` ONLY through a merge's SECOND parent
+    /// is not on the first-parent chain — `first_parent_range` must return None
+    /// (fallback), NOT walk past it to root and re-enqueue all of history (the
+    /// graph_descendant_of bug coderabbit caught).
+    #[test]
+    fn first_parent_range_falls_back_on_merge_second_parent() {
+        let (_tmp, vr) = open_unborn();
+        let c1 = vr
+            .commit_changeset(&Changeset::new("c1").create("a.md", "1"))
+            .unwrap()
+            .commit;
+        let v1 = crate::VaultRepo::blob_oid_of(b"1").unwrap();
+        let c2 = vr
+            .commit_changeset(&Changeset::new("c2").update("a.md", "2", v1))
+            .unwrap()
+            .commit;
+        // f1: a side-branch commit off c1 (same tree, distinct commit).
+        let c1_tree = vr.git().find_commit(c1).unwrap().tree_id();
+        let f1 = vr.commit_tree(c1_tree, &[c1], "f1").unwrap();
+        // m: a merge whose FIRST parent is c2 and SECOND parent is f1.
+        let c2_tree = vr.git().find_commit(c2).unwrap().tree_id();
+        let m = vr.commit_tree(c2_tree, &[c2, f1], "m").unwrap();
+
+        // f1 is reachable from m only via the 2nd parent -> not on the
+        // first-parent chain -> None (fallback), not the whole history.
+        assert_eq!(vr.first_parent_range(Some(f1), m).unwrap(), None);
+        // sanity: a stop ON the first-parent chain still yields the range.
+        assert_eq!(
+            vr.first_parent_range(Some(c1), m).unwrap(),
+            Some(vec![c2, m])
+        );
+    }
+
     /// `is_path_ignored` must honor `.gitignore` (survivors hard-coded
     /// `Ok(false)` / `Ok(true)`); the substrate's include_ignored gate uses it.
     #[test]
