@@ -302,6 +302,41 @@ mod tests {
         assert!(VaultRepo::open(tmp.path()).is_ok());
     }
 
+    /// hq8: `commit_locks()` must hand back THE shared registry (scratch
+    /// worktrees share it, GWS.9), not a fresh default. Kills the
+    /// `Arc::new(Default::default())` mutation survivor.
+    #[test]
+    fn commit_locks_returns_the_shared_registry() {
+        let tmp = TempDir::new().unwrap();
+        init_unborn(tmp.path());
+        let locks = std::sync::Arc::new(CommitLocks::new());
+        let vr = VaultRepo::open_with_locks(tmp.path(), std::sync::Arc::clone(&locks)).unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&vr.commit_locks(), &locks),
+            "commit_locks() must return the registry the repo was opened with"
+        );
+    }
+
+    /// hq8: `worktree_key()` must be the real workdir, not `PathBuf::default()`
+    /// (empty) — else every worktree keys to the same lock. Kills the
+    /// `Default::default()` mutation survivor.
+    #[test]
+    fn worktree_key_is_the_workdir_not_default() {
+        let tmp = TempDir::new().unwrap();
+        init_unborn(tmp.path());
+        let vr = VaultRepo::open(tmp.path()).unwrap();
+        let key = vr.worktree_key();
+        assert!(
+            !key.as_os_str().is_empty(),
+            "worktree_key must not be empty"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&key).unwrap(),
+            std::fs::canonicalize(tmp.path()).unwrap(),
+            "worktree_key is the repo workdir"
+        );
+    }
+
     #[test]
     fn unborn_branch_resolution() {
         let tmp = TempDir::new().unwrap();
