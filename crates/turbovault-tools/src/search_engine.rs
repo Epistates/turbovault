@@ -129,7 +129,13 @@ impl SearchEngine {
     pub async fn new(manager: Arc<VaultManager>) -> Result<Self> {
         // Define schema: fields to index
         let mut schema_builder = Schema::builder();
-        schema_builder.add_text_field("path", TEXT | STORED);
+        // turbovault-2ag: `path` is a raw STRING (not tokenized TEXT) so that
+        // `apply_changes`' `delete_term(Term::from_field_text(path, rel))`
+        // matches the exact path and removes the prior doc on edit. A TEXT
+        // field tokenizes "a/b.md" into terms, so delete_term never matched
+        // and every edit left a stale duplicate. The query parser only
+        // searches title/content/tags, so path is never full-text queried.
+        schema_builder.add_text_field("path", STRING | STORED);
         schema_builder.add_text_field("title", TEXT | STORED);
         schema_builder.add_text_field("content", TEXT);
         schema_builder.add_text_field("tags", TEXT | STORED);
@@ -170,7 +176,16 @@ impl SearchEngine {
 
             match manager.parse_file(&file_path).await {
                 Ok(vault_file) => {
-                    let path_str = file_path.to_string_lossy().to_string();
+                    // turbovault-2ag: index docs by VAULT-RELATIVE path so the
+                    // field_path key matches `apply_changes` (which uses the
+                    // git-diff relative path). Keying the initial build by the
+                    // absolute path made `apply_changes`'s relative `delete_term`
+                    // miss, leaving a stale duplicate doc on every edit.
+                    let path_str = file_path
+                        .strip_prefix(manager.vault_path())
+                        .unwrap_or(&file_path)
+                        .to_string_lossy()
+                        .to_string();
 
                     // Get title
                     let title = vault_file
@@ -223,6 +238,94 @@ impl SearchEngine {
             field_content,
             field_tags,
         })
+    }
+
+    /// GWS.14c — apply an incremental change set to the tantivy index.
+    /// Each `(path, present_in_commit)` is processed in order:
+    /// - `present=true`  → delete the existing doc for this path (no-op if
+    ///   absent), re-parse the working-tree bytes, add the new doc.
+    /// - `present=false` → delete the doc for this path.
+    /// All changes commit in one writer changeset.
+    ///
+    /// Reads from the working tree (working-tree == HEAD invariant during
+    /// the substrate's commit lock). Parse errors are logged + skipped per
+    /// path — one malformed file does not brick the whole drain pass.
+    ///
+    /// Replaces the pre-GWS.14c pattern where the server evicted the
+    /// cached engine on flush and the next query paid cold-rebuild cost.
+    #[instrument(
+        skip(self, changes),
+        fields(n_changes = changes.len()),
+        name = "search_apply_changes"
+    )]
+    pub async fn apply_changes(&self, changes: Vec<(String, bool)>) -> Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let mut writer = self
+            .index
+            .writer(50_000_000)
+            .map_err(|e| Error::config_error(format!("apply_changes: writer create: {}", e)))?;
+        for (rel_path, present) in changes {
+            // delete is a no-op if the path isn't currently in the index.
+            let term = tantivy::Term::from_field_text(self.field_path, &rel_path);
+            writer.delete_term(term);
+
+            if present {
+                // tlx.7: mirror SearchEngine::new's markdown-only filter. The
+                // initial build indexes only `.md`; without this guard a
+                // committed non-markdown path that `parse_file` accepts would
+                // be searchable incrementally but vanish on the next cold
+                // rebuild — a divergent index. The unconditional delete_term
+                // above still runs, so a path that flips type is removed.
+                if !rel_path.to_lowercase().ends_with(".md") {
+                    continue;
+                }
+                match self
+                    .manager
+                    .parse_file(std::path::Path::new(&rel_path))
+                    .await
+                {
+                    Ok(vault_file) => {
+                        let title = vault_file
+                            .frontmatter
+                            .as_ref()
+                            .and_then(|fm| fm.data.get("title"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| {
+                                std::path::Path::new(&rel_path)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("")
+                            })
+                            .to_string();
+                        let tags_str = vault_file
+                            .frontmatter
+                            .as_ref()
+                            .map(|fm| fm.tags().join(" "))
+                            .unwrap_or_default();
+                        let plain_content = to_plain_text(&vault_file.content);
+                        let _ = writer.add_document(doc!(
+                            self.field_path => rel_path.clone(),
+                            self.field_title => title,
+                            self.field_content => plain_content,
+                            self.field_tags => tags_str,
+                        ));
+                    }
+                    Err(e) => {
+                        log::debug!(
+                            "search apply_changes skip {} (parse failed: {})",
+                            rel_path,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        writer
+            .commit()
+            .map_err(|e| Error::config_error(format!("apply_changes: writer commit: {}", e)))?;
+        Ok(())
     }
 
     /// Simple keyword search
@@ -616,6 +719,82 @@ mod tests {
         assert!(!"/vault/readme.txt".ends_with(".md"));
         assert!(!"/vault/file.md.bak".ends_with(".md"));
         assert!("relative/path/note.md".ends_with(".md"));
+    }
+
+    /// turbovault-2ag: an incremental reindex of an edited file must REPLACE
+    /// its doc, not leave a stale duplicate. Regression for two bugs: the
+    /// initial build keyed docs by absolute path while `apply_changes` keyed
+    /// by vault-relative path, and the `path` field was tokenized TEXT so
+    /// `delete_term` never matched. Either alone leaves the old doc behind.
+    #[tokio::test]
+    async fn apply_changes_replaces_edited_doc_without_duplicate() {
+        use tempfile::TempDir;
+        use turbovault_core::config::{ServerConfig, VaultConfig};
+
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("s.md"), "# S\n\nalphaword content here\n").unwrap();
+
+        let mut cfg = ServerConfig::new();
+        cfg.vaults
+            .push(VaultConfig::builder("v", tmp.path()).build().unwrap());
+        let manager = Arc::new(VaultManager::new(cfg).unwrap());
+
+        let engine = SearchEngine::new(Arc::clone(&manager)).await.unwrap();
+        assert_eq!(
+            engine.search("alphaword").await.unwrap().len(),
+            1,
+            "alphaword indexed by the initial build"
+        );
+
+        // Edit the file on disk, then incrementally reindex just that path.
+        std::fs::write(tmp.path().join("s.md"), "# S\n\nbetaword content here\n").unwrap();
+        engine
+            .apply_changes(vec![("s.md".to_string(), true)])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine.search("betaword").await.unwrap().len(),
+            1,
+            "new term findable after incremental reindex"
+        );
+        assert_eq!(
+            engine.search("alphaword").await.unwrap().len(),
+            0,
+            "old doc replaced, not duplicated"
+        );
+    }
+
+    /// tlx.7: apply_changes must mirror SearchEngine::new's markdown-only
+    /// filter. A committed non-.md file that parse_file would accept must NOT
+    /// be indexed incrementally — otherwise it is searchable until the next
+    /// cold rebuild (which only indexes .md) silently drops it.
+    #[tokio::test]
+    async fn apply_changes_skips_non_markdown_paths() {
+        use tempfile::TempDir;
+        use turbovault_core::config::{ServerConfig, VaultConfig};
+
+        let tmp = TempDir::new().unwrap();
+        // A real, parseable file on disk, so it's the .md guard — not a parse
+        // failure — that keeps it out of the index.
+        std::fs::write(tmp.path().join("note.txt"), "# T\n\ngammaword content\n").unwrap();
+
+        let mut cfg = ServerConfig::new();
+        cfg.vaults
+            .push(VaultConfig::builder("v", tmp.path()).build().unwrap());
+        let manager = Arc::new(VaultManager::new(cfg).unwrap());
+
+        let engine = SearchEngine::new(Arc::clone(&manager)).await.unwrap();
+        engine
+            .apply_changes(vec![("note.txt".to_string(), true)])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            engine.search("gammaword").await.unwrap().len(),
+            0,
+            "non-.md path not indexed incrementally, matching cold-rebuild behavior"
+        );
     }
 
     /// Test: Stopword filtering works for keyword extraction

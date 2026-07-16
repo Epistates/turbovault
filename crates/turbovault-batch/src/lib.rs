@@ -26,15 +26,18 @@
 //!         BatchOperation::CreateNote {
 //!             path: "notes/new1.md".to_string(),
 //!             content: "# First Note".to_string(),
+//!             force: None,
 //!         },
 //!         BatchOperation::CreateNote {
 //!             path: "notes/new2.md".to_string(),
 //!             content: "# Second Note".to_string(),
+//!             force: None,
 //!         },
 //!         BatchOperation::UpdateLinks {
 //!             file: "notes/index.md".to_string(),
 //!             old_target: "old-link".to_string(),
 //!             new_target: "new-link".to_string(),
+//!             expected_hash: None,
 //!         },
 //!     ];
 //!
@@ -99,6 +102,7 @@
 //! let delete = BatchOperation::DeleteNote {
 //!     path: "file.md".to_string(),
 //!     expected_hash: None,
+//!     on_backlinks: None,
 //! };
 //!
 //! assert!(write.conflicts_with(&delete));
@@ -143,45 +147,150 @@ use turbovault_vault::VaultManager;
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type")]
 pub enum BatchOperation {
-    /// Create a new note with content
+    /// Create a new note with content. Defaults to strict-create: the
+    /// substrate adds `expect_absent`, so the loser of a concurrent-create
+    /// race aborts the entire batch with `ConcurrencyError`
+    /// (turbovault-947 / 6fo §6 reconsideration domino).
+    ///
+    /// `force: Some(true)` disables `expect_absent`, falling back to
+    /// upsert semantics (caller-acknowledged blind create/overwrite —
+    /// equivalent to `WriteNote { expected_hash: None }`).
     #[serde(rename = "CreateNote", alias = "CreateFile")]
-    CreateNote { path: String, content: String },
+    CreateNote {
+        path: String,
+        content: String,
+        /// Disable the implicit `expect_absent` precondition. Default
+        /// false; pass true to acknowledge a blind create/overwrite.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
+    },
 
-    /// Write/overwrite a note
+    /// Write/overwrite a note. `expected_hash` (git blob OID hex on git
+    /// backend, SHA-256 on legacy) carries an `expect_blob` precondition;
+    /// the whole batch aborts if the target file no longer matches the
+    /// expected pre-image (turbovault-c0e).
     #[serde(rename = "WriteNote", alias = "WriteFile")]
     WriteNote {
         path: String,
         content: String,
         /// Optional optimistic-concurrency precondition checked before any operation in the batch is applied.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
 
-    /// Delete a note
+    /// Delete a note. `expected_hash` guards the delete against a
+    /// concurrent modification of the target.
+    ///
+    /// turbovault-0g4.7: on the **git backend**, `on_backlinks` controls inbound
+    /// wikilinks (parity with the standalone `delete_note`):
+    /// - `"refuse"` (default) — abort the batch if the note has inbound
+    ///   backlinks (prevents silently shipping broken links);
+    /// - `"rewrite-stale-callout"` — atomically `~~[[strikethrough]]~~` every
+    ///   linker in the same commit;
+    /// - `"force"` — delete and leave inbound links dangling (the pre-0g4.7
+    ///   behavior).
+    ///
+    /// The legacy backend ignores this field and always does a bare delete (no
+    /// atomic multi-file primitive).
     #[serde(rename = "DeleteNote", alias = "DeleteFile")]
     DeleteNote {
         path: String,
         /// Optional optimistic-concurrency precondition on the deleted file.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_backlinks: Option<String>,
     },
 
-    /// Move/rename a note
+    /// Move/rename a note. `expected_hash` guards the SOURCE against
+    /// concurrent modification (the destination always carries
+    /// `expect_absent`, refusing to clobber).
+    ///
+    /// turbovault-0g4.6: on the **git backend**, `update_backlinks` (default
+    /// true) atomically rewrites every inbound wikilink — `[[from]]`,
+    /// `[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and
+    /// path-prefix forms — to the new target in the SAME commit, with per-source
+    /// `expect_blob` preconditions. Set it false for a rename-only move (inbound
+    /// links dangle — the pre-0g4.6 behavior). The legacy backend ignores this
+    /// field and is always rename-only (it has no atomic multi-file primitive).
     #[serde(rename = "MoveNote", alias = "MoveFile")]
     MoveNote {
         from: String,
         to: String,
         /// Optional optimistic-concurrency precondition on the source file.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_backlinks: Option<bool>,
     },
 
-    /// Update links in a note (find and replace link target)
+    /// Update links in a note (find and replace link target).
+    /// `expected_hash` guards the source file from concurrent
+    /// modification — important when several batch ops update siblings
+    /// of the same renamed page.
     #[serde(rename = "UpdateLinks")]
     UpdateLinks {
         file: String,
         old_target: String,
         new_target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
+
+    /// turbovault-0g4.1: apply SEARCH/REPLACE blocks to an existing note as
+    /// part of the atomic batch commit (the batch equivalent of `edit_note`).
+    /// `edits` uses the same block grammar as the tool; multiple blocks edit
+    /// multiple locations in the one file. `expected_hash` (git blob OID hex)
+    /// carries an `expect_blob` precondition — a stale pre-image aborts the
+    /// whole batch. **Git backend only**; the legacy executor refuses it.
+    #[serde(rename = "EditNote", alias = "EditFile")]
+    EditNote {
+        path: String,
+        edits: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
+
+    /// turbovault-0g4.2: set/merge frontmatter keys on a note as part of the
+    /// atomic batch commit (the batch equivalent of `update_frontmatter`).
+    /// `merge` defaults to true (deep-merge into existing frontmatter); false
+    /// replaces the frontmatter wholesale. `expected_hash` (git blob OID hex)
+    /// carries an `expect_blob` precondition. **Git backend only**.
+    #[serde(rename = "UpdateFrontmatter")]
+    UpdateFrontmatter {
+        path: String,
+        frontmatter: std::collections::HashMap<String, serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
+
+    /// turbovault-0g4.3: add or remove frontmatter tags on a note as part of
+    /// the atomic batch commit (the batch equivalent of `manage_tags`
+    /// add/remove). `operation` is `"add"` or `"remove"`; `"list"` is
+    /// read-only and not a batch op (rejected). `expected_hash` carries an
+    /// `expect_blob` precondition. **Git backend only**.
+    #[serde(rename = "ManageTags")]
+    ManageTags {
+        path: String,
+        operation: String,
+        tags: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_hash: Option<String>,
+    },
+
+    /// turbovault-0g4.4: render a template and create a note as part of the
+    /// atomic batch commit (the batch equivalent of `create_from_template`).
+    /// `force` (default false) → strict create (`expect_absent`, aborts if the
+    /// path exists); true → blind upsert. **Git backend only**.
+    #[serde(rename = "CreateFromTemplate")]
+    CreateFromTemplate {
+        template_id: String,
+        path: String,
+        fields: std::collections::HashMap<String, String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force: Option<bool>,
     },
 }
 
@@ -197,9 +306,29 @@ impl BatchOperation {
                 file,
                 old_target,
                 new_target,
+                ..
             } => {
                 vec![file.clone(), old_target.clone(), new_target.clone()]
             }
+            Self::EditNote { path, .. } => vec![path.clone()],
+            Self::UpdateFrontmatter { path, .. } => vec![path.clone()],
+            Self::ManageTags { path, .. } => vec![path.clone()],
+            Self::CreateFromTemplate { path, .. } => vec![path.clone()],
+        }
+    }
+
+    /// turbovault-0g4: the variant name if this op is git-substrate-only (has
+    /// no legacy `BatchExecutor` equivalent), else `None`. The legacy executor
+    /// uses this to refuse such ops upfront in [`BatchExecutor::validate`], so
+    /// a user on `write_backend=legacy` sees a clear error instead of a partial
+    /// apply. Extended as each git-only op is added (turbovault-0g4.*).
+    pub fn git_only_kind(&self) -> Option<&'static str> {
+        match self {
+            Self::EditNote { .. } => Some("EditNote"),
+            Self::UpdateFrontmatter { .. } => Some("UpdateFrontmatter"),
+            Self::ManageTags { .. } => Some("ManageTags"),
+            Self::CreateFromTemplate { .. } => Some("CreateFromTemplate"),
+            _ => None,
         }
     }
 
@@ -214,6 +343,7 @@ impl BatchOperation {
             | Self::DeleteNote {
                 path,
                 expected_hash: Some(hash),
+                ..
             } => Some((path, hash)),
             Self::MoveNote {
                 from,
@@ -310,6 +440,17 @@ impl BatchExecutor {
     pub async fn validate(&self, ops: &[BatchOperation]) -> Result<()> {
         if ops.is_empty() {
             return Err(Error::config_error("Batch cannot be empty".to_string()));
+        }
+
+        // turbovault-0g4: refuse git-substrate-only ops on the legacy executor
+        // upfront (zero side effects) rather than writing earlier ops then
+        // failing mid-batch. Keeps `write_backend=legacy` behavior unchanged:
+        // these ops never existed there, so a clear refusal is the only correct
+        // outcome.
+        for (i, op) in ops.iter().enumerate() {
+            if let Some(kind) = op.git_only_kind() {
+                return Err(git_only_err(i, kind));
+            }
         }
 
         // Check for conflicts (operations on same file)
@@ -450,8 +591,20 @@ impl BatchExecutor {
 
     /// Execute a single operation
     async fn execute_operation(&self, op: &BatchOperation) -> Result<String> {
+        // Legacy executor does not consult per-op preconditions
+        // (`expected_hash` / `force`). The legacy substrate has no CAS
+        // primitive on the batch path (per the legacy-stays direction in
+        // turbovault-6fo.16). `WriteTools::Legacy::batch_execute` refuses
+        // batches that carry preconditions, so reaching this code path with
+        // a precondition set is a bug elsewhere.
+        //
+        // turbovault-0g4: git-substrate-only ops have no legacy equivalent.
+        // `validate()` rejects them upfront; this is a defensive backstop.
+        if let Some(kind) = op.git_only_kind() {
+            return Err(git_only_err(0, kind));
+        }
         match op {
-            BatchOperation::CreateNote { path, content } => {
+            BatchOperation::CreateNote { path, content, .. } => {
                 let path_buf = PathBuf::from(path);
                 self.manager.write_file(&path_buf, content, None).await?;
                 Ok(format!("Created: {}", path))
@@ -472,6 +625,7 @@ impl BatchExecutor {
             BatchOperation::DeleteNote {
                 path,
                 expected_hash,
+                ..
             } => {
                 let path_buf = PathBuf::from(path);
                 self.manager
@@ -484,6 +638,7 @@ impl BatchExecutor {
                 from,
                 to,
                 expected_hash,
+                ..
             } => {
                 let from_buf = PathBuf::from(from);
                 let to_buf = PathBuf::from(to);
@@ -497,6 +652,7 @@ impl BatchExecutor {
                 file,
                 old_target,
                 new_target,
+                ..
             } => {
                 // Read file
                 let path_buf = PathBuf::from(file);
@@ -519,8 +675,24 @@ impl BatchExecutor {
                     ))
                 }
             }
+            // turbovault-0g4: git-substrate-only ops return early above; this
+            // arm keeps the match exhaustive without pinning it to the legacy
+            // op set, and defensively refuses any unhandled variant.
+            other => Err(git_only_err(
+                0,
+                other.git_only_kind().unwrap_or("operation"),
+            )),
         }
     }
+}
+
+/// turbovault-0g4: error for a git-substrate-only [`BatchOperation`] reaching
+/// the legacy executor. `index` is the op's position in the batch (use `0`
+/// when the position is not meaningful, e.g. the defensive backstop).
+fn git_only_err(index: usize, kind: &str) -> Error {
+    Error::config_error(format!(
+        "operation {index} (BatchOperation::{kind}) requires write_backend=git; the legacy batch executor has no equivalent. Switch the vault to the git backend to use it."
+    ))
 }
 
 #[cfg(test)]
@@ -535,6 +707,7 @@ mod tests {
             from: "a.md".to_string(),
             to: "b.md".to_string(),
             expected_hash: None,
+            update_backlinks: None,
         };
         let affected = op.affected_files();
         assert_eq!(affected.len(), 2);
@@ -552,6 +725,7 @@ mod tests {
         let op2 = BatchOperation::DeleteNote {
             path: "file.md".to_string(),
             expected_hash: None,
+            on_backlinks: None,
         };
 
         assert!(op1.conflicts_with(&op2));
@@ -602,6 +776,7 @@ mod tests {
             .execute(vec![BatchOperation::CreateNote {
                 path: "hello.md".to_string(),
                 content: "# Hello World".to_string(),
+                force: None,
             }])
             .await
             .unwrap();
@@ -646,6 +821,7 @@ mod tests {
             .execute(vec![BatchOperation::DeleteNote {
                 path: "to_delete.md".to_string(),
                 expected_hash: None,
+                on_backlinks: None,
             }])
             .await
             .unwrap();
@@ -665,6 +841,7 @@ mod tests {
                 from: "source.md".to_string(),
                 to: "destination.md".to_string(),
                 expected_hash: None,
+                update_backlinks: None,
             }])
             .await
             .unwrap();
@@ -688,14 +865,17 @@ mod tests {
             BatchOperation::CreateNote {
                 path: "alpha.md".to_string(),
                 content: "alpha v1".to_string(),
+                force: None,
             },
             BatchOperation::CreateNote {
                 path: "beta.md".to_string(),
                 content: "beta v1".to_string(),
+                force: None,
             },
             BatchOperation::CreateNote {
                 path: "gamma.md".to_string(),
                 content: "gamma".to_string(),
+                force: None,
             },
         ];
 
@@ -725,10 +905,12 @@ mod tests {
             BatchOperation::CreateNote {
                 path: "succeeds.md".to_string(),
                 content: "I was created".to_string(),
+                force: None,
             },
             BatchOperation::DeleteNote {
                 path: "nonexistent.md".to_string(),
                 expected_hash: None,
+                on_backlinks: None,
             },
         ];
 
@@ -796,6 +978,7 @@ mod tests {
                 BatchOperation::CreateNote {
                     path: "side-effect.md".to_string(),
                     content: "must not be written".to_string(),
+                    force: None,
                 },
                 BatchOperation::WriteNote {
                     path: "guarded.md".to_string(),
@@ -825,6 +1008,7 @@ mod tests {
             .execute(vec![BatchOperation::DeleteNote {
                 path: "delete.md".to_string(),
                 expected_hash: Some("stale".to_string()),
+                on_backlinks: None,
             }])
             .await
             .unwrap();
@@ -839,6 +1023,7 @@ mod tests {
                 from: "source.md".to_string(),
                 to: "destination.md".to_string(),
                 expected_hash: Some(source_hash),
+                update_backlinks: None,
             }])
             .await
             .unwrap();

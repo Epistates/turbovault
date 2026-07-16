@@ -1,6 +1,6 @@
 //! Representative integration tests for reusable operation implementations.
 //!
-//! Public MCP routing and complete 70-tool catalog coverage live in the
+//! Public MCP routing and complete 74-tool catalog coverage live in the
 //! provider contract tests under `src/tools/providers.rs`.
 
 use tempfile::TempDir;

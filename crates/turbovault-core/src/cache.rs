@@ -78,33 +78,19 @@ impl VaultCache {
         })
     }
 
-    /// Initialize cache with an explicit cache directory, bypassing `get_cache_dir()`.
-    ///
-    /// Use this in tests instead of mutating `XDG_CACHE_HOME`. Passing the cache
-    /// dir directly is inherently thread-safe; env-var mutation is not.
-    pub async fn init_with_cache_dir(cache_dir: &Path, project_root: &Path) -> Result<Self> {
-        let project_id = Self::get_project_id(project_root)?;
-        let project_cache_dir = cache_dir.join("projects").join(&project_id);
-
-        if !project_cache_dir.exists() {
-            fs::create_dir_all(&project_cache_dir)
-                .await
-                .map_err(Error::io)?;
-        }
-
-        Ok(Self {
-            cache_dir: cache_dir.to_path_buf(),
-            project_cache_dir: project_cache_dir.clone(),
-            vaults_file: project_cache_dir.join("vaults.yaml"),
-            metadata_file: project_cache_dir.join("metadata.json"),
-            project_id,
-            working_dir: project_root.to_path_buf(),
-        })
-    }
-
     /// Initialize cache with a specific project (useful for testing)
     pub async fn init_with_project(project_root: &Path) -> Result<Self> {
-        let cache_dir = Self::get_cache_dir()?;
+        Self::init_with_project_in(project_root, Self::get_cache_dir()?).await
+    }
+
+    /// Like [`init_with_project`](Self::init_with_project) but with an explicit
+    /// cache root instead of the platform default. Lets callers (notably tests)
+    /// isolate the cache store without mutating the process-global
+    /// `XDG_CACHE_HOME` environment variable.
+    pub(crate) async fn init_with_project_in(
+        project_root: &Path,
+        cache_dir: PathBuf,
+    ) -> Result<Self> {
         let project_id = Self::get_project_id(project_root)?;
         let project_cache_dir = cache_dir.join("projects").join(&project_id);
 
@@ -345,14 +331,18 @@ mod tests {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    /// Build a VaultCache whose project-cache directory lives entirely inside
-    /// a temporary directory, keeping tests isolated from each other and from
-    /// the real user cache.
+    /// Build a VaultCache whose cache store lives entirely inside this test's
+    /// temp directory, keeping tests isolated from each other and from the real
+    /// user cache.
     ///
-    /// We point `XDG_CACHE_HOME` at the temp dir so `get_cache_dir()` uses it.
-    ///
+    /// The cache root is injected explicitly (no `XDG_CACHE_HOME` mutation).
+    /// The previous implementation set that process-global env var, which is
+    /// NOT thread-safe — `#[tokio::test]` does not serialize test functions
+    /// (cargo runs them on parallel threads), so concurrent tests raced on the
+    /// env var and could resolve into each other's temp dirs (beads
+    /// turbovault-491). Injection removes the shared state entirely.
     async fn make_cache(temp: &TempDir) -> VaultCache {
-        VaultCache::init_with_cache_dir(temp.path(), temp.path())
+        VaultCache::init_with_project_in(temp.path(), temp.path().join("cache"))
             .await
             .unwrap()
     }
@@ -370,6 +360,8 @@ mod tests {
             cache_ttl: None,
             template_dirs: None,
             allowed_operations: None,
+            write_backend: crate::WriteBackend::default(),
+            git: None,
         }
     }
 
@@ -395,10 +387,9 @@ mod tests {
     #[tokio::test]
     async fn test_init_creates_cache_directory() {
         let temp = TempDir::new().unwrap();
-        // SAFETY: single-threaded test context; no other threads read XDG_CACHE_HOME.
-        unsafe { std::env::set_var("XDG_CACHE_HOME", temp.path()) };
-
-        let cache = VaultCache::init_with_project(temp.path()).await.unwrap();
+        let cache = VaultCache::init_with_project_in(temp.path(), temp.path().join("cache"))
+            .await
+            .unwrap();
 
         // The project cache directory should now exist on disk
         assert!(

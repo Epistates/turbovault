@@ -6,7 +6,23 @@
 # Copy this file to config.yaml and customize for your setup.
 #
 # Usage:
-#   turbovault --config config.yaml --init
+#   turbovault --config config.yaml
+#
+# Precedence (turbovault-xj8):
+#   1. `--config` vaults are canonical.
+#   2. Cache-recovered vaults fill in names not present in --config.
+#   3. `--vault <path>` is shorthand for a single "default" vault and
+#      only registers if "default" is still free.
+#   4. `is_default: true` in --config sets the active vault; otherwise
+#      cache metadata's active_vault is honored.
+#   On parse error of --config, the server exits nonzero — no silent
+#   fallback to cache recovery.
+#
+# NOTE: the config loader (TurboVaultConfigFile, read via --config /
+# TURBOVAULT_CONFIG) expects the KEYED shape shown below — a top-level
+# `vaults:` list plus an optional `tool_visibility:` section. This is the
+# canonical format (turbovault-xj8 unification); the older bare top-level
+# array of vault entries is no longer what the loader reads.
 #
 # ==============================================================================
 
@@ -25,6 +41,14 @@ vaults:
   - name: personal
     path: /Users/yourname/Documents/ObsidianVault
     is_default: true
+
+    # Recommended for Git-managed vaults: every batch becomes one atomic
+    # commit with cross-process compare-and-swap conflict detection.
+    # Run `git init` in the vault before enabling this backend.
+    write_backend: git
+    git:
+      include_ignored: false
+      require_commit_message: false
 
     # File watching - Monitor vault for external changes
     watch_for_changes: true

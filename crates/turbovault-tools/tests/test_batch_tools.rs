@@ -87,6 +87,7 @@ async fn test_batch_execute_delete() {
     let ops = vec![BatchOperation::DeleteNote {
         path: "existing.md".to_string(),
         expected_hash: None,
+        on_backlinks: None,
     }];
 
     let result = tools.batch_execute(ops).await;
@@ -108,6 +109,7 @@ async fn test_batch_execute_move() {
         from: "existing.md".to_string(),
         to: "moved.md".to_string(),
         expected_hash: None,
+        update_backlinks: None,
     }];
 
     let result = tools.batch_execute(ops).await;
@@ -141,6 +143,7 @@ async fn test_batch_execute_mixed_operations() {
             from: "existing.md".to_string(),
             to: "renamed.md".to_string(),
             expected_hash: None,
+            update_backlinks: None,
         },
     ];
 
@@ -152,7 +155,7 @@ async fn test_batch_execute_mixed_operations() {
 }
 
 #[tokio::test]
-async fn test_batch_execute_preserves_prior_successes_on_error() {
+async fn test_batch_execute_rollback_on_error() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = BatchTools::new(manager.clone());
 
@@ -163,8 +166,9 @@ async fn test_batch_execute_preserves_prior_successes_on_error() {
             expected_hash: None,
         },
         BatchOperation::DeleteNote {
-            path: "nonexistent.md".to_string(), // This will fail
+            path: "nonexistent.md".to_string(), // This will fail,
             expected_hash: None,
+            on_backlinks: None,
         },
         BatchOperation::WriteNote {
             path: "success2.md".to_string(),
@@ -219,7 +223,7 @@ async fn test_batch_execute_creates_directories() {
 }
 
 #[tokio::test]
-async fn test_batch_execute_isolated_batches_and_fail_fast_semantics() {
+async fn test_batch_execute_atomic_guarantees() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = BatchTools::new(manager.clone());
 
@@ -250,6 +254,7 @@ async fn test_batch_execute_isolated_batches_and_fail_fast_semantics() {
         BatchOperation::DeleteNote {
             path: "nonexistent_for_atomic_test.md".to_string(),
             expected_hash: None,
+            on_backlinks: None,
         },
     ];
 

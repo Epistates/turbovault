@@ -8,6 +8,106 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+/// Selects which write path serves a vault's mutations (GWS.11).
+///
+/// **Short-lived**: this flag exists so the git-native substrate
+/// (`turbovault-git`) can be wired alongside the legacy `VaultManager` path
+/// behind a per-vault switch during the cutover (GWS.15). At cutover the
+/// default flips to `Git`, the legacy path is deleted, and the flag is removed
+/// from this config entirely.
+///
+/// Per-vault by design: the substrate's working-tree-equals-HEAD invariant
+/// forbids mixing within one vault (a legacy write commits nothing, leaving
+/// the working tree out of sync with the git tip), so a vault is one or the
+/// other end-to-end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WriteBackend {
+    /// The legacy `VaultManager` mutators + `BatchExecutor` (default until cutover).
+    #[default]
+    Legacy,
+    /// The git-native write substrate (`turbovault-git`). Requires the vault
+    /// path to be a git repository.
+    Git,
+}
+
+/// How the git substrate merges a fan-out's wip branch back into main
+/// (mirrors `turbovault_git::MergeStrategy` as a serializable config type so
+/// `turbovault-core` doesn't pick up a git2/libgit2 dependency). The consumer
+/// converts at the substrate boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GitMergeStrategy {
+    /// `git merge --no-ff` — preserves the wip branch's per-transaction
+    /// commits with a merge commit on main. The default.
+    #[default]
+    MergeCommit,
+    /// Advance main directly to the wip tip — errors if main advanced
+    /// concurrently (caller falls back to `MergeCommit`).
+    FastForward,
+}
+
+/// Commit identity for git-backed writes. Optional in the config — when
+/// absent, the substrate falls back to the repo's `user.name`/`user.email`
+/// and then to a built-in TurboVault default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitAuthor {
+    pub name: String,
+    pub email: String,
+}
+
+/// Per-vault git substrate configuration. Only meaningful when
+/// [`VaultConfig::write_backend`] is `Git`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VaultGitConfig {
+    /// Target branch for commits. `None` = use the repo's current HEAD branch.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Commit author identity. `None` = repo's git config -> TurboVault default.
+    #[serde(default)]
+    pub author: Option<GitAuthor>,
+    /// Default merge strategy for fan-out merge-back (`commit_transaction`).
+    #[serde(default)]
+    pub merge_strategy: GitMergeStrategy,
+    /// turbovault-lri: when `false`, every git-backend mutation pre-checks
+    /// each touched path against the worktree's `.gitignore` matcher and
+    /// refuses the transaction (typed config error) if any path would be
+    /// excluded. When `true` (the default), `.gitignore` is ignored and
+    /// every requested path is committed — the original always-write
+    /// behavior. Useful for vaults that gitignore `.obsidian/`, build
+    /// artifacts, or per-user clutter and want a backstop against an MCP
+    /// client accidentally committing them.
+    #[serde(default = "default_include_ignored")]
+    pub include_ignored: bool,
+    /// turbovault-5nn: when `true`, every git-backend mutation MUST carry a
+    /// caller-supplied commit message — a tool called without one (or with a
+    /// blank/whitespace-only one) is refused loudly instead of falling back to
+    /// the auto-derived subject (`write_note <path>`, etc.). Default `false`
+    /// preserves the auto-derive behavior. Only meaningful on the git backend
+    /// (the legacy backend produces no commits, so a message is moot).
+    #[serde(default)]
+    pub require_commit_message: bool,
+}
+
+fn default_include_ignored() -> bool {
+    true
+}
+
+// Manual `Default` so `VaultGitConfig::default().include_ignored == true`,
+// matching the serde-default for that field (derive(Default) on a bool yields
+// `false`, which would disagree with the missing-field deserialization).
+impl Default for VaultGitConfig {
+    fn default() -> Self {
+        Self {
+            branch: None,
+            author: None,
+            merge_strategy: GitMergeStrategy::default(),
+            include_ignored: default_include_ignored(),
+            require_commit_message: false,
+        }
+    }
+}
+
 /// Configuration for a single vault
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultConfig {
@@ -27,6 +127,13 @@ pub struct VaultConfig {
     pub cache_ttl: Option<u64>,
     pub template_dirs: Option<Vec<PathBuf>>,
     pub allowed_operations: Option<HashSet<String>>,
+
+    /// Write backend selection (GWS.11). Default `Legacy` until cutover.
+    #[serde(default)]
+    pub write_backend: WriteBackend,
+    /// Git substrate settings. Only used when `write_backend == Git`.
+    #[serde(default)]
+    pub git: Option<VaultGitConfig>,
 }
 
 impl VaultConfig {
@@ -75,6 +182,8 @@ pub struct VaultConfigBuilder {
     cache_ttl: Option<u64>,
     template_dirs: Option<Vec<PathBuf>>,
     allowed_operations: Option<HashSet<String>>,
+    write_backend: WriteBackend,
+    git: Option<VaultGitConfig>,
 }
 
 impl VaultConfigBuilder {
@@ -92,6 +201,8 @@ impl VaultConfigBuilder {
             cache_ttl: None,
             template_dirs: None,
             allowed_operations: None,
+            write_backend: WriteBackend::default(),
+            git: None,
         }
     }
 
@@ -104,6 +215,19 @@ impl VaultConfigBuilder {
     /// Set watch_for_changes
     pub fn watch_for_changes(mut self, watch: bool) -> Self {
         self.watch_for_changes = Some(watch);
+        self
+    }
+
+    /// Select the write backend (GWS.11).
+    pub fn write_backend(mut self, backend: WriteBackend) -> Self {
+        self.write_backend = backend;
+        self
+    }
+
+    /// Set the per-vault git substrate config (typically combined with
+    /// `write_backend(WriteBackend::Git)`).
+    pub fn git(mut self, git: VaultGitConfig) -> Self {
+        self.git = Some(git);
         self
     }
 
@@ -126,6 +250,8 @@ impl VaultConfigBuilder {
             cache_ttl: self.cache_ttl,
             template_dirs: self.template_dirs,
             allowed_operations: self.allowed_operations,
+            write_backend: self.write_backend,
+            git: self.git,
         };
         config.validate()?;
         Ok(config)
@@ -314,5 +440,85 @@ mod tests {
         let mut config = ServerConfig::new();
         config.vaults.clear();
         assert!(config.validate().is_err());
+    }
+
+    // -------- GWS.11 write-backend + git config --------
+
+    #[test]
+    fn vault_config_defaults_to_legacy_backend_and_no_git() {
+        let temp = TempDir::new().unwrap();
+        let v = VaultConfig::builder("main", temp.path()).build().unwrap();
+        assert_eq!(v.write_backend, WriteBackend::Legacy);
+        assert!(v.git.is_none());
+    }
+
+    #[test]
+    fn vault_config_builder_sets_git_backend() {
+        let temp = TempDir::new().unwrap();
+        let v = VaultConfig::builder("g", temp.path())
+            .write_backend(WriteBackend::Git)
+            .git(VaultGitConfig {
+                branch: Some("main".to_string()),
+                author: Some(GitAuthor {
+                    name: "TurboVault".to_string(),
+                    email: "tv@localhost".to_string(),
+                }),
+                merge_strategy: GitMergeStrategy::FastForward,
+                include_ignored: false,
+                require_commit_message: false,
+            })
+            .build()
+            .unwrap();
+        assert_eq!(v.write_backend, WriteBackend::Git);
+        let g = v.git.unwrap();
+        assert_eq!(g.branch.as_deref(), Some("main"));
+        assert_eq!(g.merge_strategy, GitMergeStrategy::FastForward);
+        assert!(!g.include_ignored);
+        assert_eq!(g.author.unwrap().email, "tv@localhost");
+    }
+
+    #[test]
+    fn vault_config_yaml_roundtrip_with_git_section() {
+        let temp = TempDir::new().unwrap();
+        let v = VaultConfig::builder("g", temp.path())
+            .write_backend(WriteBackend::Git)
+            .git(VaultGitConfig::default())
+            .build()
+            .unwrap();
+        let yaml = yaml_serde::to_string(&v).unwrap();
+        let back: VaultConfig = yaml_serde::from_str(&yaml).unwrap();
+        assert_eq!(back.write_backend, WriteBackend::Git);
+        assert!(back.git.is_some());
+        // VaultGitConfig defaults survive a roundtrip.
+        let g = back.git.unwrap();
+        assert_eq!(g.merge_strategy, GitMergeStrategy::MergeCommit);
+        assert!(g.include_ignored, "include_ignored defaults to true");
+    }
+
+    #[test]
+    fn vault_config_yaml_legacy_omits_git_section() {
+        let temp = TempDir::new().unwrap();
+        let v = VaultConfig::builder("l", temp.path()).build().unwrap();
+        let yaml = yaml_serde::to_string(&v).unwrap();
+        // The roundtrip preserves the legacy default + None git.
+        let back: VaultConfig = yaml_serde::from_str(&yaml).unwrap();
+        assert_eq!(back.write_backend, WriteBackend::Legacy);
+        assert!(back.git.is_none());
+    }
+
+    #[test]
+    fn write_backend_serializes_lowercase() {
+        let yaml = yaml_serde::to_string(&WriteBackend::Git).unwrap();
+        assert!(yaml.contains("git"), "got: {yaml}");
+        let back: WriteBackend = yaml_serde::from_str("legacy\n").unwrap();
+        assert_eq!(back, WriteBackend::Legacy);
+    }
+
+    #[test]
+    fn merge_strategy_serializes_kebab_case() {
+        let yaml = yaml_serde::to_string(&GitMergeStrategy::MergeCommit).unwrap();
+        assert!(yaml.contains("merge-commit"), "got: {yaml}");
+        let back: GitMergeStrategy = yaml_serde::from_str("fast-forward\n").unwrap();
+        assert_eq!(back, GitMergeStrategy::FastForward);
     }
 }

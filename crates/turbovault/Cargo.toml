@@ -18,6 +18,7 @@ include = [
   "benches/",
   "resources/",
   "Cargo.toml",
+  "build.rs",
   "README.md",
 ]
 
@@ -65,6 +66,7 @@ turbomcp-types = { workspace = true }
 schemars = { workspace = true }
 shellexpand = { workspace = true }
 tokio = { workspace = true }
+uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 yaml_serde = { workspace = true }
@@ -80,6 +82,22 @@ tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio", "html_reports"] }
+# turbovault-6fo.18 e2e tests: direct git2 inspection (HEAD, commit
+# messages, external commits) of substrate output.
+git2 = { workspace = true }
+# turbovault-6fo.18: serialize e2e tests because libgit2's process-wide
+# init + parallel ObsidianMcpServer setup is flaky (~25% failure rate
+# on a hot machine when tests run in parallel; isolating them removes
+# the flake entirely).
+serial_test = "3"
+# turbovault-3i5: wire-level MCP e2e — spawn the real `turbovault` binary
+# over stdio and drive it with the first-party turbomcp client, exercising
+# the JSON-RPC layer the in-process 6fo.18 suite skips and asserting derived
+# graph/search state via MCP tool responses (the real flush-on-query path,
+# no `flush_*_test` backdoor).
+turbomcp-client = "3.1.5"
+turbomcp-transport = "3.1.5"
+turbomcp-protocol = "3.1.5"
 
 [[bench]]
 name = "tool_benchmarks"

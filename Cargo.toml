@@ -7,6 +7,7 @@ members = [
     "crates/turbovault-batch",
     "crates/turbovault-export",
     "crates/turbovault-audit",
+    "crates/turbovault-git",
     "crates/turbovault-sql",
     "crates/turbovault-tools",
     "crates/turbovault",
@@ -99,6 +100,10 @@ unicode-normalization = "0.1.25"  # Unicode NFC normalization
 shellexpand = "3.1"       # Shell-like expansions (tilde, env vars) - battle-tested
 path_trav = "2"           # Path traversal detection - security-focused
 
+# Git write substrate (libgit2 bindings; vendored libgit2 -> needs cmake + cc at build)
+git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS via Transaction
+fs4 = "0.13"              # cross-process advisory lock for commit + materialize
+
 # DEFERRED (Phase 3+):
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
@@ -110,6 +115,7 @@ turbovault-vault = { version = "1.5.0", path = "crates/turbovault-vault" }
 turbovault-batch = { version = "1.5.0", path = "crates/turbovault-batch" }
 turbovault-export = { version = "1.5.0", path = "crates/turbovault-export" }
 turbovault-audit = { version = "1.5.0", path = "crates/turbovault-audit" }
+turbovault-git = { version = "1.5.0", path = "crates/turbovault-git" }
 turbovault-sql = { version = "1.5.0", path = "crates/turbovault-sql" }
 turbovault-tools = { version = "1.5.0", path = "crates/turbovault-tools" }
 turbovault = { version = "1.5.0", path = "crates/turbovault" }
@@ -132,7 +138,7 @@ debug = false
 inherits = "release"
 lto = "thin"
 strip = false
-# debug = true  # uncomment when profiling with cargo flamegraph or perf
+debug = true  # turbovault-qxl: enabled for cargo-flamegraph / perf
 
 [profile.dev]
 opt-level = 0

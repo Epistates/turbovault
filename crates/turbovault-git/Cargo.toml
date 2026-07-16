@@ -1,0 +1,41 @@
+[package]
+name = "turbovault-git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Git-native write substrate for TurboVault: every mutation is a commit (blobs -> isolated index -> tree -> commit -> ref CAS -> materialize)"
+documentation = "https://docs.rs/turbovault-git"
+
+[dependencies]
+# Intentionally NO workspace-internal deps: turbovault-git is the substrate's
+# write core and stays self-contained for easy extraction to a separate repo.
+git2 = { workspace = true }
+fs4 = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "single_write"
+harness = false
+
+[[bench]]
+name = "batch"
+harness = false
+
+[[bench]]
+name = "materialize"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

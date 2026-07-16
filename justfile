@@ -34,6 +34,12 @@ test: fmt-check lint test-all
 test-all:
     cargo test --workspace --all-features
 
+# cargo's fail-fast is per-binary: it stops launching binaries after the first
+# fails, under-reporting failures that span crates. Slower; use in TDD red phases.
+# Run all tests, reporting EVERY failure across all binaries (--no-fail-fast)
+test-all-full:
+    cargo test --workspace --all-features --no-fail-fast
+
 # Run tests only (skip fmt and lint checks)
 test-quick:
     cargo test --workspace --all-features
@@ -77,6 +83,23 @@ lint:
 # Auto-fix clippy warnings
 clippy-fix:
     cargo clippy --fix --allow-dirty
+
+# =============================================================================
+# MUTATION TESTING (cargo-mutants — test EFFECTIVENESS, not just coverage)
+# =============================================================================
+
+# Mutation-test the substrate crate (highest-value, fastest signal). A
+# surviving mutant = code a test runs but does NOT actually assert on.
+mutants:
+    cargo mutants -p turbovault-git
+
+# Mutation-test one crate, e.g. `just mutants-crate turbovault-tools`
+mutants-crate CRATE:
+    cargo mutants -p {{ CRATE }}
+
+# Mutation-test the whole workspace (SLOW — many minutes).
+mutants-all:
+    cargo mutants --workspace
 
 # =============================================================================
 # DOCUMENTATION

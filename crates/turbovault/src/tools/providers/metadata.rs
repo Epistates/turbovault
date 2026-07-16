@@ -103,23 +103,29 @@ impl MetadataProvider {
     async fn update_frontmatter(
         &self,
         path: String,
-        frontmatter: serde_json::Value,
+        frontmatter: HashMap<String, serde_json::Value>,
         merge: Option<bool>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager);
-
-        let fm_map = match frontmatter {
-            serde_json::Value::Object(map) => map,
-            _ => {
-                return Err(McpError::invalid_request(
-                    "frontmatter must be a JSON object".to_string(),
-                ));
-            }
-        };
-
-        let result = tools
-            .update_frontmatter(&path, fm_map, merge.unwrap_or(true))
+        let fm_map: serde_json::Map<String, serde_json::Value> = frontmatter.into_iter().collect();
+        let (new_content, result) = tools
+            .compute_update_frontmatter(&path, fm_map, merge.unwrap_or(true))
+            .await
+            .map_err(to_mcp_error)?;
+        let message = self
+            .resolve_commit_message(commit_message, || format!("update_frontmatter {path}"))
+            .await?;
+        self.get_active_write_tools()
+            .await?
+            .write_file_with_mode_and_message(
+                &path,
+                &new_content,
+                WriteMode::Overwrite,
+                None,
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 
@@ -149,14 +155,34 @@ impl MetadataProvider {
         path: String,
         operation: String,
         tags: Option<Vec<String>>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager);
 
-        let result = tools
-            .manage_tags(&path, &operation, tags.as_deref())
+        let (maybe_content, result) = tools
+            .compute_manage_tags(&path, &operation, tags.as_deref())
             .await
             .map_err(to_mcp_error)?;
+
+        if let Some(content) = maybe_content {
+            let message = self
+                .resolve_commit_message(commit_message, || {
+                    format!("manage_tags {operation} {path}")
+                })
+                .await?;
+            self.get_active_write_tools()
+                .await?
+                .write_file_with_mode_and_message(
+                    &path,
+                    &content,
+                    WriteMode::Overwrite,
+                    None,
+                    &message,
+                )
+                .await
+                .map_err(to_mcp_error)?;
+        }
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
@@ -212,6 +238,7 @@ impl MetadataProvider {
         confirm_from: String,
         confirm_to: String,
         expected_hash: Option<String>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirmations must match
         if from != confirm_from {
@@ -227,10 +254,13 @@ impl MetadataProvider {
             )));
         }
 
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
+        let message = self
+            .resolve_commit_message(commit_message, || format!("move_file {from} -> {to}"))
+            .await?;
         tools
-            .move_file_with_hash(&from, &to, expected_hash.as_deref())
+            .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &message)
             .await
             .map_err(to_mcp_error)?;
 

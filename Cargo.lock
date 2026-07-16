@@ -1493,6 +1493,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "git2"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddddbf932745a6be37109b6112d3ee09696106f848449069d3a57bba937ab82e"
+dependencies = [
+ "bitflags",
+ "libc",
+ "libgit2-sys",
+ "log",
+]
+
+[[package]]
 name = "gloo-timers"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2218,6 +2230,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
+name = "libgit2-sys"
+version = "0.18.5+1.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "005d6ae6eac1912906073e069f7db60b1fa98e052a68227824afe3e3a1c59ca2"
+dependencies = [
+ "cc",
+ "libc",
+ "libz-sys",
+ "pkg-config",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2237,6 +2261,18 @@ name = "libyaml-rs"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
+
+[[package]]
+name = "libz-sys"
+version = "1.1.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
 
 [[package]]
 name = "linux-raw-sys"
@@ -3848,6 +3884,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "serial_test"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "699f4197115b8a7e7ff19c9a315a4bd6fffec26cc4626ef45ecaea389e081c6d"
+dependencies = [
+ "futures-executor",
+ "futures-util",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "serial_test_derive",
+]
+
+[[package]]
+name = "serial_test_derive"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94e153fc76e1c6a068703d6d29c508a0b15c061c4b7e43da59cc097bc342673c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4804,6 +4865,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbomcp-client"
+version = "3.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dab5b8f3be285b6968d55abbcce3efa9048603199a7b6bc01eb16542710bc197"
+dependencies = [
+ "chrono",
+ "futures",
+ "futures-util",
+ "parking_lot",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower",
+ "tower-layer",
+ "tower-service",
+ "tracing",
+ "turbomcp-protocol",
+ "turbomcp-transport",
+ "uuid",
+]
+
+[[package]]
 name = "turbomcp-core"
 version = "3.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5099,10 +5184,12 @@ dependencies = [
  "clap",
  "config",
  "criterion",
+ "git2",
  "log",
  "schemars",
  "serde",
  "serde_json",
+ "serial_test",
  "shellexpand",
  "simple_logger",
  "tempfile",
@@ -5110,13 +5197,17 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "turbomcp",
+ "turbomcp-client",
  "turbomcp-core",
+ "turbomcp-protocol",
  "turbomcp-server",
+ "turbomcp-transport",
  "turbomcp-types",
  "turbovault-audit",
  "turbovault-core",
  "turbovault-tools",
  "turbovault-vault",
+ "uuid",
  "yaml_serde",
 ]
 
@@ -5183,6 +5274,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbovault-git"
+version = "1.5.0"
+dependencies = [
+ "criterion",
+ "fs4",
+ "git2",
+ "log",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "turbovault-graph"
 version = "1.5.0"
 dependencies = [
@@ -5231,7 +5336,11 @@ version = "1.5.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "criterion",
+ "futures",
+ "git2",
  "log",
+ "regex",
  "serde",
  "serde_json",
  "shellexpand",
@@ -5246,11 +5355,13 @@ dependencies = [
  "turbovault-batch",
  "turbovault-core",
  "turbovault-export",
+ "turbovault-git",
  "turbovault-graph",
  "turbovault-parser",
  "turbovault-sql",
  "turbovault-vault",
  "urlencoding",
+ "uuid",
  "yaml_serde",
 ]
 
@@ -5433,6 +5544,12 @@ dependencies = [
  "itoa",
  "ryu",
 ]
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "version_check"

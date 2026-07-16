@@ -2,7 +2,7 @@
 
 use crate::ObsidianMcpServer;
 use crate::tool_visibility::{
-    ToolVisibilityOverrides, ToolVisibilitySettings, default_config_path,
+    ToolVisibilityOverrides, ToolVisibilitySettings, TurboVaultConfigFile, default_config_path,
 };
 use clap::Parser;
 use std::path::PathBuf;
@@ -262,24 +262,24 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    register_configured_vaults(&server, &args).await?;
+
     // Optionally add a vault at startup (for convenience)
     if let Some(vault_path) = args.vault {
         // Expand tilde and environment variables in the path
         let vault_path = expand_vault_path(&vault_path)?;
         log::info!("Adding vault from CLI argument: {:?}", vault_path);
         register_default_vault(&server, &vault_path).await?;
-
-        // Initialize vault (scan files and build graph) if requested
-        if args.init {
-            log::info!("Scanning vault and building link graph...");
-            // Note: Full initialization would require loading the vault manager
-            // For now, we document that users should use the dedicated init tool
-            log::info!("Vault ready for operations");
-        }
     } else {
         log::info!("No vault path provided. Use add_vault MCP tool to register a vault.");
         log::info!("Available tools: add_vault, list_vaults, set_active_vault");
     }
+
+    if args.init {
+        log::info!("Scanning registered vaults and building derived indexes...");
+        server.initialize_registered_vaults().await?;
+    }
+    server.log_orphan_fanouts_warnings().await;
 
     // Start server with multi-version protocol support.
     // Accepts both MCP 2025-06-18 and 2025-11-25 clients.
@@ -400,6 +400,54 @@ async fn load_tool_visibility(
 ) -> Result<ToolVisibilitySettings, Box<dyn std::error::Error>> {
     let default_path = default_config_path();
     load_tool_visibility_with_default(args, default_path.as_deref()).await
+}
+
+async fn register_configured_vaults(
+    server: &ObsidianMcpServer,
+    args: &Args,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let configured_path = args
+        .config
+        .clone()
+        .or_else(|| default_config_path().filter(|path| path.exists()));
+    let Some(path) = configured_path else {
+        return Ok(());
+    };
+
+    let config = TurboVaultConfigFile::load(&path).await?;
+    for mut vault in config.vaults {
+        vault.path = expand_vault_path(&vault.path)?;
+        if server.multi_vault().vault_exists(&vault.name).await {
+            let existing = server.multi_vault().get_vault_config(&vault.name).await?;
+            if paths_refer_to_same_vault(&existing.path, &vault.path) {
+                continue;
+            }
+            log::info!(
+                "Configured vault '{}' overrides cached path {}",
+                vault.name,
+                existing.path.display()
+            );
+            server.multi_vault().remove_vault(&vault.name).await?;
+        }
+        if vault.write_backend == turbovault_core::WriteBackend::Git
+            && !turbovault_tools::VaultRepo::is_git_repo(&vault.path)
+        {
+            return Err(format!(
+                "vault '{}' selects write_backend=git but {} is not a Git repository",
+                vault.name,
+                vault.path.display()
+            )
+            .into());
+        }
+        log::info!(
+            "Registering configured vault '{}' ({:?}) with write_backend={:?}",
+            vault.name,
+            vault.path,
+            vault.write_backend
+        );
+        server.multi_vault().add_vault(vault).await?;
+    }
+    Ok(())
 }
 
 async fn load_tool_visibility_with_default(

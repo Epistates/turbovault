@@ -25,11 +25,11 @@ impl Deref for BatchProvider {
 impl BatchProvider {
     // ==================== Batch Operations ====================
 
-    /// Execute a validated batch of file operations, stopping on first failure.
+    /// Execute a validated batch of file operations.
     #[tool(
-        description = "Execute multiple file operations sequentially after conflict and expected-hash validation; stops at the first failure without rolling back earlier operations",
-        usage = "Use to reduce round trips for independent file operations. WriteNote, DeleteNote, and MoveNote accept expected_hash; every supplied hash is checked before execution so an already-stale batch has no side effects. This remains fail-fast, not an all-or-nothing transaction: inspect data.success, data.failed_at, and data.changes because a race or later operation failure can leave earlier operations applied. Not idempotent.",
-        performance = "Depends on operation count and types. Operations run sequentially.",
+        description = "Execute multiple file operations. With write_backend=git, the complete batch is one atomic commit with per-path CAS preconditions: every operation applies or none do.",
+        usage = "Use the Git backend for all-or-nothing batches and cross-process concurrency safety. Pass expected_hash on guarded operations and an optional commit_message. The legacy backend remains sequential and refuses Git-only operations or batch CAS preconditions.",
+        performance = "Git batches build one isolated tree and advance one ref regardless of operation count.",
         related = ["write_note", "delete_note", "move_note"],
         examples = [
             r#"[{"type":"write","path":"note1.md","content":"..."}]"#,
@@ -39,8 +39,12 @@ impl BatchProvider {
         tags = ["write", "batch"],
         destructive = true,
     )]
-    async fn batch_execute(&self, operations: Vec<BatchOperation>) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+    async fn batch_execute(
+        &self,
+        operations: Vec<BatchOperation>,
+        commit_message: Option<String>,
+    ) -> McpResult<serde_json::Value> {
+        let vault_name = self.get_active_vault_name().await?;
 
         if operations.is_empty() {
             return Err(McpError::internal(
@@ -49,24 +53,43 @@ impl BatchProvider {
         }
 
         let op_count = operations.len();
-        let tools = BatchTools::new(manager);
+        let message = self
+            .resolve_commit_message(commit_message, || derive_batch_message(&operations))
+            .await?;
+        let tools = self.get_active_write_tools().await?;
         let result = tools
-            .batch_execute(operations)
+            .batch_execute_with_message(operations, &message)
             .await
             .map_err(to_mcp_error)?;
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
-        let response = StandardResponse::new(
+        let execution_mode = if self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map(|config| config.write_backend == WriteBackend::Git)
+            .unwrap_or(false)
+        {
+            "atomic_git_commit"
+        } else {
+            "sequential_legacy"
+        };
+        let mut response = StandardResponse::new(
             vault_name,
             "batch_execute",
             serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
         )
         .with_success(result.success)
         .with_count(op_count)
-        .with_meta("execution_mode", serde_json::json!("sequential_fail_fast"))
-        .with_warning("Batch operations completed before a failure are not rolled back.")
+        .with_meta("execution_mode", serde_json::json!(execution_mode))
         .with_next_step("quick_health_check");
+
+        if execution_mode == "sequential_legacy" && !result.success {
+            response = response.with_warning(
+                "Legacy batch execution is sequential: operations completed before the failure were not rolled back. Configure write_backend=git for all-or-nothing batches.",
+            );
+        }
 
         response.to_json()
     }

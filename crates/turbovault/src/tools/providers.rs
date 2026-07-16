@@ -11,6 +11,7 @@ mod content;
 mod context;
 mod discovery;
 mod export;
+mod fanout;
 mod files;
 mod graph;
 mod metadata;
@@ -36,6 +37,7 @@ use self::content::ContentProvider;
 use self::context::ContextProvider;
 use self::discovery::DiscoveryProvider;
 use self::export::ExportProvider;
+use self::fanout::FanoutProvider;
 use self::files::FileProvider;
 use self::graph::GraphProvider;
 use self::metadata::MetadataProvider;
@@ -131,6 +133,7 @@ impl ObsidianMcpServer {
         mount!(TemplateProvider::new(core.clone()), "templates");
         mount!(VaultProvider::new(core.clone()), "vault");
         mount!(BatchProvider::new(core.clone()), "batch");
+        mount!(FanoutProvider::new(core.clone()), "fanout");
         mount!(ExportProvider::new(core.clone()), "export");
         mount!(MetadataProvider::new(core.clone()), "metadata");
         mount!(RelationshipProvider::new(core.clone()), "relationship");
@@ -159,6 +162,114 @@ impl ObsidianMcpServer {
     /// Get the shared multi-vault manager.
     pub fn multi_vault(&self) -> Arc<MultiVaultManager> {
         self.core.multi_vault()
+    }
+
+    /// Initialize every registered vault (used by the CLI `--init` path).
+    pub async fn initialize_registered_vaults(&self) -> Result<()> {
+        self.core.initialize_registered_vaults().await
+    }
+
+    /// Warn about worktrees left behind by interrupted fanout sessions.
+    pub async fn log_orphan_fanouts_warnings(&self) {
+        self.core.log_orphan_fanouts_warnings().await;
+    }
+
+    /// Best-effort cleanup for fanout worktrees during graceful shutdown.
+    pub async fn shutdown_fanouts_best_effort(&self) {
+        self.core.shutdown_fanouts_best_effort().await;
+    }
+
+    #[doc(hidden)]
+    pub async fn get_active_write_tools_test(&self) -> McpResult<turbovault_tools::WriteTools> {
+        self.core.get_active_write_tools_test().await
+    }
+
+    #[doc(hidden)]
+    pub async fn get_active_vault_manager_test(
+        &self,
+    ) -> McpResult<Arc<turbovault_vault::VaultManager>> {
+        self.core.get_active_vault_manager_test().await
+    }
+
+    #[doc(hidden)]
+    pub async fn get_reindex_queue_test(
+        &self,
+        vault_name: &str,
+    ) -> Option<Arc<turbovault_tools::ReindexQueue>> {
+        self.core.get_reindex_queue_test(vault_name).await
+    }
+
+    #[doc(hidden)]
+    pub async fn flush_reindex_for_active_vault_test(&self) -> McpResult<()> {
+        self.core.flush_reindex_for_active_vault_test().await
+    }
+
+    #[doc(hidden)]
+    pub async fn resolve_commit_message_test(
+        &self,
+        message: Option<String>,
+        fallback: String,
+    ) -> McpResult<String> {
+        self.core
+            .resolve_commit_message_test(message, fallback)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn spawn_ref_listener_with_interval_test(
+        &self,
+        vault_name: &str,
+        interval: std::time::Duration,
+    ) {
+        self.core
+            .spawn_ref_listener_with_interval_test(vault_name, interval)
+            .await;
+    }
+
+    #[doc(hidden)]
+    pub async fn has_git_drainer_test(&self, vault_name: &str) -> bool {
+        self.core.has_git_drainer_test(vault_name).await
+    }
+
+    #[doc(hidden)]
+    pub async fn has_git_ref_listener_test(&self, vault_name: &str) -> bool {
+        self.core.has_git_ref_listener_test(vault_name).await
+    }
+
+    #[doc(hidden)]
+    pub async fn has_git_locks_test(&self, vault_name: &str) -> bool {
+        self.core.has_git_locks_test(vault_name).await
+    }
+
+    #[doc(hidden)]
+    pub async fn remove_vault_test(&self, vault_name: &str) -> McpResult<serde_json::Value> {
+        self.core.remove_vault_test(vault_name).await
+    }
+
+    #[doc(hidden)]
+    pub async fn get_or_init_git_locks_test(
+        &self,
+        vault_name: &str,
+    ) -> Arc<turbovault_tools::CommitLocks> {
+        self.core.get_or_init_git_locks_test(vault_name).await
+    }
+
+    #[doc(hidden)]
+    pub async fn register_active_fanout_test(
+        &self,
+        base_vault: &str,
+        fanout_id: &str,
+        info: turbovault_tools::FanoutInfo,
+        fanout_vault_name: &str,
+    ) {
+        self.core
+            .register_active_fanout_test(base_vault, fanout_id, info, fanout_vault_name)
+            .await;
+    }
+
+    #[doc(hidden)]
+    pub async fn clear_active_fanout_test(&self, base_vault: &str) {
+        self.core.clear_active_fanout_test(base_vault).await;
     }
 }
 
@@ -256,7 +367,7 @@ mod tests {
         let actual =
             serde_json::to_string_pretty(&server.list_tools()).expect("serialize tool catalog");
 
-        assert_eq!(server.list_tools().len(), 70, "public tool count changed");
+        assert_eq!(server.list_tools().len(), 74, "public tool count changed");
         if actual != expected {
             let actual_bytes = actual.as_bytes();
             let expected_bytes = expected.as_bytes();
@@ -274,7 +385,7 @@ mod tests {
                 String::from_utf8_lossy(&actual_bytes[start..actual_end]),
             );
         }
-        assert_eq!(server.tool_routes.len(), 70);
+        assert_eq!(server.tool_routes.len(), 74);
     }
 
     #[tokio::test]

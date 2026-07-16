@@ -316,7 +316,10 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
         json!({"path": "gamma.md", "frontmatter": ["not", "an", "object"]}),
     )
     .await;
-    assert!(invalid_frontmatter.contains("frontmatter must be a JSON object"));
+    assert!(
+        invalid_frontmatter.contains("map") || invalid_frontmatter.contains("object"),
+        "unexpected schema error: {invalid_frontmatter}"
+    );
 
     let replaced = call(
         &server,

@@ -6,6 +6,7 @@
 //! - Setting inheritance and per-vault overrides
 //! - Centralized configuration
 
+use crate::config::WriteBackend;
 use crate::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,6 +21,16 @@ pub struct VaultInfo {
     pub path: std::path::PathBuf,
     /// Whether this is the active/default vault
     pub is_default: bool,
+    /// turbovault-17q: the vault's write backend as a lowercase string
+    /// (`"legacy"` | `"git"`), surfaced at the top level so agents can discover
+    /// which vaults are on the git substrate (GWS) without parsing the nested
+    /// `config`. The full `git:` block stays in `config` / `get_vault_config`.
+    pub write_backend: String,
+    /// turbovault-17q / 5nn: whether mutations on this vault require an explicit
+    /// commit message. Only meaningful on the git backend (always `false` on
+    /// legacy, which produces no commits). Lets an agent learn the requirement
+    /// up front instead of discovering it via a refused write.
+    pub require_commit_message: bool,
     /// Configuration for this vault
     pub config: VaultConfig,
 }
@@ -175,6 +186,17 @@ impl MultiVaultManager {
                 name: name.clone(),
                 path: config.path.clone(),
                 is_default: name == &default,
+                write_backend: match config.write_backend {
+                    WriteBackend::Legacy => "legacy",
+                    WriteBackend::Git => "git",
+                }
+                .to_string(),
+                require_commit_message: matches!(config.write_backend, WriteBackend::Git)
+                    && config
+                        .git
+                        .as_ref()
+                        .map(|g| g.require_commit_message)
+                        .unwrap_or(false),
                 config: config.clone(),
             })
             .collect();
@@ -245,6 +267,8 @@ mod tests {
             cache_ttl: None,
             template_dirs: None,
             allowed_operations: None,
+            write_backend: crate::WriteBackend::default(),
+            git: None,
         }
     }
 
@@ -361,6 +385,37 @@ mod tests {
         assert_eq!(vaults.len(), 2);
         assert!(vaults.iter().any(|v| v.name == "vault1" && v.is_default));
         assert!(vaults.iter().any(|v| v.name == "vault2" && !v.is_default));
+    }
+
+    /// turbovault-17q: list_vaults surfaces `write_backend` (lowercase) and
+    /// `require_commit_message` at the top level so agents can discover which
+    /// vaults are on GWS and whether each requires a commit message.
+    #[tokio::test]
+    async fn list_vaults_surfaces_backend_and_require_commit_message() {
+        let mut git_vault = create_test_vault("vault_git", false);
+        git_vault.write_backend = crate::WriteBackend::Git;
+        git_vault.git = Some(crate::config::VaultGitConfig {
+            require_commit_message: true,
+            ..Default::default()
+        });
+        let mut config = ServerConfig::new();
+        config.vaults = vec![create_test_vault("vault1", true), git_vault];
+        let manager = MultiVaultManager::new(config).unwrap();
+
+        let vaults = manager.list_vaults().await.unwrap();
+        let legacy = vaults.iter().find(|v| v.name == "vault1").unwrap();
+        assert_eq!(legacy.write_backend, "legacy");
+        assert!(
+            !legacy.require_commit_message,
+            "legacy backend never requires a commit message"
+        );
+
+        let git = vaults.iter().find(|v| v.name == "vault_git").unwrap();
+        assert_eq!(git.write_backend, "git");
+        assert!(
+            git.require_commit_message,
+            "git vault with require_commit_message=true surfaces it"
+        );
     }
 
     #[tokio::test]
