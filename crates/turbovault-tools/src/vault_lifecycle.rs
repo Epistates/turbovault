@@ -66,6 +66,15 @@ impl VaultLifecycleTools {
             )));
         }
 
+        if let Some(template) = template
+            && !matches!(template, "default" | "research" | "team")
+        {
+            return Err(Error::config_error(format!(
+                "Unknown template: {} (supported: default, research, team)",
+                template
+            )));
+        }
+
         // Expand tilde and convert to absolute path
         let expanded_path = Self::expand_path(path)?;
 
@@ -139,15 +148,13 @@ impl VaultLifecycleTools {
         // Expand tilde and convert to absolute path
         let expanded_path = Self::expand_path(path)?;
 
-        // Create the directory if it doesn't exist
+        // Registration is intentionally distinct from creation: a typoed path
+        // must not silently become a new empty vault.
         if !expanded_path.exists() {
-            std::fs::create_dir_all(&expanded_path).map_err(|e| {
-                Error::invalid_path(format!(
-                    "Path does not exist and could not be created: {} ({})",
-                    expanded_path.display(),
-                    e
-                ))
-            })?;
+            return Err(Error::invalid_path(format!(
+                "Vault path does not exist: {}. Use create_vault to create a new vault.",
+                expanded_path.display()
+            )));
         }
 
         if !expanded_path.is_dir() {
@@ -351,9 +358,17 @@ impl VaultLifecycleTools {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn test_placeholder() {
-        // Tests are in integration tests file
-        // This module is kept for future unit tests
+    fn expand_path_resolves_tilde_without_touching_the_home_directory() {
+        let expanded = VaultLifecycleTools::expand_path(Path::new(
+            "~/turbovault-path-expansion-test/does-not-need-to-exist",
+        ))
+        .expect("tilde expansion");
+
+        assert!(expanded.is_absolute());
+        assert!(!expanded.to_string_lossy().contains('~'));
+        assert!(!expanded.exists(), "test must not create anything in home");
     }
 }

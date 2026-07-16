@@ -48,7 +48,7 @@
 //!
 //! ### Batch Tools
 //!
-//! [`batch_tools::BatchTools`] - Atomic operations:
+//! [`batch_tools::BatchTools`] - Validated fail-fast operation batches:
 //! - Execute multi-file operations
 //! - Atomic transactions
 //! - Conflict detection

@@ -12,9 +12,9 @@ The `TurboVault` project is organized as a Rust workspace with 8 crates:
 | **turbovault-parser** | OFM parsing (wikilinks, frontmatter) | ~1,500 LOC | Markdown parsing, link extraction |
 | **turbovault-graph** | Link graph analysis | ~1,200 LOC | Graph algorithms, health analysis |
 | **turbovault-vault** | File I/O, caching, validation | ~1,800 LOC | Vault management, atomic operations |
-| **turbovault-batch** | Atomic multi-file operations | ~800 LOC | Transaction support, rollback |
+| **turbovault-batch** | Validated fail-fast operation batches | ~650 LOC | Conflict validation, sequencing, detailed results |
 | **turbovault-export** | JSON/CSV export formats | ~600 LOC | Data export, reporting |
-| **turbovault-tools** | MCP tools implementation | ~2,500 LOC | 44 MCP tools, search engine |
+| **turbovault-tools** | Reusable MCP operations | ~2,500 LOC | Search, graph, metadata, and file operations |
 | **turbovault-server** | CLI + MCP server | ~600 LOC | Main binary, server orchestration |
 
 **Total**: ~11,000 lines of production Rust code
@@ -104,25 +104,27 @@ This crate provides the core abstraction for interacting with the Obsidian vault
 
 ### [turbovault-batch](../crates/turbovault-batch/README.md)
 
-**Atomic, transactional batch file operations for Obsidian vaults.**
+**Validated, sequential batches of file operations for Obsidian vaults.**
 
-This crate provides ACID-like transaction support for multi-file operations, ensuring vault integrity through atomic commits and rollback capabilities. It's designed for complex operations that need to modify multiple files while maintaining consistency.
+This crate validates operations for overlapping paths, executes them in order,
+and stops at the first failure. Individual file writes are atomic, but the
+batch is not transactional: earlier successful operations are not rolled back.
 
 **Key Components:**
-- **BatchTransaction**: Main transaction interface
-- **CreateFile**: Create new files with content and frontmatter
-- **WriteFile**: Update existing files with new content
-- **DeleteFile**: Remove files and update references
-- **MoveFile**: Move files to new locations and update references
-- **UpdateLinks**: Update links in files to point to new locations
+- **BatchExecutor**: Validates and sequences operations
+- **CreateNote**: Create a note
+- **WriteNote**: Write or replace a note
+- **DeleteNote**: Remove a note
+- **MoveNote**: Move a note without rewriting incoming links
+- **UpdateLinks**: Replace a link target in one explicitly named note
 - **Conflict Detection**: Pre-validate operations before execution
-- **Rollback Mechanism**: Restore original state on failure
+- **Detailed Results**: Report successful changes and the first failure
 
 **Architecture:**
-- ACID compliance with all operations succeeding or all failing
 - Pre-validation to detect conflicts before execution
-- Atomic execution with rollback safety
-- Thread-safe concurrent transactions
+- Sequential fail-fast execution
+- Atomic replacement for individual file writes
+- No batch-wide rollback or cross-process locking
 
 ### [turbovault-export](../crates/turbovault-export/README.md)
 
@@ -152,7 +154,7 @@ This crate provides comprehensive export capabilities for Obsidian vault data, e
 This crate implements the Model Context Protocol (MCP) tools that enable AI agents to discover, query, analyze, and manage Obsidian vaults through a structured, type-safe API. It orchestrates all vault operations by integrating the parser, graph, vault, batch, and export crates into a cohesive agent-friendly interface.
 
 **Key Components:**
-- **44 MCP Tools**: Complete vault management API
+- **70 MCP Tools**: Vault management API exposed through focused providers
 - **Search Engine**: Tantivy-powered full-text search with TF-IDF ranking
 - **Template Engine**: Pre-built templates with field validation
 - **11 Tool Categories**: FileTools, SearchTools, SearchEngine, TemplateEngine, AnalysisTools, GraphTools, BatchTools, ExportTools, ValidationTools, MetadataTools, RelationshipTools, VaultLifecycleTools
@@ -169,12 +171,12 @@ This crate implements the Model Context Protocol (MCP) tools that enable AI agen
 
 **Production-Grade MCP Server for Obsidian Vault Management**
 
-The main executable binary that exposes 44 MCP tools for AI agents to autonomously manage Obsidian vaults. This is the entry point for end users - it orchestrates all vault operations by integrating the core, parser, graph, vault, batch, export, and tools crates into a unified Model Context Protocol server.
+The main executable binary exposes 70 MCP tools for AI agents to manage Obsidian vaults. This is the entry point for end users; it composes focused providers over the core, parser, graph, vault, batch, export, and tools crates into a unified Model Context Protocol server.
 
 **Key Components:**
 - **CLI Interface**: Command-line argument parsing and configuration
 - **MCP Server**: STDIO transport for MCP protocol communication
-- **44 MCP Tools**: Complete vault management API
+- **70 MCP Tools**: Stable flat API backed by focused providers
 - **Observability**: OpenTelemetry integration for production monitoring
 - **Configuration Profiles**: Pre-tuned configurations for different use cases
 - **Vault Management**: Multi-vault support with runtime configuration

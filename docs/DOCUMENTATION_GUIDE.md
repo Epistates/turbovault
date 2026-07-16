@@ -39,7 +39,7 @@ TurboVault is organized into 8 specialized crates:
 | **turbovault-parser** | Markdown parsing | OFM syntax, frontmatter, link extraction |
 | **turbovault-graph** | Link graph analysis | Graph operations, health analysis, relationships |
 | **turbovault-vault** | Vault file operations | File I/O, watching, atomic operations, edits |
-| **turbovault-batch** | Batch transactions | Multi-file operations, conflict detection |
+| **turbovault-batch** | Fail-fast operation batches | Multi-file sequencing, conflict detection |
 | **turbovault-export** | Data export | Report generation, JSON/CSV export |
 | **turbovault-tools** | MCP tool implementations | File tools, search, analysis, validation |
 

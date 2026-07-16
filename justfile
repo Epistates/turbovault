@@ -54,6 +54,10 @@ test-integration:
 test-unit:
     cargo test --workspace --lib
 
+# Run instrumented coverage and enforce the CI line-coverage floor
+coverage:
+    cargo llvm-cov --workspace --all-features --locked --summary-only --fail-under-lines 75
+
 # =============================================================================
 # CODE QUALITY
 # =============================================================================

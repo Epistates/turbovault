@@ -43,7 +43,7 @@ impl AnalysisTools {
 
         Ok(orphans
             .into_iter()
-            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+            .map(|path| self.manager.relative_path(&path))
             .collect())
     }
 
@@ -58,7 +58,7 @@ impl AnalysisTools {
             .map(|cycle| {
                 cycle
                     .into_iter()
-                    .filter_map(|p| p.to_str().map(|s| s.to_string()))
+                    .map(|path| self.manager.relative_path(&path))
                     .collect()
             })
             .collect();

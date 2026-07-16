@@ -165,7 +165,7 @@ A: No! TurboVault works with any Obsidian vault (just a folder of markdown files
 
 **Q: Does this modify my vault?**
 
-A: Only when you use write operations (create, delete, move). All modifications are atomic and logged. Use `--profile readonly` for safe exploration.
+A: Only when you use write operations (create, delete, move). Individual note writes use atomic replacement and are logged when auditing is available. To expose only read-only tools, use `--require-read-only-tools`; the `--profile readonly` value currently affects logging only.
 
 **Q: Can I use this with multiple vaults?**
 
@@ -173,7 +173,7 @@ A: Yes! Use `VaultLifecycleTools` to manage multiple vaults and switch between t
 
 **Q: What happens if the server crashes?**
 
-A: All operations are atomic. Your vault will never be left in a broken state. Batch operations stop on first error with detailed reporting.
+A: Individual writes use atomic file replacement, which avoids partially written files. `batch_execute` is sequential and fail-fast: it stops on the first error, but earlier successful operations remain applied. Inspect the returned `success`, `failed_at`, and `changes` fields and keep normal vault backups.
 
 **Q: How do I back up my vault?**
 

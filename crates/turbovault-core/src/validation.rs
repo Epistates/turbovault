@@ -164,6 +164,7 @@ pub trait Validator {
 /// Validates frontmatter structure and required fields
 #[derive(Debug, Clone)]
 pub struct FrontmatterValidator {
+    require_frontmatter: bool,
     required_fields: HashSet<String>,
 }
 
@@ -171,8 +172,15 @@ impl FrontmatterValidator {
     /// Create a new frontmatter validator
     pub fn new() -> Self {
         Self {
+            require_frontmatter: false,
             required_fields: HashSet::new(),
         }
+    }
+
+    /// Require the file to contain a frontmatter block.
+    pub fn require_frontmatter(mut self) -> Self {
+        self.require_frontmatter = true;
+        self
     }
 
     /// Require a specific field to be present
@@ -240,12 +248,17 @@ impl Validator for FrontmatterValidator {
     fn validate(&self, file: &VaultFile) -> ValidationReport {
         if let Some(ref frontmatter) = file.frontmatter {
             self.validate_frontmatter(frontmatter)
-        } else if !self.required_fields.is_empty() {
+        } else if self.require_frontmatter || !self.required_fields.is_empty() {
             let mut report = ValidationReport::new();
+            let message = if self.required_fields.is_empty() {
+                "File has no required frontmatter"
+            } else {
+                "File has no frontmatter but required fields are specified"
+            };
             report.add_issue(ValidationIssue::new(
                 Severity::Error,
                 "frontmatter",
-                "File has no frontmatter but required fields are specified",
+                message,
             ));
             report
         } else {
@@ -608,6 +621,20 @@ mod tests {
         let report = validator.validate(&file);
         assert!(!report.passed);
         assert_eq!(report.summary.error_count, 1);
+        assert_eq!(
+            report.issues[0].message,
+            "File has no frontmatter but required fields are specified"
+        );
+    }
+
+    #[test]
+    fn test_frontmatter_validator_requires_frontmatter_without_required_fields() {
+        let validator = FrontmatterValidator::new().require_frontmatter();
+        let report = validator.validate(&create_test_file());
+
+        assert!(!report.passed);
+        assert_eq!(report.summary.error_count, 1);
+        assert_eq!(report.issues[0].message, "File has no required frontmatter");
     }
 
     #[test]

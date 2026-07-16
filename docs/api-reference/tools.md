@@ -1,6 +1,7 @@
 # MCP Tools Reference
 
-Complete reference of all 44 MCP tools available in TurboVault v1.2.1.
+Reference for TurboVault's MCP tool surface. At runtime, `tools/list` is the
+authoritative catalog, including schemas and behavior annotations.
 
 ## File Operations (6 tools)
 

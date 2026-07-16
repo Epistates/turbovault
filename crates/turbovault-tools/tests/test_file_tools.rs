@@ -132,6 +132,33 @@ async fn test_move_file_success() {
 }
 
 #[tokio::test]
+async fn test_move_file_does_not_rewrite_incoming_wikilinks() {
+    let (temp_dir, manager) = setup_test_vault().await;
+    tokio::fs::write(temp_dir.path().join("target.md"), "# Target")
+        .await
+        .unwrap();
+    tokio::fs::write(
+        temp_dir.path().join("source.md"),
+        "Links to [[target]] and must remain explicit.",
+    )
+    .await
+    .unwrap();
+    manager.initialize().await.unwrap();
+
+    let tools = FileTools::new(manager);
+    tools
+        .move_file("target.md", "archive/target.md")
+        .await
+        .unwrap();
+
+    let source = tokio::fs::read_to_string(temp_dir.path().join("source.md"))
+        .await
+        .unwrap();
+    assert!(source.contains("[[target]]"));
+    assert!(!source.contains("[[archive/target]]"));
+}
+
+#[tokio::test]
 async fn test_move_file_with_directory_creation() {
     let (temp_dir, manager) = setup_test_vault().await;
     let tools = FileTools::new(manager);

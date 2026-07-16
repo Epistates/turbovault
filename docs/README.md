@@ -49,7 +49,7 @@ TurboVault is built as a modular Rust workspace with **8 specialized crates**:
 | **turbovault-parser** | Obsidian Flavored Markdown parser | ✅ v1.1.6 |
 | **turbovault-graph** | Link graph analysis & health | ✅ v1.1.6 |
 | **turbovault-vault** | File I/O, caching, validation | ✅ v1.1.6 |
-| **turbovault-batch** | Atomic multi-file operations | ✅ v1.1.6 |
+| **turbovault-batch** | Validated fail-fast operation batches | ✅ v1.1.6 |
 | **turbovault-export** | Data export utilities | ✅ v1.1.6 |
 | **turbovault-tools** | MCP tools implementation | ✅ v1.1.6 |
 
@@ -61,7 +61,7 @@ TurboVault is built as a modular Rust workspace with **8 specialized crates**:
 - **38 specialized MCP tools** for vault management
 - Full CRUD operations on notes
 - Template generation and management
-- Batch operations with atomic transactions
+- Validated operation batches with sequential fail-fast execution
 
 ### 🔍 Intelligent Search
 - **Full-text search** powered by Tantivy

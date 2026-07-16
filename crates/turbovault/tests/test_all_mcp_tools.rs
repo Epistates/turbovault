@@ -1,5 +1,7 @@
-//! Integration tests for all 38 MCP tools through the server interface
-//! Tests the complete workflow from MCP call to response
+//! Representative integration tests for reusable operation implementations.
+//!
+//! Public MCP routing and complete 70-tool catalog coverage live in the
+//! provider contract tests under `src/tools/providers.rs`.
 
 use tempfile::TempDir;
 use tokio::fs;

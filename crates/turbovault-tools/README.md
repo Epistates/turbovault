@@ -54,7 +54,7 @@ AI Agent (Claude, GPT, etc.)
 │   turbovault-vault ─ File I/O        │
 │   turbovault-parser ─ OFM parsing    │
 │   turbovault-graph ─ Link analysis   │
-│   turbovault-batch ─ Transactions    │
+│   turbovault-batch ─ Fail-fast batches│
 │   turbovault-export ─ Data export    │
 │   turbovault-core ─ Types & errors   │
 └────────────────────────────────────────┘
@@ -68,7 +68,7 @@ Every tool is designed with AI agents in mind:
 - **Discoverable**: Tools describe themselves with clear names and parameters
 - **Structured Output**: JSON-serializable results for easy parsing
 - **Error Friendly**: Errors include suggestions and context for recovery
-- **Batching Support**: Coordinate multiple operations atomically
+- **Batching Support**: Validate and run multiple operations sequentially, stopping on first failure
 - **Search First**: Rich search and discovery to find relevant notes
 
 ### 2. Production-Grade Search Engine
@@ -121,7 +121,7 @@ let content = tools.read_file("notes/readme.md").await?;
 // Write/create note (atomic, creates directories)
 tools.write_file("notes/new-idea.md", "# My Idea\n\nContent...").await?;
 
-// Move/rename (updates all backlinks)
+// Move/rename (does not rewrite backlinks in other notes)
 tools.move_file("old/path.md", "new/path.md").await?;
 
 // Copy with metadata preservation
@@ -442,7 +442,7 @@ let analysis = tools.export_analysis_report("json").await?;
 - Integration with BI tools
 - Historical trend analysis
 
-### ValidationTools (3 operations)
+### ValidationTools (4 operations)
 
 Content validation and quality checks:
 
@@ -478,7 +478,7 @@ let quick = tools.validate_vault_quick(50).await?;
 
 **Validation Rules:**
 - Frontmatter presence and required fields
-- Link validity (broken link detection)
+- Link syntax and suspicious wikilink targets
 - Content length minimums
 - Custom validators can be added
 
@@ -557,7 +557,7 @@ normalized to 0.0-1.0
 - **Closeness**: How quickly this note can reach others
 - **Eigenvector**: Importance based on connections to important notes
 
-### VaultLifecycleTools (7 operations)
+### VaultLifecycleTools (8 operations)
 
 Multi-vault management and lifecycle:
 
@@ -582,6 +582,9 @@ let vault_info = tools.add_vault_from_path(
 
 // List all registered vaults
 let vaults = tools.list_vaults().await?;
+
+// Inspect a registered vault's configuration
+let config = tools.get_vault_config("research").await?;
 
 // Get active vault
 let active = tools.get_active_vault().await?;
@@ -1154,7 +1157,7 @@ For deeper dives into specific areas:
 - **OFM Parsing**: See `crates/turbovault-parser/README.md`
 - **Link Graph Analysis**: See `crates/turbovault-graph/README.md`
 - **File Operations**: See `crates/turbovault-vault/README.md`
-- **Batch Transactions**: See `crates/turbovault-batch/README.md`
+- **Operation Batches**: See `crates/turbovault-batch/README.md`
 - **Export Formats**: See `crates/turbovault-export/README.md`
 - **MCP Server**: See `crates/turbovault-server/README.md`
 - **Deployment**: See `/docs/deployment/index.md` (project root)

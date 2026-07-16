@@ -17,7 +17,7 @@ The main executable binary that exposes 47 MCP tools for AI agents to autonomous
 - **Full-Text Search**: Tantivy-powered search with TF-IDF ranking
 - **Link Graph Analysis**: Backlinks, hubs, orphans, cycles, health scoring
 - **Template System**: Pre-built templates with field validation
-- **Batch Operations**: Atomic multi-file transactions
+- **Batch Operations**: Validated sequential fail-fast operations
 - **Export & Reporting**: JSON/CSV exports for health reports, stats, broken links
 - **Production Observability**: OpenTelemetry, structured logging, metrics, tracing
 
@@ -595,7 +595,7 @@ turbovault --profile production --init
 **Claude will:**
 1. Use `query_metadata(pattern='status: "completed"')`
 2. Build a list of files to move
-3. Use `batch_execute()` to atomically move files and update backlinks
+3. Review backlinks, then move and update each affected note; `batch_execute()` may reduce round trips but does not roll back earlier successes
 4. Report the results
 
 ### Troubleshooting Claude Connection
@@ -702,7 +702,7 @@ The server emits OpenTelemetry spans for:
 - File operations (read, write, delete)
 - Search queries
 - Graph analysis
-- Batch transactions
+- Sequential fail-fast operation batches
 
 **Viewing Traces:**
 
@@ -1014,9 +1014,13 @@ cargo run -p turbovault-server -- --vault /path/to/vault --init
 crates/turbovault-server/
 ├── src/
 │   ├── bin/
-│   │   └── main.rs           # CLI entry point, arg parsing, server startup
+│   │   └── main.rs           # Thin async process entry point
+│   ├── cli.rs                # Testable CLI parsing and server startup
 │   ├── lib.rs                # Re-exports for public API
-│   └── tools.rs              # MCP tool implementations (44 tools)
+│   ├── tools.rs              # Shared MCP state and tool wrappers
+│   └── tools/
+│       ├── providers.rs      # Flat-name provider composition
+│       └── providers/        # Focused MCP provider handlers
 ├── tests/
 │   └── integration_test.rs   # Integration tests
 ├── Cargo.toml                # Dependencies and binary config
@@ -1025,7 +1029,7 @@ crates/turbovault-server/
 
 ### Adding a New Tool
 
-1. **Implement in `tools.rs`**:
+1. **Implement the wrapper and assign it to a provider**:
 
    ```rust
    #[tool("my_new_tool")]
@@ -1036,6 +1040,10 @@ crates/turbovault-server/
        Ok(result)
    }
    ```
+
+   Put the wrapper in the focused module that owns it under
+   `src/tools/providers/`. Mount order, duplicate checks, and the golden parity
+   test in `providers.rs` guard the public flat tool catalog.
 
 2. **Add to turbovault-tools** (if reusable logic):
 
@@ -1111,7 +1119,7 @@ cargo check -p turbovault-server
 │              turbovault-server (THIS CRATE)            │
 │                                                          │
 │  ┌────────────────────────────────────────────────┐    │
-│  │  main.rs - CLI Entry Point                     │    │
+│  │  cli.rs - CLI Orchestration                    │    │
 │  │  - Parse args (vault path, profile)            │    │
 │  │  - Initialize observability (OTLP)             │    │
 │  │  - Create VaultManager                          │    │
@@ -1119,9 +1127,10 @@ cargo check -p turbovault-server
 │  └────────────────────────────────────────────────┘    │
 │                                                          │
 │  ┌────────────────────────────────────────────────┐    │
-│  │  tools.rs - MCP Tool Implementations           │    │
-│  │  - ObsidianMcpServer struct                    │    │
-│  │  - 44 #[tool] annotated methods                │    │
+│  │  tools.rs + tools/providers.rs                 │    │
+│  │  - Shared state and MCP tool wrappers          │    │
+│  │  - 70 tools grouped into focused providers     │    │
+│  │  - Stable flat public names                    │    │
 │  │  - Error conversion (Error → McpError)         │    │
 │  └────────────────────────────────────────────────┘    │
 └───────────────────────────┬─────────────────────────────┘
@@ -1153,8 +1162,11 @@ cargo check -p turbovault-server
 
 | Component | Responsibility | Lines of Code |
 |-----------|---------------|---------------|
-| `main.rs` | CLI parsing, initialization, startup | ~100 LOC |
-| `tools.rs` | MCP tool wrappers, error conversion | ~500 LOC |
+| `bin/main.rs` | Thin async process entry point | ~6 LOC |
+| `cli.rs` | CLI parsing, initialization, startup | ~500 LOC |
+| `tools.rs` | Shared MCP state, wrappers, error conversion | ~3,000 LOC |
+| `tools/providers.rs` | Flat-name composition and parity checks | ~300 LOC |
+| `tools/providers/*.rs` | Focused MCP provider handlers | ~2,800 LOC |
 | `lib.rs` | Public API exports | ~10 LOC |
 
 **Key Design Decisions:**
@@ -1248,7 +1260,7 @@ For more details on specific components:
 - **Parser (OFM)**: See `../turbovault-parser/README.md`
 - **Link Graph**: See `../turbovault-graph/README.md`
 - **Vault Operations**: See `../turbovault-vault/README.md`
-- **Batch Transactions**: See `../turbovault-batch/README.md`
+- **Operation Batches**: See `../turbovault-batch/README.md`
 - **Export Tools**: See `../turbovault-export/README.md`
 - **MCP Tools (44 tools)**: See `../turbovault-tools/README.md`
 - **Deployment Guide**: See `/docs/deployment/index.md` (project root)

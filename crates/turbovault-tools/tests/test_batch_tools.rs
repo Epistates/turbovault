@@ -143,7 +143,7 @@ async fn test_batch_execute_mixed_operations() {
 }
 
 #[tokio::test]
-async fn test_batch_execute_rollback_on_error() {
+async fn test_batch_execute_preserves_prior_successes_on_error() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = BatchTools::new(manager.clone());
 
@@ -206,7 +206,7 @@ async fn test_batch_execute_creates_directories() {
 }
 
 #[tokio::test]
-async fn test_batch_execute_atomic_guarantees() {
+async fn test_batch_execute_isolated_batches_and_fail_fast_semantics() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = BatchTools::new(manager.clone());
 

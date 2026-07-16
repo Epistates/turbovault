@@ -124,8 +124,9 @@ impl MultiVaultManager {
             drop(current_default); // Release read lock
             vaults.remove(name);
 
-            // If there are other vaults, set the first one as default; otherwise, clear it
-            if let Some((first_name, _)) = vaults.iter().next() {
+            // Pick a deterministic replacement rather than depending on HashMap
+            // iteration order; otherwise identical removals can activate different vaults.
+            if let Some(first_name) = vaults.keys().min() {
                 *self.default_vault.write().await = first_name.clone();
             } else {
                 *self.default_vault.write().await = String::new();

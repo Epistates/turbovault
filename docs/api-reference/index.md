@@ -1,6 +1,7 @@
 # API Reference
 
-Complete reference for all 44 MCP tools available to AI agents.
+Reference for TurboVault's MCP tools. At runtime, `tools/list` is the
+authoritative catalog, including schemas and behavior annotations.
 
 ## Tool Categories
 
@@ -41,7 +42,7 @@ Complete reference for all 44 MCP tools available to AI agents.
 - `find_notes_from_template` - Find notes created from template
 
 ### Batch Operations (1 tool)
-- `batch_execute` - Execute multiple operations atomically
+- `batch_execute` - Execute validated operations sequentially; stops on first failure without rollback
 
 ### Export & Reporting (4 tools)
 - `export_health_report` - Export health metrics
@@ -49,10 +50,11 @@ Complete reference for all 44 MCP tools available to AI agents.
 - `export_vault_stats` - Export vault statistics
 - `export_analysis_report` - Export comprehensive analysis
 
-### Validation (3 tools)
+### Validation Library (4 operations; not mounted over MCP)
 - `validate_note` - Validate single note
 - `validate_note_with_rules` - Validate with custom rules
 - `validate_vault` - Validate entire vault
+- `validate_vault_quick` - Validate a vault with a strict issue-count limit
 
 ### Metadata Queries (2 tools)
 - `query_metadata` - Query frontmatter
@@ -70,7 +72,10 @@ Complete reference for all 44 MCP tools available to AI agents.
 - `get_active_vault` - Get current vault
 - `set_active_vault` - Switch vault
 - `remove_vault` - Remove vault
-- `validate_vault` - Validate vault structure
+- `get_vault_config` - Inspect a registered vault's configuration
+
+`VaultLifecycleTools::validate_vault` is also available through the Rust library,
+but is not mounted as an MCP tool.
 
 ## Example Workflows
 

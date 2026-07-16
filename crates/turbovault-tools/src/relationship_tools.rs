@@ -54,13 +54,13 @@ impl RelationshipTools {
         let read = graph.read().await;
 
         // Count direct links from source to target
-        let source_path = std::path::PathBuf::from(source);
-        let target_path = std::path::PathBuf::from(target);
+        let source_path = self.manager.resolve_path(std::path::Path::new(source))?;
+        let target_path = self.manager.resolve_path(std::path::Path::new(target))?;
 
         let mut direct_links = 0;
         if let Ok(forward_links) = read.forward_links(&source_path) {
             for (linked_file, _) in forward_links {
-                if linked_file.to_string_lossy().contains(target) {
+                if linked_file == target_path {
                     direct_links += 1;
                 }
             }
@@ -68,9 +68,9 @@ impl RelationshipTools {
 
         // Count backlinks from target to source
         let mut backlinks = 0;
-        if let Ok(back_links) = read.backlinks(&target_path) {
+        if let Ok(back_links) = read.forward_links(&target_path) {
             for (linked_file, _) in back_links {
-                if linked_file.to_string_lossy().contains(source) {
+                if linked_file == source_path {
                     backlinks += 1;
                 }
             }
@@ -120,39 +120,40 @@ impl RelationshipTools {
         let graph = self.manager.link_graph();
         let read = graph.read().await;
 
-        let file_path = std::path::PathBuf::from(file);
+        let file_path = self.manager.resolve_path(std::path::Path::new(file))?;
         let all_files = read.all_files();
 
         // Get existing forward links to exclude
         let mut existing_links = std::collections::HashSet::new();
         if let Ok(forward_links) = read.forward_links(&file_path) {
             for (linked_file, _) in forward_links {
-                existing_links.insert(linked_file.to_string_lossy().to_string());
+                existing_links.insert(linked_file);
             }
         }
+
+        let source_backlinks: std::collections::HashSet<_> = read
+            .backlinks(&file_path)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect();
 
         // Score each candidate
         let mut suggestions: Vec<LinkSuggestion> = Vec::new();
 
         for candidate in all_files {
-            let candidate_str = candidate.to_string_lossy().to_string();
-
             // Skip self and existing links
-            if candidate_str.contains(file) || existing_links.contains(&candidate_str) {
+            if candidate == file_path || existing_links.contains(&candidate) {
                 continue;
             }
 
             // Calculate co-reference strength (shared backlinks)
             let mut shared_refs = Vec::new();
-            if let Ok(source_backlinks) = read.backlinks(&file_path)
-                && let Ok(target_backlinks) = read.backlinks(&candidate)
-            {
-                let source_set: std::collections::HashSet<_> =
-                    source_backlinks.iter().map(|(p, _)| p.clone()).collect();
+            if let Ok(target_backlinks) = read.backlinks(&candidate) {
                 let target_set: std::collections::HashSet<_> =
-                    target_backlinks.iter().map(|(p, _)| p.clone()).collect();
+                    target_backlinks.into_iter().map(|(path, _)| path).collect();
 
-                for intersection_file in source_set.intersection(&target_set) {
+                for intersection_file in source_backlinks.intersection(&target_set) {
                     if let Some(name) = intersection_file.file_name() {
                         shared_refs.push(name.to_string_lossy().to_string());
                     }
@@ -175,7 +176,7 @@ impl RelationshipTools {
                 }
 
                 suggestions.push(LinkSuggestion {
-                    target: candidate_str,
+                    target: self.manager.relative_path(&candidate),
                     strength,
                     reasons,
                 });
@@ -217,7 +218,7 @@ impl RelationshipTools {
         let mut rankings: Vec<(String, f64, HashMap<&str, f64>)> = Vec::new();
 
         for file in &all_files {
-            let file_str = file.to_string_lossy().to_string();
+            let file_str = self.manager.relative_path(file);
 
             // Betweenness: count edges if this file connects two others
             let forward = read.forward_links(file).unwrap_or_default().len() as f64;

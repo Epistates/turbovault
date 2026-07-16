@@ -14,7 +14,7 @@ Overview of TurboVault's modular architecture.
 │  turbovault-server (MCP Server Binary)  │
 │                                         │
 │  ┌───────────────────────────────────┐ │
-│  │   turbovault-tools (44 MCP Tools) │ │
+│  │  Flat provider facade (70 tools)  │ │
 │  └────────┬───────────────────────────┘ │
 └───────────┼─────────────────────────────┘
             │
@@ -66,9 +66,9 @@ Overview of TurboVault's modular architecture.
 - Caching
 
 ### turbovault-batch
-- Multi-file transactions
-- Rollback support
-- Consistency guarantees
+- Conflict validation for operation batches
+- Sequential, fail-fast execution
+- Per-file atomic writes (no batch-wide rollback)
 
 ### turbovault-export
 - JSON/CSV export
@@ -76,14 +76,23 @@ Overview of TurboVault's modular architecture.
 - Data serialization
 
 ### turbovault-tools
-- 44 MCP tools
+- Reusable implementations behind 70 MCP tools
 - Tool implementation
 - Response formatting
+
+### MCP provider facade
+
+The `turbovault` crate splits the public catalog across 13 focused provider
+modules for context, files, graph, discovery, templates, vault lifecycle,
+batch, export, metadata, relationships, content, analysis, and audit. TurboMCP's
+`CompositeHandler` prefixes mounted handlers internally; TurboVault's facade
+maps those routes back to the established flat public names. For example,
+clients still call `read_note`, not `files_read_note`.
 
 ## Data Flow
 
 1. **Claude** sends MCP tool request
-2. **turbovault-server** routes to appropriate tool
+2. **turbovault** routes the flat public name to its focused provider
 3. **turbovault-tools** processes request
 4. Dependencies (parser, graph, vault) execute operation
 5. **Response** formatted and returned to Claude

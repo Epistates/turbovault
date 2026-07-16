@@ -201,6 +201,9 @@ impl AuditLog {
 
     /// Query audit entries with optional filters
     pub async fn query(&self, filter: &AuditFilter) -> Result<Vec<AuditEntry>> {
+        if filter.limit == 0 {
+            return Ok(vec![]);
+        }
         if !self.log_file.exists() {
             return Ok(vec![]);
         }
@@ -359,6 +362,9 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].path, "notes/test.md");
         assert_eq!(entries[0].operation, OperationType::Create);
+
+        let zero_limit = log.query(&AuditFilter::new().with_limit(0)).await.unwrap();
+        assert!(zero_limit.is_empty());
     }
 
     #[tokio::test]

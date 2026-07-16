@@ -191,7 +191,7 @@ a:
 // ==================== BatchTools Async Error Paths ====================
 
 #[tokio::test]
-async fn test_batch_tools_partial_failure_rollback() {
+async fn test_batch_tools_partial_failure_preserves_prior_successes() {
     let (_temp_dir, manager) = setup_minimal_vault().await;
     let tools = BatchTools::new(manager.clone());
 

@@ -16,18 +16,13 @@ impl BatchTools {
         Self { manager }
     }
 
-    /// Execute batch operations atomically
+    /// Execute batch operations sequentially, stopping at the first failure.
+    ///
+    /// Each individual file mutation is atomic, but the batch as a whole is
+    /// not transactional: operations completed before a failure remain
+    /// applied and are reported in [`BatchResult::changes`].
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
-        // Create temp directory for this batch (kept persistent)
-        let temp_dir_handle = tempfile::tempdir().map_err(|e| {
-            Error::config_error(format!("Failed to create temp directory for batch: {}", e))
-        })?;
-
-        let temp_dir = temp_dir_handle.path().to_path_buf();
-        // Keep the temp directory persistent after this function returns
-        let _temp_dir_persistent = temp_dir_handle.keep(); // Persist temp dir for batch operations
-
-        let executor = BatchExecutor::new(self.manager.clone(), temp_dir);
+        let executor = BatchExecutor::from_manager(self.manager.clone());
         executor.execute(operations).await
     }
 }

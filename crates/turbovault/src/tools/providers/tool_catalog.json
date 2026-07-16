@@ -1,0 +1,2278 @@
+[
+  {
+    "name": "get_vault_context",
+    "description": "Get complete vault context (vaults, stats, capabilities, markdown dialect) in a single discovery call",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "read_note",
+    "description": "Read complete markdown content of a note from active vault",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "write_note",
+    "description": "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. Supports optimistic concurrency: pass expected_hash (from read_note) to prevent overwriting concurrent changes",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "content": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "mode": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write"
+      ]
+    }
+  },
+  {
+    "name": "edit_note",
+    "description": "Apply targeted edits using SEARCH/REPLACE blocks (safer than full overwrite)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "edits": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dry_run": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_boolean",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "edits"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write"
+      ]
+    }
+  },
+  {
+    "name": "delete_note",
+    "description": "Permanently delete a note from active vault (irreversible, confirmation-protected)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "confirm_path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "confirm_path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "delete"
+      ]
+    }
+  },
+  {
+    "name": "move_note",
+    "description": "Move or rename a note within active vault. Does NOT update wikilinks — use get_backlinks first to assess impact",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "to": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write"
+      ]
+    }
+  },
+  {
+    "name": "get_backlinks",
+    "description": "Find all notes that link TO this note (incoming links)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_forward_links",
+    "description": "Find all notes that this note links TO (outgoing links)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_related_notes",
+    "description": "Find notes connected within N hops in the link graph (default 2 hops)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "max_hops": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_hub_notes",
+    "description": "Find the top N most connected notes in the vault (default 10). Returns notes ranked by total link count (incoming + outgoing). Hub notes are central to knowledge graph structure and often represent key concepts or index pages.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "top_n": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_dead_end_notes",
+    "description": "Find notes with incoming links but NO outgoing links (knowledge dead-ends). Returns list of paths with backlink counts. Dead-ends may indicate incomplete notes, missing connections, or final destination topics.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_isolated_clusters",
+    "description": "Find disconnected groups of notes (subgraphs with no connections to main graph). Returns clusters as arrays of paths. Isolated clusters may represent separate projects, orphaned content, or incomplete knowledge areas.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "quick_health_check",
+    "description": "Perform fast health assessment of active vault returning 0-100 score",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "health"
+      ]
+    }
+  },
+  {
+    "name": "full_health_analysis",
+    "description": "Comprehensive vault health report with detailed metrics including broken links, orphan analysis, link density, cluster analysis, and recommendations",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "health"
+      ]
+    }
+  },
+  {
+    "name": "get_broken_links",
+    "description": "Find all links pointing to non-existent notes with source path, target path, link text, and line number for each broken link",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "health"
+      ]
+    }
+  },
+  {
+    "name": "detect_cycles",
+    "description": "Detect circular reference chains in the link graph returning all cycles as arrays of paths",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "explain_vault",
+    "description": "Generate holistic vault overview in a single comprehensive call",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "search",
+    "description": "Full-text search across all notes using Tantivy search engine with BM25 ranking",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "search"
+      ]
+    }
+  },
+  {
+    "name": "advanced_search",
+    "description": "Enhanced search with tag, frontmatter, and path filters returning ranked results with match context",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "tags": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_Array_of_string",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "frontmatter_filters": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_Array_of_FrontmatterFilter",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/FrontmatterFilter"
+          },
+          "$defs": {
+            "FrontmatterFilter": {
+              "description": "A frontmatter key-value filter for advanced search",
+              "type": "object",
+              "properties": {
+                "key": {
+                  "description": "Frontmatter key to match (e.g. \"type\", \"status\", \"project\")",
+                  "type": "string"
+                },
+                "value": {
+                  "description": "Value to match against (substring match)",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ]
+            }
+          }
+        },
+        "exclude_paths": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_Array_of_string",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "search"
+      ]
+    }
+  },
+  {
+    "name": "search_by_frontmatter",
+    "description": "Find notes where a frontmatter field matches a value. Returns up to 100 results ranked by relevance",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "value": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "search"
+      ]
+    }
+  },
+  {
+    "name": "recommend_related",
+    "description": "ML-powered note recommendations based on content similarity and link proximity with similarity scores and reasoning",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "search"
+      ]
+    }
+  },
+  {
+    "name": "inspect_frontmatter",
+    "description": "Inspect the frontmatter schema across all vault notes — shows column names, types, nullability, and counts. Call this before writing SQL queries to discover available columns",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "frontmatter"
+      ]
+    }
+  },
+  {
+    "name": "query_frontmatter_sql",
+    "description": "Execute arbitrary SQL against a 'files' table built from all vault note frontmatter. Each note becomes a row with 'path' + all frontmatter keys as columns. Supports WHERE, JOIN, GROUP BY, ORDER BY, LIMIT, subqueries, and aggregations",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sql": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sql"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "frontmatter",
+        "sql"
+      ]
+    }
+  },
+  {
+    "name": "list_templates",
+    "description": "List all available note templates in the active vault",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "template"
+      ]
+    }
+  },
+  {
+    "name": "get_template",
+    "description": "Get detailed information about a specific template including fields and preview",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "template_id": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "template"
+      ]
+    }
+  },
+  {
+    "name": "create_from_template",
+    "description": "Create a new note from a template with field substitution and frontmatter",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "template_id": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "file_path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "fields": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id",
+        "file_path",
+        "fields"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "template"
+      ]
+    }
+  },
+  {
+    "name": "find_notes_from_template",
+    "description": "Find all notes created from a specific template via frontmatter tracking",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "template_id": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "template"
+      ]
+    }
+  },
+  {
+    "name": "create_vault",
+    "description": "Create and register a new Obsidian vault at the specified filesystem path with an optional template",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "template": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "admin"
+      ]
+    }
+  },
+  {
+    "name": "add_vault",
+    "description": "Register an existing Obsidian vault with the MCP server and auto-initialize",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "admin"
+      ]
+    }
+  },
+  {
+    "name": "remove_vault",
+    "description": "Unregister a vault from the MCP server (does NOT delete files)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "admin"
+      ]
+    }
+  },
+  {
+    "name": "list_vaults",
+    "description": "List all vaults registered with the MCP server",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "admin"
+      ]
+    }
+  },
+  {
+    "name": "get_vault_config",
+    "description": "Get detailed configuration for a specific vault",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "admin"
+      ]
+    }
+  },
+  {
+    "name": "set_active_vault",
+    "description": "Switch the active vault for subsequent operations",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "admin"
+      ]
+    }
+  },
+  {
+    "name": "get_active_vault",
+    "description": "Get the name of the currently active vault",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "admin"
+      ]
+    }
+  },
+  {
+    "name": "batch_execute",
+    "description": "Execute multiple file operations sequentially after conflict validation; stops at the first failure without rolling back earlier operations",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "operations": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Array_of_BatchOperation",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BatchOperation"
+          },
+          "$defs": {
+            "BatchOperation": {
+              "description": "Individual batch operation to execute",
+              "oneOf": [
+                {
+                  "description": "Create a new note with content",
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "CreateNote"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "path",
+                    "content"
+                  ]
+                },
+                {
+                  "description": "Write/overwrite a note",
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "content": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "WriteNote"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "path",
+                    "content"
+                  ]
+                },
+                {
+                  "description": "Delete a note",
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "DeleteNote"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "path"
+                  ]
+                },
+                {
+                  "description": "Move/rename a note",
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "MoveNote"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "from",
+                    "to"
+                  ]
+                },
+                {
+                  "description": "Update links in a note (find and replace link target)",
+                  "type": "object",
+                  "properties": {
+                    "file": {
+                      "type": "string"
+                    },
+                    "old_target": {
+                      "type": "string"
+                    },
+                    "new_target": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "UpdateLinks"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "file",
+                    "old_target",
+                    "new_target"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "required": [
+        "operations"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "batch"
+      ]
+    }
+  },
+  {
+    "name": "export_health_report",
+    "description": "Export vault health analysis as structured data",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "export"
+      ]
+    }
+  },
+  {
+    "name": "export_broken_links",
+    "description": "Export broken links report as structured data",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "export"
+      ]
+    }
+  },
+  {
+    "name": "export_vault_stats",
+    "description": "Export comprehensive vault statistics as structured data",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "export"
+      ]
+    }
+  },
+  {
+    "name": "export_analysis_report",
+    "description": "Export comprehensive vault analysis combining health, stats, links, and clusters",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "format"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "export"
+      ]
+    }
+  },
+  {
+    "name": "query_metadata",
+    "description": "Query notes by frontmatter metadata pattern (equality, comparison, existence checks)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "frontmatter"
+      ]
+    }
+  },
+  {
+    "name": "get_metadata_value",
+    "description": "Extract specific metadata value from a note's frontmatter (supports dot notation for nested keys)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "key": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "key"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "frontmatter"
+      ]
+    }
+  },
+  {
+    "name": "update_frontmatter",
+    "description": "Update YAML frontmatter of a note without modifying content body",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "frontmatter": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "AnyValue"
+        },
+        "merge": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_boolean",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "frontmatter"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "frontmatter"
+      ]
+    }
+  },
+  {
+    "name": "manage_tags",
+    "description": "Add, remove, or list tags on a note. List returns both frontmatter and inline #tags. Add/remove only modify frontmatter tags array",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "operation": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "tags": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_Array_of_string",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "path",
+        "operation"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "frontmatter"
+      ]
+    }
+  },
+  {
+    "name": "get_notes_info",
+    "description": "Get file metadata (size, modified time, has_frontmatter) for multiple notes without reading full content",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Array_of_string",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "move_file",
+    "description": "Move or rename any file (images, PDFs, attachments) within vault with double confirmation. Binary-safe, no content processing",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "to": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "confirm_from": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "confirm_to": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "confirm_from",
+        "confirm_to"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write"
+      ]
+    }
+  },
+  {
+    "name": "suggest_links",
+    "description": "AI-powered link suggestions for a note (returns top N candidates with reasoning)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_int32",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int32"
+        }
+      },
+      "required": [
+        "file"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_link_strength",
+    "description": "Calculate connection strength between two notes (0.0-1.0 score based on multiple factors)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "target": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_centrality_ranking",
+    "description": "Rank all notes by graph centrality metrics (betweenness, closeness, eigenvector)",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "graph"
+      ]
+    }
+  },
+  {
+    "name": "get_ofm_syntax_guide",
+    "description": "Get Obsidian Flavored Markdown syntax guide for the OFM syntax TurboVault parses, classifies, or preserves",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "get_ofm_quick_ref",
+    "description": "Get condensed OFM cheat sheet with common patterns and best practices",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "get_ofm_examples",
+    "description": "Get comprehensive example note demonstrating ALL OFM features with real-world patterns",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "diff_notes",
+    "description": "Compare two notes side-by-side showing unified diff, line-level and word-level changes, and similarity score",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "left": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "right": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "left",
+        "right"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read"
+      ]
+    }
+  },
+  {
+    "name": "diff_note_version",
+    "description": "Compare current note with a previous version from the audit trail",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "operation_id": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "operation_id"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "audit"
+      ]
+    }
+  },
+  {
+    "name": "evaluate_note_quality",
+    "description": "Evaluate note quality across readability, structure, completeness, and staleness dimensions (0-100 score per dimension plus composite)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "health"
+      ]
+    }
+  },
+  {
+    "name": "vault_quality_report",
+    "description": "Generate vault-wide quality report with score distribution, dimension averages, lowest/highest quality notes, and recommendations",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "bottom_n": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "health"
+      ]
+    }
+  },
+  {
+    "name": "analyze_note_grounding",
+    "description": "Extract grounding primitives for a note — the raw material an external LLM judge needs to score hallucination/contradiction/redundancy: candidate factual claims from the prose, declared citations (# Citations), structural signals (Schema/Examples sections), and an 'uncited' flag (makes claims but cites nothing). TurboVault does NOT score grounding itself; it surfaces the data deterministically",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "quality",
+        "okf"
+      ]
+    }
+  },
+  {
+    "name": "find_ungrounded_notes",
+    "description": "Scan the vault for hallucination-risk notes: notes that make factual claims in prose but declare no citations (# Citations). Returns them sorted by claim count (most claims first) — the notes most worth grounding review or an LLM-judge pass",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "quality",
+        "okf"
+      ]
+    }
+  },
+  {
+    "name": "okf_validate",
+    "description": "Validate the vault as an Open Knowledge Format (OKF) bundle: checks every note for OKF v0.1 conformance (parseable frontmatter with a non-empty `type`) and surfaces each concept's OKF metadata (type, title, description, resource, timestamp, citation count) plus the bundle's type vocabulary. Reports non-conformant files for use as a CI gate",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "subtree": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "okf",
+        "frontmatter"
+      ]
+    }
+  },
+  {
+    "name": "generate_index",
+    "description": "Generate or refresh OKF index.md files for progressive disclosure: each indexed directory gets an index.md listing its concept notes (with their frontmatter descriptions) and subdirectories, so agents and humans can navigate the bundle one level at a time instead of loading everything. Idempotent — unchanged indexes are not rewritten",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recursive": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_boolean",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dry_run": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_boolean",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "okf"
+      ]
+    }
+  },
+  {
+    "name": "append_log_entry",
+    "description": "Append an entry to an OKF log.md update history (spec §7). Files the entry under a `## YYYY-MM-DD` date section, newest-first — a new date becomes the top section, an existing date gains another bullet. Creates log.md (with a title) if absent",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "directory": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "date": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "okf"
+      ]
+    }
+  },
+  {
+    "name": "visualize",
+    "description": "Render the vault's concept graph as a single self-contained HTML file: a force-directed graph of every note, a detail panel with the rendered markdown body and 'cited by' backlinks, plus type filter and search. The bundle is embedded as JSON; the graph/markdown libraries load from a CDN. Shareable as a static artifact — open in any browser, no backend. Covers both OKF cross-links and Obsidian wikilinks",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "export",
+        "okf"
+      ]
+    }
+  },
+  {
+    "name": "find_stale_notes",
+    "description": "Find notes that have not been updated recently, sorted by staleness (most stale first)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "threshold_days": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint64",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "health"
+      ]
+    }
+  },
+  {
+    "name": "semantic_search",
+    "description": "Find notes semantically similar to a query using TF-IDF cosine similarity (finds conceptual matches beyond exact keyword overlap)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "search",
+        "semantic"
+      ]
+    }
+  },
+  {
+    "name": "find_similar_notes",
+    "description": "Find notes most similar in content to a specific note using TF-IDF cosine similarity",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "search",
+        "semantic"
+      ]
+    }
+  },
+  {
+    "name": "find_duplicates",
+    "description": "Find near-duplicate notes across vault using SimHash fingerprinting and TF-IDF cosine similarity verification",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "threshold": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_double",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "search",
+        "semantic"
+      ]
+    }
+  },
+  {
+    "name": "compare_notes",
+    "description": "Compare two specific notes showing similarity score, shared terms, diff summary, and actionable recommendation",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "left": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        },
+        "right": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "left",
+        "right"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "semantic"
+      ]
+    }
+  },
+  {
+    "name": "audit_log",
+    "description": "View operation history for the active vault with optional filters by path, operation type (CREATE/UPDATE/DELETE/MOVE), and result limit",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_uint",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "audit"
+      ]
+    }
+  },
+  {
+    "name": "rollback_preview",
+    "description": "Preview what a rollback would change without applying it (dry run). Shows unified diff between current content and rollback target",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "audit"
+      ]
+    }
+  },
+  {
+    "name": "rollback_note",
+    "description": "Restore a note to its state before a specific operation (identified by operation_id from audit_log)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "audit"
+      ]
+    }
+  },
+  {
+    "name": "audit_stats",
+    "description": "Get audit trail statistics including operation counts by type, total snapshot storage used, and time range of recorded operations",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "audit"
+      ]
+    }
+  }
+]

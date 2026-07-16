@@ -104,7 +104,42 @@ impl LinkGraph {
             }
         }
 
+        // A previously broken link may become valid when its target note (or an
+        // alias for that target) is added later. Runtime writes add one file at
+        // a time, unlike full initialization which indexes every node before it
+        // builds edges, so reconcile the unresolved set after updating indices.
+        self.reconcile_unresolved_links();
+
         Ok(())
+    }
+
+    fn reconcile_unresolved_links(&mut self) {
+        let unresolved = std::mem::take(&mut self.unresolved_links);
+
+        for (source_path, links) in unresolved {
+            let Some(&source_idx) = self.path_index.get(&source_path) else {
+                self.unresolved_links.insert(source_path, links);
+                continue;
+            };
+            let mut remaining = Vec::new();
+
+            for mut link in links {
+                if let Some(target_idx) = self.resolve_link(&link.target) {
+                    // Resolved same-document links are valid but do not become
+                    // graph self-loops, matching update_links().
+                    if target_idx != source_idx {
+                        link.is_valid = true;
+                        self.graph.add_edge(source_idx, target_idx, link);
+                    }
+                } else {
+                    remaining.push(link);
+                }
+            }
+
+            if !remaining.is_empty() {
+                self.unresolved_links.insert(source_path, remaining);
+            }
+        }
     }
 
     /// Remove a file from the graph.
@@ -791,6 +826,31 @@ mod tests {
         // Unresolved links should be cleared
         assert!(graph.all_unresolved_links().is_empty());
         assert_eq!(graph.edge_count(), 1);
+    }
+
+    #[test]
+    fn test_unresolved_link_resolves_when_target_is_added_later() {
+        let mut graph = LinkGraph::new();
+        let source = create_test_file("source.md", vec!["late-target"]);
+
+        graph.add_file(&source).unwrap();
+        graph.update_links(&source).unwrap();
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(graph.unresolved_link_count(), 1);
+
+        let target = create_test_file("late-target.md", vec![]);
+        graph.add_file(&target).unwrap();
+
+        assert_eq!(graph.edge_count(), 1);
+        assert_eq!(graph.unresolved_link_count(), 0);
+        assert_eq!(
+            graph.outgoing_links(&PathBuf::from("source.md")).unwrap()[0].target,
+            "late-target"
+        );
+        assert_eq!(
+            graph.backlinks(&PathBuf::from("late-target.md")).unwrap()[0].0,
+            PathBuf::from("source.md")
+        );
     }
 
     #[test]

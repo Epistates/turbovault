@@ -35,6 +35,25 @@ jobs:
       - name: Build documentation
         run: cargo doc --workspace --no-deps --locked
 
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Enforce line coverage floor
+        run: cargo llvm-cov --workspace --all-features --locked --summary-only --fail-under-lines 75
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest

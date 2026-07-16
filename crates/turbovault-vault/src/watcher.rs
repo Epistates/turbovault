@@ -233,9 +233,8 @@ impl Drop for VaultWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use notify::event::{AccessKind, CreateKind, ModifyKind, RemoveKind};
     use tempfile::TempDir;
-    use tokio::time::{Duration, sleep};
 
     async fn create_test_watcher() -> (VaultWatcher, UnboundedReceiver<VaultEvent>, TempDir) {
         let temp_dir = TempDir::new().unwrap();
@@ -277,152 +276,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_file_created_event() {
-        let (mut watcher, mut rx, temp_dir) = create_test_watcher().await;
-
-        watcher.start().await.unwrap();
-
-        // Give watcher time to initialize
-        sleep(Duration::from_millis(200)).await;
-
-        // Create a markdown file
-        let file_path = temp_dir.path().join("test.md");
-        fs::write(&file_path, "# Test").unwrap();
-
-        // Wait for event
-        sleep(Duration::from_millis(500)).await;
-
-        // Should receive create event (might get multiple events on some platforms)
-        let mut found_create = false;
-        while let Ok(event) = rx.try_recv() {
-            if matches!(event, VaultEvent::FileCreated(_)) {
-                // Canonicalize paths for comparison (macOS /var vs /private/var)
-                let event_path = event.path().canonicalize().ok();
-                let expected_path = file_path.canonicalize().ok();
-                if event_path == expected_path {
-                    found_create = true;
-                    break;
-                }
-            }
-        }
-        assert!(found_create, "Did not receive FileCreated event");
-
-        watcher.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_file_modified_event() {
-        let (mut watcher, mut rx, temp_dir) = create_test_watcher().await;
-
-        // Create file first
-        let file_path = temp_dir.path().join("test.md");
-        fs::write(&file_path, "# Test").unwrap();
-
-        watcher.start().await.unwrap();
-        sleep(Duration::from_millis(200)).await;
-
-        // Clear any create events
-        while rx.try_recv().is_ok() {}
-
-        // Modify file
-        fs::write(&file_path, "# Modified").unwrap();
-
-        // Wait for event
-        sleep(Duration::from_millis(500)).await;
-
-        // Should receive modify event (might get multiple events)
-        let mut found_modify = false;
-        while let Ok(event) = rx.try_recv() {
-            if matches!(
-                event,
-                VaultEvent::FileModified(_) | VaultEvent::FileCreated(_)
-            ) {
-                // Some platforms may emit Create instead of Modify on write
-                found_modify = true;
-                break;
-            }
-        }
-        assert!(found_modify, "Did not receive modification event");
-
-        watcher.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_file_deleted_event() {
-        let (mut watcher, mut rx, temp_dir) = create_test_watcher().await;
-
-        // Create file first
-        let file_path = temp_dir.path().join("test.md");
-        fs::write(&file_path, "# Test").unwrap();
-
-        watcher.start().await.unwrap();
-        sleep(Duration::from_millis(200)).await;
-
-        // Clear any create events
-        while rx.try_recv().is_ok() {}
-
-        // Delete file
-        fs::remove_file(&file_path).unwrap();
-
-        // Wait for event
-        sleep(Duration::from_millis(500)).await;
-
-        // Should receive delete event
-        let mut found_delete = false;
-        while let Ok(event) = rx.try_recv() {
-            if matches!(event, VaultEvent::FileDeleted(_)) {
-                found_delete = true;
-                break;
-            }
-        }
-        assert!(found_delete, "Did not receive FileDeleted event");
-
-        watcher.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_ignores_hidden_files() {
-        let (mut watcher, mut rx, temp_dir) = create_test_watcher().await;
-
-        watcher.start().await.unwrap();
-        sleep(Duration::from_millis(100)).await;
-
-        // Create hidden file
-        let file_path = temp_dir.path().join(".hidden.md");
-        fs::write(&file_path, "# Hidden").unwrap();
-
-        // Wait
-        sleep(Duration::from_millis(200)).await;
-
-        // Should NOT receive event
-        let event = rx.try_recv();
-        assert!(event.is_err());
-
-        watcher.stop().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_ignores_non_markdown_files() {
-        let (mut watcher, mut rx, temp_dir) = create_test_watcher().await;
-
-        watcher.start().await.unwrap();
-        sleep(Duration::from_millis(100)).await;
-
-        // Create non-markdown file
-        let file_path = temp_dir.path().join("test.txt");
-        fs::write(&file_path, "Test").unwrap();
-
-        // Wait
-        sleep(Duration::from_millis(200)).await;
-
-        // Should NOT receive event (markdown_only is true by default)
-        let event = rx.try_recv();
-        assert!(event.is_err());
-
-        watcher.stop().await.unwrap();
-    }
-
-    #[tokio::test]
     async fn test_vault_event_is_markdown() {
         let event = VaultEvent::FileCreated(PathBuf::from("test.md"));
         assert!(event.is_markdown());
@@ -454,5 +307,64 @@ mod tests {
         assert!(config.markdown_only);
         assert!(config.ignore_hidden);
         assert_eq!(config.debounce_ms, 100);
+    }
+
+    #[test]
+    fn test_convert_event_maps_supported_notify_kinds() {
+        let path = PathBuf::from("note.md");
+        let config = WatcherConfig::default();
+        let cases = [
+            (
+                EventKind::Create(CreateKind::File),
+                VaultEvent::FileCreated(path.clone()),
+            ),
+            (
+                EventKind::Modify(ModifyKind::Any),
+                VaultEvent::FileModified(path.clone()),
+            ),
+            (
+                EventKind::Remove(RemoveKind::File),
+                VaultEvent::FileDeleted(path.clone()),
+            ),
+            (EventKind::Any, VaultEvent::FileModified(path.clone())),
+        ];
+
+        for (kind, expected) in cases {
+            let event = Event::new(kind).add_path(path.clone());
+            assert_eq!(
+                VaultWatcher::convert_event(event, &config),
+                Some(vec![expected])
+            );
+        }
+
+        let access = Event::new(EventKind::Access(AccessKind::Any)).add_path(path);
+        assert_eq!(VaultWatcher::convert_event(access, &config), None);
+    }
+
+    #[test]
+    fn test_should_emit_event_applies_filters() {
+        let config = WatcherConfig::default();
+        assert!(VaultWatcher::should_emit_event(
+            &VaultEvent::FileCreated(PathBuf::from("visible.md")),
+            &config
+        ));
+        assert!(!VaultWatcher::should_emit_event(
+            &VaultEvent::FileCreated(PathBuf::from(".hidden.md")),
+            &config
+        ));
+        assert!(!VaultWatcher::should_emit_event(
+            &VaultEvent::FileCreated(PathBuf::from("visible.txt")),
+            &config
+        ));
+
+        let permissive = WatcherConfig {
+            markdown_only: false,
+            ignore_hidden: false,
+            ..WatcherConfig::default()
+        };
+        assert!(VaultWatcher::should_emit_event(
+            &VaultEvent::FileCreated(PathBuf::from(".hidden.txt")),
+            &permissive
+        ));
     }
 }

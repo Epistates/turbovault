@@ -1,8 +1,9 @@
 //! # Batch Operations Framework
 //!
-//! Provides atomic, transactional batch file operations with rollback support.
-//! All operations in a batch either succeed together or fail together, maintaining
-//! vault integrity even if individual operations encounter errors.
+//! Provides validated, fail-fast batches of vault file operations.
+//! Individual mutations use [`VaultManager`] atomic file operations, but a batch
+//! is not an all-or-nothing transaction: operations completed before a failure
+//! remain applied and are reported in [`BatchResult`].
 //!
 //! ## Quick Start
 //!
@@ -18,7 +19,7 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = ServerConfig::default();
 //!     let manager = VaultManager::new(config)?;
-//!     let executor = BatchExecutor::new(Arc::new(manager), PathBuf::from("/tmp"));
+//!     let executor = BatchExecutor::from_manager(Arc::new(manager));
 //!
 //!     // Define batch operations
 //!     let operations = vec![
@@ -37,7 +38,7 @@
 //!         },
 //!     ];
 //!
-//!     // Execute atomically
+//!     // Execute sequentially, stopping at the first failure
 //!     let result = executor.execute(operations).await?;
 //!     println!("Success: {}", result.success);
 //!     println!("Changes: {}", result.changes.len());
@@ -62,7 +63,7 @@
 //! [`BatchExecutor`] manages batch execution with:
 //! - Validation before execution
 //! - Conflict detection between operations
-//! - Atomic execution with proper sequencing
+//! - Sequential, fail-fast execution with proper ordering
 //! - Transaction ID tracking
 //! - Detailed result reporting
 //!
@@ -101,14 +102,15 @@
 //! assert!(write.conflicts_with(&delete));
 //! ```
 //!
-//! ## Atomicity Guarantees
+//! ## Execution Guarantees
 //!
 //! The batch executor ensures:
-//! - All-or-nothing semantics: entire batch succeeds or stops at first failure
+//! - The batch is validated for conflicting operations before execution
+//! - Execution stops at the first operation failure
 //! - Transaction tracking with unique IDs
 //! - Execution timing recorded
 //! - Detailed per-operation records for debugging
-//! - File integrity through atomic operations
+//! - Each individual file write uses the vault manager's atomic write path
 //!
 //! ## Error Handling
 //!
@@ -243,14 +245,24 @@ pub struct BatchResult {
     pub duration_ms: u64,
 }
 
-/// Batch executor with transaction support
+/// Batch executor with validation, sequencing, and transaction identifiers.
 pub struct BatchExecutor {
     manager: Arc<VaultManager>,
 }
 
 impl BatchExecutor {
-    /// Create a new batch executor
+    /// Create a batch executor.
+    ///
+    /// `temp_dir` is retained for source compatibility with earlier releases;
+    /// the current fail-fast executor does not stage data in a temporary
+    /// directory. Prefer [`Self::from_manager`] in new code.
     pub fn new(manager: Arc<VaultManager>, _temp_dir: PathBuf) -> Self {
+        Self { manager }
+    }
+
+    /// Create a batch executor without the legacy unused temporary-directory
+    /// argument.
+    pub fn from_manager(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }
 
@@ -275,7 +287,11 @@ impl BatchExecutor {
         Ok(())
     }
 
-    /// Execute batch operations atomically
+    /// Execute batch operations sequentially and stop at the first failure.
+    ///
+    /// Operations completed before a failure are not rolled back. Callers must
+    /// inspect [`BatchResult::success`], [`BatchResult::failed_at`], and
+    /// [`BatchResult::changes`] to determine what was applied.
     pub async fn execute(&self, ops: Vec<BatchOperation>) -> Result<BatchResult> {
         let transaction = TransactionBuilder::new();
 

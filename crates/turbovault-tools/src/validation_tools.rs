@@ -70,6 +70,9 @@ impl ValidationTools {
         // Add frontmatter validator if required
         if require_frontmatter || !required_fields.is_empty() {
             let mut fm_validator = FrontmatterValidator::new();
+            if require_frontmatter {
+                fm_validator = fm_validator.require_frontmatter();
+            }
             for field in required_fields {
                 fm_validator = fm_validator.require_field(field);
             }
@@ -122,7 +125,10 @@ impl ValidationTools {
                 break;
             }
             let report = validator.validate(vault_file);
-            combined_report.merge(report);
+            let remaining = max_issues - combined_report.total_issues();
+            for issue in report.issues.into_iter().take(remaining) {
+                combined_report.add_issue(issue);
+            }
         }
 
         Ok(Self::convert_report(combined_report))

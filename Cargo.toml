@@ -79,6 +79,9 @@ log = "0.4"
 
 # MCP server framework
 turbomcp = { version = "3.1.5", default-features = false }
+turbomcp-core = "3.1.5"
+turbomcp-server = { version = "3.1.5", default-features = false }
+turbomcp-types = "3.1.5"
 
 # SQL query engine (optional, for frontmatter SQL queries)
 gluesql = { version = "0.19", default-features = false, features = ["gluesql_memory_storage"] }

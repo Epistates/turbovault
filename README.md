@@ -43,7 +43,7 @@ TurboVault is a modular system composed of specialized crates. You can depend on
 | **[turbovault-vault](crates/turbovault-vault)** | Vault management, file I/O & atomic writes | [![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault) |
 | **[turbovault-tools](crates/turbovault-tools)** | 70 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
 | **[turbovault-sql](crates/turbovault-sql)** | SQL frontmatter queries (GlueSQL) | [![Docs.rs](https://docs.rs/turbovault-sql/badge.svg)](https://docs.rs/turbovault-sql) |
-| **[turbovault-batch](crates/turbovault-batch)** | Atomic batch operations | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
+| **[turbovault-batch](crates/turbovault-batch)** | Validated fail-fast operation batches | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
 | **[turbovault-export](crates/turbovault-export)** | Export & reporting (JSON/CSV/MD) | [![Docs.rs](https://docs.rs/turbovault-export/badge.svg)](https://docs.rs/turbovault-export) |
 | **[turbovault](crates/turbovault)** | Main MCP server binary / SDK orchestrator | [![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault) |
 
@@ -54,7 +54,7 @@ Unlike basic note readers, TurboVault understands your vault's **knowledge struc
 - **Full-text search** across all notes with BM25 ranking
 - **Link graph analysis** to discover relationships, hubs, orphans, and cycles
 - **Vault intelligence** with health scoring and automated recommendations
-- **Atomic batch operations** for safe, transactional multi-file edits
+- **Validated operation batches** for fewer round trips and fail-fast execution
 - **Multi-vault support** with instant context switching
 - **Runtime vault addition** — no vault required at startup, add them as needed
 
@@ -183,8 +183,8 @@ Claude: list_templates() -> create_from_template() -> write auto-formatted note
 
 ### Batch Content Operations
 ```
-You: "Move my 'MLOps' note to 'AI/Operations' and update all links"
-Claude: move_note() + batch operations -> atomic multi-file update
+You: "Move my 'MLOps' note to 'AI/Operations' and identify links to update"
+Claude: get_backlinks() -> move_note() -> edit_note() for each affected reference
 ```
 
 ### Link Suggestions
@@ -200,10 +200,10 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `write_note` — Create/overwrite notes (auto-creates directories)
 - `edit_note` — Surgical edits via SEARCH/REPLACE blocks
 - `delete_note` — Safe deletion with link tracking
-- `move_note` — Rename/relocate with automatic wikilink updates
+- `move_note` — Rename/relocate a note; does not rewrite incoming wikilinks
 - `move_file` — Move/rename non-note files (e.g. attachments, images)
 - `get_notes_info` — Metadata for multiple notes in a single call
-- `batch_execute` — Atomic multi-file operations (all-or-nothing transactions)
+- `batch_execute` — Validated sequential operations; stops on first failure without rollback
 
 ### Metadata & Tags (3)
 - `update_frontmatter` — Patch frontmatter fields (merge or replace)
@@ -463,7 +463,7 @@ turbovault-core        — Core types, MultiVaultManager, configuration
 turbovault-parser      — OFM (Obsidian Flavored Markdown) parsing
 turbovault-graph       — Link graph analysis with petgraph
 turbovault-vault       — Vault operations, file I/O, atomic writes
-turbovault-batch       — Transactional batch operations
+turbovault-batch       — Validated sequential batch operations
 turbovault-export      — JSON/CSV/Markdown export
 turbovault-sql         — SQL frontmatter queries (GlueSQL, feature-gated)
 turbovault-tools       — 70 MCP tool implementations
@@ -553,7 +553,7 @@ Claude:
   2. full_health_analysis() -> Issues: 12 broken links, 8 orphaned notes
   3. get_broken_links() -> List of specific broken links
   4. suggest_links() -> AI-powered link recommendations
-  5. batch_execute() -> Atomic fixes
+  5. Apply fixes individually, or use batch_execute() after reviewing its fail-fast semantics
   6. explain_vault() -> New health: 78/100
 ```
 

@@ -136,11 +136,7 @@ impl MetadataTools {
             if let Some(frontmatter) = vault_file.frontmatter
                 && filter.matches(&frontmatter.data)
             {
-                let display_path = vault_file
-                    .path
-                    .strip_prefix(self.manager.vault_path())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| vault_file.path.to_string_lossy().to_string());
+                let display_path = self.manager.relative_path(&vault_file.path);
 
                 matches.push(json!({
                     "path": display_path,

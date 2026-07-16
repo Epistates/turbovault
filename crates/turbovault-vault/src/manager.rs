@@ -472,18 +472,22 @@ impl VaultManager {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         use crate::edit::compute_hash;
+        use sha2::{Digest, Sha256};
+        use turbovault_core::bytes_to_lower_hex;
 
         let from_path = self.resolve_path(from)?;
         let to_path = self.resolve_path(to)?;
 
-        // Read content before move for graph update, audit, and hash check
-        let content = tokio::fs::read_to_string(&from_path)
-            .await
-            .map_err(Error::io)?;
+        // Preserve raw bytes so this operation remains safe for attachments and
+        // other non-UTF-8 files. Text is decoded only for note parsing/auditing.
+        let bytes = tokio::fs::read(&from_path).await.map_err(Error::io)?;
+        let content = std::str::from_utf8(&bytes).ok();
 
         // Optimistic concurrency check
         if let Some(expected) = expected_hash {
-            let actual = compute_hash(&content);
+            let actual = content
+                .map(compute_hash)
+                .unwrap_or_else(|| bytes_to_lower_hex(Sha256::digest(&bytes)));
             if actual != expected {
                 return Err(Error::ConcurrencyError {
                     reason: format!(
@@ -532,23 +536,25 @@ impl VaultManager {
             cache.remove(&from_path);
         }
 
-        // Parse and add to graph + cache at new location
-        match self.parser.parse_file(&to_path, &content) {
-            Ok(vault_file) => {
-                let mut graph = self.link_graph.write().await;
-                if let Err(e) = graph.add_file(&vault_file) {
-                    log::warn!("Graph add_file failed for {}: {}", to_path.display(), e);
-                }
-                if let Err(e) = graph.update_links(&vault_file) {
-                    log::warn!("Graph update_links failed for {}: {}", to_path.display(), e);
-                }
-                drop(graph);
+        // Parse and add UTF-8 notes to the graph + cache at the new location.
+        if let Some(content) = content {
+            match self.parser.parse_file(&to_path, content) {
+                Ok(vault_file) => {
+                    let mut graph = self.link_graph.write().await;
+                    if let Err(e) = graph.add_file(&vault_file) {
+                        log::warn!("Graph add_file failed for {}: {}", to_path.display(), e);
+                    }
+                    if let Err(e) = graph.update_links(&vault_file) {
+                        log::warn!("Graph update_links failed for {}: {}", to_path.display(), e);
+                    }
+                    drop(graph);
 
-                // Insert new path into cache so vault_files_validated() finds the moved note.
-                self.insert_cache_entry(to_path.clone(), vault_file).await;
-            }
-            Err(e) => {
-                log::warn!("Failed to parse {} after move: {}", to_path.display(), e);
+                    // Insert new path into cache so vault_files_validated() finds the moved note.
+                    self.insert_cache_entry(to_path.clone(), vault_file).await;
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse {} after move: {}", to_path.display(), e);
+                }
             }
         }
 
@@ -567,13 +573,15 @@ impl VaultManager {
 
             let mut entry = AuditEntry::new(OperationType::Move, &rel_from).with_new_path(&rel_to);
 
-            match snapshot_store.store(&content).await {
-                Ok(snap_id) => {
-                    let hash = SnapshotStore::compute_hash(&content);
-                    entry = entry.with_before(hash.clone(), snap_id.clone());
-                    entry = entry.with_after(hash, snap_id);
+            if let Some(content) = content {
+                match snapshot_store.store(content).await {
+                    Ok(snap_id) => {
+                        let hash = SnapshotStore::compute_hash(content);
+                        entry = entry.with_before(hash.clone(), snap_id.clone());
+                        entry = entry.with_after(hash, snap_id);
+                    }
+                    Err(e) => log::warn!("Failed to store snapshot: {}", e),
                 }
-                Err(e) => log::warn!("Failed to store snapshot: {}", e),
             }
 
             if let Err(e) = audit_log.record(&entry).await {
@@ -765,6 +773,39 @@ impl VaultManager {
         self.parser
             .parse_file(&full_path, &content)
             .map_err(|e| Error::parse_error(e.to_string()))
+    }
+
+    /// Synchronize one note's on-disk state into the parsed cache and link graph.
+    ///
+    /// This is used after an external transactional operation, such as rollback,
+    /// that creates, rewrites, or removes a note without going through the normal
+    /// `write_file`/`delete_file` paths.
+    pub async fn refresh_file_state(&self, path: &Path) -> Result<()> {
+        let full_path = self.resolve_path(path)?;
+        match tokio::fs::read_to_string(&full_path).await {
+            Ok(content) => {
+                let vault_file = self
+                    .parser
+                    .parse_file(&full_path, &content)
+                    .map_err(|error| Error::parse_error(error.to_string()))?;
+                {
+                    let mut graph = self.link_graph.write().await;
+                    graph.add_file(&vault_file)?;
+                    graph.update_links(&vault_file)?;
+                }
+                self.insert_cache_entry(full_path, vault_file).await;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                {
+                    let mut graph = self.link_graph.write().await;
+                    let _ = graph.remove_file(&full_path);
+                }
+                self.file_cache.write().await.remove(&full_path);
+                Ok(())
+            }
+            Err(error) => Err(Error::io(error)),
+        }
     }
 
     /// Scan vault and return list of all markdown files
@@ -1374,6 +1415,62 @@ mod tests {
             read_back, content,
             "Destination must have the original content"
         );
+    }
+
+    /// Moving an attachment must preserve arbitrary bytes rather than requiring UTF-8.
+    #[tokio::test]
+    async fn test_move_file_preserves_non_utf8_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        let src = Path::new("attachments/source.bin");
+        let dst = Path::new("assets/destination.bin");
+        let bytes = [0, 159, 146, 150, 255, 10];
+
+        tokio::fs::create_dir_all(temp_dir.path().join("attachments"))
+            .await
+            .unwrap();
+        tokio::fs::write(temp_dir.path().join(src), bytes)
+            .await
+            .unwrap();
+
+        manager.move_file(src, dst, None).await.unwrap();
+
+        assert!(!temp_dir.path().join(src).exists());
+        assert_eq!(
+            tokio::fs::read(temp_dir.path().join(dst)).await.unwrap(),
+            bytes
+        );
+        assert!(manager.all_cached_vault_files().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_file_state_tracks_external_delete_and_restore() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("target.md"), "# Target\n").unwrap();
+        std::fs::write(
+            temp_dir.path().join("source.md"),
+            "# Source\n\n[[target]]\n",
+        )
+        .unwrap();
+        manager.initialize().await.unwrap();
+
+        let source = Path::new("source.md");
+        tokio::fs::remove_file(temp_dir.path().join(source))
+            .await
+            .unwrap();
+        manager.refresh_file_state(source).await.unwrap();
+        assert_eq!(manager.all_cached_vault_files().await.len(), 1);
+        assert!(manager.get_forward_links(source).await.unwrap().is_empty());
+
+        tokio::fs::write(temp_dir.path().join(source), "# Restored\n\n[[target]]\n")
+            .await
+            .unwrap();
+        manager.refresh_file_state(source).await.unwrap();
+        assert_eq!(manager.all_cached_vault_files().await.len(), 2);
+        assert_eq!(manager.get_forward_links(source).await.unwrap().len(), 1);
     }
 
     /// Moving a file to a subdirectory that doesn't exist yet should create

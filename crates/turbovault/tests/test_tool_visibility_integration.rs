@@ -19,6 +19,77 @@ fn tool_names(layer: &impl McpHandler) -> Vec<String> {
     layer.list_tools().into_iter().map(|t| t.name).collect()
 }
 
+#[test]
+fn server_advertises_package_version() {
+    let server = make_server();
+    assert_eq!(server.server_info().version, env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
+fn mutating_tool_descriptions_match_current_safety_contract() {
+    let server = make_server();
+    let tools = server.list_tools();
+
+    let batch = tools
+        .iter()
+        .find(|tool| tool.name == "batch_execute")
+        .expect("batch_execute descriptor");
+    let batch_description = batch.description.as_deref().unwrap_or_default();
+    assert!(batch_description.contains("without rolling back"));
+    assert!(!batch_description.contains("all-or-nothing"));
+
+    let move_note = tools
+        .iter()
+        .find(|tool| tool.name == "move_note")
+        .expect("move_note descriptor");
+    let move_description = move_note.description.as_deref().unwrap_or_default();
+    assert!(move_description.contains("Does NOT update wikilinks"));
+}
+
+#[tokio::test]
+async fn batch_response_reports_partial_failure_contract() {
+    let temp = tempfile::TempDir::new().expect("temp vault");
+    let server = make_server();
+    let config = turbovault_core::VaultConfig::builder("test", temp.path())
+        .build()
+        .expect("vault config");
+    server
+        .multi_vault()
+        .add_vault(config)
+        .await
+        .expect("register vault");
+
+    let result = server
+        .call_tool(
+            "batch_execute",
+            serde_json::json!({
+                "operations": [
+                    {"type": "CreateNote", "path": "created.md", "content": "# Created"},
+                    {"type": "DeleteNote", "path": "missing.md"}
+                ]
+            }),
+            &ctx(),
+        )
+        .await
+        .expect("batch tool returns a structured failed batch");
+
+    let response = result
+        .structured_content
+        .expect("batch response should expose structured content");
+    assert_eq!(response["success"], false);
+    assert_eq!(response["data"]["success"], false);
+    assert_eq!(response["data"]["executed"], 1);
+    assert_eq!(response["data"]["failed_at"], 1);
+    assert_eq!(response["meta"]["execution_mode"], "sequential_fail_fast");
+    assert!(
+        response["warnings"][0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not rolled back")
+    );
+    assert!(temp.path().join("created.md").exists());
+}
+
 #[tokio::test]
 async fn visibility_layer_empty_settings_exposes_all_tools() {
     let layer =

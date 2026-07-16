@@ -58,7 +58,7 @@ make all
 │                  mcp-obsidian Binary                     │
 │                                                          │
 │  ┌────────────────────────────────────────────────┐    │
-│  │  CLI (main.rs)                                 │    │
+│  │  CLI (cli.rs; thin bin/main.rs)                │    │
 │  │  - Parse args (vault path, profile)            │    │
 │  │  - Initialize observability (OTLP)             │    │
 │  │  - Create VaultManager                          │    │
@@ -66,8 +66,9 @@ make all
 │  └────────────────────────────────────────────────┘    │
 │                                                          │
 │  ┌────────────────────────────────────────────────┐    │
-│  │  44 MCP Tools (tools.rs)                       │    │
-│  │  - File ops, search, graph, batch, export      │    │
+│  │  70 MCP tools via a flat provider facade       │    │
+│  │  - Vault, files, graph, discovery, content     │    │
+│  │  - Analysis and audit providers                │    │
 │  │  - Error conversion (Error → McpError)         │    │
 │  │  - Observability (spans, metrics)              │    │
 │  └────────────────────────────────────────────────┘    │
@@ -106,7 +107,7 @@ The project is organized as a Rust workspace with 8 crates:
 | **turbovault-parser** | OFM parsing (wikilinks, frontmatter) | ~1,500 LOC |
 | **turbovault-graph** | Link graph analysis | ~1,200 LOC |
 | **turbovault-vault** | File I/O, caching, validation | ~1,800 LOC |
-| **turbovault-batch** | Atomic multi-file operations | ~800 LOC |
+| **turbovault-batch** | Validated fail-fast operation batches | ~800 LOC |
 | **turbovault-export** | JSON/CSV export formats | ~600 LOC |
 | **turbovault-tools** | MCP tools implementation | ~2,500 LOC |
 | **turbovault-server** | CLI + MCP server | ~600 LOC |
@@ -115,7 +116,7 @@ The project is organized as a Rust workspace with 8 crates:
 
 ## Adding a New Tool
 
-1. **Implement in `tools.rs`**:
+1. **Implement the MCP wrapper and assign its provider**:
 
    ```rust
    #[tool("my_new_tool")]
@@ -126,6 +127,11 @@ The project is organized as a Rust workspace with 8 crates:
        Ok(result)
    }
    ```
+
+   Put the wrapper in the focused module that owns it under
+   `crates/turbovault/src/tools/providers/`. The facade rejects duplicate
+   public names, and a golden parity test protects the complete `tools/list`
+   output.
 
 2. **Add to turbovault-tools** (if reusable logic):
 

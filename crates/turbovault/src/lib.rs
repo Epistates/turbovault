@@ -11,7 +11,7 @@
 //! - **Vault Management**: File operations, watching, and atomic transactions
 //! - **Advanced Search**: Full-text search with Tantivy
 //! - **Graph Analysis**: Link relationships, backlinks, and health analysis
-//! - **Batch Operations**: Atomic multi-file operations with rollback
+//! - **Batch Operations**: Validated, sequential fail-fast file operations
 //! - **Multiple Transports**: Stdio (default), HTTP, WebSocket, TCP, Unix sockets
 //! - **Export & Reporting**: JSON/CSV export for analysis results
 //!
@@ -64,6 +64,7 @@
 //! - `turbovault_graph` - Graph analysis (see <https://docs.rs/turbovault-graph>)
 //! - `turbovault_batch` - Batch operations (see <https://docs.rs/turbovault-batch>)
 
+pub mod cli;
 pub mod resources;
 pub mod tool_visibility;
 pub mod tools;
