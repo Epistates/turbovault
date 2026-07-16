@@ -257,7 +257,23 @@ mod tests {
             serde_json::to_string_pretty(&server.list_tools()).expect("serialize tool catalog");
 
         assert_eq!(server.list_tools().len(), 70, "public tool count changed");
-        assert_eq!(actual, expected);
+        if actual != expected {
+            let actual_bytes = actual.as_bytes();
+            let expected_bytes = expected.as_bytes();
+            let offset = actual_bytes
+                .iter()
+                .zip(expected_bytes)
+                .position(|(left, right)| left != right)
+                .unwrap_or_else(|| actual_bytes.len().min(expected_bytes.len()));
+            let start = offset.saturating_sub(120);
+            let actual_end = (offset + 240).min(actual_bytes.len());
+            let expected_end = (offset + 240).min(expected_bytes.len());
+            panic!(
+                "public tool catalog changed at byte {offset}\nexpected near mismatch:\n{}\nactual near mismatch:\n{}",
+                String::from_utf8_lossy(&expected_bytes[start..expected_end]),
+                String::from_utf8_lossy(&actual_bytes[start..actual_end]),
+            );
+        }
         assert_eq!(server.tool_routes.len(), 70);
     }
 

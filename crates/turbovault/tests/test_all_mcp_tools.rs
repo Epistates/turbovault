@@ -277,10 +277,12 @@ async fn integration_test_batch_operations() {
         turbovault_tools::BatchOperation::WriteNote {
             path: "batch1.md".to_string(),
             content: "# Batch 1".to_string(),
+            expected_hash: None,
         },
         turbovault_tools::BatchOperation::WriteNote {
             path: "batch2.md".to_string(),
             content: "# Batch 2".to_string(),
+            expected_hash: None,
         },
     ];
 

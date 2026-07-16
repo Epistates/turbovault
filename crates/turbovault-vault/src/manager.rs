@@ -364,17 +364,19 @@ impl VaultManager {
             .await
             .map_err(Error::io)?;
 
-        // Validate expected hash if provided
-        if let Some(expected) = expected_hash {
-            let actual = compute_hash(&current_content);
-            if actual != expected {
-                return Err(Error::ConcurrencyError {
-                    reason: format!(
-                        "File modified since read. Expected hash: {}, actual: {}. Re-read the file and try again.",
-                        expected, actual
-                    ),
-                });
-            }
+        // Preserve the exact pre-image that the edit was calculated from. The
+        // write below revalidates this hash after releasing the cache lock.
+        let validated_hash = compute_hash(&current_content);
+
+        if let Some(expected) = expected_hash
+            && validated_hash != expected
+        {
+            return Err(Error::ConcurrencyError {
+                reason: format!(
+                    "File modified since read. Expected hash: {}, actual: {}. Re-read the file and try again.",
+                    expected, validated_hash
+                ),
+            });
         }
 
         // Parse and apply edits
@@ -391,8 +393,10 @@ impl VaultManager {
         // Release cache guard before write (avoid deadlock)
         drop(_cache_guard);
 
-        // Write atomically (hash already validated above, pass None)
-        self.write_file(&vault_path, &new_content, None).await?;
+        // Re-check at write time so an intervening in-process or external
+        // change is rejected instead of silently overwritten.
+        self.write_file(&vault_path, &new_content, Some(&validated_hash))
+            .await?;
 
         Ok(edit_result)
     }
@@ -1919,5 +1923,92 @@ mod tests {
             0,
             "deleted file must be evicted from cache"
         );
+    }
+
+    #[tokio::test]
+    async fn stale_write_hash_preserves_existing_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        manager
+            .write_file(Path::new("note.md"), "current", None)
+            .await
+            .unwrap();
+
+        let error = manager
+            .write_file(Path::new("note.md"), "replacement", Some("stale"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ConcurrencyError { .. }));
+        assert_eq!(
+            manager.read_file(Path::new("note.md")).await.unwrap(),
+            "current"
+        );
+    }
+
+    #[tokio::test]
+    async fn expected_hash_rejects_recreating_a_deleted_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+        let error = manager
+            .write_file(Path::new("missing.md"), "replacement", Some("stale"))
+            .await
+            .unwrap_err();
+
+        match error {
+            Error::ConcurrencyError { reason } => assert!(reason.contains("does not exist")),
+            other => panic!("expected concurrency error, got {other:?}"),
+        }
+        assert!(!temp_dir.path().join("missing.md").exists());
+    }
+
+    #[tokio::test]
+    async fn stale_edit_hash_preserves_existing_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        manager
+            .write_file(Path::new("note.md"), "hello world", None)
+            .await
+            .unwrap();
+
+        let edits = "<<<<<<< SEARCH\nhello world\n=======\ngoodbye world\n>>>>>>> REPLACE";
+        let error = manager
+            .edit_file(Path::new("note.md"), edits, Some("stale"), false)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ConcurrencyError { .. }));
+        assert_eq!(
+            manager.read_file(Path::new("note.md")).await.unwrap(),
+            "hello world"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_delete_and_move_hashes_preserve_the_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        manager
+            .write_file(Path::new("note.md"), "keep me", None)
+            .await
+            .unwrap();
+
+        let delete_error = manager
+            .delete_file(Path::new("note.md"), Some("stale"))
+            .await
+            .unwrap_err();
+        assert!(matches!(delete_error, Error::ConcurrencyError { .. }));
+
+        let move_error = manager
+            .move_file(Path::new("note.md"), Path::new("moved.md"), Some("stale"))
+            .await
+            .unwrap_err();
+        assert!(matches!(move_error, Error::ConcurrencyError { .. }));
+        assert_eq!(
+            manager.read_file(Path::new("note.md")).await.unwrap(),
+            "keep me"
+        );
+        assert!(!temp_dir.path().join("moved.md").exists());
     }
 }

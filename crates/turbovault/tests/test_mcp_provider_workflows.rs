@@ -762,6 +762,67 @@ async fn file_provider_rejects_invalid_modes_stale_writes_and_unsafe_paths() {
 }
 
 #[tokio::test]
+async fn batch_preconditions_abort_before_public_side_effects() {
+    let (temp, server) = registered_server("batch-preconditions").await;
+    write_note(&server, "guarded.md", "current").await;
+    let guarded = call(&server, "read_note", json!({"path": "guarded.md"})).await;
+    let current_hash = guarded["data"]["hash"]
+        .as_str()
+        .expect("guarded hash")
+        .to_string();
+
+    let updated = call(
+        &server,
+        "batch_execute",
+        json!({
+            "operations": [{
+                "type": "WriteNote",
+                "path": "guarded.md",
+                "content": "updated",
+                "expected_hash": current_hash,
+            }]
+        }),
+    )
+    .await;
+    assert_eq!(updated["success"], true);
+    assert_eq!(updated["data"]["executed"], 1);
+
+    let stale = call(
+        &server,
+        "batch_execute",
+        json!({
+            "operations": [
+                {
+                    "type": "CreateNote",
+                    "path": "side-effect.md",
+                    "content": "must not exist"
+                },
+                {
+                    "type": "WriteNote",
+                    "path": "guarded.md",
+                    "content": "clobbered",
+                    "expected_hash": "0".repeat(64)
+                }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(stale["success"], false);
+    assert_eq!(stale["data"]["executed"], 0);
+    assert!(
+        stale["data"]["errors"][0]
+            .as_str()
+            .expect("precondition error")
+            .contains("Precondition failed")
+    );
+    assert!(!temp.path().join("side-effect.md").exists());
+    assert_eq!(
+        call(&server, "read_note", json!({"path": "guarded.md"})).await["data"]["content"],
+        "updated"
+    );
+}
+
+#[tokio::test]
 async fn vault_lifecycle_works_through_the_public_facade() {
     let root = TempDir::new().expect("vault lifecycle root");
     let created_path = root.path().join("created");

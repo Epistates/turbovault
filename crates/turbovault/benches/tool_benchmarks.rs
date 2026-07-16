@@ -173,6 +173,7 @@ fn bench_batch_operations(c: &mut Criterion) {
                         .map(|i| BatchOperation::WriteNote {
                             path: format!("batch_{}.md", i),
                             content: format!("# Batch {}", i),
+                            expected_hash: None,
                         })
                         .collect();
                     tools.batch_execute(black_box(ops)).await.unwrap()

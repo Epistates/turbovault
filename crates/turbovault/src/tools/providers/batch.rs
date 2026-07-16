@@ -27,8 +27,8 @@ impl BatchProvider {
 
     /// Execute a validated batch of file operations, stopping on first failure.
     #[tool(
-        description = "Execute multiple file operations sequentially after conflict validation; stops at the first failure without rolling back earlier operations",
-        usage = "Use to reduce round trips for independent file operations. This is fail-fast, not an all-or-nothing transaction: inspect data.success, data.failed_at, and data.changes because earlier operations remain applied when a later operation fails. Not idempotent.",
+        description = "Execute multiple file operations sequentially after conflict and expected-hash validation; stops at the first failure without rolling back earlier operations",
+        usage = "Use to reduce round trips for independent file operations. WriteNote, DeleteNote, and MoveNote accept expected_hash; every supplied hash is checked before execution so an already-stale batch has no side effects. This remains fail-fast, not an all-or-nothing transaction: inspect data.success, data.failed_at, and data.changes because a race or later operation failure can leave earlier operations applied. Not idempotent.",
         performance = "Depends on operation count and types. Operations run sequentially.",
         related = ["write_note", "delete_note", "move_note"],
         examples = [

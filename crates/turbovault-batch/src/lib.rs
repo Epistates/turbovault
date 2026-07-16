@@ -93,10 +93,12 @@
 //! let write = BatchOperation::WriteNote {
 //!     path: "file.md".to_string(),
 //!     content: "content".to_string(),
+//!     expected_hash: None,
 //! };
 //!
 //! let delete = BatchOperation::DeleteNote {
 //!     path: "file.md".to_string(),
+//!     expected_hash: None,
 //! };
 //!
 //! assert!(write.conflicts_with(&delete));
@@ -147,15 +149,32 @@ pub enum BatchOperation {
 
     /// Write/overwrite a note
     #[serde(rename = "WriteNote", alias = "WriteFile")]
-    WriteNote { path: String, content: String },
+    WriteNote {
+        path: String,
+        content: String,
+        /// Optional optimistic-concurrency precondition checked before any operation in the batch is applied.
+        #[serde(default)]
+        expected_hash: Option<String>,
+    },
 
     /// Delete a note
     #[serde(rename = "DeleteNote", alias = "DeleteFile")]
-    DeleteNote { path: String },
+    DeleteNote {
+        path: String,
+        /// Optional optimistic-concurrency precondition on the deleted file.
+        #[serde(default)]
+        expected_hash: Option<String>,
+    },
 
     /// Move/rename a note
     #[serde(rename = "MoveNote", alias = "MoveFile")]
-    MoveNote { from: String, to: String },
+    MoveNote {
+        from: String,
+        to: String,
+        /// Optional optimistic-concurrency precondition on the source file.
+        #[serde(default)]
+        expected_hash: Option<String>,
+    },
 
     /// Update links in a note (find and replace link target)
     #[serde(rename = "UpdateLinks")]
@@ -172,8 +191,8 @@ impl BatchOperation {
         match self {
             Self::CreateNote { path, .. } => vec![path.clone()],
             Self::WriteNote { path, .. } => vec![path.clone()],
-            Self::DeleteNote { path } => vec![path.clone()],
-            Self::MoveNote { from, to } => vec![from.clone(), to.clone()],
+            Self::DeleteNote { path, .. } => vec![path.clone()],
+            Self::MoveNote { from, to, .. } => vec![from.clone(), to.clone()],
             Self::UpdateLinks {
                 file,
                 old_target,
@@ -181,6 +200,27 @@ impl BatchOperation {
             } => {
                 vec![file.clone(), old_target.clone(), new_target.clone()]
             }
+        }
+    }
+
+    /// Return the path and expected content hash guarded by this operation.
+    pub fn precondition(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::WriteNote {
+                path,
+                expected_hash: Some(hash),
+                ..
+            }
+            | Self::DeleteNote {
+                path,
+                expected_hash: Some(hash),
+            } => Some((path, hash)),
+            Self::MoveNote {
+                from,
+                expected_hash: Some(hash),
+                ..
+            } => Some((from, hash)),
+            _ => None,
         }
     }
 
@@ -287,6 +327,30 @@ impl BatchExecutor {
         Ok(())
     }
 
+    /// Check all optimistic-concurrency guards before applying any operation.
+    async fn precheck_preconditions(&self, ops: &[BatchOperation]) -> Result<()> {
+        for op in ops {
+            let Some((path, expected)) = op.precondition() else {
+                continue;
+            };
+
+            let path_buf = PathBuf::from(path);
+            let content = self.manager.read_file(&path_buf).await.map_err(|error| {
+                Error::concurrency_error(format!(
+                    "Precondition failed for {path}: expected hash {expected}, but the file could not be read ({error}). Re-read the file and retry."
+                ))
+            })?;
+            let actual = turbovault_vault::compute_hash(&content);
+            if actual != expected {
+                return Err(Error::concurrency_error(format!(
+                    "Precondition failed for {path}: expected hash {expected}, actual {actual}. Re-read the file and retry."
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Execute batch operations sequentially and stop at the first failure.
     ///
     /// Operations completed before a failure are not rolled back. Callers must
@@ -297,6 +361,19 @@ impl BatchExecutor {
 
         // 1. Validate
         if let Err(e) = self.validate(&ops).await {
+            return Ok(BatchResult {
+                success: false,
+                executed: 0,
+                total: ops.len(),
+                failed_at: None,
+                changes: vec![],
+                errors: vec![e.to_string()],
+                records: vec![],
+                transaction_id: transaction.transaction_id().to_string(),
+                duration_ms: transaction.elapsed_ms(),
+            });
+        }
+        if let Err(e) = self.precheck_preconditions(&ops).await {
             return Ok(BatchResult {
                 success: false,
                 executed: 0,
@@ -380,22 +457,39 @@ impl BatchExecutor {
                 Ok(format!("Created: {}", path))
             }
 
-            BatchOperation::WriteNote { path, content } => {
+            BatchOperation::WriteNote {
+                path,
+                content,
+                expected_hash,
+            } => {
                 let path_buf = PathBuf::from(path);
-                self.manager.write_file(&path_buf, content, None).await?;
+                self.manager
+                    .write_file(&path_buf, content, expected_hash.as_deref())
+                    .await?;
                 Ok(format!("Updated: {}", path))
             }
 
-            BatchOperation::DeleteNote { path } => {
+            BatchOperation::DeleteNote {
+                path,
+                expected_hash,
+            } => {
                 let path_buf = PathBuf::from(path);
-                self.manager.delete_file(&path_buf, None).await?;
+                self.manager
+                    .delete_file(&path_buf, expected_hash.as_deref())
+                    .await?;
                 Ok(format!("Deleted: {}", path))
             }
 
-            BatchOperation::MoveNote { from, to } => {
+            BatchOperation::MoveNote {
+                from,
+                to,
+                expected_hash,
+            } => {
                 let from_buf = PathBuf::from(from);
                 let to_buf = PathBuf::from(to);
-                self.manager.move_file(&from_buf, &to_buf, None).await?;
+                self.manager
+                    .move_file(&from_buf, &to_buf, expected_hash.as_deref())
+                    .await?;
                 Ok(format!("Moved: {} → {}", from, to))
             }
 
@@ -440,6 +534,7 @@ mod tests {
         let op = BatchOperation::MoveNote {
             from: "a.md".to_string(),
             to: "b.md".to_string(),
+            expected_hash: None,
         };
         let affected = op.affected_files();
         assert_eq!(affected.len(), 2);
@@ -452,9 +547,11 @@ mod tests {
         let op1 = BatchOperation::WriteNote {
             path: "file.md".to_string(),
             content: "content".to_string(),
+            expected_hash: None,
         };
         let op2 = BatchOperation::DeleteNote {
             path: "file.md".to_string(),
+            expected_hash: None,
         };
 
         assert!(op1.conflicts_with(&op2));
@@ -466,10 +563,12 @@ mod tests {
         let op1 = BatchOperation::WriteNote {
             path: "file1.md".to_string(),
             content: "content".to_string(),
+            expected_hash: None,
         };
         let op2 = BatchOperation::WriteNote {
             path: "file2.md".to_string(),
             content: "content".to_string(),
+            expected_hash: None,
         };
 
         assert!(!op1.conflicts_with(&op2));
@@ -526,6 +625,7 @@ mod tests {
             .execute(vec![BatchOperation::WriteNote {
                 path: "existing.md".to_string(),
                 content: "new content".to_string(),
+                expected_hash: None,
             }])
             .await
             .unwrap();
@@ -545,6 +645,7 @@ mod tests {
         let result = executor
             .execute(vec![BatchOperation::DeleteNote {
                 path: "to_delete.md".to_string(),
+                expected_hash: None,
             }])
             .await
             .unwrap();
@@ -563,6 +664,7 @@ mod tests {
             .execute(vec![BatchOperation::MoveNote {
                 from: "source.md".to_string(),
                 to: "destination.md".to_string(),
+                expected_hash: None,
             }])
             .await
             .unwrap();
@@ -626,6 +728,7 @@ mod tests {
             },
             BatchOperation::DeleteNote {
                 path: "nonexistent.md".to_string(),
+                expected_hash: None,
             },
         ];
 
@@ -657,5 +760,90 @@ mod tests {
         assert_eq!(result.executed, 0);
         assert_eq!(result.total, 0);
         assert!(!result.errors.is_empty(), "should report why it failed");
+    }
+
+    #[tokio::test]
+    async fn matching_write_precondition_succeeds() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("note.md"), "v1").unwrap();
+        let expected_hash = turbovault_vault::compute_hash("v1");
+        let executor = make_executor(&temp).await;
+
+        let result = executor
+            .execute(vec![BatchOperation::WriteNote {
+                path: "note.md".to_string(),
+                content: "v2".to_string(),
+                expected_hash: Some(expected_hash),
+            }])
+            .await
+            .unwrap();
+
+        assert!(result.success, "batch should succeed: {:?}", result.errors);
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("note.md")).unwrap(),
+            "v2"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_precondition_aborts_before_any_operation() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("guarded.md"), "current").unwrap();
+        let executor = make_executor(&temp).await;
+
+        let result = executor
+            .execute(vec![
+                BatchOperation::CreateNote {
+                    path: "side-effect.md".to_string(),
+                    content: "must not be written".to_string(),
+                },
+                BatchOperation::WriteNote {
+                    path: "guarded.md".to_string(),
+                    content: "replacement".to_string(),
+                    expected_hash: Some("stale".to_string()),
+                },
+            ])
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.executed, 0);
+        assert!(!temp.path().join("side-effect.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("guarded.md")).unwrap(),
+            "current"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_and_move_preconditions_guard_their_source_files() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("delete.md"), "keep").unwrap();
+        let executor = make_executor(&temp).await;
+
+        let delete = executor
+            .execute(vec![BatchOperation::DeleteNote {
+                path: "delete.md".to_string(),
+                expected_hash: Some("stale".to_string()),
+            }])
+            .await
+            .unwrap();
+        assert!(!delete.success);
+        assert_eq!(delete.executed, 0);
+        assert!(temp.path().join("delete.md").exists());
+
+        std::fs::write(temp.path().join("source.md"), "move me").unwrap();
+        let source_hash = turbovault_vault::compute_hash("move me");
+        let moved = executor
+            .execute(vec![BatchOperation::MoveNote {
+                from: "source.md".to_string(),
+                to: "destination.md".to_string(),
+                expected_hash: Some(source_hash),
+            }])
+            .await
+            .unwrap();
+        assert!(moved.success, "move should succeed: {:?}", moved.errors);
+        assert!(!temp.path().join("source.md").exists());
+        assert!(temp.path().join("destination.md").exists());
     }
 }
