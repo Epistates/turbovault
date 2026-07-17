@@ -90,6 +90,7 @@ impl TemplateProvider {
         template_id: String,
         file_path: String,
         fields: String, // JSON string
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = TemplateEngine::new(manager);
@@ -98,8 +99,18 @@ impl TemplateProvider {
         let field_values: HashMap<String, String> = serde_json::from_str(&fields)
             .map_err(|e| McpError::invalid_request(format!("Invalid fields JSON: {}", e)))?;
 
-        let result = engine
-            .create_from_template(&template_id, &file_path, field_values)
+        let (content, result) = engine
+            .compute_from_template(&template_id, &file_path, field_values)
+            .await
+            .map_err(to_mcp_error)?;
+        let message = self
+            .resolve_commit_message(commit_message, || {
+                format!("create_from_template {template_id} -> {file_path}")
+            })
+            .await?;
+        self.get_active_write_tools()
+            .await?
+            .create_file_with_message(&file_path, &content, &message)
             .await
             .map_err(to_mcp_error)?;
 

@@ -45,7 +45,7 @@
   },
   {
     "name": "write_note",
-    "description": "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. Supports optimistic concurrency: pass expected_hash (from read_note) to prevent overwriting concurrent changes",
+    "description": "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash unless force=true. Git-backed vaults commit the mutation atomically.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -68,6 +68,22 @@
           ]
         },
         "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_boolean",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "commit_message": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_string",
           "type": [
@@ -123,6 +139,14 @@
             "boolean",
             "null"
           ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -143,7 +167,7 @@
   },
   {
     "name": "delete_note",
-    "description": "Permanently delete a note from active vault (irreversible, confirmation-protected)",
+    "description": "Delete a note with confirmation, concurrency protection, and backlink safety. By default refuses when inbound links exist; use on_backlinks='rewrite-stale-callout' for an atomic delete+rewrite, or force=true to leave broken links.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -158,6 +182,30 @@
           "type": "string"
         },
         "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "force": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_boolean",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "on_backlinks": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_string",
           "type": [
@@ -185,7 +233,7 @@
   },
   {
     "name": "move_note",
-    "description": "Move or rename a note within active vault. Does NOT update wikilinks — use get_backlinks first to assess impact",
+    "description": "Move or rename a note. Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -204,6 +252,22 @@
           "title": "Nullable_string",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "update_backlinks": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_boolean",
+          "type": [
+            "boolean",
             "null"
           ]
         }
@@ -767,6 +831,14 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "string",
           "type": "string"
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1001,7 +1073,7 @@
   },
   {
     "name": "batch_execute",
-    "description": "Execute multiple file operations sequentially after conflict and expected-hash validation; stops at the first failure without rolling back earlier operations",
+    "description": "Execute multiple file operations. With write_backend=git, the complete batch is one atomic commit with per-path CAS preconditions: every operation applies or none do.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1017,7 +1089,7 @@
               "description": "Individual batch operation to execute",
               "oneOf": [
                 {
-                  "description": "Create a new note with content",
+                  "description": "Create a new note with content. Defaults to strict-create: the\nsubstrate adds `expect_absent`, so the loser of a concurrent-create\nrace aborts the entire batch with `ConcurrencyError`\n(turbovault-947 / 6fo §6 reconsideration domino).\n\n`force: Some(true)` disables `expect_absent`, falling back to\nupsert semantics (caller-acknowledged blind create/overwrite —\nequivalent to `WriteNote { expected_hash: None }`).",
                   "type": "object",
                   "properties": {
                     "path": {
@@ -1025,6 +1097,13 @@
                     },
                     "content": {
                       "type": "string"
+                    },
+                    "force": {
+                      "description": "Disable the implicit `expect_absent` precondition. Default\nfalse; pass true to acknowledge a blind create/overwrite.",
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
                     },
                     "type": {
                       "type": "string",
@@ -1038,7 +1117,7 @@
                   ]
                 },
                 {
-                  "description": "Write/overwrite a note",
+                  "description": "Write/overwrite a note. `expected_hash` (git blob OID hex on git\nbackend, SHA-256 on legacy) carries an `expect_blob` precondition;\nthe whole batch aborts if the target file no longer matches the\nexpected pre-image (turbovault-c0e).",
                   "type": "object",
                   "properties": {
                     "path": {
@@ -1052,8 +1131,7 @@
                       "type": [
                         "string",
                         "null"
-                      ],
-                      "default": null
+                      ]
                     },
                     "type": {
                       "type": "string",
@@ -1067,7 +1145,7 @@
                   ]
                 },
                 {
-                  "description": "Delete a note",
+                  "description": "Delete a note. `expected_hash` guards the delete against a\nconcurrent modification of the target.\n\nturbovault-0g4.7: on the **git backend**, `on_backlinks` controls inbound\nwikilinks (parity with the standalone `delete_note`):\n- `\"refuse\"` (default) — abort the batch if the note has inbound\n  backlinks (prevents silently shipping broken links);\n- `\"rewrite-stale-callout\"` — atomically `~~[[strikethrough]]~~` every\n  linker in the same commit;\n- `\"force\"` — delete and leave inbound links dangling (the pre-0g4.7\n  behavior).\n\nThe legacy backend ignores this field and always does a bare delete (no\natomic multi-file primitive).",
                   "type": "object",
                   "properties": {
                     "path": {
@@ -1078,8 +1156,13 @@
                       "type": [
                         "string",
                         "null"
-                      ],
-                      "default": null
+                      ]
+                    },
+                    "on_backlinks": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "type": {
                       "type": "string",
@@ -1092,7 +1175,7 @@
                   ]
                 },
                 {
-                  "description": "Move/rename a note",
+                  "description": "Move/rename a note. `expected_hash` guards the SOURCE against\nconcurrent modification (the destination always carries\n`expect_absent`, refusing to clobber).\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The legacy backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
                   "type": "object",
                   "properties": {
                     "from": {
@@ -1106,8 +1189,13 @@
                       "type": [
                         "string",
                         "null"
-                      ],
-                      "default": null
+                      ]
+                    },
+                    "update_backlinks": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
                     },
                     "type": {
                       "type": "string",
@@ -1121,7 +1209,7 @@
                   ]
                 },
                 {
-                  "description": "Update links in a note (find and replace link target)",
+                  "description": "Update links in a note (find and replace link target).\n`expected_hash` guards the source file from concurrent\nmodification — important when several batch ops update siblings\nof the same renamed page.",
                   "type": "object",
                   "properties": {
                     "file": {
@@ -1132,6 +1220,12 @@
                     },
                     "new_target": {
                       "type": "string"
+                    },
+                    "expected_hash": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "type": {
                       "type": "string",
@@ -1144,10 +1238,147 @@
                     "old_target",
                     "new_target"
                   ]
+                },
+                {
+                  "description": "turbovault-0g4.1: apply SEARCH/REPLACE blocks to an existing note as\npart of the atomic batch commit (the batch equivalent of `edit_note`).\n`edits` uses the same block grammar as the tool; multiple blocks edit\nmultiple locations in the one file. `expected_hash` (git blob OID hex)\ncarries an `expect_blob` precondition — a stale pre-image aborts the\nwhole batch. **Git backend only**; the legacy executor refuses it.",
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "edits": {
+                      "type": "string"
+                    },
+                    "expected_hash": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "EditNote"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "path",
+                    "edits"
+                  ]
+                },
+                {
+                  "description": "turbovault-0g4.2: set/merge frontmatter keys on a note as part of the\natomic batch commit (the batch equivalent of `update_frontmatter`).\n`merge` defaults to true (deep-merge into existing frontmatter); false\nreplaces the frontmatter wholesale. `expected_hash` (git blob OID hex)\ncarries an `expect_blob` precondition. **Git backend only**.",
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "frontmatter": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "merge": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "expected_hash": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "UpdateFrontmatter"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "path",
+                    "frontmatter"
+                  ]
+                },
+                {
+                  "description": "turbovault-0g4.3: add or remove frontmatter tags on a note as part of\nthe atomic batch commit (the batch equivalent of `manage_tags`\nadd/remove). `operation` is `\"add\"` or `\"remove\"`; `\"list\"` is\nread-only and not a batch op (rejected). `expected_hash` carries an\n`expect_blob` precondition. **Git backend only**.",
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "operation": {
+                      "type": "string"
+                    },
+                    "tags": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "expected_hash": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "ManageTags"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "path",
+                    "operation",
+                    "tags"
+                  ]
+                },
+                {
+                  "description": "turbovault-0g4.4: render a template and create a note as part of the\natomic batch commit (the batch equivalent of `create_from_template`).\n`force` (default false) → strict create (`expect_absent`, aborts if the\npath exists); true → blind upsert. **Git backend only**.",
+                  "type": "object",
+                  "properties": {
+                    "template_id": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "fields": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      }
+                    },
+                    "force": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "type": {
+                      "type": "string",
+                      "const": "CreateFromTemplate"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "template_id",
+                    "path",
+                    "fields"
+                  ]
                 }
               ]
             }
           }
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1163,6 +1394,116 @@
       "tags": [
         "write",
         "batch"
+      ]
+    }
+  },
+  {
+    "name": "begin_fanout",
+    "description": "Open an isolated Git worktree for parallel agent writes. Fanout provides isolation, while batch_execute provides all-or-nothing multi-file atomicity.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "merge_strategy": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "git"
+      ]
+    }
+  },
+  {
+    "name": "commit_fanout",
+    "description": "Merge the active fanout back into its base vault and clean up the scratch worktree.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "merge_strategy": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "git"
+      ]
+    }
+  },
+  {
+    "name": "abandon_fanout",
+    "description": "Discard the active fanout and remove its worktree without changing the base vault.",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "destructiveHint": true
+    },
+    "_meta": {
+      "tags": [
+        "write",
+        "git"
+      ]
+    }
+  },
+  {
+    "name": "list_orphan_fanouts",
+    "description": "List orphan fanout worktrees left by interrupted server sessions.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "vault": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "annotations": {
+      "readOnlyHint": true
+    },
+    "_meta": {
+      "tags": [
+        "read",
+        "git"
       ]
     }
   },
@@ -1353,13 +1694,23 @@
         },
         "frontmatter": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "AnyValue"
+          "title": "Map_of_AnyValue",
+          "type": "object",
+          "additionalProperties": true
         },
         "merge": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_boolean",
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
             "null"
           ]
         }
@@ -1407,6 +1758,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -1483,6 +1842,14 @@
           "type": "string"
         },
         "expected_hash": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_message": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_string",
           "type": [

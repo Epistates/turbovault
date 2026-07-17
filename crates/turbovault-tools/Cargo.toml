@@ -18,6 +18,8 @@ turbovault-vault = { workspace = true }
 turbovault-batch = { workspace = true }
 turbovault-export = { workspace = true }
 turbovault-audit = { workspace = true }
+turbovault-git = { workspace = true }
+futures = { workspace = true }
 
 # MCP server framework
 # Note: No features needed here - tools crate only defines tool implementations
@@ -35,9 +37,13 @@ tracing = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 shellexpand = { workspace = true }
 urlencoding = "2"
+uuid = { workspace = true }
 
 # Diff tools
 similar = { workspace = true }
+
+# Wikilink rewriting for atomic move_note + delete_note (turbovault-lqr / oz6)
+regex = { workspace = true }
 
 # Tier 1d: Production-grade full-text search
 tantivy = { workspace = true }
@@ -52,6 +58,13 @@ sql = ["dep:turbovault-sql"]
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
+# Tests only — production code uses `turbovault_git::Oid`, never git2 directly.
+git2 = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "write_tools"
+harness = false
 
 [package.metadata.docs.rs]
 all-features = true

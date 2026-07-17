@@ -191,7 +191,7 @@ a:
 // ==================== BatchTools Async Error Paths ====================
 
 #[tokio::test]
-async fn test_batch_tools_partial_failure_preserves_prior_successes() {
+async fn test_batch_tools_partial_failure_rollback() {
     let (_temp_dir, manager) = setup_minimal_vault().await;
     let tools = BatchTools::new(manager.clone());
 
@@ -209,6 +209,7 @@ async fn test_batch_tools_partial_failure_preserves_prior_successes() {
         BatchOperation::DeleteNote {
             path: "nonexistent_file_for_failure.md".to_string(),
             expected_hash: None,
+            on_backlinks: None,
         },
         BatchOperation::WriteNote {
             path: "file3.md".to_string(),

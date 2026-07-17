@@ -40,8 +40,7 @@ impl FileProvider {
         let tools = FileTools::new(manager);
         let content = tools.read_file(&path).await.map_err(to_mcp_error)?;
 
-        // Compute hash for use with edit_file
-        let hash = turbovault_vault::compute_hash(&content);
+        let hash = self.hash_for_active_backend(&content).await?;
 
         let uri = obsidian_uri(&vault_name, &path);
         StandardResponse::new(
@@ -55,8 +54,8 @@ impl FileProvider {
 
     /// Write or update a note with optional mode (overwrite, append, prepend)
     #[tool(
-        description = "Write a note in active vault with mode control: 'overwrite' (default) replaces entire file, 'append' adds to end, 'prepend' adds after frontmatter. Supports optimistic concurrency: pass expected_hash (from read_note) to prevent overwriting concurrent changes",
-        usage = "Use for creating new notes, replacing existing ones, or appending/prepending content. Append mode is ideal for daily notes and journals. Prepend inserts after frontmatter if present. Accepts Obsidian Flavored Markdown. For targeted edits, use edit_note instead. Pass expected_hash to detect concurrent modifications",
+        description = "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash unless force=true. Git-backed vaults commit the mutation atomically.",
+        usage = "Read existing notes first and pass the returned expected_hash. Use force=true only for an intentional blind overwrite. commit_message controls the Git commit subject when using write_backend=git.",
         performance = "Moderate (<50ms typical). Includes filesystem write and link graph update",
         related = ["read_note", "edit_note", "create_from_template"],
         examples = ["mode: overwrite (default)", "mode: append (add to end)", "mode: prepend (add after frontmatter)", "expected_hash: <hash from read_note>"],
@@ -69,14 +68,44 @@ impl FileProvider {
         content: String,
         mode: Option<String>,
         expected_hash: Option<String>,
+        force: Option<bool>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let vault_name = self.get_active_vault_name().await?;
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
-        let tools = FileTools::new(manager);
-        tools
-            .write_file_with_mode(&path, &content, write_mode, expected_hash.as_deref())
-            .await
-            .map_err(to_mcp_error)?;
+        let tools = self.get_active_write_tools().await?;
+        let message = self
+            .resolve_commit_message(commit_message, || format!("write_note {path}"))
+            .await?;
+        let force = force.unwrap_or(false);
+
+        if tools.is_git() && !force && expected_hash.is_none() && write_mode == WriteMode::Overwrite
+        {
+            let manager = self.get_active_vault_manager().await?;
+            if tokio::fs::try_exists(manager.vault_path().join(&path))
+                .await
+                .unwrap_or(false)
+            {
+                return Err(McpError::invalid_request(format!(
+                    "write_note refused: '{path}' exists. Read it and pass expected_hash, or pass force=true to acknowledge a blind overwrite."
+                )));
+            }
+            tools
+                .create_file_with_message(&path, &content, &message)
+                .await
+                .map_err(to_mcp_error)?;
+        } else {
+            tools
+                .write_file_with_mode_and_message(
+                    &path,
+                    &content,
+                    write_mode,
+                    expected_hash.as_deref(),
+                    &message,
+                )
+                .await
+                .map_err(to_mcp_error)?;
+        }
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
@@ -106,12 +135,16 @@ impl FileProvider {
         edits: String,
         expected_hash: Option<String>,
         dry_run: Option<bool>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
         let dry_run = dry_run.unwrap_or(false);
+        let message = self
+            .resolve_commit_message(commit_message, || format!("edit_note {path}"))
+            .await?;
         let result = tools
-            .edit_file(&path, &edits, expected_hash.as_deref(), dry_run)
+            .edit_file_with_message(&path, &edits, expected_hash.as_deref(), dry_run, &message)
             .await
             .map_err(to_mcp_error)?;
 
@@ -128,8 +161,8 @@ impl FileProvider {
 
     /// Delete a note (confirmation-protected)
     #[tool(
-        description = "Permanently delete a note from active vault (irreversible, confirmation-protected)",
-        usage = "Use to remove unwanted notes. REQUIRES confirm_path parameter matching path exactly to prevent accidental deletion. Removes file from filesystem and updates link graph. Any links to this note become broken links. Use get_backlinks first to understand impact. Pass expected_hash for concurrency protection",
+        description = "Delete a note with confirmation, concurrency protection, and backlink safety. By default refuses when inbound links exist; use on_backlinks='rewrite-stale-callout' for an atomic delete+rewrite, or force=true to leave broken links.",
+        usage = "confirm_path must exactly match path. Pass expected_hash from read_note. Git-backed rewrite mode updates every linker in the same atomic commit.",
         performance = "Fast (<20ms typical). Includes filesystem delete and link graph update",
         related = ["get_backlinks", "get_broken_links", "move_note"],
         examples = ["path: drafts/old-idea.md, confirm_path: drafts/old-idea.md"],
@@ -141,6 +174,9 @@ impl FileProvider {
         path: String,
         confirm_path: String,
         expected_hash: Option<String>,
+        commit_message: Option<String>,
+        force: Option<bool>,
+        on_backlinks: Option<String>,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirm_path must match path exactly
         if path != confirm_path {
@@ -150,19 +186,52 @@ impl FileProvider {
             )));
         }
 
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
-        tools
-            .delete_file_with_hash(&path, expected_hash.as_deref())
-            .await
-            .map_err(to_mcp_error)?;
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
+        let message = self
+            .resolve_commit_message(commit_message, || format!("delete_note {path}"))
+            .await?;
+        let force = force.unwrap_or(!tools.is_git());
+        let backlinks = if force {
+            Vec::new()
+        } else {
+            tools
+                .list_inbound_backlinks(&path)
+                .await
+                .map_err(to_mcp_error)?
+        };
+
+        let updated_sources = if backlinks.is_empty() || force {
+            tools
+                .delete_file_with_hash_and_message(&path, expected_hash.as_deref(), &message)
+                .await
+                .map_err(to_mcp_error)?;
+            Vec::new()
+        } else if on_backlinks.as_deref() == Some("rewrite-stale-callout") {
+            tools
+                .delete_file_with_link_rewrite_to_stale(&path, expected_hash.as_deref(), &message)
+                .await
+                .map_err(to_mcp_error)?
+                .link_sources_updated
+        } else {
+            return Err(McpError::invalid_request(format!(
+                "delete_note refused: '{path}' has {} inbound backlink(s): {}. Pass on_backlinks='rewrite-stale-callout' or force=true.",
+                backlinks.len(),
+                backlinks
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        };
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
         StandardResponse::new(
             vault_name,
             "delete_note",
-            serde_json::json!({"path": path, "status": "deleted"}),
+            serde_json::json!({"path": path, "status": "deleted", "link_sources_updated": updated_sources}),
         )
         .with_next_step("quick_health_check")
         .to_json()
@@ -170,8 +239,8 @@ impl FileProvider {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note within active vault. Does NOT update wikilinks — use get_backlinks first to assess impact",
-        usage = "Use to reorganize vault structure or rename notes. This performs a filesystem move only. Links pointing to the old path will become broken. Always call get_backlinks before moving to understand impact, then manually update references if needed. Pass expected_hash for concurrency protection",
+        description = "Move or rename a note. Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
+        usage = "Pass expected_hash from read_note. With update_backlinks=true, a concurrent change to the source or any linker aborts the entire move with nothing committed.",
         performance = "Fast (<20ms typical). Filesystem rename, falls back to copy+delete for cross-filesystem moves",
         related = ["get_backlinks", "get_forward_links", "search"],
         examples = [],
@@ -183,23 +252,46 @@ impl FileProvider {
         from: String,
         to: String,
         expected_hash: Option<String>,
+        commit_message: Option<String>,
+        update_backlinks: Option<bool>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
-        tools
-            .move_file_with_hash(&from, &to, expected_hash.as_deref())
-            .await
-            .map_err(to_mcp_error)?;
+        let vault_name = self.get_active_vault_name().await?;
+        let tools = self.get_active_write_tools().await?;
+        let message = self
+            .resolve_commit_message(commit_message, || format!("move_note {from} -> {to}"))
+            .await?;
+        let update_backlinks = update_backlinks.unwrap_or_else(|| tools.is_git());
+        let updated_sources = if update_backlinks {
+            self.flush_reindex_for_active_vault().await?;
+            tools
+                .move_file_with_link_updates(&from, &to, expected_hash.as_deref(), &message)
+                .await
+                .map_err(to_mcp_error)?
+                .link_sources_updated
+        } else {
+            tools
+                .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &message)
+                .await
+                .map_err(to_mcp_error)?;
+            Vec::new()
+        };
 
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
-        StandardResponse::new(
+        let response = StandardResponse::new(
             vault_name,
             "move_note",
-            serde_json::json!({"from": from, "to": to, "status": "moved"}),
+            serde_json::json!({"from": from, "to": to, "status": "moved", "link_sources_updated": updated_sources}),
         )
-        .with_next_steps(&["get_backlinks", "get_forward_links"])
-        .with_warning("Links pointing to the old path are now broken. Use get_backlinks and edit_note to update references.")
-        .to_json()
+        .with_next_steps(&["get_backlinks", "get_forward_links"]);
+        if update_backlinks {
+            response.to_json()
+        } else {
+            response
+                .with_warning(
+                    "Links pointing to the old path were not updated and may now be broken.",
+                )
+                .to_json()
+        }
     }
 }

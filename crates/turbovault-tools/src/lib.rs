@@ -50,7 +50,7 @@
 //!
 //! [`batch_tools::BatchTools`] - Validated fail-fast operation batches:
 //! - Execute multi-file operations
-//! - Atomic transactions
+//! - Atomic changesets
 //! - Conflict detection
 //! - Result tracking
 //!
@@ -136,7 +136,7 @@
 //! - File access and modification
 //! - Error handling and validation
 //! - Thread-safe operations
-//! - Atomic transactions
+//! - Atomic changesets
 //!
 //! ## Example Usage
 //!
@@ -173,12 +173,14 @@ pub mod diff_tools;
 pub mod duplicate_tools;
 pub mod export_tools;
 pub mod file_tools;
+pub mod git_file_tools;
 pub mod graph_tools;
 pub mod grounding;
 pub mod metadata_tools;
 pub mod okf_tools;
 pub mod output_formatter;
 pub mod quality_tools;
+pub mod reindex;
 pub mod relationship_tools;
 pub mod response_utils;
 pub mod search_engine;
@@ -188,6 +190,8 @@ pub mod templates;
 pub mod validation_tools;
 pub mod vault_lifecycle;
 pub mod viewer;
+pub mod wikilink_rewriter;
+pub mod write_tools;
 
 #[cfg(feature = "sql")]
 pub mod sql_engine;
@@ -199,6 +203,7 @@ pub use diff_tools::{DiffResult, DiffSummary, DiffTools};
 pub use duplicate_tools::{CompareResult, DuplicateGroup, DuplicateTools};
 pub use export_tools::ExportTools;
 pub use file_tools::{FileTools, NoteInfo, WriteMode, obsidian_uri};
+pub use git_file_tools::{CachedRepo, CasCollisionFlush, GitFileTools, MoveWithLinksResult};
 pub use graph_tools::{BrokenLinkInfo, GraphTools, HealthInfo};
 pub use grounding::{GroundingAnalysis, GroundingTools, UngroundedNote, UngroundedReport};
 pub use metadata_tools::MetadataTools;
@@ -207,16 +212,22 @@ pub use okf_tools::{
 };
 pub use output_formatter::{OutputFormat, ResponseFormatter};
 pub use quality_tools::{QualityScore, QualityTools, VaultQualityReport};
+pub use reindex::{ReindexQueue, apply_commit_diff, watch_ref_changes};
 pub use relationship_tools::RelationshipTools;
 pub use search_engine::{SearchEngine, SearchQuery, SearchResultInfo};
 pub use search_tools::SearchTools;
 pub use similarity_engine::{SimilarityEngine, SimilarityResult};
-pub use templates::{TemplateDefinition, TemplateEngine, TemplateFieldType};
+pub use templates::{TemplateDefinition, TemplateEngine, TemplateField, TemplateFieldType};
 pub use turbovault_batch::{BatchOperation, BatchResult};
 pub use turbovault_core::prelude::*;
+pub use turbovault_git::{
+    CommitHook, CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, OrphanFanout,
+    VaultRepo,
+};
 pub use validation_tools::{ValidationReportInfo, ValidationTools};
 pub use vault_lifecycle::VaultLifecycleTools;
 pub use viewer::{ViewerTools, VisualizationResult};
+pub use write_tools::WriteTools;
 
 #[cfg(feature = "sql")]
 pub use sql_engine::FrontmatterSqlEngine;

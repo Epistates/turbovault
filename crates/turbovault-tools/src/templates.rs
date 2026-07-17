@@ -357,11 +357,31 @@ impl TemplateEngine {
         file_path: &str,
         field_values: HashMap<String, String>,
     ) -> crate::Result<CreatedNoteInfo> {
+        let (full_content, info) = self
+            .compute_from_template(template_id, file_path, field_values)
+            .await?;
+        self.manager
+            .write_file(Path::new(file_path), &full_content, None)
+            .await?;
+        Ok(info)
+    }
+
+    /// turbovault-gje: pure compute variant of [`Self::create_from_template`]
+    /// — validates fields, renders the body + frontmatter, and returns
+    /// `(full_content, CreatedNoteInfo)` without writing. Lets the MCP
+    /// layer route the write through `WriteTools` (substrate-aware)
+    /// instead of the `VaultManager`-direct path that bypassed the git
+    /// backend's commit machinery.
+    pub async fn compute_from_template(
+        &self,
+        template_id: &str,
+        file_path: &str,
+        field_values: HashMap<String, String>,
+    ) -> crate::Result<(String, CreatedNoteInfo)> {
         let template = self.get_template(template_id).ok_or_else(|| {
             crate::Error::not_found(format!("Template {} not found", template_id))
         })?;
 
-        // Validate all required fields
         for field in template.required_fields() {
             let value = field_values.get(&field.name).ok_or_else(|| {
                 crate::Error::validation_error(format!("Missing required field: {}", field.name))
@@ -371,20 +391,17 @@ impl TemplateEngine {
                 .map_err(crate::Error::validation_error)?;
         }
 
-        // Build frontmatter
         let mut frontmatter = template.frontmatter_template.clone();
         frontmatter.insert("template".to_string(), template_id.to_string());
         if let Some(title) = field_values.get("title") {
             frontmatter.insert("title".to_string(), title.clone());
         }
 
-        // Render content by substituting field values
         let mut content = template.content_template.clone();
         for (key, value) in &field_values {
             content = content.replace(&format!("{{{}}}", key), value);
         }
 
-        // Create note in vault
         let mut frontmatter_yaml = String::from("---\n");
         for (key, value) in frontmatter {
             frontmatter_yaml.push_str(&format!("{}: {}\n", key, value));
@@ -393,16 +410,13 @@ impl TemplateEngine {
 
         let full_content = format!("{}{}", frontmatter_yaml, content);
 
-        self.manager
-            .write_file(Path::new(file_path), &full_content, None)
-            .await?;
-
-        Ok(CreatedNoteInfo {
+        let info = CreatedNoteInfo {
             path: file_path.to_string(),
             title: field_values.get("title").cloned().unwrap_or_default(),
             template_id: template_id.to_string(),
             content_preview: content.lines().take(3).collect::<Vec<_>>().join("\n"),
-        })
+        };
+        Ok((full_content, info))
     }
 
     /// Find notes created from specific template

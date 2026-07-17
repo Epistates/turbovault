@@ -40,6 +40,7 @@ impl AuditProvider {
         operation: Option<String>,
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("audit_log").await?;
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;
@@ -88,6 +89,7 @@ impl AuditProvider {
         read_only = true,
     )]
     async fn rollback_preview(&self, operation_id: String) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("rollback_preview").await?;
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let audit_tools = self.get_audit_tools().await?;
@@ -119,6 +121,7 @@ impl AuditProvider {
         destructive = true,
     )]
     async fn rollback_note(&self, operation_id: String) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("rollback_note").await?;
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let audit_tools = self.get_audit_tools().await?;
@@ -162,6 +165,7 @@ impl AuditProvider {
         read_only = true,
     )]
     async fn audit_stats(&self) -> McpResult<serde_json::Value> {
+        self.refuse_audit_on_git_backend("audit_stats").await?;
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;

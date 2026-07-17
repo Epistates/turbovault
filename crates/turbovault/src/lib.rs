@@ -8,7 +8,7 @@
 //! ## Features
 //!
 //! - **MCP Server Framework**: Full Model Context Protocol implementation
-//! - **Vault Management**: File operations, watching, and atomic transactions
+//! - **Vault Management**: File operations, watching, and atomic changesets
 //! - **Advanced Search**: Full-text search with Tantivy
 //! - **Graph Analysis**: Link relationships, backlinks, and health analysis
 //! - **Batch Operations**: Validated, sequential fail-fast file operations

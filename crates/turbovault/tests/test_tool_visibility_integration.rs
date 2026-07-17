@@ -35,15 +35,17 @@ fn mutating_tool_descriptions_match_current_safety_contract() {
         .find(|tool| tool.name == "batch_execute")
         .expect("batch_execute descriptor");
     let batch_description = batch.description.as_deref().unwrap_or_default();
-    assert!(batch_description.contains("without rolling back"));
-    assert!(!batch_description.contains("all-or-nothing"));
+    assert!(batch_description.contains("write_backend=git"));
+    assert!(batch_description.contains("atomic commit"));
+    assert!(batch_description.contains("every operation applies or none do"));
 
     let move_note = tools
         .iter()
         .find(|tool| tool.name == "move_note")
         .expect("move_note descriptor");
     let move_description = move_note.description.as_deref().unwrap_or_default();
-    assert!(move_description.contains("Does NOT update wikilinks"));
+    assert!(move_description.contains("update inbound wikilinks atomically by default"));
+    assert!(move_description.contains("update_backlinks=false"));
 }
 
 #[tokio::test]
@@ -80,7 +82,7 @@ async fn batch_response_reports_partial_failure_contract() {
     assert_eq!(response["data"]["success"], false);
     assert_eq!(response["data"]["executed"], 1);
     assert_eq!(response["data"]["failed_at"], 1);
-    assert_eq!(response["meta"]["execution_mode"], "sequential_fail_fast");
+    assert_eq!(response["meta"]["execution_mode"], "sequential_legacy");
     assert!(
         response["warnings"][0]
             .as_str()

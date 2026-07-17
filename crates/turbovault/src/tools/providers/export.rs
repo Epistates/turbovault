@@ -36,7 +36,7 @@ impl ExportProvider {
         read_only = true,
     )]
     async fn export_health_report(&self, format: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = ExportTools::new(manager);
         let report = tools
             .export_health_report(&format)
@@ -64,7 +64,7 @@ impl ExportProvider {
         read_only = true,
     )]
     async fn export_broken_links(&self, format: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = ExportTools::new(manager);
         let links = tools
             .export_broken_links(&format)
@@ -92,7 +92,7 @@ impl ExportProvider {
         read_only = true,
     )]
     async fn export_vault_stats(&self, format: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = ExportTools::new(manager);
         let stats = tools
             .export_vault_stats(&format)
@@ -120,7 +120,7 @@ impl ExportProvider {
         read_only = true,
     )]
     async fn export_analysis_report(&self, format: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let tools = ExportTools::new(manager);
         let report = tools
             .export_analysis_report(&format)

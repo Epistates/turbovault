@@ -23,10 +23,10 @@ Build your own applications, search engines, or custom MCP servers using our mod
 - **SOTA Standards**: Fully supports Obsidian-flavored Markdown (wikilinks, embeds, callouts).
 
 ### 2. As a Ready-to-Use MCP Server (For Users)
-Transform your Obsidian vault into an intelligent knowledge system immediately. Connect TurboVault to Claude Desktop or any MCP-compatible client to gain **70 specialized tools** for your notes.
+Transform your Obsidian vault into an intelligent knowledge system immediately. Connect TurboVault to Claude Desktop or any MCP-compatible client to gain **74 specialized tools** for your notes.
 
 - **Zero Coding Required**: Install the binary and point it at your vault.
-- **70 Specialized Tools**: Searching, link analysis, SQL frontmatter queries, health checks, and more.
+- **74 Specialized Tools**: Searching, link analysis, atomic Git-backed writes, SQL frontmatter queries, health checks, and more.
 - **Multi-Vault Support**: Switch between personal and work notes seamlessly at runtime.
 
 ---
@@ -41,7 +41,7 @@ TurboVault is a modular system composed of specialized crates. You can depend on
 | **[turbovault-parser](crates/turbovault-parser)** | High-speed .md & .ofm parser | [![Docs.rs](https://docs.rs/turbovault-parser/badge.svg)](https://docs.rs/turbovault-parser) |
 | **[turbovault-graph](crates/turbovault-graph)** | Link graph analysis & relationship discovery | [![Docs.rs](https://docs.rs/turbovault-graph/badge.svg)](https://docs.rs/turbovault-graph) |
 | **[turbovault-vault](crates/turbovault-vault)** | Vault management, file I/O & atomic writes | [![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault) |
-| **[turbovault-tools](crates/turbovault-tools)** | 70 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
+| **[turbovault-tools](crates/turbovault-tools)** | 74 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
 | **[turbovault-sql](crates/turbovault-sql)** | SQL frontmatter queries (GlueSQL) | [![Docs.rs](https://docs.rs/turbovault-sql/badge.svg)](https://docs.rs/turbovault-sql) |
 | **[turbovault-batch](crates/turbovault-batch)** | Validated fail-fast operation batches | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
 | **[turbovault-export](crates/turbovault-export)** | Export & reporting (JSON/CSV/MD) | [![Docs.rs](https://docs.rs/turbovault-export/badge.svg)](https://docs.rs/turbovault-export) |
@@ -155,6 +155,29 @@ You: "What are my most important notes?"
 Claude: [Uses get_hub_notes() to find key concepts]
 ```
 
+### Atomic Git-Backed Writes
+
+For vaults already managed by Git, enable the transactional backend in the
+TurboVault YAML config:
+
+```yaml
+vaults:
+  - name: personal
+    path: ~/Documents/Notes
+    is_default: true
+    write_backend: git
+    git:
+      include_ignored: false
+      require_commit_message: false
+```
+
+Start with `turbovault --config ~/.turbovault/config.yaml`. Every mutation is
+then a Git commit. Multi-operation batches build one isolated tree and advance
+the branch with compare-and-swap, so a stale path aborts the entire batch and
+concurrent TurboVault processes cannot interleave commit/materialization. The
+backend also refuses to overwrite dirty or untracked touched paths and refuses
+to reset an index containing staged changes.
+
 ## What Can Claude Do?
 
 ### Search & Discovery
@@ -193,17 +216,23 @@ You: "Based on my vault, what notes should I link this to?"
 Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 ```
 
-## 70 MCP Tools Organized by Category
+## 74 MCP Tools Organized by Category
 
 ### File Operations & Batch (8)
 - `read_note` — Get note content with hash for conflict detection
 - `write_note` — Create/overwrite notes (auto-creates directories)
 - `edit_note` — Surgical edits via SEARCH/REPLACE blocks
 - `delete_note` — Safe deletion with link tracking
-- `move_note` — Rename/relocate a note; does not rewrite incoming wikilinks
+- `move_note` — Rename/relocate a note; Git-backed vaults atomically rewrite incoming wikilinks
 - `move_file` — Move/rename non-note files (e.g. attachments, images)
 - `get_notes_info` — Metadata for multiple notes in a single call
-- `batch_execute` — Validated sequential operations; stops on first failure without rollback
+- `batch_execute` — One all-or-nothing commit with `write_backend: git`; legacy stays sequential
+
+### Git Fanout (4)
+- `begin_fanout` — Open an isolated worktree for parallel agent writes
+- `commit_fanout` — Merge an active fanout back into its base vault
+- `abandon_fanout` — Discard a fanout without changing the base vault
+- `list_orphan_fanouts` — Diagnose worktrees left by interrupted sessions
 
 ### Metadata & Tags (3)
 - `update_frontmatter` — Patch frontmatter fields (merge or replace)
@@ -466,7 +495,7 @@ turbovault-vault       — Vault operations, file I/O, atomic writes
 turbovault-batch       — Validated sequential batch operations
 turbovault-export      — JSON/CSV/Markdown export
 turbovault-sql         — SQL frontmatter queries (GlueSQL, feature-gated)
-turbovault-tools       — 70 MCP tool implementations
+turbovault-tools       — 74 MCP tool implementations
 turbovault (binary)    — CLI and MCP server entry point
 ```
 

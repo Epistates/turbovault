@@ -139,40 +139,7 @@ impl VaultProvider {
         tags = ["write", "admin"],
     )]
     async fn remove_vault(&self, name: String) -> McpResult<serde_json::Value> {
-        let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
-        tools.remove_vault(&name).await.map_err(to_mcp_error)?;
-
-        // Clear all per-vault caches for the removed vault
-        {
-            let mut search_cache = self.search_engines.write().await;
-            search_cache.remove(&name);
-        }
-        {
-            let mut sim_cache = self.similarity_engines.write().await;
-            sim_cache.remove(&name);
-        }
-        {
-            let mut mgr_cache = self.vault_managers.write().await;
-            mgr_cache.remove(&name);
-        }
-
-        let response = StandardResponse::new(
-            name.clone(),
-            "remove_vault",
-            serde_json::json!({"status": "removed"}),
-        )
-        .with_next_step("list_vaults");
-
-        // CACHE PERSISTENCE: Save updated vault state to cache
-        if let Err(e) = self.persist_vault_state().await {
-            log::warn!(
-                "Failed to persist vault state after removal to cache: {}",
-                e
-            );
-            // Not a fatal error - continue anyway
-        }
-
-        response.to_json()
+        self.remove_vault_with_cleanup(&name).await
     }
 
     /// List all registered vaults

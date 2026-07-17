@@ -36,7 +36,7 @@ impl DiscoveryProvider {
         read_only = true,
     )]
     async fn search(&self, query: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
         let results = engine.search(&query).await.map_err(to_mcp_error)?;
 
@@ -75,7 +75,7 @@ impl DiscoveryProvider {
         exclude_paths: Option<Vec<String>>,
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
 
         let result_limit = limit.unwrap_or(10);
@@ -123,7 +123,7 @@ impl DiscoveryProvider {
         key: String,
         value: String,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
 
         let results = engine
@@ -152,7 +152,7 @@ impl DiscoveryProvider {
         read_only = true,
     )]
     async fn recommend_related(&self, path: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
+        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
         let results = engine
             .recommend_related(&path)
@@ -185,7 +185,7 @@ impl DiscoveryProvider {
     async fn inspect_frontmatter(&self) -> McpResult<serde_json::Value> {
         #[cfg(feature = "sql")]
         {
-            let (vault_name, manager) = self.get_vault_pair().await?;
+            let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
             let engine = FrontmatterSqlEngine::new(manager);
             let result = engine.inspect().await.map_err(to_mcp_error)?;
 
@@ -220,7 +220,7 @@ impl DiscoveryProvider {
     async fn query_frontmatter_sql(&self, sql: String) -> McpResult<serde_json::Value> {
         #[cfg(feature = "sql")]
         {
-            let (vault_name, manager) = self.get_vault_pair().await?;
+            let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
             let engine = FrontmatterSqlEngine::new(manager);
             let result = engine.query(&sql).await.map_err(to_mcp_error)?;
 

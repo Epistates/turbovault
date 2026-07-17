@@ -12,6 +12,22 @@
 //! >>>>>>> REPLACE
 //! ```
 //!
+//! ## Editing content that contains a `=======` line (turbovault-74v):
+//! The fence is variable-width. To match content that itself contains a
+//! standard 7-char `=======` line, widen ALL three markers to 8+ chars so the
+//! 7-char line is treated as content, not the divider:
+//! ```text
+//! <<<<<<<< SEARCH
+//! above
+//! =======
+//! below
+//! ========
+//! new above
+//! =======
+//! new below
+//! >>>>>>>> REPLACE
+//! ```
+//!
 //! ## Fuzzy Matching Strategy (aider-inspired):
 //! 1. Exact match (fastest)
 //! 2. Whitespace-insensitive match
@@ -122,56 +138,89 @@ impl EditEngine {
     /// >>>>>>> REPLACE
     /// ```
     pub fn parse_blocks(&self, input: &str) -> Result<Vec<SearchReplaceBlock>> {
+        // turbovault-u9w: collect each block's body into a buffer, THEN detect
+        // the divider, so a body that legitimately contains a `=======` line is
+        // handled rather than silently mis-split.
+        //
+        // turbovault-74v (TV-006): the fence is variable-width (>= 7). A block
+        // opened by a W-wide `<<<…< SEARCH` is delimited by a W-wide `===…=`
+        // divider and closed by a W-wide `>>>…> REPLACE`; marker-shaped lines of
+        // ANY OTHER width are body content. So to edit content that contains a
+        // standard 7-char `=======` line, widen all three markers to 8+ chars
+        // (the markdown "longer fence to escape" idiom). 7-wide stays the
+        // default and is fully backward-compatible.
         let mut blocks = Vec::new();
-        let mut current_search = String::new();
-        let mut current_replace = String::new();
-        let mut state = ParseState::Init;
+        let mut buffer: Vec<&str> = Vec::new();
+        let mut in_block = false;
+        let mut width = 0usize;
 
         for line in input.lines() {
             let trimmed = line.trim();
 
-            match state {
-                ParseState::Init => {
-                    if trimmed == "<<<<<<< SEARCH" {
-                        state = ParseState::InSearch;
-                    }
+            if !in_block {
+                if let Some(w) = fence_width(trimmed, '<', " SEARCH") {
+                    in_block = true;
+                    width = w;
+                    buffer.clear();
+                } else if fence_width(trimmed, '>', " REPLACE").is_some() {
+                    return Err(Error::ParseError {
+                        reason:
+                            "Unexpected >>>>>>> REPLACE outside a SEARCH block. Missing <<<<<<< SEARCH?"
+                                .to_string(),
+                    });
                 }
-                ParseState::InSearch => {
-                    if trimmed == "=======" {
-                        state = ParseState::InReplace;
-                    } else {
-                        if !current_search.is_empty() {
-                            current_search.push('\n');
-                        }
-                        current_search.push_str(line); // Preserve original indentation
-                    }
+                // Any other line outside a block is preamble/trailing — ignored.
+            } else if fence_width(trimmed, '<', " SEARCH") == Some(width) {
+                return Err(Error::ParseError {
+                    reason:
+                        "Nested SEARCH block: missing >>>>>>> REPLACE before the next <<<<<<< SEARCH"
+                            .to_string(),
+                });
+            } else if fence_width(trimmed, '>', " REPLACE") == Some(width) {
+                // Only a divider of THIS block's fence width separates the
+                // halves; narrower/wider `=` runs in the body are content.
+                let divider_count = buffer
+                    .iter()
+                    .filter(|l| fence_width(l.trim(), '=', "") == Some(width))
+                    .count();
+                if divider_count == 0 {
+                    return Err(Error::ParseError {
+                        reason: "SEARCH/REPLACE block is missing the ======= divider".to_string(),
+                    });
                 }
-                ParseState::InReplace => {
-                    if trimmed == ">>>>>>> REPLACE" {
-                        blocks.push(SearchReplaceBlock {
-                            search: current_search.clone(),
-                            replace: current_replace.clone(),
-                        });
-                        current_search.clear();
-                        current_replace.clear();
-                        state = ParseState::Init;
-                    } else {
-                        if !current_replace.is_empty() {
-                            current_replace.push('\n');
-                        }
-                        current_replace.push_str(line); // Preserve original indentation
-                    }
+                if divider_count > 1 {
+                    // turbovault-u9w / turbovault-74v: more than one fence-width
+                    // divider line — the split is ambiguous. Fail loud and point
+                    // at the wider-fence fix.
+                    let eq = "=".repeat(width);
+                    return Err(Error::ParseError {
+                        reason: format!(
+                            "SEARCH/REPLACE block contains {divider_count} `{eq}` divider lines but the divider must appear exactly once. \
+                             If the matched content has a literal `{eq}` line, widen ALL three fence markers to {}+ characters (e.g. `{}` / `{}` / `{}`) so a {width}-character `=` line in your content is treated as content, not the divider (turbovault-u9w / turbovault-74v).",
+                            width + 1,
+                            "<".repeat(width + 1),
+                            "=".repeat(width + 1),
+                            ">".repeat(width + 1),
+                        ),
+                    });
                 }
+                let divider_idx = buffer
+                    .iter()
+                    .position(|l| fence_width(l.trim(), '=', "") == Some(width))
+                    .unwrap();
+                let search = buffer[..divider_idx].join("\n");
+                let replace = buffer[divider_idx + 1..].join("\n");
+                blocks.push(SearchReplaceBlock { search, replace });
+                buffer.clear();
+                in_block = false;
+            } else {
+                buffer.push(line);
             }
         }
 
-        // Check for incomplete block
-        if state != ParseState::Init {
+        if in_block {
             return Err(Error::ParseError {
-                reason: format!(
-                    "Incomplete SEARCH/REPLACE block (state: {:?}). Expected >>>>>>> REPLACE",
-                    state
-                ),
+                reason: "Incomplete SEARCH/REPLACE block. Expected >>>>>>> REPLACE".to_string(),
             });
         }
 
@@ -520,14 +569,6 @@ impl Default for EditEngine {
     }
 }
 
-/// Parse state machine
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ParseState {
-    Init,
-    InSearch,
-    InReplace,
-}
-
 /// Type of match found
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum MatchType {
@@ -558,6 +599,23 @@ pub fn compute_hash(content: &str) -> String {
 /// Normalize whitespace for comparison
 fn normalize_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Width of a SEARCH/REPLACE fence marker line (turbovault-74v).
+///
+/// Returns `Some(w)` when `line` (already trimmed) is exactly `w` copies of
+/// `ch` (with `w >= 7`) immediately followed by `suffix` — e.g.
+/// `fence_width("<<<<<<<< SEARCH", '<', " SEARCH") == Some(8)`. For the divider
+/// `suffix` is `""`. Returns `None` otherwise. The `>= 7` floor keeps the
+/// canonical 7-wide git-conflict markers as the default fence while letting
+/// callers widen the fence to escape content that itself contains a marker line.
+fn fence_width(line: &str, ch: char, suffix: &str) -> Option<usize> {
+    let run = line.strip_suffix(suffix)?;
+    if run.len() >= 7 && run.chars().all(|c| c == ch) {
+        Some(run.len())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -595,6 +653,114 @@ second new
 
         let blocks = engine.parse_blocks(input).unwrap();
         assert_eq!(blocks.len(), 2);
+    }
+
+    /// turbovault-u9w: SEARCH content containing a literal `=======` line
+    /// must produce a LOUD parse error, not silent mis-splitting.
+    #[test]
+    fn parse_block_with_divider_in_search_content_errors_loudly() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<< SEARCH\nbefore divider\n=======\ncontent containing\n=======\nfooter\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`=======`") && msg.contains("turbovault-u9w"),
+            "expected u9w ambiguity error, got: {msg}"
+        );
+    }
+
+    /// turbovault-u9w: REPLACE content with a literal `=======` is the
+    /// same shape (the parser sees N+1 dividers total, where N is the
+    /// number of dividers in the body).
+    #[test]
+    fn parse_block_with_divider_in_replace_content_errors_loudly() {
+        let engine = EditEngine::new();
+        let input =
+            "<<<<<<< SEARCH\nold\n=======\nnew with\n=======\nan extra divider\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("turbovault-u9w"),
+            "expected u9w ambiguity error, got: {err}"
+        );
+    }
+
+    /// turbovault-u9w: a block with NO `=======` is incomplete and errors.
+    #[test]
+    fn parse_block_without_divider_errors() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<< SEARCH\nold\nnew\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("======="),
+            "expected missing-divider error, got: {err}"
+        );
+    }
+
+    /// turbovault-u9w: A `>>>>>>> REPLACE` outside any `<<<<<<< SEARCH` is
+    /// a structural error.
+    #[test]
+    fn parse_block_with_dangling_replace_marker_errors() {
+        let engine = EditEngine::new();
+        let input = "no marker yet\n>>>>>>> REPLACE\nthen content";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("outside"),
+            "expected dangling-marker error, got: {err}"
+        );
+    }
+
+    /// turbovault-u9w: nested `<<<<<<< SEARCH` (missing the prior `>>>>>>>
+    /// REPLACE`) is also a structural error.
+    #[test]
+    fn parse_nested_search_marker_errors() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<< SEARCH\nold\n<<<<<<< SEARCH\nmore\n=======\nnew\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err();
+        assert!(
+            err.to_string().contains("Nested"),
+            "expected nested-marker error, got: {err}"
+        );
+    }
+
+    /// turbovault-74v (TV-006): a wider fence (8-wide markers) lets a block
+    /// MATCH content containing a standard 7-char `=======` line — the 7-char
+    /// lines are body content, the 8-char `========` is the divider.
+    #[test]
+    fn parse_wide_fence_allows_divider_in_content() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<<< SEARCH\nabove\n=======\nbelow\n========\nABOVE\n=======\nBELOW\n>>>>>>>> REPLACE";
+        let blocks = engine.parse_blocks(input).unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].search, "above\n=======\nbelow");
+        assert_eq!(blocks[0].replace, "ABOVE\n=======\nBELOW");
+    }
+
+    /// turbovault-74v (TV-006): end-to-end — edit a note whose body contains a
+    /// `=======` horizontal-rule line via a wide fence. Feature-parity with a
+    /// full overwrite; the prior refuse-loudly behavior could not touch such
+    /// content.
+    #[test]
+    fn apply_wide_fence_edits_content_with_divider() {
+        let engine = EditEngine::new();
+        let content = "intro\n\nabove\n=======\nbelow\n\noutro";
+        let input = "<<<<<<<< SEARCH\nabove\n=======\nbelow\n========\nABOVE\n=======\nBELOW\n>>>>>>>> REPLACE";
+        let blocks = engine.parse_blocks(input).unwrap();
+        let (res, new) = engine.apply_edits(content, &blocks, false).unwrap();
+        assert!(res.success);
+        assert_eq!(new, "intro\n\nABOVE\n=======\nBELOW\n\noutro");
+    }
+
+    /// turbovault-74v: the 7-wide ambiguity error now points at the wider-fence
+    /// fix (keeps the u9w fail-loud guarantee for the default fence).
+    #[test]
+    fn divider_ambiguity_error_suggests_wider_fence() {
+        let engine = EditEngine::new();
+        let input = "<<<<<<< SEARCH\nbefore\n=======\nmid\n=======\nafter\n>>>>>>> REPLACE";
+        let err = engine.parse_blocks(input).unwrap_err().to_string();
+        assert!(
+            err.contains("widen") && err.contains("turbovault-74v"),
+            "expected wider-fence suggestion, got: {err}"
+        );
     }
 
     #[test]
