@@ -25,14 +25,27 @@ jobs:
         with:
           key: verify
 
+      - name: Verify release version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          test "v${VERSION}" = "${GITHUB_REF_NAME}"
+          grep -q "^## \[${VERSION}\]" CHANGELOG.md
+
       - name: Verify formatting
         run: cargo fmt --all --check
 
       - name: Lint with clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Run tests
-        run: cargo test --workspace --all-targets --locked
+        run: cargo test --workspace --all-targets --all-features --locked
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked
 
   # ── Publish Crates (manual for now) ──────────────────────────────────
   # publish:
@@ -59,11 +72,14 @@ jobs:
   #           sleep 30
   #         }
   #         publish turbovault-core
+  #         publish turbovault-git
+  #         publish turbovault-audit
   #         publish turbovault-parser
   #         publish turbovault-graph
+  #         publish turbovault-export
   #         publish turbovault-vault
   #         publish turbovault-batch
-  #         publish turbovault-export
+  #         publish turbovault-sql
   #         publish turbovault-tools
   #         publish turbovault
 
@@ -138,9 +154,9 @@ jobs:
       - name: Build
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release --locked --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }}
           fi
         shell: bash
 
@@ -226,7 +242,11 @@ jobs:
 
           # Create tar to preserve permissions and prevent corruption
           tar -czf "artifacts/$BINARY.tar.gz" "$BINARY"
-          sha256sum "$BINARY" > "artifacts/$BINARY.sha256"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$BINARY" > "artifacts/$BINARY.sha256"
+          else
+            shasum -a 256 "$BINARY" > "artifacts/$BINARY.sha256"
+          fi
           ls -lh "$BINARY"
           cat "artifacts/$BINARY.sha256"
         shell: bash
