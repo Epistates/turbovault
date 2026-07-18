@@ -1,9 +1,13 @@
 //! Error type for the git write substrate.
 //!
-//! The crate owns its error domain (git2 / io / invariant violations) so it
-//! stays self-contained — no leakage of `git2` into a consumer crate. Conversion
-//! to the consumer's error type happens at the tool-layer boundary (added when
-//! the substrate is wired into the MCP server, GWS.12).
+//! The crate owns git2 / io / invariant-violation errors, plus a bridge from
+//! `turbovault-core`'s error type (`Error::Core`, write-substrate-layering M1)
+//! — the boundary through which `commit_changeset` (M2) surfaces failures from
+//! parsing/validating a core `ChangePlan`/`Precondition`, without this crate
+//! re-declaring core's variants. `git2` itself still never leaks into a
+//! consumer crate; conversion to the consumer's error type happens at the
+//! tool-layer boundary (added when the substrate is wired into the MCP
+//! server, GWS.12).
 
 use std::path::PathBuf;
 
@@ -47,7 +51,27 @@ pub enum Error {
     /// Invariant violation or unsupported state with a description.
     #[error("{0}")]
     Other(String),
+
+    /// Bridged error from `turbovault-core` (write-substrate-layering M1/ij6):
+    /// the boundary through which `commit_changeset` (M2) surfaces failures
+    /// from parsing/validating a core `ChangePlan`/`Precondition`, without
+    /// this crate re-declaring core's error variants.
+    #[error("core error: {0}")]
+    Core(#[from] turbovault_core::Error),
 }
 
 /// Result alias for the git write substrate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_error_bridges_via_from() {
+        let core_err = turbovault_core::Error::not_found("a.md");
+        let git_err: Error = core_err.into();
+        assert!(matches!(git_err, Error::Core(_)));
+        assert!(git_err.to_string().contains("Not found in graph"));
+    }
+}

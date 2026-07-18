@@ -75,24 +75,28 @@
 //! - [`models`] - Rich data models with position tracking
 
 pub mod cache;
+pub mod change_plan;
 pub mod config;
 pub mod error;
 pub mod metrics;
 pub mod models;
 pub mod multi_vault;
 pub mod okf;
+pub mod precondition;
 pub mod profiles;
 pub mod resilience;
 pub mod task_parser;
 pub mod utils;
 pub mod validation;
 
+pub use change_plan::{Change, ChangePlan};
 pub use config::*;
 pub use error::{Error, Result};
 pub use metrics::{Counter, Histogram, HistogramStats, HistogramTimer, MetricsContext};
 pub use models::*;
 pub use multi_vault::{MultiVaultManager, VaultInfo};
 pub use okf::{Citation, ConceptConformance, ReservedFile, check_concept, concept_id};
+pub use precondition::Precondition;
 pub use profiles::ConfigProfile;
 pub use utils::{
     CSVBuilder, PathValidator, TransactionBuilder, bytes_to_lower_hex, to_json_string,
