@@ -22,13 +22,13 @@ pub struct VaultInfo {
     /// Whether this is the active/default vault
     pub is_default: bool,
     /// turbovault-17q: the vault's write backend as a lowercase string
-    /// (`"legacy"` | `"git"`), surfaced at the top level so agents can discover
+    /// (`"direct"` | `"git"`), surfaced at the top level so agents can discover
     /// which vaults are on the git substrate (GWS) without parsing the nested
     /// `config`. The full `git:` block stays in `config` / `get_vault_config`.
     pub write_backend: String,
     /// turbovault-17q / 5nn: whether mutations on this vault require an explicit
     /// commit message. Only meaningful on the git backend (always `false` on
-    /// legacy, which produces no commits). Lets an agent learn the requirement
+    /// direct, which produces no commits). Lets an agent learn the requirement
     /// up front instead of discovering it via a refused write.
     pub require_commit_message: bool,
     /// Configuration for this vault
@@ -187,7 +187,7 @@ impl MultiVaultManager {
                 path: config.path.clone(),
                 is_default: name == &default,
                 write_backend: match config.write_backend {
-                    WriteBackend::Legacy => "legacy",
+                    WriteBackend::Direct => "direct",
                     WriteBackend::Git => "git",
                 }
                 .to_string(),
@@ -403,11 +403,11 @@ mod tests {
         let manager = MultiVaultManager::new(config).unwrap();
 
         let vaults = manager.list_vaults().await.unwrap();
-        let legacy = vaults.iter().find(|v| v.name == "vault1").unwrap();
-        assert_eq!(legacy.write_backend, "legacy");
+        let direct = vaults.iter().find(|v| v.name == "vault1").unwrap();
+        assert_eq!(direct.write_backend, "direct");
         assert!(
-            !legacy.require_commit_message,
-            "legacy backend never requires a commit message"
+            !direct.require_commit_message,
+            "direct backend never requires a commit message"
         );
 
         let git = vaults.iter().find(|v| v.name == "vault_git").unwrap();

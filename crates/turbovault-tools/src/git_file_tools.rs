@@ -655,8 +655,8 @@ impl GitFileTools {
 
     /// Translate every [`BatchOperation`] to a single [`Changeset`] and
     /// commit as **one atomic commit** — either every op lands or none do.
-    /// This is the spec-promised behavior the legacy [`BatchTools`] never
-    /// actually delivered (the legacy path stopped at `failed_at` and left
+    /// This is the spec-promised behavior the direct [`BatchTools`] never
+    /// actually delivered (the direct path stopped at `failed_at` and left
     /// partial state on disk).
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
         self.batch_execute_inner(operations, None).await
@@ -961,7 +961,7 @@ impl GitFileTools {
         let mut changes = Vec::with_capacity(total);
         let mut records = Vec::with_capacity(total);
         // turbovault-0g4.5: intra-batch same-path conflict policy. The git
-        // path skips the legacy `validate()`/`conflicts_with()` O(n²) check;
+        // path skips the direct `validate()`/`conflicts_with()` O(n²) check;
         // the substrate DOES reject a changeset with duplicate change paths
         // (`commit_changeset` → "duplicate change for path …"), but only at
         // apply time and with a message that names neither the offending op
@@ -1300,7 +1300,7 @@ fn describe_op(op: &BatchOperation) -> String {
 /// Translate a substrate error into the core error space used by the tool
 /// layer. Precondition failures (the OCC CAS abort) become `ConcurrencyError`
 /// so callers and tests can switch on the same shape they get from the
-/// legacy path.
+/// direct path.
 fn git_err_to_core(e: turbovault_git::Error) -> Error {
     match e {
         turbovault_git::Error::PreconditionFailed {
@@ -1976,7 +1976,7 @@ mod tests {
     #[tokio::test]
     async fn write_file_with_garbage_hash_is_loud_concurrency_error() {
         // A malformed hash from the caller (e.g. cross-restart edge case
-        // where the legacy SHA-256 hex still lives in the client) lands as
+        // where the direct SHA-256 hex still lives in the client) lands as
         // ConcurrencyError, NOT ConfigError — same shape callers handle for
         // any other stale-token failure, single switch arm fixes both
         // backends.
@@ -2087,7 +2087,7 @@ mod tests {
     }
 
     /// turbovault-6sj: the `new_hash` an edit returns must round-trip as
-    /// `expected_hash` on the next call. This is the CAS contract the legacy
+    /// `expected_hash` on the next call. This is the CAS contract the direct
     /// path delivered; the git backend must do the same.
     #[tokio::test]
     async fn edit_file_new_hash_round_trips_as_expected_hash() {
@@ -2736,8 +2736,8 @@ mod tests {
     }
 
     /// turbovault-uag: git-backend Prepend into a note WITH frontmatter inserts
-    /// AFTER the `---` block (never above it); Append goes to the end. The legacy
-    /// `test_file_tools` suite covered only the legacy path; the git-backend
+    /// AFTER the `---` block (never above it); Append goes to the end. The direct
+    /// `test_file_tools` suite covered only the direct path; the git-backend
     /// resolve_write_content + find_frontmatter_end path was uncovered.
     #[tokio::test]
     async fn git_prepend_after_frontmatter_and_append_at_end() {

@@ -713,7 +713,7 @@ impl CoreToolHandler {
     /// **GWS.14c skip:** if the active vault is on the git backend, the
     /// reindex drainer will incrementally `apply_changes` to the cached
     /// engine on the next flush — evicting here would force a full
-    /// cold-rebuild on the next query and defeat the optimization. Legacy
+    /// cold-rebuild on the next query and defeat the optimization. Direct
     /// backend still gets the hammer.
     async fn invalidate_search_cache(&self) {
         let Ok(vault_name) = self.get_active_vault_name().await else {
@@ -799,7 +799,7 @@ impl CoreToolHandler {
     }
 
     /// turbovault-5nn: true when the active vault is on the git backend AND has
-    /// `git.require_commit_message = true`. Only meaningful on git (the legacy
+    /// `git.require_commit_message = true`. Only meaningful on git (the direct
     /// backend produces no commits).
     async fn active_vault_requires_commit_message(&self) -> bool {
         self.multi_vault_mgr
@@ -847,7 +847,7 @@ impl CoreToolHandler {
         Ok((vault_name, manager))
     }
     /// Same as `get_vault_pair` but FIRST flushes the GWS.14 reindex queue
-    /// for the active vault (no-op on the Legacy backend or when the queue
+    /// for the active vault (no-op on the Direct backend or when the queue
     /// is empty). Called by every read tool that touches derived state
     /// (link graph, search/tantivy, similarity, quality reports). Read
     /// tools that consume only working-tree bytes (`read_note`,
@@ -859,11 +859,10 @@ impl CoreToolHandler {
     }
 
     /// Build the backend-dispatching write surface for the active vault.
-    /// `Legacy` → wraps the cached `VaultManager`-backed tools. `Git` →
+    /// `Direct` → wraps the cached `VaultManager`-backed tools. `Git` →
     /// wraps a cached `VaultRepo` (so all in-process callers share one
     /// commit-section mutex per vault). The MCP tool methods call this and
-    /// never branch on the backend themselves; cutover (GWS.15) deletes the
-    /// `Legacy` arm here.
+    /// never branch on the backend themselves.
     async fn get_active_write_tools(&self) -> McpResult<WriteTools> {
         let vault_name = self.get_active_vault_name().await?;
         let manager = self.get_active_vault_manager().await?;
@@ -874,7 +873,7 @@ impl CoreToolHandler {
             .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
 
         match vault_config.write_backend {
-            WriteBackend::Legacy => Ok(WriteTools::legacy(manager)),
+            WriteBackend::Direct => Ok(WriteTools::direct(manager)),
             WriteBackend::Git => {
                 let locks = self.get_or_init_git_locks(&vault_name).await;
                 let queue = self.get_or_init_reindex_queue(&vault_name).await;
@@ -1180,7 +1179,7 @@ impl CoreToolHandler {
     /// param. The token a read RETURNS must be the token CAS ACCEPTS — that
     /// is the contract this helper closes for the git backend.
     ///
-    /// - **Legacy backend:** 64-char SHA-256 of the working-tree bytes (the
+    /// - **Direct backend:** 64-char SHA-256 of the working-tree bytes (the
     ///   token `turbovault_vault::compute_hash` has always produced).
     /// - **Git backend:** 40-char hex git blob OID, matching `expect_blob`'s
     ///   tree-side precondition exactly.
@@ -1195,7 +1194,7 @@ impl CoreToolHandler {
             .await
             .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
         match cfg.write_backend {
-            WriteBackend::Legacy => Ok(turbovault_vault::compute_hash(content)),
+            WriteBackend::Direct => Ok(turbovault_vault::compute_hash(content)),
             WriteBackend::Git => VaultRepo::blob_oid_of(content.as_bytes())
                 .map(|oid| oid.to_string())
                 .map_err(|e| McpError::internal(format!("blob_oid_of failed: {}", e))),
@@ -1364,7 +1363,7 @@ impl CoreToolHandler {
 
     /// Drain the active vault's reindex queue through HEAD before a
     /// derived-state query (graph/search/analysis) reads. No-op for
-    /// vaults on the legacy backend (no queue) or when the queue is
+    /// vaults on the direct backend (no queue) or when the queue is
     /// empty.
     ///
     /// **Send/!Sync note:** `VaultRepo` is opened + dropped inside a

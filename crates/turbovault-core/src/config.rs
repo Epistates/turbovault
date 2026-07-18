@@ -8,24 +8,24 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Selects which write path serves a vault's mutations (GWS.11).
+/// Selects which write path serves a vault's mutations.
 ///
-/// **Short-lived**: this flag exists so the git-native substrate
-/// (`turbovault-git`) can be wired alongside the legacy `VaultManager` path
-/// behind a per-vault switch during the cutover (GWS.15). At cutover the
-/// default flips to `Git`, the legacy path is deleted, and the flag is removed
-/// from this config entirely.
+/// A **permanent per-vault** choice, not a cutover flag: `direct` and `git`
+/// are two write mechanisms that coexist, one per vault. Per-vault by design —
+/// the git substrate's working-tree-equals-HEAD invariant forbids mixing
+/// within one vault (a direct write commits nothing, leaving the working tree
+/// out of sync with the git tip), so a vault is one or the other end-to-end.
 ///
-/// Per-vault by design: the substrate's working-tree-equals-HEAD invariant
-/// forbids mixing within one vault (a legacy write commits nothing, leaving
-/// the working tree out of sync with the git tip), so a vault is one or the
-/// other end-to-end.
+/// The default is `Direct`. The old variant name `legacy` is kept as a serde
+/// alias so existing configs (`write_backend: legacy`) deserialize unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WriteBackend {
-    /// The legacy `VaultManager` mutators + `BatchExecutor` (default until cutover).
+    /// The non-git write path: `VaultManager` mutators write directly to the
+    /// filesystem. The default. Accepts `legacy` as a serde alias.
     #[default]
-    Legacy,
+    #[serde(alias = "legacy")]
+    Direct,
     /// The git-native write substrate (`turbovault-git`). Requires the vault
     /// path to be a git repository.
     Git,
@@ -84,7 +84,7 @@ pub struct VaultGitConfig {
     /// blank/whitespace-only one) is refused loudly instead of falling back to
     /// the auto-derived subject (`write_note <path>`, etc.). Default `false`
     /// preserves the auto-derive behavior. Only meaningful on the git backend
-    /// (the legacy backend produces no commits, so a message is moot).
+    /// (the direct backend produces no commits, so a message is moot).
     #[serde(default)]
     pub require_commit_message: bool,
 }
@@ -128,7 +128,8 @@ pub struct VaultConfig {
     pub template_dirs: Option<Vec<PathBuf>>,
     pub allowed_operations: Option<HashSet<String>>,
 
-    /// Write backend selection (GWS.11). Default `Legacy` until cutover.
+    /// Write backend selection. Default `Direct` — a permanent per-vault
+    /// choice (see [`WriteBackend`]).
     #[serde(default)]
     pub write_backend: WriteBackend,
     /// Git substrate settings. Only used when `write_backend == Git`.
@@ -445,10 +446,10 @@ mod tests {
     // -------- GWS.11 write-backend + git config --------
 
     #[test]
-    fn vault_config_defaults_to_legacy_backend_and_no_git() {
+    fn vault_config_defaults_to_direct_backend_and_no_git() {
         let temp = TempDir::new().unwrap();
         let v = VaultConfig::builder("main", temp.path()).build().unwrap();
-        assert_eq!(v.write_backend, WriteBackend::Legacy);
+        assert_eq!(v.write_backend, WriteBackend::Direct);
         assert!(v.git.is_none());
     }
 
@@ -496,13 +497,13 @@ mod tests {
     }
 
     #[test]
-    fn vault_config_yaml_legacy_omits_git_section() {
+    fn vault_config_yaml_direct_omits_git_section() {
         let temp = TempDir::new().unwrap();
         let v = VaultConfig::builder("l", temp.path()).build().unwrap();
         let yaml = yaml_serde::to_string(&v).unwrap();
-        // The roundtrip preserves the legacy default + None git.
+        // The roundtrip preserves the direct default + None git.
         let back: VaultConfig = yaml_serde::from_str(&yaml).unwrap();
-        assert_eq!(back.write_backend, WriteBackend::Legacy);
+        assert_eq!(back.write_backend, WriteBackend::Direct);
         assert!(back.git.is_none());
     }
 
@@ -510,8 +511,13 @@ mod tests {
     fn write_backend_serializes_lowercase() {
         let yaml = yaml_serde::to_string(&WriteBackend::Git).unwrap();
         assert!(yaml.contains("git"), "got: {yaml}");
+        let yaml = yaml_serde::to_string(&WriteBackend::Direct).unwrap();
+        assert!(yaml.contains("direct"), "got: {yaml}");
+        // `legacy` is kept as a serde alias so pre-rename configs still load.
         let back: WriteBackend = yaml_serde::from_str("legacy\n").unwrap();
-        assert_eq!(back, WriteBackend::Legacy);
+        assert_eq!(back, WriteBackend::Direct);
+        let back: WriteBackend = yaml_serde::from_str("direct\n").unwrap();
+        assert_eq!(back, WriteBackend::Direct);
     }
 
     #[test]

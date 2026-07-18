@@ -1,14 +1,13 @@
 //! Backend-dispatching write surface (GWS.12).
 //!
-//! [`WriteTools`] wraps either the legacy [`FileTools`] + [`BatchTools`] pair
+//! [`WriteTools`] wraps either the direct [`FileTools`] + [`BatchTools`] pair
 //! or the git-backed [`GitFileTools`], chosen at construction from a vault's
 //! [`turbovault_core::config::WriteBackend`]. The MCP layer holds one
 //! `WriteTools` per vault and never branches on the backend itself.
 //!
-//! **Lifecycle:** this enum exists for the parallel window — Phase 2 of the
-//! git-substrate cutover (GWS.12 → GWS.15). At cutover (GWS.15) the `Legacy`
-//! arm is deleted, `WriteTools` collapses to bare `GitFileTools`, and the
-//! type either disappears or becomes a thin alias.
+//! **Lifecycle:** a permanent per-vault dispatch, not a cutover shim. The
+//! non-git (`Direct`) and `Git` arms are two write mechanisms that coexist,
+//! one per vault; neither arm is a deletion target.
 
 use crate::batch_tools::BatchTools;
 use crate::file_tools::{FileTools, NoteInfo, WriteMode};
@@ -25,9 +24,9 @@ use turbovault_vault::{EditResult, VaultManager};
 /// backend-agnostic.
 #[derive(Clone)]
 pub enum WriteTools {
-    /// Pre-cutover `VaultManager` mutators + `BatchExecutor`. Deletion target
-    /// at GWS.15.
-    Legacy { files: FileTools, batch: BatchTools },
+    /// The non-git (`Direct`) write path: `VaultManager` mutators +
+    /// `BatchExecutor`. A permanent per-vault option, not a deletion target.
+    Direct { files: FileTools, batch: BatchTools },
     /// `turbovault-git` substrate — every change is a commit.
     Git(GitFileTools),
 }
@@ -38,10 +37,10 @@ impl WriteTools {
         matches!(self, Self::Git(_))
     }
 
-    /// Construct the legacy dispatch wrapping the existing `VaultManager`-backed
+    /// Construct the direct dispatch wrapping the existing `VaultManager`-backed
     /// tools.
-    pub fn legacy(manager: Arc<VaultManager>) -> Self {
-        Self::Legacy {
+    pub fn direct(manager: Arc<VaultManager>) -> Self {
+        Self::Direct {
             files: FileTools::new(Arc::clone(&manager)),
             batch: BatchTools::new(manager),
         }
@@ -96,8 +95,8 @@ impl WriteTools {
     }
 
     /// turbovault-lri: builder-style override for the underlying
-    /// [`GitFileTools::include_ignored`] policy. No-op on the legacy arm
-    /// (the legacy backend doesn't consult `.gitignore` at all). When
+    /// [`GitFileTools::include_ignored`] policy. No-op on the direct arm
+    /// (the direct backend doesn't consult `.gitignore` at all). When
     /// `false`, every mutation pre-checks each touched path against the
     /// worktree's `.gitignore` matcher and refuses the changeset with
     /// a typed error if any path would be ignored. Default `true`.
@@ -110,7 +109,7 @@ impl WriteTools {
 
     /// turbovault-a0l (PERF-1): install the cached per-vault `VaultRepo` handle
     /// on the git arm so writes reuse it instead of opening per call. No-op on
-    /// the legacy arm (no substrate handle).
+    /// the direct arm (no substrate handle).
     pub fn with_cached_repo(self, cached_repo: CachedRepo) -> Self {
         match self {
             Self::Git(g) => Self::Git(g.with_cached_repo(cached_repo)),
@@ -122,14 +121,14 @@ impl WriteTools {
 
     pub async fn read_file(&self, path: &str) -> Result<String> {
         match self {
-            Self::Legacy { files, .. } => files.read_file(path).await,
+            Self::Direct { files, .. } => files.read_file(path).await,
             Self::Git(g) => g.read_file(path).await,
         }
     }
 
     pub async fn get_notes_info(&self, paths: &[String]) -> Result<Vec<NoteInfo>> {
         match self {
-            Self::Legacy { files, .. } => files.get_notes_info(paths).await,
+            Self::Direct { files, .. } => files.get_notes_info(paths).await,
             Self::Git(g) => g.get_notes_info(paths).await,
         }
     }
@@ -144,7 +143,7 @@ impl WriteTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => {
+            Self::Direct { files, .. } => {
                 files
                     .write_file_with_mode(path, content, mode, expected_hash)
                     .await
@@ -158,7 +157,7 @@ impl WriteTools {
 
     pub async fn write_file(&self, path: &str, content: &str) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.write_file(path, content).await,
+            Self::Direct { files, .. } => files.write_file(path, content).await,
             Self::Git(g) => g.write_file(path, content).await,
         }
     }
@@ -170,14 +169,14 @@ impl WriteTools {
     /// CAS fail loudly with `ConcurrencyError`. This is the safety the
     /// MCP layer's pre-check cannot provide on its own (TOCTOU window).
     ///
-    /// **Legacy backend:** delegates to `write_file` (best-effort; legacy
+    /// **Direct backend:** delegates to `write_file` (best-effort; direct
     /// has no atomic create primitive). The MCP layer's pre-check is the
     /// only protection — concurrent creates can still race. Known limit of
-    /// the legacy path; documented, not fixed (per the legacy-stays
+    /// the direct path; documented, not fixed (per the direct-stays
     /// direction).
     pub async fn create_file(&self, path: &str, content: &str) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.write_file(path, content).await,
+            Self::Direct { files, .. } => files.write_file(path, content).await,
             Self::Git(g) => g.create_file(path, content).await,
         }
     }
@@ -186,8 +185,8 @@ impl WriteTools {
     //
     // Each `_with_message` method behaves identically to its base sibling
     // except that on the git backend the caller's `message` becomes the
-    // commit subject (and body, when newline-separated). Legacy backend
-    // silently ignores `message` — legacy writes don't produce commits.
+    // commit subject (and body, when newline-separated). Direct backend
+    // silently ignores `message` — direct writes don't produce commits.
 
     pub async fn write_file_with_mode_and_message(
         &self,
@@ -198,7 +197,7 @@ impl WriteTools {
         message: &str,
     ) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => {
+            Self::Direct { files, .. } => {
                 files
                     .write_file_with_mode(path, content, mode, expected_hash)
                     .await
@@ -217,7 +216,7 @@ impl WriteTools {
         message: &str,
     ) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.write_file(path, content).await,
+            Self::Direct { files, .. } => files.write_file(path, content).await,
             Self::Git(g) => g.create_file_with_message(path, content, message).await,
         }
     }
@@ -231,7 +230,7 @@ impl WriteTools {
         message: &str,
     ) -> Result<EditResult> {
         match self {
-            Self::Legacy { files, .. } => {
+            Self::Direct { files, .. } => {
                 files.edit_file(path, edits, expected_hash, dry_run).await
             }
             Self::Git(g) => {
@@ -248,7 +247,7 @@ impl WriteTools {
         message: &str,
     ) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.delete_file_with_hash(path, expected_hash).await,
+            Self::Direct { files, .. } => files.delete_file_with_hash(path, expected_hash).await,
             Self::Git(g) => {
                 g.delete_file_with_hash_and_message(path, expected_hash, message)
                     .await
@@ -264,7 +263,7 @@ impl WriteTools {
         message: &str,
     ) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
+            Self::Direct { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
             Self::Git(g) => {
                 g.move_file_with_hash_and_message(from, to, expected_hash, message)
                     .await
@@ -275,11 +274,11 @@ impl WriteTools {
     /// turbovault-oz6: list inbound backlinks for a path. Both backends
     /// resolve via the same in-memory link graph (kept coherent by the
     /// substrate's CommitHook + drainer / external-ref listener for git;
-    /// kept manually-coherent by VaultManager mutators for legacy).
+    /// kept manually-coherent by VaultManager mutators for direct).
     pub async fn list_inbound_backlinks(&self, path: &str) -> Result<Vec<String>> {
         match self {
             Self::Git(g) => g.list_inbound_backlinks(path).await,
-            Self::Legacy { files, .. } => {
+            Self::Direct { files, .. } => {
                 let bls = files
                     .manager
                     .get_backlinks(std::path::Path::new(path))
@@ -301,7 +300,7 @@ impl WriteTools {
     }
 
     /// turbovault-oz6: atomic delete + inbound-wikilink wrap-as-stale.
-    /// **Git backend only** — legacy refuses loudly (no atomic multi-file
+    /// **Git backend only** — direct refuses loudly (no atomic multi-file
     /// primitive).
     pub async fn delete_file_with_link_rewrite_to_stale(
         &self,
@@ -310,8 +309,8 @@ impl WriteTools {
         message: &str,
     ) -> Result<MoveWithLinksResult> {
         match self {
-            Self::Legacy { .. } => Err(Error::config_error(
-                "Atomic delete + wikilink wrap-as-stale requires write_backend=git. The legacy backend has no multi-file atomic primitive; use force=true on the legacy delete (rename-only — links will dangle) or switch to git.",
+            Self::Direct { .. } => Err(Error::config_error(
+                "Atomic delete + wikilink wrap-as-stale requires write_backend=git. The direct backend has no multi-file atomic primitive; use force=true on the direct delete (rename-only — links will dangle) or switch to git.",
             )),
             Self::Git(g) => {
                 g.delete_file_with_link_rewrite_to_stale(path, expected_hash, message)
@@ -321,8 +320,8 @@ impl WriteTools {
     }
 
     /// turbovault-lqr: atomic move + inbound-wikilink rewrite.
-    /// **Git backend only** — legacy refuses loudly (no atomic multi-file
-    /// primitive; the substrate's killer feature that the legacy path
+    /// **Git backend only** — direct refuses loudly (no atomic multi-file
+    /// primitive; the substrate's killer feature that the direct path
     /// cannot match).
     pub async fn move_file_with_link_updates(
         &self,
@@ -332,8 +331,8 @@ impl WriteTools {
         message: &str,
     ) -> Result<MoveWithLinksResult> {
         match self {
-            Self::Legacy { .. } => Err(Error::config_error(
-                "Atomic move + wikilink update requires write_backend=git. The legacy backend has no multi-file atomic primitive; use the legacy `move_file` flow (rename only; links will dangle) or switch to git.",
+            Self::Direct { .. } => Err(Error::config_error(
+                "Atomic move + wikilink update requires write_backend=git. The direct backend has no multi-file atomic primitive; use the direct `move_file` flow (rename only; links will dangle) or switch to git.",
             )),
             Self::Git(g) => {
                 g.move_file_with_link_updates(from, to, expected_hash, message)
@@ -348,9 +347,9 @@ impl WriteTools {
         message: &str,
     ) -> Result<BatchResult> {
         match self {
-            Self::Legacy { batch, .. } => {
-                legacy_batch_refusal(&operations)?;
-                // Legacy doesn't commit; message ignored.
+            Self::Direct { batch, .. } => {
+                direct_batch_refusal(&operations)?;
+                // Direct doesn't commit; message ignored.
                 batch.batch_execute(operations).await
             }
             Self::Git(g) => g.batch_execute_with_message(operations, message).await,
@@ -365,7 +364,7 @@ impl WriteTools {
         dry_run: bool,
     ) -> Result<EditResult> {
         match self {
-            Self::Legacy { files, .. } => {
+            Self::Direct { files, .. } => {
                 files.edit_file(path, edits, expected_hash, dry_run).await
             }
             Self::Git(g) => g.edit_file(path, edits, expected_hash, dry_run).await,
@@ -374,7 +373,7 @@ impl WriteTools {
 
     pub async fn delete_file(&self, path: &str) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.delete_file(path).await,
+            Self::Direct { files, .. } => files.delete_file(path).await,
             Self::Git(g) => g.delete_file(path).await,
         }
     }
@@ -385,14 +384,14 @@ impl WriteTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.delete_file_with_hash(path, expected_hash).await,
+            Self::Direct { files, .. } => files.delete_file_with_hash(path, expected_hash).await,
             Self::Git(g) => g.delete_file_with_hash(path, expected_hash).await,
         }
     }
 
     pub async fn move_file(&self, from: &str, to: &str) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.move_file(from, to).await,
+            Self::Direct { files, .. } => files.move_file(from, to).await,
             Self::Git(g) => g.move_file(from, to).await,
         }
     }
@@ -404,26 +403,26 @@ impl WriteTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
+            Self::Direct { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
             Self::Git(g) => g.move_file_with_hash(from, to, expected_hash).await,
         }
     }
 
     pub async fn copy_file(&self, from: &str, to: &str) -> Result<()> {
         match self {
-            Self::Legacy { files, .. } => files.copy_file(from, to).await,
+            Self::Direct { files, .. } => files.copy_file(from, to).await,
             Self::Git(g) => g.copy_file(from, to).await,
         }
     }
 
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
         match self {
-            Self::Legacy { batch, .. } => {
-                // turbovault-c0e / 0g4: legacy backend has no per-op CAS
-                // primitive and no git-only ops (per the legacy-stays direction
+            Self::Direct { batch, .. } => {
+                // turbovault-c0e / 0g4: direct backend has no per-op CAS
+                // primitive and no git-only ops (per the direct-stays direction
                 // in turbovault-6fo.16). Refuse loudly rather than silently
                 // dropping the precondition or partially applying.
-                legacy_batch_refusal(&operations)?;
+                direct_batch_refusal(&operations)?;
                 batch.batch_execute(operations).await
             }
             Self::Git(g) => g.batch_execute(operations).await,
@@ -432,9 +431,9 @@ impl WriteTools {
 }
 
 /// turbovault-0g4: index + name of the first git-substrate-only op in a batch
-/// (one with no legacy executor equivalent — see
+/// (one with no direct executor equivalent — see
 /// [`turbovault_batch::BatchOperation::git_only_kind`]), or `None` if every op
-/// is legacy-capable.
+/// is direct-capable.
 fn first_git_only_op(operations: &[BatchOperation]) -> Option<(usize, &'static str)> {
     operations
         .iter()
@@ -442,21 +441,21 @@ fn first_git_only_op(operations: &[BatchOperation]) -> Option<(usize, &'static s
         .find_map(|(i, op)| op.git_only_kind().map(|kind| (i, kind)))
 }
 
-/// turbovault-0g4 + c0e: the two refusals the legacy batch dispatch performs
+/// turbovault-0g4 + c0e: the two refusals the direct batch dispatch performs
 /// upfront (zero side effects), in priority order:
-/// 1. git-substrate-only ops (no legacy equivalent), then
-/// 2. per-op CAS preconditions (no legacy batch-level CAS).
+/// 1. git-substrate-only ops (no direct equivalent), then
+/// 2. per-op CAS preconditions (no direct batch-level CAS).
 ///
 /// Refusing here — rather than letting the executor partially apply or return
-/// a softer `BatchResult { success: false }` — keeps `write_backend=legacy`
+/// a softer `BatchResult { success: false }` — keeps `write_backend=direct`
 /// behavior unchanged and the error shape consistent across both refusals.
-fn legacy_batch_refusal(operations: &[BatchOperation]) -> Result<()> {
+fn direct_batch_refusal(operations: &[BatchOperation]) -> Result<()> {
     if let Some((idx, kind)) = first_git_only_op(operations) {
         return Err(Error::config_error(format!(
-            "BatchOperation at index {idx} ({kind}) requires write_backend=git; the legacy batch executor has no equivalent. Switch the vault to the git backend to use it."
+            "BatchOperation at index {idx} ({kind}) requires write_backend=git; the direct batch executor has no equivalent. Switch the vault to the git backend to use it."
         )));
     }
-    // The legacy executor performs its best-effort preflight validation for
+    // The direct executor performs its best-effort preflight validation for
     // expected_hash values. It is not cross-process atomic, but preserving
     // that compatibility is preferable to rejecting batches that worked
     // before the Git backend was introduced.
@@ -477,9 +476,9 @@ mod tests {
         cfg
     }
 
-    async fn legacy_tools(tmp: &TempDir) -> WriteTools {
+    async fn direct_tools(tmp: &TempDir) -> WriteTools {
         let manager = Arc::new(VaultManager::new(test_server_config(tmp.path(), "l")).unwrap());
-        WriteTools::legacy(manager)
+        WriteTools::direct(manager)
     }
 
     async fn git_tools(tmp: &TempDir) -> WriteTools {
@@ -492,9 +491,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_dispatch_writes_and_reads_back() {
+    async fn direct_dispatch_writes_and_reads_back() {
         let tmp = TempDir::new().unwrap();
-        let tools = legacy_tools(&tmp).await;
+        let tools = direct_tools(&tmp).await;
         tools.write_file("a.md", "alpha").await.unwrap();
         assert_eq!(tools.read_file("a.md").await.unwrap(), "alpha");
     }
@@ -526,12 +525,12 @@ mod tests {
         assert_eq!(tools.read_file("dup.md").await.unwrap(), "v1");
     }
 
-    /// Legacy retains its best-effort expected-hash preflight for backwards
+    /// Direct retains its best-effort expected-hash preflight for backwards
     /// compatibility. The Git backend is required for cross-process atomicity.
     #[tokio::test]
-    async fn legacy_batch_honors_per_op_precondition_preflight() {
+    async fn direct_batch_honors_per_op_precondition_preflight() {
         let tmp = TempDir::new().unwrap();
-        let tools = legacy_tools(&tmp).await;
+        let tools = direct_tools(&tmp).await;
         let ops = vec![BatchOperation::WriteNote {
             path: "a.md".into(),
             content: "v".into(),
@@ -542,14 +541,14 @@ mod tests {
         assert!(!tmp.path().join("a.md").exists());
     }
 
-    /// turbovault-0g4.1: a git-substrate-only op (EditNote) in a legacy batch
+    /// turbovault-0g4.1: a git-substrate-only op (EditNote) in a direct batch
     /// is refused with a clear write_backend=git message, and NO earlier op is
     /// applied (validate() rejects upfront, zero side effects). Keeps the
-    /// legacy backend's behavior unchanged for users who never had these ops.
+    /// direct backend's behavior unchanged for users who never had these ops.
     #[tokio::test]
-    async fn legacy_batch_refuses_git_only_edit_note() {
+    async fn direct_batch_refuses_git_only_edit_note() {
         let tmp = TempDir::new().unwrap();
-        let tools = legacy_tools(&tmp).await;
+        let tools = direct_tools(&tmp).await;
         let ops = vec![
             BatchOperation::WriteNote {
                 path: "kept.md".into(),
@@ -571,16 +570,16 @@ mod tests {
         // validate() refuses upfront: the earlier WriteNote never landed.
         assert!(
             !tmp.path().join("kept.md").exists(),
-            "no op applied on a refused legacy batch"
+            "no op applied on a refused direct batch"
         );
     }
 
     /// turbovault-c0e: precondition-FREE batches still pass through to the
-    /// legacy executor unchanged.
+    /// direct executor unchanged.
     #[tokio::test]
-    async fn legacy_batch_passes_through_when_no_preconditions() {
+    async fn direct_batch_passes_through_when_no_preconditions() {
         let tmp = TempDir::new().unwrap();
-        let tools = legacy_tools(&tmp).await;
+        let tools = direct_tools(&tmp).await;
         let ops = vec![BatchOperation::WriteNote {
             path: "a.md".into(),
             content: "v".into(),
@@ -590,22 +589,22 @@ mod tests {
         assert!(res.success);
     }
 
-    /// turbovault-947: legacy dispatch has no atomic create primitive — the
+    /// turbovault-947: direct dispatch has no atomic create primitive — the
     /// fallback is `write_file` which blind-overwrites. Documented limit;
-    /// the MCP layer's pre-check is the only protection on legacy.
+    /// the MCP layer's pre-check is the only protection on direct.
     #[tokio::test]
-    async fn legacy_create_file_is_blind_fallback() {
+    async fn direct_create_file_is_blind_fallback() {
         let tmp = TempDir::new().unwrap();
-        let tools = legacy_tools(&tmp).await;
+        let tools = direct_tools(&tmp).await;
         tools.write_file("dup.md", "v1").await.unwrap();
-        // Legacy intentionally allows this — known limit.
+        // Direct intentionally allows this — known limit.
         tools.create_file("dup.md", "v2").await.unwrap();
         assert_eq!(tools.read_file("dup.md").await.unwrap(), "v2");
     }
 
     #[tokio::test]
     async fn dispatch_observably_different_for_batch_atomicity() {
-        // Same failing batch: legacy leaves partial state, git leaves none.
+        // Same failing batch: direct leaves partial state, git leaves none.
         // Trigger = MoveNote from a non-existent source — both backends fail
         // on the read, but at different points in the apply pipeline.
         let make_ops = || {
@@ -630,14 +629,14 @@ mod tests {
         };
 
         let l_tmp = TempDir::new().unwrap();
-        let l = legacy_tools(&l_tmp).await;
+        let l = direct_tools(&l_tmp).await;
         let l_res = l.batch_execute(make_ops()).await.unwrap();
         assert!(!l_res.success);
-        // Legacy: `first.md` landed before the failed move -> partial state
+        // Direct: `first.md` landed before the failed move -> partial state
         // (the defect the substrate replaces).
         assert!(
             l_tmp.path().join("first.md").exists(),
-            "legacy leaves partial state behind"
+            "direct leaves partial state behind"
         );
 
         let g_tmp = TempDir::new().unwrap();

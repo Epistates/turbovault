@@ -205,7 +205,7 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
 
 #[tokio::test]
 async fn move_with_link_updates_lands_as_one_commit() {
-    // The case the legacy batch couldn't deliver atomically: rename a page
+    // The case the direct batch couldn't deliver atomically: rename a page
     // AND update its inbound wikilinks in ONE commit. This is the substrate's
     // headline win.
     let tmp = TempDir::new().unwrap();

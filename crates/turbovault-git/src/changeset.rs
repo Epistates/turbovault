@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn rename_chained_with_link_updates_is_one_commit() {
         // Move + update-links: rename old->new AND fix link targets in two other
-        // files, all in one atomic commit (the case the legacy batch couldn't).
+        // files, all in one atomic commit (the case the direct batch couldn't).
         let (_tmp, vr) = open_unborn();
         vr.commit_changeset(
             &Changeset::new("seed")

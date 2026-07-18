@@ -82,7 +82,7 @@ async fn batch_response_reports_partial_failure_contract() {
     assert_eq!(response["data"]["success"], false);
     assert_eq!(response["data"]["executed"], 1);
     assert_eq!(response["data"]["failed_at"], 1);
-    assert_eq!(response["meta"]["execution_mode"], "sequential_legacy");
+    assert_eq!(response["meta"]["execution_mode"], "sequential_direct");
     assert!(
         response["warnings"][0]
             .as_str()

@@ -28,7 +28,7 @@ impl BatchProvider {
     /// Execute a validated batch of file operations.
     #[tool(
         description = "Execute multiple file operations. With write_backend=git, the complete batch is one atomic commit with per-path CAS preconditions: every operation applies or none do.",
-        usage = "Use the Git backend for all-or-nothing batches and cross-process concurrency safety. Pass expected_hash on guarded operations and an optional commit_message. The legacy backend remains sequential and refuses Git-only operations or batch CAS preconditions.",
+        usage = "Use the Git backend for all-or-nothing batches and cross-process concurrency safety. Pass expected_hash on guarded operations and an optional commit_message. The direct backend remains sequential and refuses Git-only operations or batch CAS preconditions.",
         performance = "Git batches build one isolated tree and advance one ref regardless of operation count.",
         related = ["write_note", "delete_note", "move_note"],
         examples = [
@@ -73,7 +73,7 @@ impl BatchProvider {
         {
             "atomic_git_commit"
         } else {
-            "sequential_legacy"
+            "sequential_direct"
         };
         let mut response = StandardResponse::new(
             vault_name,
@@ -85,9 +85,9 @@ impl BatchProvider {
         .with_meta("execution_mode", serde_json::json!(execution_mode))
         .with_next_step("quick_health_check");
 
-        if execution_mode == "sequential_legacy" && !result.success {
+        if execution_mode == "sequential_direct" && !result.success {
             response = response.with_warning(
-                "Legacy batch execution is sequential: operations completed before the failure were not rolled back. Configure write_backend=git for all-or-nothing batches.",
+                "Direct batch execution is sequential: operations completed before the failure were not rolled back. Configure write_backend=git for all-or-nothing batches.",
             );
         }
 

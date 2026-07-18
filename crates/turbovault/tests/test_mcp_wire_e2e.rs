@@ -18,7 +18,7 @@
 //!
 //! The git-backed vault is registered through a temp `--config` YAML, the
 //! only over-wire route to `write_backend: git` (the `add_vault` MCP tool
-//! exposes name+path only = Legacy; turbovault-xj8).
+//! exposes name+path only = Direct; turbovault-xj8).
 //!
 //! Serialized (`#[serial_test::serial]`): each test spawns its own server
 //! process, but the test process shares libgit2's process-wide init.

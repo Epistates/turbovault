@@ -1,4 +1,4 @@
-//! Baseline benchmarks comparing the legacy `VaultManager`-backed write path
+//! Baseline benchmarks comparing the direct `VaultManager`-backed write path
 //! against the new git substrate path, both routed through `WriteTools`.
 //!
 //! Goal: capture **before-cutover** numbers so the GWS.15 decision is
@@ -22,7 +22,7 @@
 //! - Tempdir per iteration (high setup cost outside the measured region).
 //!   Use criterion's `iter_batched` to keep the measured closure tight.
 //! - Single-threaded tokio runtime; no MCP-server overhead.
-//! - The legacy `batch_execute` is **not** transactional — partial state on
+//! - The direct `batch_execute` is **not** transactional — partial state on
 //!   failure is the known defect; happy-path numbers only.
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
@@ -61,10 +61,10 @@ struct Fixture {
     tools: WriteTools,
 }
 
-fn legacy_fixture() -> Fixture {
+fn direct_fixture() -> Fixture {
     let tmp = TempDir::new().unwrap();
     let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
-    let tools = WriteTools::legacy(manager);
+    let tools = WriteTools::direct(manager);
     Fixture { _tmp: tmp, tools }
 }
 
@@ -104,9 +104,9 @@ fn body(size: usize) -> String {
 fn bench_write_file_1kb(c: &mut Criterion) {
     let mut g = c.benchmark_group("write_file_1kb");
     let content = body(1024);
-    g.bench_function("legacy", |b| {
+    g.bench_function("direct", |b| {
         b.iter_batched(
-            legacy_fixture,
+            direct_fixture,
             |f| {
                 rt().block_on(async {
                     f.tools.write_file("a.md", &content).await.unwrap();
@@ -143,9 +143,9 @@ fn bench_write_file_1kb(c: &mut Criterion) {
 fn bench_write_file_100kb(c: &mut Criterion) {
     let mut g = c.benchmark_group("write_file_100kb");
     let content = body(100 * 1024);
-    g.bench_function("legacy", |b| {
+    g.bench_function("direct", |b| {
         b.iter_batched(
-            legacy_fixture,
+            direct_fixture,
             |f| {
                 rt().block_on(async {
                     f.tools.write_file("a.md", &content).await.unwrap();
@@ -185,8 +185,8 @@ fn bench_edit_file(c: &mut Criterion) {
     let mut g = c.benchmark_group("edit_file");
     let edits = "<<<<<<< SEARCH\nhello world\n=======\nhi world\n>>>>>>> REPLACE\n";
 
-    fn seeded_legacy() -> Fixture {
-        let f = legacy_fixture();
+    fn seeded_direct() -> Fixture {
+        let f = direct_fixture();
         rt().block_on(async {
             f.tools.write_file("a.md", "hello world\n").await.unwrap();
         });
@@ -200,9 +200,9 @@ fn bench_edit_file(c: &mut Criterion) {
         f
     }
 
-    g.bench_function("legacy", |b| {
+    g.bench_function("direct", |b| {
         b.iter_batched(
-            seeded_legacy,
+            seeded_direct,
             |f| {
                 rt().block_on(async {
                     f.tools.edit_file("a.md", edits, None, false).await.unwrap();
@@ -230,8 +230,8 @@ fn bench_edit_file(c: &mut Criterion) {
 fn bench_delete_file(c: &mut Criterion) {
     let mut g = c.benchmark_group("delete_file");
 
-    fn seeded_legacy() -> Fixture {
-        let f = legacy_fixture();
+    fn seeded_direct() -> Fixture {
+        let f = direct_fixture();
         rt().block_on(async {
             f.tools.write_file("a.md", "body").await.unwrap();
         });
@@ -245,9 +245,9 @@ fn bench_delete_file(c: &mut Criterion) {
         f
     }
 
-    g.bench_function("legacy", |b| {
+    g.bench_function("direct", |b| {
         b.iter_batched(
-            seeded_legacy,
+            seeded_direct,
             |f| {
                 rt().block_on(async {
                     f.tools.delete_file("a.md").await.unwrap();
@@ -275,8 +275,8 @@ fn bench_delete_file(c: &mut Criterion) {
 fn bench_move_file(c: &mut Criterion) {
     let mut g = c.benchmark_group("move_file");
 
-    fn seeded_legacy() -> Fixture {
-        let f = legacy_fixture();
+    fn seeded_direct() -> Fixture {
+        let f = direct_fixture();
         rt().block_on(async {
             f.tools.write_file("a.md", "body").await.unwrap();
         });
@@ -290,9 +290,9 @@ fn bench_move_file(c: &mut Criterion) {
         f
     }
 
-    g.bench_function("legacy", |b| {
+    g.bench_function("direct", |b| {
         b.iter_batched(
-            seeded_legacy,
+            seeded_direct,
             |f| {
                 rt().block_on(async {
                     f.tools.move_file("a.md", "b.md").await.unwrap();
@@ -329,9 +329,9 @@ fn batch_ops(n: usize) -> Vec<BatchOperation> {
 
 fn bench_batch(c: &mut Criterion, name: &str, n: usize) {
     let mut g = c.benchmark_group(name);
-    g.bench_function("legacy", |b| {
+    g.bench_function("direct", |b| {
         b.iter_batched(
-            legacy_fixture,
+            direct_fixture,
             |f| {
                 rt().block_on(async {
                     let res = f.tools.batch_execute(batch_ops(n)).await.unwrap();

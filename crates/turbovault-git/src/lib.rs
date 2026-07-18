@@ -7,7 +7,7 @@
 //! log; `update-ref` CAS is the cross-process serialization primitive.
 //!
 //! Design: `git-write-substrate-architecture.md`. This crate replaces the
-//! legacy `VaultManager` write path (mutators, batch executor, path-lock
+//! direct `VaultManager` write path (mutators, batch executor, path-lock
 //! registry, audit/snapshot rollback).
 //!
 //! Layers (built bottom-up):

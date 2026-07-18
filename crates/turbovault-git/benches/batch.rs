@@ -1,7 +1,7 @@
 //! Multi-file batch commit throughput.
 //!
 //! Cost of `commit_changeset` carrying N `create` ops in one atomic commit —
-//! the case the legacy batch was supposed to be transactional about.
+//! the case the direct batch was supposed to be transactional about.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::atomic::{AtomicU64, Ordering};

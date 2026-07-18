@@ -166,7 +166,7 @@ pub enum BatchOperation {
     },
 
     /// Write/overwrite a note. `expected_hash` (git blob OID hex on git
-    /// backend, SHA-256 on legacy) carries an `expect_blob` precondition;
+    /// backend, SHA-256 on direct) carries an `expect_blob` precondition;
     /// the whole batch aborts if the target file no longer matches the
     /// expected pre-image (turbovault-c0e).
     #[serde(rename = "WriteNote", alias = "WriteFile")]
@@ -190,7 +190,7 @@ pub enum BatchOperation {
     /// - `"force"` — delete and leave inbound links dangling (the pre-0g4.7
     ///   behavior).
     ///
-    /// The legacy backend ignores this field and always does a bare delete (no
+    /// The direct backend ignores this field and always does a bare delete (no
     /// atomic multi-file primitive).
     #[serde(rename = "DeleteNote", alias = "DeleteFile")]
     DeleteNote {
@@ -211,7 +211,7 @@ pub enum BatchOperation {
     /// `[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and
     /// path-prefix forms — to the new target in the SAME commit, with per-source
     /// `expect_blob` preconditions. Set it false for a rename-only move (inbound
-    /// links dangle — the pre-0g4.6 behavior). The legacy backend ignores this
+    /// links dangle — the pre-0g4.6 behavior). The direct backend ignores this
     /// field and is always rename-only (it has no atomic multi-file primitive).
     #[serde(rename = "MoveNote", alias = "MoveFile")]
     MoveNote {
@@ -242,7 +242,7 @@ pub enum BatchOperation {
     /// `edits` uses the same block grammar as the tool; multiple blocks edit
     /// multiple locations in the one file. `expected_hash` (git blob OID hex)
     /// carries an `expect_blob` precondition — a stale pre-image aborts the
-    /// whole batch. **Git backend only**; the legacy executor refuses it.
+    /// whole batch. **Git backend only**; the direct executor refuses it.
     #[serde(rename = "EditNote", alias = "EditFile")]
     EditNote {
         path: String,
@@ -318,9 +318,9 @@ impl BatchOperation {
     }
 
     /// turbovault-0g4: the variant name if this op is git-substrate-only (has
-    /// no legacy `BatchExecutor` equivalent), else `None`. The legacy executor
+    /// no direct `BatchExecutor` equivalent), else `None`. The direct executor
     /// uses this to refuse such ops upfront in [`BatchExecutor::validate`], so
-    /// a user on `write_backend=legacy` sees a clear error instead of a partial
+    /// a user on `write_backend=direct` sees a clear error instead of a partial
     /// apply. Extended as each git-only op is added (turbovault-0g4.*).
     pub fn git_only_kind(&self) -> Option<&'static str> {
         match self {
@@ -442,9 +442,9 @@ impl BatchExecutor {
             return Err(Error::config_error("Batch cannot be empty".to_string()));
         }
 
-        // turbovault-0g4: refuse git-substrate-only ops on the legacy executor
+        // turbovault-0g4: refuse git-substrate-only ops on the direct executor
         // upfront (zero side effects) rather than writing earlier ops then
-        // failing mid-batch. Keeps `write_backend=legacy` behavior unchanged:
+        // failing mid-batch. Keeps `write_backend=direct` behavior unchanged:
         // these ops never existed there, so a clear refusal is the only correct
         // outcome.
         for (i, op) in ops.iter().enumerate() {
@@ -591,14 +591,14 @@ impl BatchExecutor {
 
     /// Execute a single operation
     async fn execute_operation(&self, op: &BatchOperation) -> Result<String> {
-        // Legacy executor does not consult per-op preconditions
-        // (`expected_hash` / `force`). The legacy substrate has no CAS
-        // primitive on the batch path (per the legacy-stays direction in
-        // turbovault-6fo.16). `WriteTools::Legacy::batch_execute` refuses
+        // Direct executor does not consult per-op preconditions
+        // (`expected_hash` / `force`). The direct substrate has no CAS
+        // primitive on the batch path (per the direct-stays direction in
+        // turbovault-6fo.16). `WriteTools::Direct::batch_execute` refuses
         // batches that carry preconditions, so reaching this code path with
         // a precondition set is a bug elsewhere.
         //
-        // turbovault-0g4: git-substrate-only ops have no legacy equivalent.
+        // turbovault-0g4: git-substrate-only ops have no direct equivalent.
         // `validate()` rejects them upfront; this is a defensive backstop.
         if let Some(kind) = op.git_only_kind() {
             return Err(git_only_err(0, kind));
@@ -676,7 +676,7 @@ impl BatchExecutor {
                 }
             }
             // turbovault-0g4: git-substrate-only ops return early above; this
-            // arm keeps the match exhaustive without pinning it to the legacy
+            // arm keeps the match exhaustive without pinning it to the direct
             // op set, and defensively refuses any unhandled variant.
             other => Err(git_only_err(
                 0,
@@ -687,11 +687,11 @@ impl BatchExecutor {
 }
 
 /// turbovault-0g4: error for a git-substrate-only [`BatchOperation`] reaching
-/// the legacy executor. `index` is the op's position in the batch (use `0`
+/// the direct executor. `index` is the op's position in the batch (use `0`
 /// when the position is not meaningful, e.g. the defensive backstop).
 fn git_only_err(index: usize, kind: &str) -> Error {
     Error::config_error(format!(
-        "operation {index} (BatchOperation::{kind}) requires write_backend=git; the legacy batch executor has no equivalent. Switch the vault to the git backend to use it."
+        "operation {index} (BatchOperation::{kind}) requires write_backend=git; the direct batch executor has no equivalent. Switch the vault to the git backend to use it."
     ))
 }
 
