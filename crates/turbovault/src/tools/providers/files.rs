@@ -21,7 +21,7 @@ impl Deref for FileProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "1.5.0")]
+#[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
 impl FileProvider {
     // ==================== File Operations ====================
 

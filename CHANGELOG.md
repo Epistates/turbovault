@@ -5,6 +5,45 @@ All notable changes to TurboVault will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-07-17
+
+### Added
+
+- **Atomic Git-backed writes** ([#32](https://github.com/Epistates/turbovault/issues/32), [#37](https://github.com/Epistates/turbovault/pull/37)): New `turbovault-git` crate and opt-in `write_backend: git` mode. Each mutation builds an isolated Git tree and advances the branch with compare-and-swap; a multi-operation batch is one commit, so stale preconditions or later failures apply none of it.
+- **Cross-process write coordination**: An advisory repository lock spans commit creation, ref advancement, and working-tree materialization. TurboVault refuses to overwrite dirty or untracked touched paths and refuses writes while the Git index contains staged changes.
+- **Git worktree fanout tools**: `begin_fanout`, `commit_fanout`, `abandon_fanout`, and `list_orphan_fanouts` provide isolated workspaces for parallel agents, with fast-forward or merge-back support.
+- **Commit-driven derived-state reindexing**: Git-backed writes enqueue changed commit ranges and reconcile the graph/search state before dependent reads. External ref advances such as `git pull` are detected and indexed.
+- **Open Knowledge Format support**: Detect OKF bundles, validate OKF v0.1 conformance, resolve OKF cross-links, generate bundle indexes, surface grounding context, maintain change logs, and render an HTML vault viewer.
+- **Configurable tool visibility** ([#25](https://github.com/Epistates/turbovault/pull/25)): Allow, hide, or disable tools by name or tag through YAML, environment variables, and CLI options.
+- **Transport environment configuration** ([#26](https://github.com/Epistates/turbovault/pull/26)): Added the documented environment-variable surface for vault, config, tool visibility, and logging behavior.
+
+### Changed
+
+- **74 MCP tools**: The public tool surface grew from 70 to 74 with Git fanout, and is now implemented as focused providers composed through TurboMCP while preserving the existing flat tool names.
+- **Git-aware mutation routing**: Note writes, edits, deletes, moves, templates, frontmatter/tag updates, binary moves, and batches use the selected write backend. Git-backed note moves update inbound wikilinks atomically by default.
+- **Safer overwrite contract**: Existing-note overwrites require the hash returned by `read_note` unless `force=true` is explicitly supplied. Edit and batch preconditions are revalidated at the final write boundary.
+- **Batch execution contract**: Git-backed batches are all-or-nothing with per-path CAS. The compatibility backend remains sequential/fail-fast and now reports that execution mode and warns when completed operations were not rolled back.
+- **Performance**: Vault-wide metadata queries use validated cache-first scans, and Git repository handles and derived-state updates are reused or incrementally reconciled.
+- **Dependencies**: Updated TurboMCP to 3.1.5 and Git bindings to `git2` 0.21 / libgit2 1.9.4, alongside current compatible transitive security updates.
+
+### Fixed
+
+- **Attachment graph pollution**: Non-Markdown attachment links are excluded consistently from note graph ingestion and broken-link analysis.
+- **Edit TOCTOU race**: `edit_note` carries the validated pre-image hash into the final write instead of silently overwriting an intervening change.
+- **Batch stale-write window**: Supplied write/delete/move hashes are checked before legacy execution, while Git-backed batches recheck them against the atomic commit base.
+- **Provider contract drift**: Checked-in tool catalog, dispatch, schema, tag, visibility, and shared-state tests protect the decomposed server surface.
+
+### Security
+
+- **Working-tree protection**: Git-backed writes reject symlinks/non-regular touched paths, untracked collisions, dirty touched files, and staged-index state before materialization.
+- **Dependency audit refresh**: Removed Git-specific RustSec warnings by upgrading `git2`; only two allowed transitive warnings remain in the audit output.
+
+### Upgrade notes
+
+- Existing installations keep the compatibility write backend. To enable atomic multi-file transactions, point TurboVault at an existing Git repository and set `write_backend: git` in that vault's YAML configuration.
+- Git commits are the atomic source of truth. Working-tree paths are replaced atomically one file at a time; interrupted materialization is recoverable by idempotently resynchronizing from `HEAD`.
+- Audit/rollback MCP tools continue to serve the compatibility backend. For Git-backed vaults, use Git history and restore operations; TurboVault returns an explicit backend-specific message instead of an unrelated legacy audit.
+
 ## [1.5.0] - 2026-05-01
 
 ### Added

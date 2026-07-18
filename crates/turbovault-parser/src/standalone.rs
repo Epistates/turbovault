@@ -42,11 +42,11 @@ pub struct ParseOptions {
     pub parse_frontmatter: bool,
     /// Parse wikilinks and embeds
     pub parse_wikilinks: bool,
-    /// Parse markdown links [text](url)
+    /// Parse markdown links such as `[text](url)`
     pub parse_markdown_links: bool,
     /// Parse headings (H1-H6)
     pub parse_headings: bool,
-    /// Parse task items (- [ ] / - [x])
+    /// Parse task items (`- [ ]` / `- [x]`)
     pub parse_tasks: bool,
     /// Parse callout blocks (> [!NOTE])
     pub parse_callouts: bool,
@@ -142,15 +142,15 @@ pub struct ParsedContent {
     pub frontmatter: Option<Frontmatter>,
     /// Document headings (H1-H6)
     pub headings: Vec<Heading>,
-    /// Wikilinks: [[Note]], [[Note|alias]], [[Note#heading]]
+    /// Wikilinks: `[[Note]]`, `[[Note|alias]]`, `[[Note#heading]]`
     pub wikilinks: Vec<Link>,
-    /// Embeds: ![[image.png]], ![[Note]]
+    /// Embeds: `![[image.png]]`, `![[Note]]`
     pub embeds: Vec<Link>,
-    /// Standard markdown links: [text](url)
+    /// Standard markdown links: `[text](url)`
     pub markdown_links: Vec<Link>,
     /// Inline tags: #tag, #nested/tag
     pub tags: Vec<Tag>,
-    /// Task items: - [ ], - [x]
+    /// Task items: `- [ ]`, `- [x]`
     pub tasks: Vec<TaskItem>,
     /// Callout blocks: > [!NOTE]
     pub callouts: Vec<Callout>,

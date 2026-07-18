@@ -21,7 +21,7 @@ impl Deref for VaultProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "1.5.0")]
+#[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
 impl VaultProvider {
     // ==================== Vault Lifecycle (Multi-Vault Management) ====================
 
