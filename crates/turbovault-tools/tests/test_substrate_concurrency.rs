@@ -186,10 +186,11 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
     assert!(
         matches!(
             res,
-            Err(turbovault_git::Error::PreconditionFailed { ref path, .. })
-                if path == "watched.md"
+            Err(turbovault_git::Error::Core(turbovault_core::Error::ConcurrencyError {
+                ref reason,
+            })) if reason.contains("watched.md")
         ),
-        "expected PreconditionFailed on watched.md, got: {res:?}",
+        "expected ConcurrencyError on watched.md, got: {res:?}",
     );
 
     // Nothing from the batch is on disk.

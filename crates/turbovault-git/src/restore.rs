@@ -131,7 +131,7 @@ impl VaultRepo {
     ) -> Result<Option<Changeset>> {
         let head_oid = self
             .head_oid()
-            .ok_or_else(|| Error::Other("cannot restore: branch is unborn".to_string()))?;
+            .ok_or_else(|| Error::other("cannot restore: branch is unborn"))?;
         let head_tree = self.git().find_commit(head_oid)?.tree_id();
         let target_tree = self.git().find_commit(target_commit)?.tree_id();
 
@@ -333,7 +333,10 @@ mod tests {
         commit(&vr, Changeset::new("u2").update("a.md", "v3", blob_v2));
         // Now applying the prepared restore must abort — precondition expects v2.
         let res = vr.commit_changeset(&restore_txn);
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        assert!(matches!(
+            res,
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("a.md")
+        ));
         assert_eq!(read_wt(&vr, "a.md"), "v3", "concurrent change preserved");
     }
 

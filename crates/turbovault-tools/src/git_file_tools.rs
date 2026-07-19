@@ -1298,21 +1298,15 @@ fn describe_op(op: &BatchOperation) -> String {
 }
 
 /// Translate a substrate error into the core error space used by the tool
-/// layer. Precondition failures (the OCC CAS abort) become `ConcurrencyError`
-/// so callers and tests can switch on the same shape they get from the
-/// direct path.
+/// layer. "Changed underneath us" conflicts (ref CAS / stale precondition —
+/// ij6: now bridged from turbovault-git as `Error::Core(core::Error::
+/// ConcurrencyError)`) pass through as `ConcurrencyError` so callers and
+/// tests can switch on the same shape they get from the direct path.
 fn git_err_to_core(e: turbovault_git::Error) -> Error {
     match e {
-        turbovault_git::Error::PreconditionFailed {
-            path,
-            expected,
-            found,
-        } => Error::ConcurrencyError {
-            reason: format!(
-                "precondition failed for {}: expected {:?}, found {:?}",
-                path, expected, found
-            ),
-        },
+        turbovault_git::Error::Core(turbovault_core::Error::ConcurrencyError { reason }) => {
+            Error::ConcurrencyError { reason }
+        }
         other => Error::config_error(format!("git substrate error: {}", other)),
     }
 }

@@ -6,7 +6,7 @@
 //! read). Before committing, [`VaultRepo::check_preconditions`] re-resolves each
 //! path against the base tree it is building on and confirms the blob oid still
 //! matches. If **any** path changed underneath the changeset, the whole batch
-//! aborts with [`Error::PreconditionFailed`] and nothing is applied — so the
+//! aborts with a `ConcurrencyError` (via [`Error::concurrency`]) and nothing is applied — so the
 //! agent re-reads the affected paths and re-decides rather than silently
 //! overwriting a concurrent change.
 //!
@@ -57,8 +57,8 @@ impl VaultRepo {
     /// Validate every precondition against `base_tree` (the tree the changeset
     /// is building on; `None` = an empty/unborn base where nothing exists).
     /// Returns `Ok(())` only if **all** match; the first mismatch aborts with
-    /// [`Error::PreconditionFailed`] (the whole changeset fails, nothing
-    /// applied).
+    /// a `ConcurrencyError` (via [`Error::concurrency`]; the whole changeset
+    /// fails, nothing applied).
     #[instrument(
         skip(self, preconditions),
         fields(base = ?base_tree, n = preconditions.len()),
@@ -75,11 +75,11 @@ impl VaultRepo {
                 None => None, // empty base: every path is absent
             };
             if found != pc.expected {
-                return Err(Error::PreconditionFailed {
-                    path: pc.path.clone(),
-                    expected: pc.expected,
-                    found,
-                });
+                let path = &pc.path;
+                let expected = pc.expected;
+                return Err(Error::concurrency(format!(
+                    "precondition failed for {path}: expected {expected:?}, found {found:?}"
+                )));
             }
         }
         Ok(())
@@ -149,8 +149,10 @@ mod tests {
         // Caller thinks a.md holds "stale" but it actually holds "alpha".
         let stale = VaultRepo::blob_oid_of(b"stale").unwrap();
         match vr.check_preconditions(Some(t), &[Precondition::expect_blob("a.md", stale)]) {
-            Err(Error::PreconditionFailed { path, .. }) => assert_eq!(path, "a.md"),
-            other => panic!("expected PreconditionFailed, got {other:?}"),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) => {
+                assert!(reason.contains("a.md"), "reason: {reason}")
+            }
+            other => panic!("expected ConcurrencyError, got {other:?}"),
         }
     }
 
@@ -160,7 +162,7 @@ mod tests {
         let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
         assert!(matches!(
             vr.check_preconditions(Some(t), &[Precondition::expect_absent("a.md")]),
-            Err(Error::PreconditionFailed { .. })
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
     }
 
@@ -171,7 +173,7 @@ mod tests {
         let phantom = VaultRepo::blob_oid_of(b"x").unwrap();
         assert!(matches!(
             vr.check_preconditions(Some(t), &[Precondition::expect_blob("missing.md", phantom)]),
-            Err(Error::PreconditionFailed { .. })
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
     }
 
@@ -191,8 +193,10 @@ mod tests {
                 Precondition::expect_blob("b.md", b_stale),
             ],
         ) {
-            Err(Error::PreconditionFailed { path, .. }) => assert_eq!(path, "b.md"),
-            other => panic!("expected PreconditionFailed on b.md, got {other:?}"),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) => {
+                assert!(reason.contains("b.md"), "reason: {reason}")
+            }
+            other => panic!("expected ConcurrencyError on b.md, got {other:?}"),
         }
     }
 
@@ -205,7 +209,7 @@ mod tests {
         let phantom = VaultRepo::blob_oid_of(b"x").unwrap();
         assert!(matches!(
             vr.check_preconditions(None, &[Precondition::expect_blob("a.md", phantom)]),
-            Err(Error::PreconditionFailed { .. })
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
     }
 }

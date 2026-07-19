@@ -144,7 +144,7 @@ fn cleanup_inner(
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            first_err.get_or_insert(Error::Io(e));
+            first_err.get_or_insert(e.into());
         }
     }
     // (b) Prune the .git/worktrees/<name>/ metadata.
@@ -221,7 +221,7 @@ impl VaultRepo {
         let main_branch = self.head_ref()?; // errors if detached
         let parent_tip = self
             .head_oid()
-            .ok_or_else(|| Error::Other("cannot fan-out from an unborn branch".to_string()))?;
+            .ok_or_else(|| Error::other("cannot fan-out from an unborn branch"))?;
 
         let wip_branch = format!("wip/{id}");
         let worktree_name = format!("wip-{id}");
@@ -348,10 +348,10 @@ fn merge_inner(
 
     let wip_tip = repo
         .refname_to_id(&wip_ref)
-        .map_err(|e| Error::Other(format!("wip branch {} missing: {e}", info.wip_branch)))?;
+        .map_err(|e| Error::other(format!("wip branch {} missing: {e}", info.wip_branch)))?;
     let main_tip_before = repo
         .refname_to_id(&info.main_branch)
-        .map_err(|e| Error::Other(format!("main branch {} missing: {e}", info.main_branch)))?;
+        .map_err(|e| Error::other(format!("main branch {} missing: {e}", info.main_branch)))?;
 
     // If the fan-out made no commits, the wip branch still points at the
     // parent tip — there is nothing to merge back. Treat as a no-op success.
@@ -366,7 +366,7 @@ fn merge_inner(
     match strategy {
         MergeStrategy::FastForward => {
             if main_tip_before != info.parent_tip {
-                return Err(Error::Other(format!(
+                return Err(Error::other(format!(
                     "fast-forward merge-back failed: main advanced ({} -> {}) during the \
                      fan-out; use MergeCommit instead",
                     info.parent_tip, main_tip_before
@@ -387,7 +387,7 @@ fn merge_inner(
             let theirs_tree = repo.find_commit(wip_tip)?.tree()?;
             let mut idx = repo.merge_trees(&base_tree, &ours_tree, &theirs_tree, None)?;
             if idx.has_conflicts() {
-                return Err(Error::Other(format!(
+                return Err(Error::other(format!(
                     "merge-back conflict between main ({}) and wip {} ({}); \
                      resolve manually",
                     main_tip_before, info.wip_branch, wip_tip
@@ -542,7 +542,7 @@ mod tests {
 
         let res = fanout.commit_fanout(MergeStrategy::FastForward);
         assert!(
-            matches!(res, Err(Error::Other(_))),
+            matches!(res, Err(Error::Core(turbovault_core::Error::Other(_)))),
             "FF must refuse when main advanced"
         );
     }

@@ -192,9 +192,9 @@ pub struct ChangesetResult {
 impl VaultRepo {
     /// Apply `txn` as a single commit (see the module docs for the pipeline).
     ///
-    /// Aborts with [`Error::PreconditionFailed`] if any precondition is stale
-    /// (nothing committed, working tree untouched) and with [`Error::Other`] for
-    /// an empty changeset or duplicate change paths.
+    /// Aborts with a `ConcurrencyError` (via [`Error::concurrency`]) if any
+    /// precondition is stale (nothing committed, working tree untouched) and
+    /// with [`Error::other`] for an empty changeset or duplicate change paths.
     #[instrument(
         skip(self, txn),
         fields(
@@ -206,13 +206,13 @@ impl VaultRepo {
     )]
     pub fn commit_changeset(&self, txn: &Changeset) -> Result<ChangesetResult> {
         if txn.changes.is_empty() {
-            return Err(Error::Other("empty changeset (no changes)".to_string()));
+            return Err(Error::other("empty changeset (no changes)"));
         }
         // A path mutated twice in one changeset is ambiguous — reject it.
         let mut seen = BTreeSet::new();
         for c in &txn.changes {
             if !seen.insert(c.path()) {
-                return Err(Error::Other(format!(
+                return Err(Error::other(format!(
                     "duplicate change for path {} in one changeset",
                     c.path()
                 )));
@@ -280,9 +280,7 @@ impl VaultRepo {
                     // preconditions passed); an identity tree implies a
                     // non-unborn base, so it is always `Some` here.
                     let commit = parent_at_apply.ok_or_else(|| {
-                        Error::Other(
-                            "identity-tree no-op on an unborn branch is impossible".to_string(),
-                        )
+                        Error::other("identity-tree no-op on an unborn branch is impossible")
                     })?;
                     Ok(ChangesetResult {
                         commit,
@@ -347,9 +345,10 @@ mod tests {
             &Changeset::new("create draft").create("draft.md", "generated content"),
         );
 
-        assert!(
-            matches!(result, Err(Error::Other(message)) if message.contains("differs from HEAD"))
-        );
+        assert!(matches!(
+            result,
+            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("differs from HEAD")
+        ));
         assert_eq!(vr.head_oid(), None, "ref did not advance");
         assert_eq!(read_wt(&vr, "draft.md"), "local draft");
     }
@@ -365,9 +364,10 @@ mod tests {
 
         let result = vr.commit_changeset(&Changeset::new("update").update("note.md", "v2", v1));
 
-        assert!(
-            matches!(result, Err(Error::Other(message)) if message.contains("differs from HEAD"))
-        );
+        assert!(matches!(
+            result,
+            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("differs from HEAD")
+        ));
         assert_eq!(vr.head_oid(), head_before, "ref did not advance");
         assert_eq!(read_wt(&vr, "note.md"), "manual edit");
     }
@@ -389,7 +389,10 @@ mod tests {
 
         let result = vr.commit_changeset(&Changeset::new("update a").upsert("a.md", "a2"));
 
-        assert!(matches!(result, Err(Error::Other(message)) if message.contains("staged changes")));
+        assert!(matches!(
+            result,
+            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("staged changes")
+        ));
         assert_eq!(vr.head_oid(), head_before);
         assert!(
             vr.git()
@@ -428,7 +431,7 @@ mod tests {
             .expect_blob("a.md", stale);
         assert!(matches!(
             vr.commit_changeset(&txn),
-            Err(Error::PreconditionFailed { .. })
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
 
         assert_eq!(vr.head_oid(), head_before, "no commit on abort");
@@ -475,7 +478,7 @@ mod tests {
             .expect_blob("b.md", stale_b);
         assert!(matches!(
             vr.commit_changeset(&txn),
-            Err(Error::PreconditionFailed { path, .. }) if path == "b.md"
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { ref reason })) if reason.contains("b.md")
         ));
         assert_eq!(vr.head_oid(), head_before, "nothing committed");
         assert!(!workfile(&vr, "a.md").exists(), "a.md never materialized");
@@ -486,7 +489,7 @@ mod tests {
         let (_tmp, vr) = open_unborn();
         assert!(matches!(
             vr.commit_changeset(&Changeset::new("empty")),
-            Err(Error::Other(_))
+            Err(Error::Core(turbovault_core::Error::Other(_)))
         ));
     }
 
@@ -496,7 +499,10 @@ mod tests {
         let txn = Changeset::new("dup")
             .upsert("a.md", "x")
             .upsert("a.md", "y");
-        assert!(matches!(vr.commit_changeset(&txn), Err(Error::Other(_))));
+        assert!(matches!(
+            vr.commit_changeset(&txn),
+            Err(Error::Core(turbovault_core::Error::Other(_)))
+        ));
     }
 
     #[test]
@@ -532,7 +538,9 @@ mod tests {
 
         // create on an existing path fails (expect_absent precondition).
         let res = vr.commit_changeset(&Changeset::new("c2").create("a.md", "again"));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("a.md"))
+        );
         assert_eq!(
             read_wt(&vr, "a.md"),
             "alpha",
@@ -553,7 +561,9 @@ mod tests {
 
         // Update with stale expected (still v1, but file is now v2) aborts.
         let res = vr.commit_changeset(&Changeset::new("u-stale").update("a.md", "v3", v1));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("a.md"))
+        );
         assert_eq!(read_wt(&vr, "a.md"), "v2", "stale update did not apply");
     }
 
@@ -566,7 +576,9 @@ mod tests {
         // Stale expected -> abort, file still there.
         let stale = VaultRepo::blob_oid_of(b"OLD").unwrap();
         let res = vr.commit_changeset(&Changeset::new("d-stale").delete("a.md", stale));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("a.md"))
+        );
         assert!(workfile(&vr, "a.md").exists(), "stale delete did not apply");
 
         // Correct expected -> file gone.
@@ -603,7 +615,9 @@ mod tests {
         let stale = VaultRepo::blob_oid_of(b"different").unwrap();
         let res =
             vr.commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", stale));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "old.md"));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("old.md"))
+        );
         assert!(workfile(&vr, "old.md").exists(), "source kept on abort");
         assert!(
             !workfile(&vr, "new.md").exists(),
@@ -624,7 +638,9 @@ mod tests {
         let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
         let res = vr
             .commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", from_blob));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "new.md"));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("new.md"))
+        );
         assert!(workfile(&vr, "old.md").exists());
         assert_eq!(read_wt(&vr, "new.md"), "occupied", "destination untouched");
     }
@@ -1047,7 +1063,7 @@ mod tests {
         let res = vr
             .commit_changeset(&Changeset::new("idempotent-but-stale").update("a.md", "v1", stale));
         assert!(
-            matches!(res, Err(Error::PreconditionFailed { ref path, .. }) if path == "a.md"),
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { ref reason })) if reason.contains("a.md")),
             "stale precondition aborts even when the tree would be identical: {res:?}"
         );
         assert_eq!(vr.head_oid(), head_before, "nothing committed on abort");
