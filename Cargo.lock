@@ -5372,6 +5372,8 @@ version = "1.5.0"
 dependencies = [
  "anyhow",
  "dashmap",
+ "futures",
+ "git2",
  "log",
  "notify",
  "path_trav",
@@ -5386,6 +5388,7 @@ dependencies = [
  "tracing",
  "turbovault-audit",
  "turbovault-core",
+ "turbovault-git",
  "turbovault-graph",
  "turbovault-parser",
  "unicode-normalization",

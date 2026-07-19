@@ -7,11 +7,13 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::instrument;
-use turbovault_audit::{AuditEntry, AuditLog, OperationType, SnapshotStore};
+use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
+use turbovault_core::{Change, ChangePlan, Precondition};
 use turbovault_graph::LinkGraph;
 use turbovault_parser::Parser;
-use uuid::Uuid;
+
+use crate::substrate::{DirectSubstrate, WriteSubstrate};
 
 /// File cache entry with timestamp
 /// Used during initialization to populate link graph; read path bypasses cache
@@ -32,13 +34,34 @@ pub struct VaultManager {
     file_cache: Arc<RwLock<HashMap<PathBuf, CacheEntry>>>,
     audit_log: Option<Arc<AuditLog>>,
     snapshot_store: Option<Arc<SnapshotStore>>,
+    /// write-substrate-layering M3a: the write dispatch chokepoint (design
+    /// §6.3). Selected once, at construction, from `write_backend` — layers
+    /// above `VaultManager` stay backend-agnostic (R2).
+    substrate: WriteSubstrate,
 }
 
 impl VaultManager {
     /// Create a new vault manager
     pub fn new(config: ServerConfig) -> Result<Self> {
-        let vault_path = config.default_vault()?.path.clone();
+        let default_vault = config.default_vault()?;
+        let vault_path = default_vault.path.clone();
         let parser = Parser::new(vault_path.clone());
+
+        // write-substrate-layering M3a (deliverable decision 1): only the
+        // Direct arm sits on a production path here — regardless of the
+        // vault's configured `write_backend`. `GitSubstrate` is built and
+        // unit-tested directly (substrate.rs) but MUST NOT be constructed
+        // here yet: pre-M3a, `write_file`/`delete_file`/`move_file` never
+        // looked at `write_backend` at all, and several already-shipped
+        // tools (`generate_index`, `append_log_entry`, `visualize`) call
+        // these mutators directly rather than through the server's
+        // git-aware `WriteTools`/`GitFileTools` dispatch. Selecting
+        // `WriteSubstrate::Git` from config here would silently hand those
+        // callers a second, uncoordinated git-write path (its own
+        // `CommitLocks` domain, no cached repo, no reindex hook) racing the
+        // real one. Wiring a live Git arm is M4's job, once those call
+        // sites are migrated onto the server's shared repo/lock/hook.
+        let substrate = WriteSubstrate::Direct(DirectSubstrate::new(vault_path.clone()));
 
         Ok(Self {
             config,
@@ -48,6 +71,7 @@ impl VaultManager {
             file_cache: Arc::new(RwLock::new(HashMap::new())),
             audit_log: None,
             snapshot_store: None,
+            substrate,
         })
     }
 
@@ -68,8 +92,15 @@ impl VaultManager {
             .replace('\\', "/")
     }
 
-    /// Set the audit log and snapshot store for operation tracking
+    /// Set the audit log and snapshot store for operation tracking.
+    ///
+    /// Wires the Direct substrate's own audit/snapshot recording (M3a
+    /// deliverable decision 3) in addition to the manager's own copies
+    /// (kept for the `audit_log()`/`snapshot_store()` accessors below).
     pub fn set_audit_log(&mut self, audit_log: Arc<AuditLog>, snapshot_store: Arc<SnapshotStore>) {
+        if let WriteSubstrate::Direct(direct) = &mut self.substrate {
+            direct.set_audit_log(Arc::clone(&audit_log), Arc::clone(&snapshot_store));
+        }
         self.audit_log = Some(audit_log);
         self.snapshot_store = Some(snapshot_store);
     }
@@ -180,6 +211,14 @@ impl VaultManager {
     /// If `expected_hash` is provided, the file's current content hash is verified
     /// before writing. If it doesn't match (another agent modified the file since
     /// the caller last read it), a `ConcurrencyError` is returned.
+    ///
+    /// write-substrate-layering M3a: the signature and observable behavior
+    /// are unchanged — internally this now translates `expected_hash` into a
+    /// [`Precondition`] (`for_replace`, forced blind when absent: `write_file`
+    /// has no create-only default), builds a one-change [`ChangePlan`], and
+    /// delegates to [`Self::substrate`]. The fs-write + precondition + audit
+    /// work itself lives in `DirectSubstrate::apply` now; this method only
+    /// does path resolution and the post-apply link-graph/cache sync (R7).
     #[instrument(skip(self, content), fields(file = ?path, size = content.len()), name = "vault_write_file")]
     pub async fn write_file(
         &self,
@@ -187,147 +226,15 @@ impl VaultManager {
         content: &str,
         expected_hash: Option<&str>,
     ) -> Result<()> {
-        use crate::edit::compute_hash;
-
         let vault_path = self.resolve_path(path)?;
+        let rel_path = self.relative_path(&vault_path);
 
-        // Read current content for hash check and audit trail
-        let before_content = tokio::fs::read_to_string(&vault_path).await.ok();
-        let file_existed = before_content.is_some();
+        let plan = ChangePlan::new(format!("write_file {rel_path}"))
+            .upsert(rel_path.clone(), content.as_bytes())
+            .with_precondition(rel_path, Precondition::for_replace(expected_hash, true));
 
-        // Optimistic concurrency check
-        if let Some(expected) = expected_hash {
-            if let Some(ref current) = before_content {
-                let actual = compute_hash(current);
-                if actual != expected {
-                    return Err(Error::ConcurrencyError {
-                        reason: format!(
-                            "File modified since last read. Expected hash: {}, actual: {}. Re-read the file and retry.",
-                            expected, actual
-                        ),
-                    });
-                }
-            } else {
-                return Err(Error::ConcurrencyError {
-                    reason: format!(
-                        "File does not exist but expected_hash '{}' was provided. The file may have been deleted.",
-                        expected
-                    ),
-                });
-            }
-        }
-
-        // Ensure parent directory exists
-        if let Some(parent) = vault_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(Error::io)?;
-        }
-
-        // Write to temp file (UUID suffix prevents collision between concurrent writes)
-        let temp_path = vault_path.with_extension(format!("tmp.{}", Uuid::new_v4()));
-        tokio::fs::write(&temp_path, content)
-            .await
-            .map_err(Error::io)?;
-
-        // Atomic rename (clean up temp file on failure)
-        if let Err(e) = tokio::fs::rename(&temp_path, &vault_path).await {
-            let _ = tokio::fs::remove_file(&temp_path).await;
-            return Err(Error::io(e));
-        }
-
-        // Record audit trail (fire-and-forget — never blocks writes)
-        if let (Some(audit_log), Some(snapshot_store)) = (&self.audit_log, &self.snapshot_store) {
-            let rel_path = vault_path
-                .strip_prefix(&self.vault_path)
-                .unwrap_or(&vault_path)
-                .to_string_lossy()
-                .to_string();
-
-            let operation = if file_existed {
-                OperationType::Update
-            } else {
-                OperationType::Create
-            };
-
-            let mut entry = AuditEntry::new(operation, &rel_path);
-
-            // Store before snapshot
-            if let Some(ref before) = before_content {
-                match snapshot_store.store(before).await {
-                    Ok(snap_id) => {
-                        entry = entry.with_before(SnapshotStore::compute_hash(before), snap_id);
-                    }
-                    Err(e) => log::warn!("Failed to store before-snapshot: {}", e),
-                }
-            }
-
-            // Store after snapshot
-            match snapshot_store.store(content).await {
-                Ok(snap_id) => {
-                    entry = entry.with_after(SnapshotStore::compute_hash(content), snap_id);
-                }
-                Err(e) => log::warn!("Failed to store after-snapshot: {}", e),
-            }
-
-            if let Err(e) = audit_log.record(&entry).await {
-                log::warn!("Failed to record audit entry: {}", e);
-            }
-        }
-
-        // Parse file and update graph + cache — markdown only.
-        //
-        // The link graph and the note cache model *notes*; non-markdown files
-        // (e.g. an exported `viz.html`, attachments) must not be ingested as
-        // nodes/cache entries or they pollute stats, orphan detection, and
-        // note-listing tools. `move_file` already handles non-note files
-        // separately; `write_file` is the only other path that can receive one.
-        //
-        // We no longer pre-remove the old entry here. cache.insert() below atomically
-        // overwrites it, so a pre-remove would only create a brief absence window during
-        // which vault_files_validated() would silently miss this file.
-        let is_markdown = vault_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("md"));
-        if !is_markdown {
-            return Ok(());
-        }
-        match self.parser.parse_file(&vault_path, content) {
-            Ok(vault_file) => {
-                log::debug!(
-                    "Parsed {}: {} links extracted",
-                    vault_path.display(),
-                    vault_file.links.len()
-                );
-
-                // Update graph
-                let mut graph = self.link_graph.write().await;
-                if let Err(e) = graph.add_file(&vault_file) {
-                    log::warn!("Graph add_file failed for {}: {}", vault_path.display(), e);
-                }
-                if let Err(e) = graph.update_links(&vault_file) {
-                    log::warn!(
-                        "Graph update_links failed for {}: {}",
-                        vault_path.display(),
-                        e
-                    );
-                }
-                log::debug!("Graph updated for {}", vault_path.display());
-                drop(graph);
-
-                // Reinsert into file cache so vault_files_validated() sees the new file
-                // without requiring a full reinitialize().
-                self.insert_cache_entry(vault_path, vault_file).await;
-            }
-            Err(e) => {
-                log::warn!(
-                    "Failed to parse {} after write (graph not updated): {}",
-                    vault_path.display(),
-                    e
-                );
-                // Don't fail the write operation if parse fails
-            }
-        }
-
+        let outcome = self.substrate.apply(&plan).await?;
+        self.sync_index(&outcome.changed).await;
         Ok(())
     }
 
@@ -402,72 +309,34 @@ impl VaultManager {
     }
 
     /// Delete file from vault with audit trail, graph cleanup, and optional concurrency check.
+    ///
+    /// write-substrate-layering M3a: `expected_hash` translates to
+    /// [`Precondition::for_in_place`] (a bare delete with no hash requires
+    /// the path to exist, matching the pre-M3a "attempt the remove and let
+    /// it fail" behavior — both now surface as a loud error rather than an
+    /// `Io` error specifically, an accepted refinement — see
+    /// `DirectSubstrate::check_precondition`).
     #[instrument(skip(self), fields(file = ?path), name = "vault_delete_file")]
     pub async fn delete_file(&self, path: &Path, expected_hash: Option<&str>) -> Result<()> {
-        use crate::edit::compute_hash;
-
         let vault_path = self.resolve_path(path)?;
+        let rel_path = self.relative_path(&vault_path);
 
-        // Read content for hash check and audit trail
-        let before_content = tokio::fs::read_to_string(&vault_path).await.ok();
+        let plan = ChangePlan::new(format!("delete_file {rel_path}"))
+            .remove(rel_path.clone())
+            .with_precondition(rel_path, Precondition::for_in_place(expected_hash));
 
-        // Optimistic concurrency check
-        if let (Some(expected), Some(current)) = (expected_hash, &before_content) {
-            let actual = compute_hash(current);
-            if actual != expected {
-                return Err(Error::ConcurrencyError {
-                    reason: format!(
-                        "File modified since last read. Expected hash: {}, actual: {}. Re-read the file and retry.",
-                        expected, actual
-                    ),
-                });
-            }
-        }
-
-        tokio::fs::remove_file(&vault_path)
-            .await
-            .map_err(Error::io)?;
-
-        // Remove from graph
-        {
-            let mut graph = self.link_graph.write().await;
-            let _ = graph.remove_file(&vault_path);
-        }
-
-        // Invalidate cache
-        {
-            let mut cache = self.file_cache.write().await;
-            cache.remove(&vault_path);
-        }
-
-        // Record audit trail
-        if let (Some(audit_log), Some(snapshot_store)) = (&self.audit_log, &self.snapshot_store) {
-            let rel_path = vault_path
-                .strip_prefix(&self.vault_path)
-                .unwrap_or(&vault_path)
-                .to_string_lossy()
-                .to_string();
-
-            let mut entry = AuditEntry::new(OperationType::Delete, &rel_path);
-
-            if let Some(ref before) = before_content {
-                match snapshot_store.store(before).await {
-                    Ok(snap_id) => {
-                        entry = entry.with_before(SnapshotStore::compute_hash(before), snap_id);
-                    }
-                    Err(e) => log::warn!("Failed to store before-snapshot: {}", e),
-                }
-            }
-
-            if let Err(e) = audit_log.record(&entry).await {
-                log::warn!("Failed to record audit entry: {}", e);
-            }
-        }
-
+        let outcome = self.substrate.apply(&plan).await?;
+        self.sync_index(&outcome.changed).await;
         Ok(())
     }
 
     /// Move file within vault with audit trail, graph update, and optional concurrency check.
+    ///
+    /// write-substrate-layering M3a: `from`'s `expected_hash` translates to
+    /// [`Precondition::for_in_place`] via a raw [`Change::Rename`] — the
+    /// destination carries no precondition of its own (matching the pre-M3a
+    /// behavior of clobbering an existing destination; a destination guard
+    /// is `ChangePlan::rename`'s semantic-builder territory, not used here).
     #[instrument(skip(self), fields(from = ?from, to = ?to), name = "vault_move_file")]
     pub async fn move_file(
         &self,
@@ -475,124 +344,20 @@ impl VaultManager {
         to: &Path,
         expected_hash: Option<&str>,
     ) -> Result<()> {
-        use crate::edit::compute_hash;
-        use sha2::{Digest, Sha256};
-        use turbovault_core::bytes_to_lower_hex;
-
         let from_path = self.resolve_path(from)?;
         let to_path = self.resolve_path(to)?;
+        let rel_from = self.relative_path(&from_path);
+        let rel_to = self.relative_path(&to_path);
 
-        // Preserve raw bytes so this operation remains safe for attachments and
-        // other non-UTF-8 files. Text is decoded only for note parsing/auditing.
-        let bytes = tokio::fs::read(&from_path).await.map_err(Error::io)?;
-        let content = std::str::from_utf8(&bytes).ok();
+        let plan = ChangePlan::new(format!("move_file {rel_from} -> {rel_to}"))
+            .with_change(Change::Rename {
+                from: rel_from.clone(),
+                to: rel_to,
+            })
+            .with_precondition(rel_from, Precondition::for_in_place(expected_hash));
 
-        // Optimistic concurrency check
-        if let Some(expected) = expected_hash {
-            let actual = content
-                .map(compute_hash)
-                .unwrap_or_else(|| bytes_to_lower_hex(Sha256::digest(&bytes)));
-            if actual != expected {
-                return Err(Error::ConcurrencyError {
-                    reason: format!(
-                        "File modified since last read. Expected hash: {}, actual: {}. Re-read the file and retry.",
-                        expected, actual
-                    ),
-                });
-            }
-        }
-
-        // Ensure parent directory exists
-        if let Some(parent) = to_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(Error::io)?;
-        }
-
-        // Perform rename
-        match tokio::fs::rename(&from_path, &to_path).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
-                tokio::fs::copy(&from_path, &to_path)
-                    .await
-                    .map_err(Error::io)?;
-                if let Err(del_err) = tokio::fs::remove_file(&from_path).await {
-                    let _ = tokio::fs::remove_file(&to_path).await;
-                    return Err(Error::io(del_err));
-                }
-            }
-            Err(e) => return Err(Error::io(e)),
-        }
-
-        // Update graph: remove old, add new
-        {
-            let mut graph = self.link_graph.write().await;
-            if let Err(e) = graph.remove_file(&from_path) {
-                log::warn!(
-                    "Graph remove_file failed for {}: {}",
-                    from_path.display(),
-                    e
-                );
-            }
-        }
-
-        // Invalidate cache for old path
-        {
-            let mut cache = self.file_cache.write().await;
-            cache.remove(&from_path);
-        }
-
-        // Parse and add UTF-8 notes to the graph + cache at the new location.
-        if let Some(content) = content {
-            match self.parser.parse_file(&to_path, content) {
-                Ok(vault_file) => {
-                    let mut graph = self.link_graph.write().await;
-                    if let Err(e) = graph.add_file(&vault_file) {
-                        log::warn!("Graph add_file failed for {}: {}", to_path.display(), e);
-                    }
-                    if let Err(e) = graph.update_links(&vault_file) {
-                        log::warn!("Graph update_links failed for {}: {}", to_path.display(), e);
-                    }
-                    drop(graph);
-
-                    // Insert new path into cache so vault_files_validated() finds the moved note.
-                    self.insert_cache_entry(to_path.clone(), vault_file).await;
-                }
-                Err(e) => {
-                    log::warn!("Failed to parse {} after move: {}", to_path.display(), e);
-                }
-            }
-        }
-
-        // Record audit trail
-        if let (Some(audit_log), Some(snapshot_store)) = (&self.audit_log, &self.snapshot_store) {
-            let rel_from = from_path
-                .strip_prefix(&self.vault_path)
-                .unwrap_or(&from_path)
-                .to_string_lossy()
-                .to_string();
-            let rel_to = to_path
-                .strip_prefix(&self.vault_path)
-                .unwrap_or(&to_path)
-                .to_string_lossy()
-                .to_string();
-
-            let mut entry = AuditEntry::new(OperationType::Move, &rel_from).with_new_path(&rel_to);
-
-            if let Some(content) = content {
-                match snapshot_store.store(content).await {
-                    Ok(snap_id) => {
-                        let hash = SnapshotStore::compute_hash(content);
-                        entry = entry.with_before(hash.clone(), snap_id.clone());
-                        entry = entry.with_after(hash, snap_id);
-                    }
-                    Err(e) => log::warn!("Failed to store snapshot: {}", e),
-                }
-            }
-
-            if let Err(e) = audit_log.record(&entry).await {
-                log::warn!("Failed to record audit entry: {}", e);
-            }
-        }
-
+        let outcome = self.substrate.apply(&plan).await?;
+        self.sync_index(&outcome.changed).await;
         Ok(())
     }
 
@@ -753,6 +518,91 @@ impl VaultManager {
                 cached_at: now,
             },
         );
+    }
+
+    /// Bring the link graph + note cache into agreement with a substrate
+    /// apply's verdict on which paths are now present (design R7 — one
+    /// post-apply sync shared by `write_file`/`delete_file`/`move_file`,
+    /// replacing their three near-duplicate pre-M3a graph/cache blocks).
+    ///
+    /// Markdown-only, mirroring pre-M3a `write_file`'s `is_markdown` guard:
+    /// the link graph and note cache model *notes*, so attachments and other
+    /// non-note artifacts are never graph nodes. (Pre-M3a `move_file` did
+    /// not apply this guard on its insert side — any UTF-8-decodable file
+    /// was cached regardless of extension; this unifies on the stricter,
+    /// already-established `write_file` behavior. No existing caller relies
+    /// on a non-markdown file appearing in the cache after a move.)
+    async fn sync_index(&self, changed: &[(String, bool)]) {
+        for (rel_path, present) in changed {
+            let full_path = self.vault_path.join(rel_path);
+            let is_markdown = full_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+            if !is_markdown {
+                continue;
+            }
+
+            if *present {
+                match tokio::fs::read_to_string(&full_path).await {
+                    Ok(content) => match self.parser.parse_file(&full_path, &content) {
+                        Ok(vault_file) => {
+                            {
+                                let mut graph = self.link_graph.write().await;
+                                if let Err(e) = graph.add_file(&vault_file) {
+                                    log::warn!(
+                                        "Graph add_file failed for {}: {}",
+                                        full_path.display(),
+                                        e
+                                    );
+                                }
+                                if let Err(e) = graph.update_links(&vault_file) {
+                                    log::warn!(
+                                        "Graph update_links failed for {}: {}",
+                                        full_path.display(),
+                                        e
+                                    );
+                                }
+                            }
+                            self.insert_cache_entry(full_path, vault_file).await;
+                        }
+                        Err(e) => log::warn!(
+                            "Failed to parse {} after apply (graph not updated): {}",
+                            full_path.display(),
+                            e
+                        ),
+                    },
+                    Err(e) => log::warn!(
+                        "Failed to re-read {} after apply: {}",
+                        full_path.display(),
+                        e
+                    ),
+                }
+            } else {
+                // Re-check disk state before evicting: `sync_index` runs
+                // after `substrate.apply()` has already released its
+                // write-lock, so a concurrent blind write that recreated
+                // this path can land between this apply's completion and
+                // this eviction. If the path exists again, this "removed"
+                // notification is stale — skip it and let the write that
+                // recreated the path reconcile the cache via its own
+                // present=true branch, instead of clobbering a legitimately
+                // present file.
+                // ponytail: narrows the race (check-then-evict is still not
+                // atomic with the recreating write) rather than closing it
+                // outright; a full fix serializes sync_index with apply()
+                // per path, add if this ever proves observable in practice.
+                if tokio::fs::try_exists(&full_path).await.unwrap_or(false) {
+                    continue;
+                }
+                {
+                    let mut graph = self.link_graph.write().await;
+                    let _ = graph.remove_file(&full_path);
+                }
+                let mut cache = self.file_cache.write().await;
+                cache.remove(&full_path);
+            }
+        }
     }
 
     /// Check if cache entry is expired (TTL-based)
@@ -1448,6 +1298,38 @@ mod tests {
         assert!(manager.all_cached_vault_files().await.is_empty());
     }
 
+    /// `sync_index` is markdown-only (unified from `write_file`'s pre-M3a
+    /// guard, see the doc comment on `sync_index`): a moved non-`.md`
+    /// UTF-8-decodable file must not appear in the cache, even though
+    /// pre-M3a `move_file` cached any UTF-8-decodable file regardless of
+    /// extension.
+    #[tokio::test]
+    async fn test_move_file_non_markdown_utf8_not_cached() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        let src = Path::new("notes.txt");
+        let dst = Path::new("moved.txt");
+
+        tokio::fs::write(temp_dir.path().join(src), "plain text, not markdown")
+            .await
+            .unwrap();
+
+        manager.move_file(src, dst, None).await.unwrap();
+
+        assert!(!temp_dir.path().join(src).exists());
+        assert_eq!(
+            tokio::fs::read_to_string(temp_dir.path().join(dst))
+                .await
+                .unwrap(),
+            "plain text, not markdown"
+        );
+        assert!(
+            manager.all_cached_vault_files().await.is_empty(),
+            "non-markdown files must never be cached"
+        );
+    }
+
     #[tokio::test]
     async fn test_refresh_file_state_tracks_external_delete_and_restore() {
         let temp_dir = TempDir::new().unwrap();
@@ -1923,6 +1805,42 @@ mod tests {
             0,
             "deleted file must be evicted from cache"
         );
+    }
+
+    /// `sync_index`'s eviction branch runs after `substrate.apply()` has
+    /// already released its write-lock (see the "ponytail" comment on that
+    /// branch). If a path is recreated between an operation's apply() and
+    /// its sync_index() call, a stale "now absent" notification for that
+    /// path must not evict the file that is legitimately present again.
+    #[tokio::test]
+    async fn test_sync_index_skips_stale_removal_when_path_recreated() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        manager
+            .write_file(Path::new("race.md"), "v1", None)
+            .await
+            .unwrap();
+        assert_eq!(manager.all_cached_vault_files().await.len(), 1);
+
+        // Stand in for a concurrent blind write that recreated the path
+        // after a delete's apply() completed but before the delete's
+        // sync_index() call ran.
+        manager
+            .write_file(Path::new("race.md"), "v2", None)
+            .await
+            .unwrap();
+
+        // The delete's (delayed, stale) removal notification arrives last.
+        manager.sync_index(&[("race.md".to_string(), false)]).await;
+
+        assert_eq!(
+            manager.all_cached_vault_files().await.len(),
+            1,
+            "stale removal must not evict a path that was recreated"
+        );
+        assert_eq!(manager.read_file(Path::new("race.md")).await.unwrap(), "v2");
     }
 
     #[tokio::test]

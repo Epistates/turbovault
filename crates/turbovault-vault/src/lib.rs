@@ -97,11 +97,13 @@
 pub mod atomic;
 pub mod edit;
 pub mod manager;
+pub mod substrate;
 pub mod watcher;
 
 pub use atomic::{AtomicFileOps, FileOp, TransactionResult};
 pub use edit::{EditEngine, EditResult, SearchReplaceBlock, compute_hash};
 pub use manager::VaultManager;
+pub use substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
 pub use turbovault_core::prelude::*;
 pub use watcher::{VaultEvent, VaultWatcher, WatcherConfig};
 
@@ -109,6 +111,7 @@ pub mod prelude {
     pub use crate::atomic::*;
     pub use crate::edit::*;
     pub use crate::manager::*;
+    pub use crate::substrate::*;
     pub use crate::watcher::*;
     pub use turbovault_core::prelude::*;
 }
