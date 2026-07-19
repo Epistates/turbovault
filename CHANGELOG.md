@@ -5,6 +5,13 @@ All notable changes to TurboVault will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Compiled-in plugin boundary** ([#34](https://github.com/Epistates/turbovault/issues/34)): Added the default-off `plugin-api` feature and the publishable `turbovault-plugin-api` crate. Plugins receive a curated CAS-only `VaultApi`, an object-safe tool provider contract, redacted request context, strict MCP namespaces, and a bounded hook bus with explicit lag/resync and close semantics.
+- **Best-effort hook provenance** ([#33](https://github.com/Epistates/turbovault/issues/33)): Plugin writes can carry source and correlation metadata into advisory event envelopes. Attribution is explicitly not an authentication boundary, and uncorrelated events fail open as external-or-unknown.
+
 ## [1.6.0] - 2026-07-17
 
 ### Added

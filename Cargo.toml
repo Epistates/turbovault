@@ -10,6 +10,7 @@ members = [
     "crates/turbovault-git",
     "crates/turbovault-sql",
     "crates/turbovault-tools",
+    "crates/turbovault-plugin-api",
     "crates/turbovault",
 ]
 resolver = "2"
@@ -118,6 +119,7 @@ turbovault-audit = { version = "1.6.0", path = "crates/turbovault-audit" }
 turbovault-git = { version = "1.6.0", path = "crates/turbovault-git" }
 turbovault-sql = { version = "1.6.0", path = "crates/turbovault-sql" }
 turbovault-tools = { version = "1.6.0", path = "crates/turbovault-tools" }
+turbovault-plugin-api = { version = "1.6.0", path = "crates/turbovault-plugin-api" }
 turbovault = { version = "1.6.0", path = "crates/turbovault" }
 
 [profile.release]

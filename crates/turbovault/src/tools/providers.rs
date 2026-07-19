@@ -30,6 +30,12 @@ use turbomcp_server::CompositeHandler;
 use turbomcp_types::ResourceTemplate;
 use turbovault_core::prelude::MultiVaultManager;
 
+#[cfg(feature = "plugin-api")]
+use turbovault_plugin_api::{
+    HookBus, Plugin, PluginContext, PluginError, PluginErrorCode, PluginProvider,
+    PluginRequestContext, ToolResult as PluginToolResult, VaultApi,
+};
+
 use self::analysis::AnalysisProvider;
 use self::audit::AuditProvider;
 use self::batch::BatchProvider;
@@ -46,6 +52,127 @@ use self::templates::TemplateProvider;
 use self::vault::VaultProvider;
 use super::CoreToolHandler;
 
+#[cfg(feature = "plugin-api")]
+#[derive(Clone)]
+struct PluginProviderAdapter {
+    descriptor: turbovault_plugin_api::PluginDescriptor,
+    provider: Arc<dyn PluginProvider>,
+    tools: Arc<Vec<Tool>>,
+}
+
+#[cfg(feature = "plugin-api")]
+impl PluginProviderAdapter {
+    fn new(
+        descriptor: turbovault_plugin_api::PluginDescriptor,
+        provider: Arc<dyn PluginProvider>,
+    ) -> Result<Self> {
+        let tools = provider.tools();
+        let mut names = std::collections::HashSet::new();
+        for tool in &tools {
+            let valid_name = !tool.name.is_empty()
+                && tool.name.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || character == '_' || character == '-'
+                });
+            if !valid_name {
+                return Err(anyhow!(
+                    "plugin {:?} has invalid local tool name {:?}",
+                    descriptor.id,
+                    tool.name
+                ));
+            }
+            if !names.insert(tool.name.clone()) {
+                return Err(anyhow!(
+                    "plugin {:?} advertises tool {:?} more than once",
+                    descriptor.id,
+                    tool.name
+                ));
+            }
+        }
+        Ok(Self {
+            descriptor,
+            provider,
+            tools: Arc::new(tools),
+        })
+    }
+}
+
+#[cfg(feature = "plugin-api")]
+fn plugin_error(error: PluginError) -> McpError {
+    match error.code {
+        PluginErrorCode::InvalidInput | PluginErrorCode::NotFound | PluginErrorCode::Conflict => {
+            McpError::invalid_request(error.message)
+        }
+        PluginErrorCode::Unavailable | PluginErrorCode::Internal => {
+            McpError::internal(error.message)
+        }
+    }
+}
+
+#[cfg(feature = "plugin-api")]
+#[allow(clippy::manual_async_fn)]
+impl McpHandler for PluginProviderAdapter {
+    fn server_info(&self) -> ServerInfo {
+        ServerInfo::new(&self.descriptor.name, &self.descriptor.version)
+    }
+
+    fn list_tools(&self) -> Vec<Tool> {
+        self.tools.as_ref().clone()
+    }
+
+    fn list_resources(&self) -> Vec<Resource> {
+        Vec::new()
+    }
+
+    fn list_prompts(&self) -> Vec<Prompt> {
+        Vec::new()
+    }
+
+    fn call_tool<'a>(
+        &'a self,
+        name: &'a str,
+        args: serde_json::Value,
+        ctx: &'a RequestContext,
+    ) -> impl std::future::Future<Output = McpResult<PluginToolResult>> + MaybeSend + 'a {
+        async move {
+            if !self.tools.iter().any(|tool| tool.name == name) {
+                return Err(McpError::tool_not_found(name));
+            }
+            let context = PluginRequestContext {
+                request_id: ctx.request_id.clone(),
+                user_id: ctx.user_id.clone(),
+                session_id: ctx.session_id.clone(),
+                client_id: ctx.client_id.clone(),
+                metadata: ctx
+                    .metadata
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            };
+            self.provider
+                .call_tool(name, args, context)
+                .await
+                .map_err(plugin_error)
+        }
+    }
+
+    fn read_resource<'a>(
+        &'a self,
+        uri: &'a str,
+        _ctx: &'a RequestContext,
+    ) -> impl std::future::Future<Output = McpResult<ResourceResult>> + MaybeSend + 'a {
+        async move { Err(McpError::resource_not_found(uri)) }
+    }
+
+    fn get_prompt<'a>(
+        &'a self,
+        name: &'a str,
+        _args: Option<serde_json::Value>,
+        _ctx: &'a RequestContext,
+    ) -> impl std::future::Future<Output = McpResult<PromptResult>> + MaybeSend + 'a {
+        async move { Err(McpError::prompt_not_found(name)) }
+    }
+}
+
 /// Obsidian MCP server with stable public names and focused internal providers.
 #[derive(Clone)]
 pub struct ObsidianMcpServer {
@@ -58,6 +185,8 @@ pub struct ObsidianMcpServer {
     tool_routes: Arc<HashMap<String, String>>,
     resource_routes: Arc<HashMap<String, String>>,
     prompt_routes: Arc<HashMap<String, String>>,
+    #[cfg(feature = "plugin-api")]
+    hooks: HookBus,
 }
 
 impl ObsidianMcpServer {
@@ -68,6 +197,30 @@ impl ObsidianMcpServer {
     }
 
     fn from_core(core: CoreToolHandler) -> Result<Self> {
+        #[cfg(feature = "plugin-api")]
+        {
+            Self::assemble(core, Vec::new())
+        }
+        #[cfg(not(feature = "plugin-api"))]
+        {
+            Self::assemble(core)
+        }
+    }
+
+    /// Create a server with compiled-in plugin factories.
+    ///
+    /// Each plugin is mounted under its validated descriptor ID. This API is
+    /// available only with the default-off `plugin-api` Cargo feature.
+    #[cfg(feature = "plugin-api")]
+    pub fn new_with_plugins(plugins: Vec<Arc<dyn Plugin>>) -> Result<Self> {
+        let core = CoreToolHandler::new()?;
+        Self::assemble(core, plugins)
+    }
+
+    fn assemble(
+        core: CoreToolHandler,
+        #[cfg(feature = "plugin-api")] plugins: Vec<Arc<dyn Plugin>>,
+    ) -> Result<Self> {
         let mut composite = CompositeHandler::new("obsidian-vault", env!("CARGO_PKG_VERSION"));
         let mut tools = Vec::new();
         let mut resources = Vec::new();
@@ -141,6 +294,48 @@ impl ObsidianMcpServer {
         mount!(AnalysisProvider::new(core.clone()), "analysis");
         mount!(AuditProvider::new(core.clone()), "audit");
 
+        #[cfg(feature = "plugin-api")]
+        let hooks = {
+            const DEFAULT_HOOK_CAPACITY: usize = 1_024;
+            let hooks = HookBus::new(DEFAULT_HOOK_CAPACITY);
+            let vault = VaultApi::new(super::plugin_host::vault_host(core.clone(), hooks.clone()));
+
+            for plugin in plugins {
+                let descriptor = plugin.descriptor();
+                descriptor
+                    .validate()
+                    .map_err(|error| anyhow!("invalid plugin descriptor: {error}"))?;
+                let prefix = descriptor.id.clone();
+                let provider = plugin
+                    .build(PluginContext {
+                        vault: vault.clone(),
+                        hooks: hooks.clone(),
+                    })
+                    .map_err(|error| anyhow!("plugin {prefix:?} failed to build: {error}"))?;
+                let adapter = PluginProviderAdapter::new(descriptor, provider)?;
+
+                for mut tool in adapter.list_tools() {
+                    let local_name = tool.name.clone();
+                    let public_name = format!("{prefix}_{local_name}");
+                    tool.name = public_name.clone();
+                    if tool_routes
+                        .insert(public_name.clone(), public_name.clone())
+                        .is_some()
+                    {
+                        return Err(anyhow!(
+                            "plugin tool {public_name:?} collides with an existing public tool"
+                        ));
+                    }
+                    tools.push(tool);
+                }
+
+                composite = composite
+                    .try_mount(adapter, &prefix)
+                    .map_err(|error| anyhow!("could not mount plugin {prefix:?}: {error}"))?;
+            }
+            hooks
+        };
+
         Ok(Self {
             core,
             composite,
@@ -151,7 +346,15 @@ impl ObsidianMcpServer {
             tool_routes: Arc::new(tool_routes),
             resource_routes: Arc::new(resource_routes),
             prompt_routes: Arc::new(prompt_routes),
+            #[cfg(feature = "plugin-api")]
+            hooks,
         })
+    }
+
+    /// Return the shared bounded hook bus.
+    #[cfg(feature = "plugin-api")]
+    pub fn hook_bus(&self) -> HookBus {
+        self.hooks.clone()
     }
 
     /// Initialize the persistent cache after server creation.
@@ -358,6 +561,231 @@ mod tests {
         result
             .structured_content
             .expect("tool result should contain structured content")
+    }
+
+    #[cfg(feature = "plugin-api")]
+    struct ContractPlugin;
+
+    #[cfg(feature = "plugin-api")]
+    impl Plugin for ContractPlugin {
+        fn descriptor(&self) -> turbovault_plugin_api::PluginDescriptor {
+            turbovault_plugin_api::PluginDescriptor {
+                id: "contract".to_string(),
+                name: "Contract Test Plugin".to_string(),
+                version: "1.0.0".to_string(),
+                description: "Exercises the stable plugin boundary".to_string(),
+            }
+        }
+
+        fn build(
+            &self,
+            context: PluginContext,
+        ) -> turbovault_plugin_api::PluginResult<Arc<dyn PluginProvider>> {
+            Ok(Arc::new(ContractProvider {
+                vault: context.vault,
+            }))
+        }
+    }
+
+    #[cfg(feature = "plugin-api")]
+    struct ContractProvider {
+        vault: VaultApi,
+    }
+
+    #[cfg(feature = "plugin-api")]
+    #[async_trait::async_trait]
+    impl PluginProvider for ContractProvider {
+        fn tools(&self) -> Vec<Tool> {
+            vec![Tool::new(
+                "round_trip",
+                "Create and read a note through VaultApi",
+            )]
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            arguments: serde_json::Value,
+            context: PluginRequestContext,
+        ) -> turbovault_plugin_api::PluginResult<ToolResult> {
+            if name != "round_trip" {
+                return Err(PluginError::not_found(format!("unknown tool {name:?}")));
+            }
+            let path = arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| PluginError::invalid_input("path is required"))?;
+            let content = arguments
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| PluginError::invalid_input("content is required"))?;
+            let precondition = arguments
+                .get("expected_version")
+                .and_then(serde_json::Value::as_str)
+                .map(|version| turbovault_plugin_api::WritePrecondition::Match(version.to_string()))
+                .unwrap_or(turbovault_plugin_api::WritePrecondition::CreateOnly);
+            let vault = self.vault.active_vault().await?;
+            let receipt = self
+                .vault
+                .write_note(turbovault_plugin_api::WriteNoteRequest {
+                    path: path.to_string(),
+                    content: content.to_string(),
+                    precondition,
+                    commit_message: Some(format!("contract plugin creates {path}")),
+                    provenance: Some(turbovault_plugin_api::WriteProvenance {
+                        source: "contract-test".to_string(),
+                        correlation_id: Some(context.request_id),
+                        note: None,
+                    }),
+                })
+                .await?;
+            let snapshot = self.vault.read_note(path).await?;
+            let notes = self.vault.list_notes().await?;
+            ToolResult::json(&serde_json::json!({
+                "vault": vault,
+                "receipt": receipt,
+                "snapshot": snapshot,
+                "notes": notes,
+            }))
+            .map_err(|error| PluginError::internal(error.to_string()))
+        }
+    }
+
+    #[cfg(feature = "plugin-api")]
+    #[tokio::test]
+    async fn plugin_tools_are_namespaced_and_use_the_curated_vault_api() {
+        use turbovault_core::VaultConfig;
+        use turbovault_plugin_api::{EventAttribution, HookEvent};
+
+        let temp = tempfile::TempDir::new().expect("temp vault");
+        let server = ObsidianMcpServer::new_with_plugins(vec![Arc::new(ContractPlugin)])
+            .expect("plugin composition");
+        let config = VaultConfig::builder("plugin-test", temp.path())
+            .build()
+            .expect("vault config");
+        server
+            .multi_vault()
+            .add_vault(config)
+            .await
+            .expect("register vault");
+        server
+            .multi_vault()
+            .set_active_vault("plugin-test")
+            .await
+            .expect("select vault");
+
+        let advertised = server.list_tools();
+        assert_eq!(advertised.len(), 75);
+        assert!(
+            advertised
+                .iter()
+                .any(|tool| tool.name == "contract_round_trip")
+        );
+        assert!(!advertised.iter().any(|tool| tool.name == "round_trip"));
+
+        let mut events = server.hook_bus().subscribe().expect("hook subscription");
+        let ctx = RequestContext::with_id("plugin-request");
+        let result = server
+            .call_tool(
+                "contract_round_trip",
+                serde_json::json!({"path": "plugin.md", "content": "# Plugin"}),
+                &ctx,
+            )
+            .await
+            .expect("namespaced plugin call");
+        let result = structured(result);
+        let initial_version = result["receipt"]["version"]
+            .as_str()
+            .expect("initial version")
+            .to_string();
+        assert_eq!(result["vault"]["name"], "plugin-test");
+        assert_eq!(result["snapshot"]["content"], "# Plugin");
+        assert_eq!(result["receipt"]["version"], result["snapshot"]["version"]);
+        assert_eq!(result["notes"], serde_json::json!(["plugin.md"]));
+
+        let event = events.recv().await.expect("plugin write event");
+        assert_eq!(event.vault, "plugin-test");
+        assert_eq!(
+            event.event,
+            HookEvent::FileCreated {
+                path: "plugin.md".to_string()
+            }
+        );
+        assert!(matches!(
+            event.attribution,
+            EventAttribution::Attributed(turbovault_plugin_api::WriteProvenance {
+                source,
+                correlation_id: Some(id),
+                ..
+            }) if source == "contract-test" && id == "plugin-request"
+        ));
+
+        let error = server
+            .call_tool("round_trip", serde_json::json!({}), &ctx)
+            .await
+            .expect_err("unprefixed plugin tool must not be public");
+        assert_eq!(error.jsonrpc_code(), -32001);
+
+        let conflict = server
+            .call_tool(
+                "contract_round_trip",
+                serde_json::json!({"path": "plugin.md", "content": "# Overwrite"}),
+                &ctx,
+            )
+            .await
+            .expect_err("create-only write must refuse overwrites");
+        assert_eq!(conflict.jsonrpc_code(), -32600);
+
+        let updated = server
+            .call_tool(
+                "contract_round_trip",
+                serde_json::json!({
+                    "path": "plugin.md",
+                    "content": "# Updated",
+                    "expected_version": initial_version.clone(),
+                }),
+                &ctx,
+            )
+            .await
+            .expect("matching CAS write");
+        let updated = structured(updated);
+        assert_eq!(updated["snapshot"]["content"], "# Updated");
+        assert_ne!(updated["receipt"]["version"], result["receipt"]["version"]);
+        let modified = events.recv().await.expect("plugin update event");
+        assert!(matches!(
+            modified.event,
+            HookEvent::FileModified { ref path } if path == "plugin.md"
+        ));
+
+        let stale = server
+            .call_tool(
+                "contract_round_trip",
+                serde_json::json!({
+                    "path": "plugin.md",
+                    "content": "# Stale",
+                    "expected_version": initial_version,
+                }),
+                &ctx,
+            )
+            .await
+            .expect_err("stale CAS write must fail");
+        assert_eq!(stale.jsonrpc_code(), -32600);
+    }
+
+    #[cfg(feature = "plugin-api")]
+    #[test]
+    fn duplicate_plugin_namespaces_are_rejected_before_serving() {
+        let error = ObsidianMcpServer::new_with_plugins(vec![
+            Arc::new(ContractPlugin),
+            Arc::new(ContractPlugin),
+        ])
+        .err()
+        .expect("duplicate namespace must fail");
+        assert!(
+            error.to_string().contains("contract_round_trip")
+                || error.to_string().contains("duplicate prefix"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]

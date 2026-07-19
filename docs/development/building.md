@@ -78,7 +78,8 @@ turbovault/
 │   ├── turbovault-vault/        # File I/O
 │   ├── turbovault-batch/        # Batch ops
 │   ├── turbovault-export/       # Export utils
-│   └── turbovault-tools/        # MCP tools
+│   ├── turbovault-tools/        # MCP tools
+│   └── turbovault-plugin-api/   # Stable compiled-in plugin boundary
 ├── docs/                        # Documentation
 ├── tests/                       # Integration tests
 └── Cargo.toml                   # Workspace

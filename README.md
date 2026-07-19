@@ -42,6 +42,7 @@ TurboVault is a modular system composed of specialized crates. You can depend on
 | **[turbovault-graph](crates/turbovault-graph)** | Link graph analysis & relationship discovery | [![Docs.rs](https://docs.rs/turbovault-graph/badge.svg)](https://docs.rs/turbovault-graph) |
 | **[turbovault-vault](crates/turbovault-vault)** | Vault management, file I/O & atomic writes | [![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault) |
 | **[turbovault-tools](crates/turbovault-tools)** | 74 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
+| **[turbovault-plugin-api](crates/turbovault-plugin-api)** | Stable facade, provider contract & bounded hooks for compiled-in plugins | [![Docs.rs](https://docs.rs/turbovault-plugin-api/badge.svg)](https://docs.rs/turbovault-plugin-api) |
 | **[turbovault-sql](crates/turbovault-sql)** | SQL frontmatter queries (GlueSQL) | [![Docs.rs](https://docs.rs/turbovault-sql/badge.svg)](https://docs.rs/turbovault-sql) |
 | **[turbovault-batch](crates/turbovault-batch)** | Validated fail-fast operation batches | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
 | **[turbovault-export](crates/turbovault-export)** | Export & reporting (JSON/CSV/MD) | [![Docs.rs](https://docs.rs/turbovault-export/badge.svg)](https://docs.rs/turbovault-export) |
@@ -496,6 +497,7 @@ turbovault-batch       — Validated sequential batch operations
 turbovault-export      — JSON/CSV/Markdown export
 turbovault-sql         — SQL frontmatter queries (GlueSQL, feature-gated)
 turbovault-tools       — 74 MCP tool implementations
+turbovault-plugin-api  — Curated plugin facade, provider contract, event hooks
 turbovault (binary)    — CLI and MCP server entry point
 ```
 
