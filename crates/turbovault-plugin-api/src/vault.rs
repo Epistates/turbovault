@@ -84,6 +84,23 @@ pub trait VaultHost: Send + Sync {
 
     /// Create or compare-and-swap a complete note.
     async fn write_note(&self, request: WriteNoteRequest) -> PluginResult<WriteReceipt>;
+
+    /// Read a read-only vault application-config file, e.g. an entry under
+    /// `.obsidian/`, returning `None` when it does not exist.
+    ///
+    /// This is the only door onto the vault's non-note config space (the note
+    /// APIs deliberately exclude dotfolders like `.obsidian`). It exists so a
+    /// module can self-tune to the user's app settings — for example the
+    /// Obsidian Tasks plugin's `data.json` — instead of requiring the settings
+    /// to be duplicated into module config.
+    ///
+    /// Hosts enforce read scoping and path-traversal safety, and MAY decline the
+    /// capability entirely; the default implementation returns `None` so that a
+    /// host which does not support config reads degrades gracefully rather than
+    /// erroring. The path is vault-relative and uses `/` separators.
+    async fn read_config(&self, _relative_path: &str) -> PluginResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
 }
 
 /// Cloneable, curated facade supplied to every plugin.
@@ -122,5 +139,11 @@ impl VaultApi {
     /// Create or compare-and-swap a complete note.
     pub async fn write_note(&self, request: WriteNoteRequest) -> PluginResult<WriteReceipt> {
         self.host.write_note(request).await
+    }
+
+    /// Read a read-only vault application-config file (e.g. under `.obsidian/`),
+    /// returning `None` when it does not exist or the host declines the read.
+    pub async fn read_config(&self, relative_path: &str) -> PluginResult<Option<Vec<u8>>> {
+        self.host.read_config(relative_path).await
     }
 }

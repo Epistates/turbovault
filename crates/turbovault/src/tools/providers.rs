@@ -641,11 +641,23 @@ mod tests {
                 .await?;
             let snapshot = self.vault.read_note(path).await?;
             let notes = self.vault.list_notes().await?;
+            let config_content = match arguments
+                .get("config_path")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some(config_path) => self
+                    .vault
+                    .read_config(config_path)
+                    .await?
+                    .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+                None => None,
+            };
             ToolResult::json(&serde_json::json!({
                 "vault": vault,
                 "receipt": receipt,
                 "snapshot": snapshot,
                 "notes": notes,
+                "config_content": config_content,
             }))
             .map_err(|error| PluginError::internal(error.to_string()))
         }
@@ -658,6 +670,15 @@ mod tests {
         use turbovault_plugin_api::{EventAttribution, HookEvent};
 
         let temp = tempfile::TempDir::new().expect("temp vault");
+        // A config file in the vault's non-note space, to exercise read_config.
+        let config_dir = temp
+            .path()
+            .join(".obsidian")
+            .join("plugins")
+            .join("example");
+        std::fs::create_dir_all(&config_dir).expect("config dir");
+        std::fs::write(config_dir.join("data.json"), br#"{"k":"v"}"#).expect("write config");
+
         let server = ObsidianMcpServer::new_with_plugins(vec![Arc::new(ContractPlugin)])
             .expect("plugin composition");
         let config = VaultConfig::builder("plugin-test", temp.path())
@@ -688,7 +709,11 @@ mod tests {
         let result = server
             .call_tool(
                 "contract_round_trip",
-                serde_json::json!({"path": "plugin.md", "content": "# Plugin"}),
+                serde_json::json!({
+                    "path": "plugin.md",
+                    "content": "# Plugin",
+                    "config_path": ".obsidian/plugins/example/data.json",
+                }),
                 &ctx,
             )
             .await
@@ -702,6 +727,8 @@ mod tests {
         assert_eq!(result["snapshot"]["content"], "# Plugin");
         assert_eq!(result["receipt"]["version"], result["snapshot"]["version"]);
         assert_eq!(result["notes"], serde_json::json!(["plugin.md"]));
+        // read_config reads a known `.obsidian/` path, separate from the note space.
+        assert_eq!(result["config_content"], "{\"k\":\"v\"}");
 
         let event = events.recv().await.expect("plugin write event");
         assert_eq!(event.vault, "plugin-test");

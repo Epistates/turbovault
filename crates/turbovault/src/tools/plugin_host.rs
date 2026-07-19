@@ -192,6 +192,34 @@ impl VaultHost for PluginVaultHost {
             bytes: request.content.len(),
         })
     }
+
+    async fn read_config(&self, relative_path: &str) -> PluginResult<Option<Vec<u8>>> {
+        // Scope this capability to the Obsidian app-config namespace. Modules may
+        // read `.obsidian/**` (their settings live there); everything else stays
+        // behind the note APIs.
+        let normalized = relative_path.replace('\\', "/");
+        if normalized != ".obsidian" && !normalized.starts_with(".obsidian/") {
+            return Err(PluginError::invalid_input(format!(
+                "read_config is scoped to `.obsidian/`; refused {relative_path:?}"
+            )));
+        }
+
+        let manager = self
+            .core
+            .get_active_vault_manager()
+            .await
+            .map_err(map_host_error)?;
+        // resolve_path applies path_trav traversal detection against the vault root.
+        let resolved = manager
+            .resolve_path(Path::new(&normalized))
+            .map_err(map_core_error)?;
+
+        match tokio::fs::read(&resolved).await {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(PluginError::internal(error.to_string())),
+        }
+    }
 }
 
 pub(super) fn vault_host(core: CoreToolHandler, hooks: HookBus) -> Arc<dyn VaultHost> {
