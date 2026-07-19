@@ -81,6 +81,7 @@ jobs:
   #         publish turbovault-batch
   #         publish turbovault-sql
   #         publish turbovault-tools
+  #         publish turbovault-plugin-api
   #         publish turbovault
 
   # ── Build Prebuilt Binaries ───────────────────────────────────────────

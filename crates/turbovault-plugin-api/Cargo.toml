@@ -1,0 +1,30 @@
+[package]
+name = "turbovault-plugin-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = true
+description = "Stable plugin contract and curated vault facade for TurboVault"
+documentation = "https://docs.rs/turbovault-plugin-api"
+readme = "README.md"
+keywords = ["mcp", "obsidian", "vault", "plugin", "turbovault"]
+categories = ["development-tools", "text-processing"]
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+turbomcp-types = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

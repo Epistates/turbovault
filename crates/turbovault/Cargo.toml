@@ -40,6 +40,10 @@ unix = ["turbomcp/unix"]                     # Add Unix socket support (~100 KB)
 # SQL frontmatter queries (GlueSQL)
 sql = ["turbovault-tools/sql"]
 
+# Stable compiled-in plugin boundary. Individual plugin features added under
+# crates/plugins/ must include this feature and remain default-off.
+plugin-api = ["dep:async-trait", "dep:turbovault-plugin-api"]
+
 # Convenience bundles
 http-full = ["http", "websocket"]            # HTTP + WebSocket
 # Note: unix is excluded from all-transports on Windows (not supported)
@@ -56,6 +60,7 @@ turbovault-core = { workspace = true }
 turbovault-vault = { workspace = true }
 turbovault-audit = { workspace = true }
 turbovault-tools = { workspace = true }
+turbovault-plugin-api = { workspace = true, optional = true }
 
 # MCP server framework (features passed through from turbovault)
 turbomcp = { workspace = true, features = ["stdio", "telemetry"] }
@@ -73,6 +78,7 @@ yaml_serde = { workspace = true }
 config = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+async-trait = { workspace = true, optional = true }
 log = { workspace = true }
 simple_logger = "5.2"
 tracing = { workspace = true }
