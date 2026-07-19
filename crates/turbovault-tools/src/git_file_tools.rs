@@ -19,8 +19,9 @@ use futures::future::BoxFuture;
 use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_batch::{BatchOperation, BatchResult, OperationRecord};
+use turbovault_core::ChangePlan;
 use turbovault_core::prelude::*;
-use turbovault_git::{Changeset, CommitHook, CommitLocks, Oid, VaultRepo};
+use turbovault_git::{CommitHook, CommitLocks, Oid, VaultRepo};
 use turbovault_vault::{EditEngine, EditResult, VaultManager};
 
 /// turbovault-lqr: result of an atomic `move_file_with_link_updates`. The
@@ -268,7 +269,7 @@ impl GitFileTools {
         content: &str,
         message: &str,
     ) -> Result<()> {
-        let txn = Changeset::new(message.to_string()).create(path, content.as_bytes().to_vec());
+        let txn = ChangePlan::new(message.to_string()).create(path, content.as_bytes().to_vec());
         self.apply_txn(&txn).await
     }
 
@@ -357,9 +358,9 @@ impl GitFileTools {
         message: &str,
     ) -> Result<()> {
         let expected = parse_blob_oid(expected_hash)?;
-        let mut txn = Changeset::new(message.to_string()).remove(path);
+        let mut txn = ChangePlan::new(message.to_string()).remove(path);
         if let Some(oid) = expected {
-            txn = txn.expect_blob(path, oid);
+            txn = txn.expect_blob(path, oid.to_string());
         }
         self.apply_txn(&txn).await
     }
@@ -397,11 +398,11 @@ impl GitFileTools {
         let expected_from = parse_blob_oid(expected_hash)?;
         let content = self.read_file(from).await?;
 
-        let mut txn = Changeset::new(message.to_string())
+        let mut txn = ChangePlan::new(message.to_string())
             .remove(from)
             .upsert(to, content.into_bytes());
         if let Some(oid) = expected_from {
-            txn = txn.expect_blob(from, oid);
+            txn = txn.expect_blob(from, oid.to_string());
         }
         // Destination is always required to be absent — refuses to clobber.
         txn = txn.expect_absent(to);
@@ -427,7 +428,7 @@ impl GitFileTools {
         message: &str,
     ) -> Result<MoveWithLinksResult> {
         let expected_target = parse_blob_oid(expected_hash)?;
-        let txn = Changeset::new(message.to_string());
+        let txn = ChangePlan::new(message.to_string());
         let (txn, link_sources_updated) = self
             .fold_delete_with_stale_links(txn, path, expected_target)
             .await?;
@@ -450,10 +451,10 @@ impl GitFileTools {
     /// as [`Self::fold_move_with_links`].
     async fn fold_delete_with_stale_links(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         path: &str,
         expected_target: Option<Oid>,
-    ) -> Result<(Changeset, Vec<String>)> {
+    ) -> Result<(ChangePlan, Vec<String>)> {
         use crate::wikilink_rewriter::wrap_wikilinks_as_stale;
 
         let backlink_paths = {
@@ -489,12 +490,12 @@ impl GitFileTools {
 
         let mut txn = txn.remove(path);
         if let Some(oid) = expected_target {
-            txn = txn.expect_blob(path, oid);
+            txn = txn.expect_blob(path, oid.to_string());
         }
         for (rel_path, rewritten, oid) in &link_updates {
             txn = txn
                 .upsert(rel_path.clone(), rewritten.clone().into_bytes())
-                .expect_blob(rel_path.clone(), *oid);
+                .expect_blob(rel_path.clone(), oid.to_string());
         }
 
         let updated = link_updates.into_iter().map(|(p, _, _)| p).collect();
@@ -555,7 +556,7 @@ impl GitFileTools {
         message: &str,
     ) -> Result<MoveWithLinksResult> {
         let expected_from = parse_blob_oid(expected_hash)?;
-        let txn = Changeset::new(message.to_string());
+        let txn = ChangePlan::new(message.to_string());
         let (txn, link_sources_updated) = self
             .fold_move_with_links(txn, from, to, expected_from)
             .await?;
@@ -581,11 +582,11 @@ impl GitFileTools {
     /// `manager.initialize()`.
     async fn fold_move_with_links(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         from: &str,
         to: &str,
         expected_from: Option<Oid>,
-    ) -> Result<(Changeset, Vec<String>)> {
+    ) -> Result<(ChangePlan, Vec<String>)> {
         use crate::wikilink_rewriter::rewrite_wikilinks;
 
         let content = self.read_file(from).await?;
@@ -628,13 +629,13 @@ impl GitFileTools {
         // Source rename + each link source's rewrite, with preconditions.
         let mut txn = txn.remove(from).upsert(to, content.into_bytes());
         if let Some(oid) = expected_from {
-            txn = txn.expect_blob(from, oid);
+            txn = txn.expect_blob(from, oid.to_string());
         }
         txn = txn.expect_absent(to);
         for (rel_path, rewritten, oid) in &link_updates {
             txn = txn
                 .upsert(rel_path.clone(), rewritten.clone().into_bytes())
-                .expect_blob(rel_path.clone(), *oid);
+                .expect_blob(rel_path.clone(), oid.to_string());
         }
 
         let updated = link_updates.into_iter().map(|(p, _, _)| p).collect();
@@ -645,7 +646,7 @@ impl GitFileTools {
     /// commit. Same expect-absent guard on the destination as `move_file`.
     pub async fn copy_file(&self, from: &str, to: &str) -> Result<()> {
         let content = self.read_file(from).await?;
-        let txn = Changeset::new(format!("copy_file {} -> {}", from, to))
+        let txn = ChangePlan::new(format!("copy_file {} -> {}", from, to))
             .upsert(to, content.into_bytes())
             .expect_absent(to);
         self.apply_txn(&txn).await
@@ -653,7 +654,7 @@ impl GitFileTools {
 
     // -------- Batch (the atomicity win) --------
 
-    /// Translate every [`BatchOperation`] to a single [`Changeset`] and
+    /// Translate every [`BatchOperation`] to a single [`ChangePlan`] and
     /// commit as **one atomic commit** — either every op lands or none do.
     /// This is the spec-promised behavior the direct [`BatchTools`] never
     /// actually delivered (the direct path stopped at `failed_at` and left
@@ -675,7 +676,7 @@ impl GitFileTools {
 
     // -------- internals --------
 
-    async fn translate_op(&self, txn: Changeset, op: &BatchOperation) -> Result<Changeset> {
+    async fn translate_op(&self, txn: ChangePlan, op: &BatchOperation) -> Result<ChangePlan> {
         // Per-op preconditions (turbovault-c0e). Every variant that touches
         // an existing target accepts `expected_hash` (git blob OID hex on
         // git backend); `CreateNote` carries an implicit `expect_absent`
@@ -784,11 +785,11 @@ impl GitFileTools {
     /// translate_op to keep that dispatcher flat.
     async fn fold_delete_note(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         path: &str,
         expected_hash: Option<&str>,
         on_backlinks: Option<&str>,
-    ) -> Result<Changeset> {
+    ) -> Result<ChangePlan> {
         let expected = parse_blob_oid(expected_hash)?;
         Ok(match on_backlinks.unwrap_or("refuse") {
             // Bare delete — leave inbound links dangling (pre-0g4.7 behavior).
@@ -824,12 +825,12 @@ impl GitFileTools {
     /// wikilinks in the same commit; update_backlinks=false is rename-only.
     async fn fold_move_note(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         from: &str,
         to: &str,
         expected_hash: Option<&str>,
         update_backlinks: Option<bool>,
-    ) -> Result<Changeset> {
+    ) -> Result<ChangePlan> {
         let expected_from = parse_blob_oid(expected_hash)?;
         if update_backlinks.unwrap_or(true) {
             Ok(self
@@ -842,7 +843,7 @@ impl GitFileTools {
             let content = self.read_file(from).await?;
             let mut t = txn.remove(from).upsert(to, content.into_bytes());
             if let Some(oid) = expected_from {
-                t = t.expect_blob(from, oid);
+                t = t.expect_blob(from, oid.to_string());
             }
             Ok(t.expect_absent(to))
         }
@@ -853,11 +854,11 @@ impl GitFileTools {
     /// the dry-run/hash reporting a batch doesn't need).
     async fn fold_edit_note(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         path: &str,
         edits: &str,
         expected_hash: Option<&str>,
-    ) -> Result<Changeset> {
+    ) -> Result<ChangePlan> {
         let current = self.read_file(path).await?;
         let engine = EditEngine::new();
         let blocks = engine.parse_blocks(edits)?;
@@ -870,12 +871,12 @@ impl GitFileTools {
     /// resulting content into the batch commit.
     async fn fold_update_frontmatter(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         path: &str,
         frontmatter: &std::collections::HashMap<String, serde_json::Value>,
         merge: Option<bool>,
         expected_hash: Option<&str>,
-    ) -> Result<Changeset> {
+    ) -> Result<ChangePlan> {
         let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
         let fm_map: serde_json::Map<String, serde_json::Value> =
             frontmatter.clone().into_iter().collect();
@@ -889,12 +890,12 @@ impl GitFileTools {
     /// "list" is read-only (returns None) and rejected inside a batch.
     async fn fold_manage_tags(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         path: &str,
         operation: &str,
         tags: &[String],
         expected_hash: Option<&str>,
-    ) -> Result<Changeset> {
+    ) -> Result<ChangePlan> {
         let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
         let (maybe, _info) = mt.compute_manage_tags(path, operation, Some(tags)).await?;
         let new_content = maybe.ok_or_else(|| {
@@ -911,12 +912,12 @@ impl GitFileTools {
     /// force-upsert (overwrite).
     async fn fold_create_from_template(
         &self,
-        txn: Changeset,
+        txn: ChangePlan,
         template_id: &str,
         path: &str,
         fields: &std::collections::HashMap<String, String>,
         force: Option<bool>,
-    ) -> Result<Changeset> {
+    ) -> Result<ChangePlan> {
         let engine = crate::TemplateEngine::new(Arc::clone(&self.manager));
         let (content, _info) = engine
             .compute_from_template(template_id, path, fields.clone())
@@ -957,7 +958,7 @@ impl GitFileTools {
         let commit_msg = message
             .map(String::from)
             .unwrap_or_else(|| format!("batch_execute ({} ops)", total));
-        let mut txn = Changeset::new(commit_msg);
+        let mut txn = ChangePlan::new(commit_msg);
         let mut changes = Vec::with_capacity(total);
         let mut records = Vec::with_capacity(total);
         // turbovault-0g4.5: intra-batch same-path conflict policy. The git
@@ -1128,7 +1129,7 @@ impl GitFileTools {
         })
     }
 
-    async fn apply_txn(&self, txn: &Changeset) -> Result<()> {
+    async fn apply_txn(&self, txn: &ChangePlan) -> Result<()> {
         // `VaultRepo` is `Send` but `!Sync`; the substrate work is blocking
         // libgit2. Move it to the blocking pool. The `Arc<CommitLocks>` is
         // shared across calls so cross-call commit-section serialization
@@ -1201,7 +1202,7 @@ impl GitFileTools {
 /// gitignore gate (when `include_ignored == false`), then `commit_changeset`.
 /// Shared by `apply_txn`'s cached-handle and per-call-open paths so the policy
 /// + commit logic stays in one place.
-fn run_txn(repo: &VaultRepo, txn: &Changeset, include_ignored: bool) -> Result<()> {
+fn run_txn(repo: &VaultRepo, txn: &ChangePlan, include_ignored: bool) -> Result<()> {
     if !include_ignored {
         for changed in txn.touched_paths() {
             if repo.is_path_ignored(&changed).map_err(git_err_to_core)? {
@@ -1222,10 +1223,10 @@ fn build_upsert_txn(
     path: &str,
     content: &str,
     expected: Option<Oid>,
-) -> Changeset {
-    let mut txn = Changeset::new(message).upsert(path, content.as_bytes().to_vec());
+) -> ChangePlan {
+    let mut txn = ChangePlan::new(message).upsert(path, content.as_bytes().to_vec());
     if let Some(oid) = expected {
-        txn = txn.expect_blob(path, oid);
+        txn = txn.expect_blob(path, oid.to_string());
     }
     txn
 }
@@ -1235,24 +1236,24 @@ fn build_upsert_txn(
 /// of every content-replacing batch op (WriteNote / UpdateLinks / EditNote /
 /// UpdateFrontmatter / ManageTags).
 fn upsert_expecting(
-    txn: Changeset,
+    txn: ChangePlan,
     path: &str,
     bytes: Vec<u8>,
     expected_hash: Option<&str>,
-) -> Result<Changeset> {
+) -> Result<ChangePlan> {
     let mut t = txn.upsert(path, bytes);
     if let Some(oid) = parse_blob_oid(expected_hash)? {
-        t = t.expect_blob(path, oid);
+        t = t.expect_blob(path, oid.to_string());
     }
     Ok(t)
 }
 
 /// v3b.2: fold `remove(path)` plus an already-parsed optional `expect_blob`
 /// precondition into `txn` — the shared tail of the bare-delete branches.
-fn remove_expecting(txn: Changeset, path: &str, expected: Option<Oid>) -> Changeset {
+fn remove_expecting(txn: ChangePlan, path: &str, expected: Option<Oid>) -> ChangePlan {
     let mut t = txn.remove(path);
     if let Some(oid) = expected {
-        t = t.expect_blob(path, oid);
+        t = t.expect_blob(path, oid.to_string());
     }
     t
 }

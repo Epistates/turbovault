@@ -178,6 +178,27 @@ impl ChangePlan {
         self.preconditions.push((to, Precondition::ExpectAbsent));
         self
     }
+
+    /// The full set of paths this plan's changes touch — `path` for
+    /// `Upsert`/`Remove`, both `from` and `to` for `Rename` (a rename removes
+    /// bytes at `from` and adds them at `to`). The single source of truth for
+    /// "which paths does this plan mutate" — used by the git substrate's
+    /// gitignore gate + materialize call ([`turbovault-git`]'s
+    /// `commit_changeset`) and by the tool layer's intra-batch path-collision
+    /// check.
+    pub fn touched_paths(&self) -> Vec<String> {
+        let mut out = Vec::with_capacity(self.changes.len());
+        for c in &self.changes {
+            match c {
+                Change::Upsert { path, .. } | Change::Remove { path } => out.push(path.clone()),
+                Change::Rename { from, to } => {
+                    out.push(from.clone());
+                    out.push(to.clone());
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -310,6 +331,30 @@ mod tests {
             }
             .path(),
             "c.md"
+        );
+    }
+
+    #[test]
+    fn touched_paths_lists_every_path_including_both_rename_endpoints() {
+        let plan = ChangePlan::new("c")
+            .create("a.md", "a")
+            .update("b.md", "b", "deadbeef")
+            .remove("c.md")
+            .with_change(Change::Rename {
+                from: "old.md".into(),
+                to: "new.md".into(),
+            });
+        let mut p = plan.touched_paths();
+        p.sort();
+        assert_eq!(
+            p,
+            vec![
+                "a.md".to_string(),
+                "b.md".to_string(),
+                "c.md".to_string(),
+                "new.md".to_string(),
+                "old.md".to_string(),
+            ]
         );
     }
 

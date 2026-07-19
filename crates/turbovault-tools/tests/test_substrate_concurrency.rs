@@ -175,12 +175,12 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
     // expose read-set preconditions; this exercises the substrate's
     // reconsideration domino, which is what derived-state preconditions
     // (turbovault-5fm) will eventually surface.)
-    use turbovault_git::Changeset;
-    let txn = Changeset::new("write a/b/c, guard watched")
+    use turbovault_core::ChangePlan;
+    let txn = ChangePlan::new("write a/b/c, guard watched")
         .upsert("a.md", "AA")
         .upsert("b.md", "BB")
         .upsert("c.md", "CC")
-        .expect_blob("watched.md", watched_v1);
+        .expect_blob("watched.md", watched_v1.to_string());
     let repo = VaultRepo::open_with_locks(tmp.path(), Arc::new(CommitLocks::new())).unwrap();
     let res = repo.commit_changeset(&txn);
     assert!(
@@ -238,14 +238,14 @@ async fn move_with_link_updates_lands_as_one_commit() {
     // Drive a single changeset directly through the substrate (the
     // move-with-links composition isn't yet wrapped by GitFileTools — the
     // batch surface gets close, but doesn't accept preconditions yet).
-    use turbovault_git::Changeset;
+    use turbovault_core::ChangePlan;
     let body_blob = VaultRepo::blob_oid_of(b"body").unwrap();
     let l1_blob = VaultRepo::blob_oid_of(b"see [[old]]").unwrap();
     let l2_blob = VaultRepo::blob_oid_of(b"ref [[old]] here").unwrap();
-    let txn = Changeset::new("mv old->new + fix links")
-        .rename("old.md", "new.md", "body", body_blob)
-        .update("link1.md", "see [[new]]", l1_blob)
-        .update("link2.md", "ref [[new]] here", l2_blob);
+    let txn = ChangePlan::new("mv old->new + fix links")
+        .rename("old.md", "new.md", body_blob.to_string())
+        .update("link1.md", "see [[new]]", l1_blob.to_string())
+        .update("link2.md", "ref [[new]] here", l2_blob.to_string());
     let repo = VaultRepo::open_with_locks_and_hook(
         tmp.path(),
         Arc::clone(&locks),

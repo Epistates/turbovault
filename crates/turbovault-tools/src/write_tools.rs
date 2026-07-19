@@ -164,7 +164,7 @@ impl WriteTools {
 
     /// Strict create (turbovault-947 / write-note CAS-by-default).
     ///
-    /// **Git backend:** the substrate's `Changeset::create` carries an
+    /// **Git backend:** the substrate's `ChangePlan::create` carries an
     /// `expect_absent` precondition — a concurrent winner makes the loser's
     /// CAS fail loudly with `ConcurrencyError`. This is the safety the
     /// MCP layer's pre-check cannot provide on its own (TOCTOU window).

@@ -7,7 +7,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::TempDir;
-use turbovault_git::{Changeset, VaultRepo};
+use turbovault_core::ChangePlan;
+use turbovault_git::VaultRepo;
 
 fn open_born_repo() -> (TempDir, VaultRepo) {
     let tmp = TempDir::new().unwrap();
@@ -16,7 +17,7 @@ fn open_born_repo() -> (TempDir, VaultRepo) {
     git2::Repository::init_opts(tmp.path(), &opts).unwrap();
     let vr = VaultRepo::open(tmp.path()).unwrap();
     // Seed so HEAD is born; subsequent benches don't pay the initial-commit cost.
-    vr.commit_changeset(&Changeset::new("seed").create("seed.md", "S"))
+    vr.commit_changeset(&ChangePlan::new("seed").create("seed.md", "S"))
         .unwrap();
     (tmp, vr)
 }
@@ -28,7 +29,7 @@ fn single_write_create(c: &mut Criterion) {
         b.iter(|| {
             let n = counter.fetch_add(1, Ordering::Relaxed);
             let path = format!("file_{n}.md");
-            vr.commit_changeset(&Changeset::new("c").create(path, "content"))
+            vr.commit_changeset(&ChangePlan::new("c").create(path, "content"))
                 .unwrap();
         });
     });

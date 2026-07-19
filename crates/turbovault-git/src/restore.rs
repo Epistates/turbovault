@@ -11,22 +11,22 @@
 //! - [`VaultRepo::read_at`] — preview a path's content at a historical commit.
 //! - [`VaultRepo::paths_changed_between`] — the path set the rollback tool
 //!   needs (diff the commit-to-undo against its parent).
-//! - [`VaultRepo::build_restore_changeset`] — assemble a [`Changeset`]
-//!   that brings each given path back to its target-commit state, with the
-//!   right precondition (the path's CURRENT blob at HEAD) so a concurrent
-//!   change since the rollback was requested aborts loudly. Caller applies it
-//!   via [`VaultRepo::commit_changeset`].
+//! - [`VaultRepo::build_restore_changeset`] — assemble a
+//!   [`turbovault_core::ChangePlan`] that brings each given path back to its
+//!   target-commit state, with the right precondition (the path's CURRENT
+//!   blob at HEAD) so a concurrent change since the rollback was requested
+//!   aborts loudly. Caller applies it via [`VaultRepo::commit_changeset`].
 //!
 //! The tool layer's `rollback_note(operation_id)` composes these: locate the
 //! commit for `operation_id`, take its parent as the target, list the paths
 //! it touched, and apply the restore changeset.
 
-use crate::changeset::Changeset;
 use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
 use git2::Oid;
 use std::path::Path;
 use tracing::instrument;
+use turbovault_core::ChangePlan;
 
 impl VaultRepo {
     /// Read a path's bytes at a specific commit. `None` if the path is absent
@@ -128,14 +128,14 @@ impl VaultRepo {
         target_commit: Oid,
         paths: &[String],
         message: impl Into<String>,
-    ) -> Result<Option<Changeset>> {
+    ) -> Result<Option<ChangePlan>> {
         let head_oid = self
             .head_oid()
             .ok_or_else(|| Error::other("cannot restore: branch is unborn"))?;
         let head_tree = self.git().find_commit(head_oid)?.tree_id();
         let target_tree = self.git().find_commit(target_commit)?.tree_id();
 
-        let mut txn = Changeset::new(message);
+        let mut txn = ChangePlan::new(message);
         let mut any = false;
         for path in paths {
             let current = self.blob_oid_at(head_tree, path)?;
@@ -146,10 +146,10 @@ impl VaultRepo {
             match (current, target) {
                 (Some(current_oid), Some(target_oid)) => {
                     let content = self.read_blob(target_oid)?;
-                    txn = txn.update(path, content, current_oid);
+                    txn = txn.update(path, content, current_oid.to_string());
                 }
                 (Some(current_oid), None) => {
-                    txn = txn.delete(path, current_oid);
+                    txn = txn.delete(path, current_oid.to_string());
                 }
                 (None, Some(target_oid)) => {
                     let content = self.read_blob(target_oid)?;
@@ -187,14 +187,14 @@ mod tests {
     }
 
     /// Commit `txn` and return the new HEAD commit oid.
-    fn commit(vr: &VaultRepo, txn: Changeset) -> Oid {
+    fn commit(vr: &VaultRepo, txn: ChangePlan) -> Oid {
         vr.commit_changeset(&txn).unwrap().commit
     }
 
     #[test]
     fn read_at_returns_content_or_none() {
         let (_t, vr) = open_unborn();
-        let c1 = commit(&vr, Changeset::new("c").create("a.md", "v1"));
+        let c1 = commit(&vr, ChangePlan::new("c").create("a.md", "v1"));
         assert_eq!(
             vr.read_at(c1, "a.md").unwrap().as_deref(),
             Some(b"v1".as_slice())
@@ -205,12 +205,12 @@ mod tests {
     #[test]
     fn paths_changed_between_diff_two_commits() {
         let (_t, vr) = open_unborn();
-        let c1 = commit(&vr, Changeset::new("c").create("a.md", "alpha"));
+        let c1 = commit(&vr, ChangePlan::new("c").create("a.md", "alpha"));
         let blob_a = VaultRepo::blob_oid_of(b"alpha").unwrap();
         let c2 = commit(
             &vr,
-            Changeset::new("c2")
-                .update("a.md", "ALPHA", blob_a)
+            ChangePlan::new("c2")
+                .update("a.md", "ALPHA", blob_a.to_string())
                 .create("b.md", "beta"),
         );
         let mut paths = vr.paths_changed_between(c1, c2).unwrap();
@@ -222,9 +222,12 @@ mod tests {
     fn restore_updates_a_changed_path_back() {
         // Restore an updated file to its earlier content.
         let (_t, vr) = open_unborn();
-        let c1 = commit(&vr, Changeset::new("c").create("a.md", "v1"));
+        let c1 = commit(&vr, ChangePlan::new("c").create("a.md", "v1"));
         let blob_v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        let _c2 = commit(&vr, Changeset::new("u").update("a.md", "v2", blob_v1));
+        let _c2 = commit(
+            &vr,
+            ChangePlan::new("u").update("a.md", "v2", blob_v1.to_string()),
+        );
 
         let restore_txn = vr
             .build_restore_changeset(c1, &["a.md".to_string()], "rollback to c1")
@@ -238,9 +241,12 @@ mod tests {
     fn restore_recreates_a_deleted_path() {
         // The deleted-then-restored case: target has it, current does not -> create.
         let (_t, vr) = open_unborn();
-        let c1 = commit(&vr, Changeset::new("c").create("a.md", "v1"));
+        let c1 = commit(&vr, ChangePlan::new("c").create("a.md", "v1"));
         let blob_v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        let _c2 = commit(&vr, Changeset::new("d").delete("a.md", blob_v1));
+        let _c2 = commit(
+            &vr,
+            ChangePlan::new("d").delete("a.md", blob_v1.to_string()),
+        );
         assert!(!workfile(&vr, "a.md").exists());
 
         let restore_txn = vr
@@ -256,8 +262,8 @@ mod tests {
         // The created-then-restored case: target lacks it, current has it -> delete.
         let (_t, vr) = open_unborn();
         // Make a non-empty initial commit so we have a target commit BEFORE a.md existed.
-        let c1 = commit(&vr, Changeset::new("seed").create("seed.md", "S"));
-        let _c2 = commit(&vr, Changeset::new("c").create("a.md", "alpha"));
+        let c1 = commit(&vr, ChangePlan::new("seed").create("seed.md", "S"));
+        let _c2 = commit(&vr, ChangePlan::new("c").create("a.md", "alpha"));
         assert!(workfile(&vr, "a.md").exists());
 
         let restore_txn = vr
@@ -274,7 +280,7 @@ mod tests {
     #[test]
     fn restore_no_op_when_current_matches_target() {
         let (_t, vr) = open_unborn();
-        let c1 = commit(&vr, Changeset::new("c").create("a.md", "v1"));
+        let c1 = commit(&vr, ChangePlan::new("c").create("a.md", "v1"));
         // Path already matches target -> Ok(None).
         let result = vr
             .build_restore_changeset(c1, &["a.md".to_string()], "nothing to do")
@@ -289,7 +295,7 @@ mod tests {
         let (_t, vr) = open_unborn();
         let c1 = commit(
             &vr,
-            Changeset::new("seed")
+            ChangePlan::new("seed")
                 .create("a.md", "A1")
                 .create("b.md", "B1"),
         );
@@ -297,9 +303,9 @@ mod tests {
         let blob_b1 = VaultRepo::blob_oid_of(b"B1").unwrap();
         let c2 = commit(
             &vr,
-            Changeset::new("multi")
-                .update("a.md", "A2", blob_a1)
-                .update("b.md", "B2", blob_b1),
+            ChangePlan::new("multi")
+                .update("a.md", "A2", blob_a1.to_string())
+                .update("b.md", "B2", blob_b1.to_string()),
         );
 
         // To undo c2: restore the paths it touched to their state at its parent (c1).
@@ -319,9 +325,12 @@ mod tests {
         // between when the rollback was prepared and when it applies, the
         // precondition (current blob) fails and the restore aborts.
         let (_t, vr) = open_unborn();
-        let c1 = commit(&vr, Changeset::new("c").create("a.md", "v1"));
+        let c1 = commit(&vr, ChangePlan::new("c").create("a.md", "v1"));
         let blob_v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        let _c2 = commit(&vr, Changeset::new("u").update("a.md", "v2", blob_v1));
+        let _c2 = commit(
+            &vr,
+            ChangePlan::new("u").update("a.md", "v2", blob_v1.to_string()),
+        );
 
         // Prepare the restore txn (preconditioned against current state == v2).
         let restore_txn = vr
@@ -330,7 +339,10 @@ mod tests {
             .unwrap();
         // Concurrent third write moves a.md to v3 before the restore applies.
         let blob_v2 = VaultRepo::blob_oid_of(b"v2").unwrap();
-        commit(&vr, Changeset::new("u2").update("a.md", "v3", blob_v2));
+        commit(
+            &vr,
+            ChangePlan::new("u2").update("a.md", "v3", blob_v2.to_string()),
+        );
         // Now applying the prepared restore must abort — precondition expects v2.
         let res = vr.commit_changeset(&restore_txn);
         assert!(matches!(
@@ -347,7 +359,7 @@ mod tests {
         let (_t, vr) = open_unborn();
         let c = commit(
             &vr,
-            Changeset::new("init")
+            ChangePlan::new("init")
                 .create("a.md", "A")
                 .create("dir/b.md", "B"),
         );
@@ -364,7 +376,7 @@ mod tests {
         let (_t, vr) = open_unborn();
         let c1 = commit(
             &vr,
-            Changeset::new("seed")
+            ChangePlan::new("seed")
                 .create("keep.md", "K")
                 .create("gone.md", "G")
                 .create("mod.md", "M1"),
@@ -373,10 +385,10 @@ mod tests {
         let g = VaultRepo::blob_oid_of(b"G").unwrap();
         let c2 = commit(
             &vr,
-            Changeset::new("mix")
+            ChangePlan::new("mix")
                 .create("new.md", "N")
-                .update("mod.md", "M2", m1)
-                .delete("gone.md", g),
+                .update("mod.md", "M2", m1.to_string())
+                .delete("gone.md", g.to_string()),
         );
 
         let mut out = vr.diff_path_statuses(Some(c1), c2).unwrap();
@@ -395,7 +407,7 @@ mod tests {
     #[test]
     fn diff_path_statuses_empty_for_identical_commits() {
         let (_t, vr) = open_unborn();
-        let c = commit(&vr, Changeset::new("c").create("a.md", "x"));
+        let c = commit(&vr, ChangePlan::new("c").create("a.md", "x"));
         let out = vr.diff_path_statuses(Some(c), c).unwrap();
         assert!(out.is_empty());
     }

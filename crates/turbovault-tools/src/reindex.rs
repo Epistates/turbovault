@@ -297,8 +297,9 @@ mod tests {
     use super::*;
     use std::path::Path as StdPath;
     use tempfile::TempDir;
+    use turbovault_core::ChangePlan;
     use turbovault_core::config::{ServerConfig, VaultConfig};
-    use turbovault_git::{Changeset, CommitLocks};
+    use turbovault_git::CommitLocks;
 
     fn init_repo(dir: &StdPath) {
         let mut opts = git2::RepositoryInitOptions::new();
@@ -361,7 +362,7 @@ mod tests {
         let (_tmp, manager, repo, queue) = setup();
 
         // Substrate write fires the hook, which enqueues.
-        repo.commit_changeset(&Changeset::new("c").create("hub.md", "# Hub\n\nsee [[other]]"))
+        repo.commit_changeset(&ChangePlan::new("c").create("hub.md", "# Hub\n\nsee [[other]]"))
             .unwrap();
         assert_eq!(queue.pending_count(), 1);
 
@@ -383,13 +384,13 @@ mod tests {
     async fn drain_removes_deleted_files_from_graph() {
         let (_tmp, manager, repo, queue) = setup();
 
-        repo.commit_changeset(&Changeset::new("c").create("ghost.md", "# Ghost"))
+        repo.commit_changeset(&ChangePlan::new("c").create("ghost.md", "# Ghost"))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(manager.link_graph().read().await.node_count(), 1);
 
         let ghost_blob = VaultRepo::blob_oid_of(b"# Ghost").unwrap();
-        repo.commit_changeset(&Changeset::new("d").delete("ghost.md", ghost_blob))
+        repo.commit_changeset(&ChangePlan::new("d").delete("ghost.md", ghost_blob.to_string()))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(
@@ -403,11 +404,11 @@ mod tests {
     async fn drain_through_handles_multi_commit_burst_in_order() {
         let (_tmp, manager, repo, queue) = setup();
 
-        repo.commit_changeset(&Changeset::new("c1").create("a.md", "A"))
+        repo.commit_changeset(&ChangePlan::new("c1").create("a.md", "A"))
             .unwrap();
-        repo.commit_changeset(&Changeset::new("c2").create("b.md", "B"))
+        repo.commit_changeset(&ChangePlan::new("c2").create("b.md", "B"))
             .unwrap();
-        repo.commit_changeset(&Changeset::new("c3").create("c.md", "C"))
+        repo.commit_changeset(&ChangePlan::new("c3").create("c.md", "C"))
             .unwrap();
         assert_eq!(queue.pending_count(), 3);
 
@@ -428,7 +429,7 @@ mod tests {
         let bogus = Oid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
         queue.push(bogus);
         let real = repo
-            .commit_changeset(&Changeset::new("c").create("a.md", "A"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "A"))
             .unwrap();
         assert_eq!(queue.pending_count(), 2, "[bogus, real] queued");
 
@@ -451,7 +452,7 @@ mod tests {
         let (_tmp, manager, repo, queue) = setup();
 
         repo.commit_changeset(
-            &Changeset::new("batch")
+            &ChangePlan::new("batch")
                 .create("one.md", "# One\n\nlinks [[two]]\n")
                 .create("two.md", "# Two\n"),
         )
@@ -483,7 +484,7 @@ mod tests {
         let (_tmp, manager, repo, queue) = setup();
 
         // Commit 1: linker references [[target]] — target does not exist yet.
-        repo.commit_changeset(&Changeset::new("c1").create("linker.md", "see [[target]]\n"))
+        repo.commit_changeset(&ChangePlan::new("c1").create("linker.md", "see [[target]]\n"))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         {
@@ -498,7 +499,7 @@ mod tests {
         }
 
         // Commit 2: target.md created in a SEPARATE commit.
-        repo.commit_changeset(&Changeset::new("c2").create("target.md", "# Target\n"))
+        repo.commit_changeset(&ChangePlan::new("c2").create("target.md", "# Target\n"))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
 
@@ -531,7 +532,7 @@ mod tests {
 
         // Establish a resolved linker -> target edge.
         repo.commit_changeset(
-            &Changeset::new("c1")
+            &ChangePlan::new("c1")
                 .create("linker.md", "see [[target]]\n")
                 .create("target.md", "# T\n"),
         )
@@ -546,7 +547,7 @@ mod tests {
         // Move target.md -> target-renamed.md and rewrite the linker, one commit
         // (the move_file_with_link_updates shape).
         repo.commit_changeset(
-            &Changeset::new("move")
+            &ChangePlan::new("move")
                 .remove("target.md")
                 .upsert("target-renamed.md", b"# T\n".to_vec())
                 .upsert("linker.md", b"see [[target-renamed]]\n".to_vec()),
@@ -576,7 +577,7 @@ mod tests {
     async fn drain_advances_cursor_to_latest_applied_commit() {
         let (_tmp, manager, repo, queue) = setup();
         let r1 = repo
-            .commit_changeset(&Changeset::new("c").create("a.md", "A"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "A"))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(queue.cursor(), Some(r1.commit));
@@ -614,7 +615,7 @@ mod tests {
         let (_tmp, manager, repo, queue) = setup();
 
         // v1 links to "alpha"
-        repo.commit_changeset(&Changeset::new("c").create("n.md", "see [[alpha]]"))
+        repo.commit_changeset(&ChangePlan::new("c").create("n.md", "see [[alpha]]"))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         let unresolved_after_v1 = manager.link_graph().read().await.unresolved_link_count();
@@ -622,8 +623,12 @@ mod tests {
 
         // v2 replaces link target with "beta"
         let v1_blob = VaultRepo::blob_oid_of(b"see [[alpha]]").unwrap();
-        repo.commit_changeset(&Changeset::new("u").update("n.md", "see [[beta]]", v1_blob))
-            .unwrap();
+        repo.commit_changeset(&ChangePlan::new("u").update(
+            "n.md",
+            "see [[beta]]",
+            v1_blob.to_string(),
+        ))
+        .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
 
         // turbovault-34p: assert the modify actually CLEARED the stale [[alpha]]

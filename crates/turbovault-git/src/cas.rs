@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn parallel_commit_changeset_lands_every_commit() {
         let (tmp, vr0) = open_unborn();
-        vr0.commit_changeset(&crate::Changeset::new("seed").create("seed.md", "0"))
+        vr0.commit_changeset(&turbovault_core::ChangePlan::new("seed").create("seed.md", "0"))
             .unwrap();
         let path = tmp.path().to_path_buf();
         let locks = vr0.commit_locks();
@@ -389,7 +389,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let vr = crate::VaultRepo::open_with_locks(&p, l).unwrap();
                     vr.commit_changeset(
-                        &crate::Changeset::new("c").create(format!("f{i}.md"), "x"),
+                        &turbovault_core::ChangePlan::new("c").create(format!("f{i}.md"), "x"),
                     )
                     .unwrap();
                 })

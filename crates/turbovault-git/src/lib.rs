@@ -30,11 +30,10 @@ mod plumbing;
 mod repo;
 mod restore;
 
-pub use changeset::{Changeset, ChangesetResult};
+pub use changeset::ChangesetResult;
 pub use error::{Error, Result};
 pub use fanout::{FanoutInfo, FanoutWorktree, MergeBackResult, MergeStrategy, OrphanFanout};
 pub use locks::CommitLocks;
-pub use occ::Precondition;
 pub use plumbing::TreeChange;
 pub use repo::{CommitHook, VaultRepo};
 

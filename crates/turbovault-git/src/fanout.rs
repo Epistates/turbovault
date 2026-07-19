@@ -420,9 +420,9 @@ fn merge_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Changeset;
     use git2::Repository;
     use tempfile::TempDir;
+    use turbovault_core::ChangePlan;
 
     /// Init main repo + apply one seed commit so main is BORN (begin_fanout
     /// requires a tip to fork from).
@@ -435,7 +435,7 @@ mod tests {
         opts.initial_head("main");
         Repository::init_opts(main_dir.path(), &opts).unwrap();
         let vr = VaultRepo::open(main_dir.path()).unwrap();
-        vr.commit_changeset(&Changeset::new("seed").create("seed.md", "S"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("seed.md", "S"))
             .unwrap();
         (main_dir, scratch_parent, vr)
     }
@@ -462,7 +462,7 @@ mod tests {
         // Apply a txn in the fan-out — main's tip is UNCHANGED.
         fanout
             .worktree_repo()
-            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
         assert_eq!(
             vr.head_oid(),
@@ -484,7 +484,7 @@ mod tests {
         let fanout = vr.begin_fanout("2", &wt_path).unwrap();
         fanout
             .worktree_repo()
-            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
 
         let res = fanout.commit_fanout(MergeStrategy::MergeCommit).unwrap();
@@ -516,7 +516,7 @@ mod tests {
         let fanout = vr.begin_fanout("3", &wt_path).unwrap();
         fanout
             .worktree_repo()
-            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
 
         let res = fanout.commit_fanout(MergeStrategy::FastForward).unwrap();
@@ -532,12 +532,12 @@ mod tests {
         let fanout = vr.begin_fanout("4", &wt_path).unwrap();
         fanout
             .worktree_repo()
-            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
 
         // Concurrent writer on main (e.g. cross-process / Workflow B) advances
         // main while the fan-out was working.
-        vr.commit_changeset(&Changeset::new("concurrent").create("c.md", "concurrent"))
+        vr.commit_changeset(&ChangePlan::new("concurrent").create("c.md", "concurrent"))
             .unwrap();
 
         let res = fanout.commit_fanout(MergeStrategy::FastForward);
@@ -554,11 +554,11 @@ mod tests {
         let fanout = vr.begin_fanout("5", &wt_path).unwrap();
         fanout
             .worktree_repo()
-            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
 
         // Concurrent main writer touches a DISJOINT path.
-        vr.commit_changeset(&Changeset::new("concurrent").create("c.md", "concurrent"))
+        vr.commit_changeset(&ChangePlan::new("concurrent").create("c.md", "concurrent"))
             .unwrap();
 
         let res = fanout.commit_fanout(MergeStrategy::MergeCommit).unwrap();
@@ -580,7 +580,7 @@ mod tests {
     fn merge_commit_aborts_on_conflicting_same_path_edit() {
         let (_m, scratch, vr) = open_born();
         // Seed a shared file on main so both sides edit the SAME path.
-        vr.commit_changeset(&Changeset::new("seed").create("shared.md", "base"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("shared.md", "base"))
             .unwrap();
         let base = crate::VaultRepo::blob_oid_of(b"base").unwrap();
 
@@ -589,11 +589,19 @@ mod tests {
         // wip edits shared.md one way...
         fanout
             .worktree_repo()
-            .commit_changeset(&Changeset::new("wip").update("shared.md", "wip-side", base))
+            .commit_changeset(&ChangePlan::new("wip").update(
+                "shared.md",
+                "wip-side",
+                base.to_string(),
+            ))
             .unwrap();
         // ...main edits the SAME path a different way (concurrent).
-        vr.commit_changeset(&Changeset::new("concurrent").update("shared.md", "main-side", base))
-            .unwrap();
+        vr.commit_changeset(&ChangePlan::new("concurrent").update(
+            "shared.md",
+            "main-side",
+            base.to_string(),
+        ))
+        .unwrap();
         let main_after_concurrent = vr.head_oid().unwrap();
 
         // Merge-back must ABORT — no silent text merge.
@@ -622,7 +630,7 @@ mod tests {
         let fanout = vr.begin_fanout("6", &wt_path).unwrap();
         fanout
             .worktree_repo()
-            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
 
         fanout.abandon_fanout().unwrap();
@@ -675,7 +683,7 @@ mod tests {
         // Open the worktree separately (the stateless API doesn't return a
         // VaultRepo handle — caller manages that lifecycle).
         let wt = VaultRepo::open_with_locks(&wt_path, vr.commit_locks()).unwrap();
-        wt.commit_changeset(&Changeset::new("c").create("page.md", "PAGE"))
+        wt.commit_changeset(&ChangePlan::new("c").create("page.md", "PAGE"))
             .unwrap();
 
         let res = vr
@@ -694,7 +702,7 @@ mod tests {
         let wt_path = scratch_path(&scratch, "msg-1");
         let info = vr.open_fanout_worktree("msg-1", &wt_path).unwrap();
         let wt = VaultRepo::open_with_locks(&wt_path, vr.commit_locks()).unwrap();
-        wt.commit_changeset(&Changeset::new("c").create("page.md", "PAGE"))
+        wt.commit_changeset(&ChangePlan::new("c").create("page.md", "PAGE"))
             .unwrap();
 
         let res = vr
@@ -722,7 +730,7 @@ mod tests {
         let info = vr.open_fanout_worktree("stateless-3", &wt_path).unwrap();
 
         let wt = VaultRepo::open_with_locks(&wt_path, vr.commit_locks()).unwrap();
-        wt.commit_changeset(&Changeset::new("c").create("orphan.md", "discarded"))
+        wt.commit_changeset(&ChangePlan::new("c").create("orphan.md", "discarded"))
             .unwrap();
 
         vr.abandon_fanout_by_info(&info).unwrap();

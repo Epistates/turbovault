@@ -6,7 +6,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::TempDir;
-use turbovault_git::{Changeset, VaultRepo};
+use turbovault_core::ChangePlan;
+use turbovault_git::VaultRepo;
 
 fn open_born_repo() -> (TempDir, VaultRepo) {
     let tmp = TempDir::new().unwrap();
@@ -14,7 +15,7 @@ fn open_born_repo() -> (TempDir, VaultRepo) {
     opts.initial_head("main");
     git2::Repository::init_opts(tmp.path(), &opts).unwrap();
     let vr = VaultRepo::open(tmp.path()).unwrap();
-    vr.commit_changeset(&Changeset::new("seed").create("seed.md", "S"))
+    vr.commit_changeset(&ChangePlan::new("seed").create("seed.md", "S"))
         .unwrap();
     (tmp, vr)
 }
@@ -27,7 +28,7 @@ fn batch_create(c: &mut Criterion) {
         group.bench_function(format!("n={n}"), |b| {
             b.iter(|| {
                 let base = counter.fetch_add(n, Ordering::Relaxed);
-                let mut txn = Changeset::new("batch");
+                let mut txn = ChangePlan::new("batch");
                 for i in 0..n {
                     let path = format!("file_{}.md", base + i);
                     txn = txn.create(path, "content");
