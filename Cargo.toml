@@ -10,12 +10,13 @@ members = [
     "crates/turbovault-git",
     "crates/turbovault-sql",
     "crates/turbovault-tools",
+    "crates/turbovault-plugin-api",
     "crates/turbovault",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "1.5.0"
+version = "1.6.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
@@ -108,17 +109,18 @@ fs4 = "0.13"              # cross-process advisory lock for commit + materialize
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "1.5.0", path = "crates/turbovault-core" }
-turbovault-parser = { version = "1.5.0", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "1.5.0", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "1.5.0", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "1.5.0", path = "crates/turbovault-batch" }
-turbovault-export = { version = "1.5.0", path = "crates/turbovault-export" }
-turbovault-audit = { version = "1.5.0", path = "crates/turbovault-audit" }
-turbovault-git = { version = "1.5.0", path = "crates/turbovault-git" }
-turbovault-sql = { version = "1.5.0", path = "crates/turbovault-sql" }
-turbovault-tools = { version = "1.5.0", path = "crates/turbovault-tools" }
-turbovault = { version = "1.5.0", path = "crates/turbovault" }
+turbovault-core = { version = "1.6.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "1.6.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "1.6.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "1.6.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "1.6.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "1.6.0", path = "crates/turbovault-export" }
+turbovault-audit = { version = "1.6.0", path = "crates/turbovault-audit" }
+turbovault-git = { version = "1.6.0", path = "crates/turbovault-git" }
+turbovault-sql = { version = "1.6.0", path = "crates/turbovault-sql" }
+turbovault-tools = { version = "1.6.0", path = "crates/turbovault-tools" }
+turbovault-plugin-api = { version = "1.6.0", path = "crates/turbovault-plugin-api" }
+turbovault = { version = "1.6.0", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3

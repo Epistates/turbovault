@@ -460,7 +460,7 @@ pub enum ContentBlock {
     },
     /// A horizontal rule (---, ***, ___)
     HorizontalRule,
-    /// HTML <details><summary> block
+    /// HTML `<details><summary>` block
     Details {
         summary: String,
         content: String,
@@ -553,7 +553,7 @@ pub enum InlineElement {
     Emphasis { value: String },
     /// Inline code (`code`)
     Code { value: String },
-    /// A link [text](url)
+    /// A link such as `[text](url)`
     Link {
         text: String,
         url: String,

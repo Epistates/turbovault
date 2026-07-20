@@ -23,6 +23,9 @@ use turbovault_vault::VaultManager;
 mod providers;
 pub use providers::ObsidianMcpServer;
 
+#[cfg(feature = "plugin-api")]
+mod plugin_host;
+
 #[cfg(feature = "sql")]
 use turbovault_tools::FrontmatterSqlEngine;
 

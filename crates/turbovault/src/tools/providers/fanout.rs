@@ -54,7 +54,7 @@ impl Deref for FanoutProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "1.5.0")]
+#[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
 impl FanoutProvider {
     #[tool(
         description = "Open an isolated Git worktree for parallel agent writes. Fanout provides isolation, while batch_execute provides all-or-nothing multi-file atomicity.",

@@ -37,7 +37,7 @@ pub struct MoveWithLinksResult {
 }
 
 /// Callback invoked **before** returning a `ConcurrencyError` from
-/// [`GitFileTools::apply_txn`] (GWS.14b). The MCP server installs one that
+/// the internal `GitFileTools::apply_txn` path (GWS.14b). The MCP server installs one that
 /// drains the per-vault reindex queue — so the agent's re-read (which the
 /// error tells it to do) sees a coherent graph + search state, not the
 /// pre-conflict snapshot.
@@ -656,7 +656,7 @@ impl GitFileTools {
 
     /// Translate every [`BatchOperation`] to a single [`ChangePlan`] and
     /// commit as **one atomic commit** — either every op lands or none do.
-    /// This is the spec-promised behavior the direct [`BatchTools`] never
+    /// This is the spec-promised behavior the direct [`crate::BatchTools`] never
     /// actually delivered (the direct path stopped at `failed_at` and left
     /// partial state on disk).
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {

@@ -297,7 +297,7 @@ impl VaultRepo {
     /// Scan this repo's registered worktrees for `wip-*` entries — fanout
     /// artifacts left over from a previous session. Pure read; never mutates.
     /// Caller decides whether to clean each one up (via
-    /// [`abandon_fanout_by_info`] if they can rebuild the [`FanoutInfo`], or
+    /// [`Self::abandon_fanout_by_info`] if they can rebuild the [`FanoutInfo`], or
     /// manually via `git worktree remove` + `git branch -D`).
     pub fn list_orphan_fanouts(&self) -> Result<Vec<OrphanFanout>> {
         let repo = self.git();

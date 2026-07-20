@@ -44,7 +44,7 @@ pub struct GroundingAnalysis {
     pub has_schema_section: bool,
     /// Whether an `# Examples` section is present.
     pub has_examples_section: bool,
-    /// Whether claims were truncated to [`MAX_CLAIMS`].
+    /// Whether claims were truncated to the internal maximum claim count.
     pub claims_truncated: bool,
     /// Extracted candidate claims (declarative prose sentences).
     pub claims: Vec<String>,

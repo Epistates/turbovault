@@ -802,7 +802,7 @@ fn collect_inline_elements(blocks: &[ContentBlock], output: &mut Vec<InlineEleme
 /// Parse markdown content into structured blocks.
 ///
 /// This is the main entry point for block-level parsing. It handles:
-/// - Wikilink preprocessing (converts [[x]] to markdown links)
+/// - Wikilink preprocessing (converts `[[x]]` to markdown links)
 /// - HTML details block extraction
 /// - Full pulldown-cmark parsing with GFM extensions
 ///

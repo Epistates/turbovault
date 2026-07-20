@@ -14,7 +14,7 @@ Overview of TurboVault's modular architecture.
 │  turbovault-server (MCP Server Binary)  │
 │                                         │
 │  ┌───────────────────────────────────┐ │
-│  │  Flat provider facade (70 tools)  │ │
+│  │  Flat core + plugin providers     │ │
 │  └────────┬───────────────────────────┘ │
 └───────────┼─────────────────────────────┘
             │
@@ -76,18 +76,29 @@ Overview of TurboVault's modular architecture.
 - Data serialization
 
 ### turbovault-tools
-- Reusable implementations behind 70 MCP tools
+- Reusable implementations behind 74 MCP tools
 - Tool implementation
 - Response formatting
 
+### turbovault-plugin-api
+
+- Curated `VaultApi` instead of raw manager/server access
+- Object-safe compiled-in provider and factory contracts
+- Strict plugin tool namespaces
+- Bounded best-effort hooks with explicit lag and close states
+
 ### MCP provider facade
 
-The `turbovault` crate splits the public catalog across 13 focused provider
+The `turbovault` crate splits the public catalog across 14 focused provider
 modules for context, files, graph, discovery, templates, vault lifecycle,
-batch, export, metadata, relationships, content, analysis, and audit. TurboMCP's
-`CompositeHandler` prefixes mounted handlers internally; TurboVault's facade
-maps those routes back to the established flat public names. For example,
-clients still call `read_note`, not `files_read_note`.
+batch, fanout, export, metadata, relationships, content, analysis, and audit.
+TurboMCP's `CompositeHandler` prefixes mounted handlers internally;
+TurboVault's facade maps core routes back to the established flat public
+names. For example, clients still call `read_note`, not `files_read_note`.
+Compiled-in plugins keep their namespace, such as `tasks_list_tasks`.
+
+See [Plugin Architecture](plugins.md) for the host contract, lifecycle, and
+contribution rules.
 
 ## Data Flow
 
