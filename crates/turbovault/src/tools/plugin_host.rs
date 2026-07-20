@@ -63,7 +63,7 @@ impl VaultHost for PluginVaultHost {
             .await
             .map_err(map_core_error)?;
         let write_backend = match config.write_backend {
-            WriteBackend::Legacy => "legacy",
+            WriteBackend::Direct => "direct",
             WriteBackend::Git => "git",
         };
         Ok(VaultDescriptor {
