@@ -70,6 +70,18 @@ async fn setup_wire_vault() -> (TempDir, TempDir, Client<ChildProcessTransport>)
     let config = ChildProcessConfig {
         command: env!("CARGO_BIN_EXE_turbovault").to_string(),
         args: vec!["--config".to_string(), cfg_path.display().to_string()],
+        // turbovault-1co: isolate the spawned server's persistent vault cache to
+        // a per-test temp dir. Without this, the child runs cli.rs's cache
+        // recovery against the shared ~/.cache/turbovault registry, which
+        // accumulates fanout scratch vaults across runs and fills to
+        // MAX_VAULTS=50 — making begin_fanout's add_vault trip. get_cache_dir()
+        // honors XDG_CACHE_HOME, and the transport ADDS this to the child's
+        // inherited env (HOME/PATH preserved), so recovery starts from an empty
+        // cache every run.
+        environment: Some(vec![(
+            "XDG_CACHE_HOME".to_string(),
+            cfg_dir.path().join("cache").display().to_string(),
+        )]),
         kill_on_drop: true,
         ..Default::default()
     };
