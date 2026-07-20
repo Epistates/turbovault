@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use turbovault_core::Precondition;
 use turbovault_core::prelude::*;
 use turbovault_parser::parse_tags;
 use turbovault_vault::VaultManager;
@@ -169,7 +170,12 @@ impl MetadataTools {
             .await?;
         let file_path = PathBuf::from(path);
         self.manager
-            .write_file(&file_path, &new_content, None)
+            .write_file(
+                &file_path,
+                &new_content,
+                Precondition::for_in_place(None),
+                &format!("update_frontmatter {path}"),
+            )
             .await?;
         Ok(info)
     }
@@ -237,7 +243,12 @@ impl MetadataTools {
         if let Some(new_content) = maybe_write {
             let file_path = PathBuf::from(path);
             self.manager
-                .write_file(&file_path, &new_content, None)
+                .write_file(
+                    &file_path,
+                    &new_content,
+                    Precondition::for_in_place(None),
+                    &format!("manage_tags {path}"),
+                )
                 .await?;
         }
         Ok(info)

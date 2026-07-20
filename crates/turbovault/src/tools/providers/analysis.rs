@@ -3,6 +3,7 @@
 use std::ops::Deref;
 
 use super::super::*;
+use turbovault_core::Precondition;
 
 #[derive(Clone)]
 pub(super) struct AnalysisProvider(CoreToolHandler);
@@ -369,7 +370,12 @@ impl AnalysisProvider {
 
         let out_rel = output.unwrap_or_else(|| "viz.html".to_string());
         manager
-            .write_file(std::path::Path::new(&out_rel), &html, None)
+            .write_file(
+                std::path::Path::new(&out_rel),
+                &html,
+                Precondition::for_replace(None, true),
+                &format!("visualize {out_rel}"),
+            )
             .await
             .map_err(to_mcp_error)?;
 

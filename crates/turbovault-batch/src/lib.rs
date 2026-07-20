@@ -139,6 +139,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use turbovault_core::Precondition;
 use turbovault_core::TransactionBuilder;
 use turbovault_core::prelude::*;
 use turbovault_vault::VaultManager;
@@ -606,7 +607,14 @@ impl BatchExecutor {
         match op {
             BatchOperation::CreateNote { path, content, .. } => {
                 let path_buf = PathBuf::from(path);
-                self.manager.write_file(&path_buf, content, None).await?;
+                self.manager
+                    .write_file(
+                        &path_buf,
+                        content,
+                        Precondition::for_replace(None, true),
+                        &format!("batch create {path}"),
+                    )
+                    .await?;
                 Ok(format!("Created: {}", path))
             }
 
@@ -617,7 +625,12 @@ impl BatchExecutor {
             } => {
                 let path_buf = PathBuf::from(path);
                 self.manager
-                    .write_file(&path_buf, content, expected_hash.as_deref())
+                    .write_file(
+                        &path_buf,
+                        content,
+                        Precondition::for_replace(expected_hash.as_deref(), true),
+                        &format!("batch write {path}"),
+                    )
                     .await?;
                 Ok(format!("Updated: {}", path))
             }
@@ -629,7 +642,11 @@ impl BatchExecutor {
             } => {
                 let path_buf = PathBuf::from(path);
                 self.manager
-                    .delete_file(&path_buf, expected_hash.as_deref())
+                    .delete_file(
+                        &path_buf,
+                        Precondition::for_in_place(expected_hash.as_deref()),
+                        &format!("batch delete {path}"),
+                    )
                     .await?;
                 Ok(format!("Deleted: {}", path))
             }
@@ -643,7 +660,13 @@ impl BatchExecutor {
                 let from_buf = PathBuf::from(from);
                 let to_buf = PathBuf::from(to);
                 self.manager
-                    .move_file(&from_buf, &to_buf, expected_hash.as_deref())
+                    .move_file(
+                        &from_buf,
+                        &to_buf,
+                        Precondition::for_in_place(expected_hash.as_deref()),
+                        Precondition::Blind,
+                        &format!("batch move {from} -> {to}"),
+                    )
                     .await?;
                 Ok(format!("Moved: {} → {}", from, to))
             }
@@ -663,7 +686,14 @@ impl BatchExecutor {
 
                 // Write back if changed
                 if updated != content {
-                    self.manager.write_file(&path_buf, &updated, None).await?;
+                    self.manager
+                        .write_file(
+                            &path_buf,
+                            &updated,
+                            Precondition::for_replace(None, true),
+                            &format!("batch update-links {file}"),
+                        )
+                        .await?;
                     Ok(format!(
                         "Updated links in {}: {} → {}",
                         file, old_target, new_target

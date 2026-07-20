@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use tokio::io::AsyncReadExt;
+use turbovault_core::Precondition;
 use turbovault_core::prelude::*;
 use turbovault_vault::VaultManager;
 
@@ -74,11 +75,17 @@ impl FileTools {
         mode: WriteMode,
         expected_hash: Option<&str>,
     ) -> Result<()> {
+        let precondition = Precondition::for_replace(expected_hash, true);
         match mode {
             WriteMode::Overwrite => {
                 let file_path = PathBuf::from(path);
                 self.manager
-                    .write_file(&file_path, content, expected_hash)
+                    .write_file(
+                        &file_path,
+                        content,
+                        precondition,
+                        &format!("write_file {path}"),
+                    )
                     .await
             }
             WriteMode::Append => {
@@ -90,7 +97,12 @@ impl FileTools {
                 };
                 let file_path = PathBuf::from(path);
                 self.manager
-                    .write_file(&file_path, &combined, expected_hash)
+                    .write_file(
+                        &file_path,
+                        &combined,
+                        precondition,
+                        &format!("write_file (append) {path}"),
+                    )
                     .await
             }
             WriteMode::Prepend => {
@@ -99,7 +111,12 @@ impl FileTools {
                     let file_path = PathBuf::from(path);
                     return self
                         .manager
-                        .write_file(&file_path, content, expected_hash)
+                        .write_file(
+                            &file_path,
+                            content,
+                            precondition,
+                            &format!("write_file (prepend) {path}"),
+                        )
                         .await;
                 }
 
@@ -123,7 +140,12 @@ impl FileTools {
                 };
                 let file_path = PathBuf::from(path);
                 self.manager
-                    .write_file(&file_path, &combined, expected_hash)
+                    .write_file(
+                        &file_path,
+                        &combined,
+                        precondition,
+                        &format!("write_file (prepend) {path}"),
+                    )
                     .await
             }
         }
@@ -148,13 +170,25 @@ impl FileTools {
     ) -> Result<turbovault_vault::EditResult> {
         let file_path = PathBuf::from(path);
         self.manager
-            .edit_file(&file_path, edits, expected_hash, dry_run)
+            .edit_file(
+                &file_path,
+                edits,
+                Precondition::for_in_place(expected_hash),
+                dry_run,
+                &format!("edit_file {path}"),
+            )
             .await
     }
 
     /// Delete a file from the vault (with audit trail and graph cleanup)
     pub async fn delete_file(&self, path: &str) -> Result<()> {
-        self.manager.delete_file(&PathBuf::from(path), None).await
+        self.manager
+            .delete_file(
+                &PathBuf::from(path),
+                Precondition::for_in_place(None),
+                &format!("delete_file {path}"),
+            )
+            .await
     }
 
     /// Delete a file with optional optimistic concurrency hash check
@@ -164,14 +198,24 @@ impl FileTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         self.manager
-            .delete_file(&PathBuf::from(path), expected_hash)
+            .delete_file(
+                &PathBuf::from(path),
+                Precondition::for_in_place(expected_hash),
+                &format!("delete_file {path}"),
+            )
             .await
     }
 
     /// Move a file within the vault (with audit trail and graph update)
     pub async fn move_file(&self, from: &str, to: &str) -> Result<()> {
         self.manager
-            .move_file(&PathBuf::from(from), &PathBuf::from(to), None)
+            .move_file(
+                &PathBuf::from(from),
+                &PathBuf::from(to),
+                Precondition::for_in_place(None),
+                Precondition::Blind,
+                &format!("move_file {from} -> {to}"),
+            )
             .await
     }
 
@@ -183,7 +227,13 @@ impl FileTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         self.manager
-            .move_file(&PathBuf::from(from), &PathBuf::from(to), expected_hash)
+            .move_file(
+                &PathBuf::from(from),
+                &PathBuf::from(to),
+                Precondition::for_in_place(expected_hash),
+                Precondition::Blind,
+                &format!("move_file {from} -> {to}"),
+            )
             .await
     }
 

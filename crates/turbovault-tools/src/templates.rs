@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use turbovault_core::Precondition;
 use turbovault_vault::VaultManager;
 
 /// Field types for template parameters
@@ -361,7 +362,12 @@ impl TemplateEngine {
             .compute_from_template(template_id, file_path, field_values)
             .await?;
         self.manager
-            .write_file(Path::new(file_path), &full_content, None)
+            .write_file(
+                Path::new(file_path),
+                &full_content,
+                Precondition::for_replace(None, true),
+                &format!("create_from_template {file_path}"),
+            )
             .await?;
         Ok(info)
     }

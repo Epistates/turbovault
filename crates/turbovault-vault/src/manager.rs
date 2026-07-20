@@ -13,7 +13,7 @@ use turbovault_core::{Change, ChangePlan, Precondition};
 use turbovault_graph::LinkGraph;
 use turbovault_parser::Parser;
 
-use crate::substrate::{DirectSubstrate, WriteSubstrate};
+use crate::substrate::{ApplyOutcome, DirectSubstrate, WriteSubstrate};
 
 /// File cache entry with timestamp
 /// Used during initialization to populate link graph; read path bypasses cache
@@ -206,36 +206,53 @@ impl VaultManager {
         Ok(content)
     }
 
-    /// Write file to disk atomically with optional optimistic concurrency control.
+    /// Write file to disk atomically, guarded by an explicit [`Precondition`].
     ///
-    /// If `expected_hash` is provided, the file's current content hash is verified
-    /// before writing. If it doesn't match (another agent modified the file since
-    /// the caller last read it), a `ConcurrencyError` is returned.
-    ///
-    /// write-substrate-layering M3a: the signature and observable behavior
-    /// are unchanged — internally this now translates `expected_hash` into a
-    /// [`Precondition`] (`for_replace`, forced blind when absent: `write_file`
-    /// has no create-only default), builds a one-change [`ChangePlan`], and
-    /// delegates to [`Self::substrate`]. The fs-write + precondition + audit
-    /// work itself lives in `DirectSubstrate::apply` now; this method only
+    /// write-substrate-layering M3b: the old hash-option-plus-implicit-
+    /// message signature is gone — callers now build the [`Precondition`]
+    /// themselves (`Precondition::for_replace` for the historical "no hash =
+    /// blind overwrite-or-create" default) and supply the plan's `message`.
+    /// This method builds the one-change [`ChangePlan`]
+    /// and delegates to [`Self::substrate`]; the fs-write + precondition +
+    /// audit work itself lives in `DirectSubstrate::apply`. This method only
     /// does path resolution and the post-apply link-graph/cache sync (R7).
     #[instrument(skip(self, content), fields(file = ?path, size = content.len()), name = "vault_write_file")]
     pub async fn write_file(
         &self,
         path: &Path,
         content: &str,
-        expected_hash: Option<&str>,
+        precondition: Precondition,
+        message: &str,
     ) -> Result<()> {
         let vault_path = self.resolve_path(path)?;
         let rel_path = self.relative_path(&vault_path);
 
-        let plan = ChangePlan::new(format!("write_file {rel_path}"))
+        let plan = ChangePlan::new(message)
             .upsert(rel_path.clone(), content.as_bytes())
-            .with_precondition(rel_path, Precondition::for_replace(expected_hash, true));
+            .with_precondition(rel_path, precondition);
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
         Ok(())
+    }
+
+    /// Apply an arbitrary multi-change [`ChangePlan`] — the R3 multi-change
+    /// entry point the four single-op mutators above are thin builders over.
+    /// Every path the plan touches is resolved through the same traversal
+    /// guard (`resolve_path`) the single-op mutators run before ever
+    /// building a plan, so this entry point can't become a chokepoint
+    /// bypass for callers (batch, rollback, …) that build their own plans.
+    /// Delegates to the substrate and runs the same post-apply link-
+    /// graph/cache sync (R7) as the single-op mutators.
+    #[instrument(skip(self, plan), fields(changes = plan.changes.len()), name = "vault_apply_changes")]
+    pub async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
+        for touched in plan.touched_paths() {
+            self.resolve_path(Path::new(&touched))?;
+        }
+
+        let outcome = self.substrate.apply(plan).await?;
+        self.sync_index(&outcome.changed).await;
+        Ok(outcome)
     }
 
     /// Edit file using SEARCH/REPLACE blocks (LLM-optimized)
@@ -246,8 +263,12 @@ impl VaultManager {
     /// # Arguments
     /// * `path` - Relative path to file in vault
     /// * `edits` - String containing SEARCH/REPLACE blocks
-    /// * `expected_hash` - Optional SHA-256 hash for TOCTOU protection
+    /// * `precondition` - Guard checked against the pre-image the edit was
+    ///   calculated from; only [`Precondition::ExpectBlob`] is meaningfully
+    ///   checked here (a stale-hash rejection) — the M1 `for_in_place`
+    ///   translation never produces the other variants for this call site
     /// * `dry_run` - If true, preview changes without applying
+    /// * `message` - Commit/audit message for the write this edit produces
     ///
     /// # Returns
     /// EditResult with new hash, applied blocks count, and optional diff preview
@@ -256,8 +277,9 @@ impl VaultManager {
         &self,
         path: &Path,
         edits: &str,
-        expected_hash: Option<&str>,
+        precondition: Precondition,
         dry_run: bool,
+        message: &str,
     ) -> Result<crate::edit::EditResult> {
         use crate::edit::{EditEngine, compute_hash};
 
@@ -275,8 +297,8 @@ impl VaultManager {
         // write below revalidates this hash after releasing the cache lock.
         let validated_hash = compute_hash(&current_content);
 
-        if let Some(expected) = expected_hash
-            && validated_hash != expected
+        if let Precondition::ExpectBlob(expected) = &precondition
+            && &validated_hash != expected
         {
             return Err(Error::ConcurrencyError {
                 reason: format!(
@@ -302,59 +324,77 @@ impl VaultManager {
 
         // Re-check at write time so an intervening in-process or external
         // change is rejected instead of silently overwritten.
-        self.write_file(&vault_path, &new_content, Some(&validated_hash))
-            .await?;
+        self.write_file(
+            &vault_path,
+            &new_content,
+            Precondition::ExpectBlob(validated_hash),
+            message,
+        )
+        .await?;
 
         Ok(edit_result)
     }
 
-    /// Delete file from vault with audit trail, graph cleanup, and optional concurrency check.
+    /// Delete file from vault with audit trail, graph cleanup, and an
+    /// explicit [`Precondition`] guard.
     ///
-    /// write-substrate-layering M3a: `expected_hash` translates to
-    /// [`Precondition::for_in_place`] (a bare delete with no hash requires
-    /// the path to exist, matching the pre-M3a "attempt the remove and let
-    /// it fail" behavior — both now surface as a loud error rather than an
-    /// `Io` error specifically, an accepted refinement — see
+    /// write-substrate-layering M3b: the old hash-option signature is gone —
+    /// callers translate via [`Precondition::for_in_place`] themselves (a
+    /// bare delete with no hash
+    /// requires the path to exist, matching the pre-M3a "attempt the remove
+    /// and let it fail" behavior — both now surface as a loud error rather
+    /// than an `Io` error specifically, an accepted refinement — see
     /// `DirectSubstrate::check_precondition`).
     #[instrument(skip(self), fields(file = ?path), name = "vault_delete_file")]
-    pub async fn delete_file(&self, path: &Path, expected_hash: Option<&str>) -> Result<()> {
+    pub async fn delete_file(
+        &self,
+        path: &Path,
+        precondition: Precondition,
+        message: &str,
+    ) -> Result<()> {
         let vault_path = self.resolve_path(path)?;
         let rel_path = self.relative_path(&vault_path);
 
-        let plan = ChangePlan::new(format!("delete_file {rel_path}"))
+        let plan = ChangePlan::new(message)
             .remove(rel_path.clone())
-            .with_precondition(rel_path, Precondition::for_in_place(expected_hash));
+            .with_precondition(rel_path, precondition);
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
         Ok(())
     }
 
-    /// Move file within vault with audit trail, graph update, and optional concurrency check.
+    /// Move file within vault with audit trail, graph update, and dual
+    /// [`Precondition`] guards (design §6.3: one for the source, one for the
+    /// destination).
     ///
-    /// write-substrate-layering M3a: `from`'s `expected_hash` translates to
-    /// [`Precondition::for_in_place`] via a raw [`Change::Rename`] — the
-    /// destination carries no precondition of its own (matching the pre-M3a
-    /// behavior of clobbering an existing destination; a destination guard
-    /// is `ChangePlan::rename`'s semantic-builder territory, not used here).
+    /// write-substrate-layering M3b: the old hash-option signature is gone —
+    /// callers translate `from`'s guard via
+    /// [`Precondition::for_in_place`] themselves; a caller preserving the
+    /// pre-M3a behavior of clobbering an existing destination passes
+    /// `dest_precondition = Precondition::Blind` (a real destination guard is
+    /// `ChangePlan::rename`'s semantic-builder territory, not used here).
     #[instrument(skip(self), fields(from = ?from, to = ?to), name = "vault_move_file")]
     pub async fn move_file(
         &self,
         from: &Path,
         to: &Path,
-        expected_hash: Option<&str>,
+        src_precondition: Precondition,
+        dest_precondition: Precondition,
+        message: &str,
     ) -> Result<()> {
         let from_path = self.resolve_path(from)?;
         let to_path = self.resolve_path(to)?;
         let rel_from = self.relative_path(&from_path);
         let rel_to = self.relative_path(&to_path);
 
-        let plan = ChangePlan::new(format!("move_file {rel_from} -> {rel_to}"))
+        let plan = ChangePlan::new(message)
             .with_change(Change::Rename {
                 from: rel_from.clone(),
-                to: rel_to,
+                to: rel_to.clone(),
             })
-            .with_precondition(rel_from, Precondition::for_in_place(expected_hash));
+            .with_precondition(rel_from, src_precondition)
+            .with_precondition(rel_to, dest_precondition);
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
@@ -868,11 +908,78 @@ mod tests {
         // Write a file
         let path = Path::new("test.md");
         let content = "# Test Note\nHello world";
-        assert!(manager.write_file(path, content, None).await.is_ok());
+        assert!(
+            manager
+                .write_file(path, content, Precondition::Blind, "test")
+                .await
+                .is_ok()
+        );
 
         // Read it back
         let read_content = manager.read_file(path).await.unwrap();
         assert_eq!(read_content, content);
+    }
+
+    /// `apply_changes` is the multi-change entry point the single-op
+    /// mutators (`write_file`/`delete_file`/`move_file`) build one-change
+    /// plans over. Exercise it directly with a plan mixing create, update,
+    /// and remove in one call.
+    #[tokio::test]
+    async fn test_apply_changes_multi_change_plan() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        // Seed the files the update/remove changes act on.
+        manager
+            .write_file(
+                Path::new("updated.md"),
+                "# Old",
+                Precondition::Blind,
+                "test",
+            )
+            .await
+            .unwrap();
+        manager
+            .write_file(
+                Path::new("removed.md"),
+                "# Gone",
+                Precondition::Blind,
+                "test",
+            )
+            .await
+            .unwrap();
+
+        let plan = ChangePlan::new("multi-change test")
+            .create("new.md", "# New")
+            .upsert("updated.md", "# Updated")
+            .with_precondition("updated.md", Precondition::ExpectExists)
+            .remove("removed.md")
+            .with_precondition("removed.md", Precondition::ExpectExists);
+
+        let outcome = manager.apply_changes(&plan).await.unwrap();
+
+        assert_eq!(
+            outcome.changed,
+            vec![
+                ("new.md".to_string(), true),
+                ("updated.md".to_string(), true),
+                ("removed.md".to_string(), false),
+            ]
+        );
+
+        assert_eq!(
+            manager.read_file(Path::new("new.md")).await.unwrap(),
+            "# New"
+        );
+        assert_eq!(
+            manager.read_file(Path::new("updated.md")).await.unwrap(),
+            "# Updated"
+        );
+        assert!(
+            manager.read_file(Path::new("removed.md")).await.is_err(),
+            "removed.md should no longer exist after apply_changes"
+        );
     }
 
     #[tokio::test]
@@ -884,7 +991,12 @@ mod tests {
         // Write file in nested directory
         let path = Path::new("notes/subfolder/test.md");
         let content = "Nested file";
-        assert!(manager.write_file(path, content, None).await.is_ok());
+        assert!(
+            manager
+                .write_file(path, content, Precondition::Blind, "test")
+                .await
+                .is_ok()
+        );
 
         // Verify it was created
         let read_content = manager.read_file(path).await.unwrap();
@@ -913,7 +1025,12 @@ mod tests {
         let content = "Atomic write test";
 
         // Write file
-        assert!(manager.write_file(path, content, None).await.is_ok());
+        assert!(
+            manager
+                .write_file(path, content, Precondition::Blind, "test")
+                .await
+                .is_ok()
+        );
 
         // Verify no .tmp files are left
         let entries = std::fs::read_dir(temp_dir.path()).unwrap();
@@ -936,7 +1053,12 @@ mod tests {
         let content1 = "Original content";
 
         // Write initial file
-        assert!(manager.write_file(path, content1, None).await.is_ok());
+        assert!(
+            manager
+                .write_file(path, content1, Precondition::Blind, "test")
+                .await
+                .is_ok()
+        );
 
         // Read from cache
         let read1 = manager.read_file(path).await.unwrap();
@@ -1136,7 +1258,8 @@ mod tests {
             .write_file(
                 std::path::Path::new("viz.html"),
                 "<html>[fake](/note.md)</html>",
-                None,
+                Precondition::Blind,
+                "test",
             )
             .await
             .unwrap();
@@ -1224,12 +1347,18 @@ mod tests {
         let manager = VaultManager::new(config).unwrap();
 
         let rel = Path::new("to_delete.md");
-        manager.write_file(rel, "# Delete me", None).await.unwrap();
+        manager
+            .write_file(rel, "# Delete me", Precondition::Blind, "test")
+            .await
+            .unwrap();
 
         // Verify the file exists before deletion.
         assert!(temp_dir.path().join(rel).exists());
 
-        manager.delete_file(rel, None).await.unwrap();
+        manager
+            .delete_file(rel, Precondition::ExpectExists, "test")
+            .await
+            .unwrap();
 
         // File must no longer exist on disk.
         assert!(
@@ -1253,9 +1382,21 @@ mod tests {
         let dst = Path::new("dest_note.md");
         let content = "# Moved Note\nsome content";
 
-        manager.write_file(src, content, None).await.unwrap();
+        manager
+            .write_file(src, content, Precondition::Blind, "test")
+            .await
+            .unwrap();
 
-        manager.move_file(src, dst, None).await.unwrap();
+        manager
+            .move_file(
+                src,
+                dst,
+                Precondition::ExpectExists,
+                Precondition::Blind,
+                "test",
+            )
+            .await
+            .unwrap();
 
         // Old path must no longer exist.
         assert!(
@@ -1288,7 +1429,16 @@ mod tests {
             .await
             .unwrap();
 
-        manager.move_file(src, dst, None).await.unwrap();
+        manager
+            .move_file(
+                src,
+                dst,
+                Precondition::ExpectExists,
+                Precondition::Blind,
+                "test",
+            )
+            .await
+            .unwrap();
 
         assert!(!temp_dir.path().join(src).exists());
         assert_eq!(
@@ -1315,7 +1465,16 @@ mod tests {
             .await
             .unwrap();
 
-        manager.move_file(src, dst, None).await.unwrap();
+        manager
+            .move_file(
+                src,
+                dst,
+                Precondition::ExpectExists,
+                Precondition::Blind,
+                "test",
+            )
+            .await
+            .unwrap();
 
         assert!(!temp_dir.path().join(src).exists());
         assert_eq!(
@@ -1371,12 +1530,24 @@ mod tests {
         let dst = Path::new("deep/nested/subdir/note.md");
         let content = "# Cross-dir Move";
 
-        manager.write_file(src, content, None).await.unwrap();
+        manager
+            .write_file(src, content, Precondition::Blind, "test")
+            .await
+            .unwrap();
 
         // The destination directory does not exist yet.
         assert!(!temp_dir.path().join("deep").exists());
 
-        manager.move_file(src, dst, None).await.unwrap();
+        manager
+            .move_file(
+                src,
+                dst,
+                Precondition::ExpectExists,
+                Precondition::Blind,
+                "test",
+            )
+            .await
+            .unwrap();
 
         // Source gone, destination present.
         assert!(!temp_dir.path().join(src).exists());
@@ -1397,7 +1568,10 @@ mod tests {
         // Write into a nested directory to exercise the parent-creation path
         // and ensure temp files are cleaned up in the right place.
         let rel = Path::new("sub/cleanup_test.md");
-        manager.write_file(rel, "content", None).await.unwrap();
+        manager
+            .write_file(rel, "content", Precondition::Blind, "test")
+            .await
+            .unwrap();
 
         // Walk the entire vault tree and assert no `.tmp.*` files remain.
         let mut stack = vec![temp_dir.path().to_path_buf()];
@@ -1429,12 +1603,15 @@ mod tests {
 
         // Write the target file so the parser can resolve the link.
         let target = Path::new("target.md");
-        manager.write_file(target, "# Target", None).await.unwrap();
+        manager
+            .write_file(target, "# Target", Precondition::Blind, "test")
+            .await
+            .unwrap();
 
         // Write a source file that links to target.
         let source = Path::new("source.md");
         manager
-            .write_file(source, "# Source\n[[target]]", None)
+            .write_file(source, "# Source\n[[target]]", Precondition::Blind, "test")
             .await
             .unwrap();
 
@@ -1471,7 +1648,10 @@ mod tests {
         );
 
         // Delete A.
-        manager.delete_file(Path::new("a.md"), None).await.unwrap();
+        manager
+            .delete_file(Path::new("a.md"), Precondition::ExpectExists, "test")
+            .await
+            .unwrap();
 
         // After deletion A must no longer appear in B's backlinks.
         let backlinks_after = manager.get_backlinks(&b_abs).await.unwrap();
@@ -1690,7 +1870,12 @@ mod tests {
         manager.initialize().await.unwrap(); // warm empty cache
 
         manager
-            .write_file(Path::new("new.md"), "---\nstatus: fresh\n---\n# New", None)
+            .write_file(
+                Path::new("new.md"),
+                "---\nstatus: fresh\n---\n# New",
+                Precondition::Blind,
+                "test",
+            )
             .await
             .unwrap();
 
@@ -1729,7 +1914,8 @@ mod tests {
             .write_file(
                 Path::new("note.md"),
                 "---\nstatus: updated\n---\n# Note",
-                None,
+                Precondition::Blind,
+                "test",
             )
             .await
             .unwrap();
@@ -1761,7 +1947,13 @@ mod tests {
         manager.initialize().await.unwrap();
 
         manager
-            .move_file(Path::new("from.md"), Path::new("to.md"), None)
+            .move_file(
+                Path::new("from.md"),
+                Path::new("to.md"),
+                Precondition::ExpectExists,
+                Precondition::Blind,
+                "test",
+            )
             .await
             .unwrap();
 
@@ -1796,7 +1988,7 @@ mod tests {
         assert_eq!(manager.all_cached_vault_files().await.len(), 1);
 
         manager
-            .delete_file(Path::new("note.md"), None)
+            .delete_file(Path::new("note.md"), Precondition::ExpectExists, "test")
             .await
             .unwrap();
 
@@ -1819,7 +2011,7 @@ mod tests {
         let manager = VaultManager::new(config).unwrap();
 
         manager
-            .write_file(Path::new("race.md"), "v1", None)
+            .write_file(Path::new("race.md"), "v1", Precondition::Blind, "test")
             .await
             .unwrap();
         assert_eq!(manager.all_cached_vault_files().await.len(), 1);
@@ -1828,7 +2020,7 @@ mod tests {
         // after a delete's apply() completed but before the delete's
         // sync_index() call ran.
         manager
-            .write_file(Path::new("race.md"), "v2", None)
+            .write_file(Path::new("race.md"), "v2", Precondition::Blind, "test")
             .await
             .unwrap();
 
@@ -1848,12 +2040,17 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
         manager
-            .write_file(Path::new("note.md"), "current", None)
+            .write_file(Path::new("note.md"), "current", Precondition::Blind, "test")
             .await
             .unwrap();
 
         let error = manager
-            .write_file(Path::new("note.md"), "replacement", Some("stale"))
+            .write_file(
+                Path::new("note.md"),
+                "replacement",
+                Precondition::ExpectBlob("stale".to_string()),
+                "test",
+            )
             .await
             .unwrap_err();
 
@@ -1870,7 +2067,12 @@ mod tests {
         let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
 
         let error = manager
-            .write_file(Path::new("missing.md"), "replacement", Some("stale"))
+            .write_file(
+                Path::new("missing.md"),
+                "replacement",
+                Precondition::ExpectBlob("stale".to_string()),
+                "test",
+            )
             .await
             .unwrap_err();
 
@@ -1886,13 +2088,24 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
         manager
-            .write_file(Path::new("note.md"), "hello world", None)
+            .write_file(
+                Path::new("note.md"),
+                "hello world",
+                Precondition::Blind,
+                "test",
+            )
             .await
             .unwrap();
 
         let edits = "<<<<<<< SEARCH\nhello world\n=======\ngoodbye world\n>>>>>>> REPLACE";
         let error = manager
-            .edit_file(Path::new("note.md"), edits, Some("stale"), false)
+            .edit_file(
+                Path::new("note.md"),
+                edits,
+                Precondition::ExpectBlob("stale".to_string()),
+                false,
+                "test",
+            )
             .await
             .unwrap_err();
 
@@ -1908,18 +2121,28 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
         manager
-            .write_file(Path::new("note.md"), "keep me", None)
+            .write_file(Path::new("note.md"), "keep me", Precondition::Blind, "test")
             .await
             .unwrap();
 
         let delete_error = manager
-            .delete_file(Path::new("note.md"), Some("stale"))
+            .delete_file(
+                Path::new("note.md"),
+                Precondition::ExpectBlob("stale".to_string()),
+                "test",
+            )
             .await
             .unwrap_err();
         assert!(matches!(delete_error, Error::ConcurrencyError { .. }));
 
         let move_error = manager
-            .move_file(Path::new("note.md"), Path::new("moved.md"), Some("stale"))
+            .move_file(
+                Path::new("note.md"),
+                Path::new("moved.md"),
+                Precondition::ExpectBlob("stale".to_string()),
+                Precondition::Blind,
+                "test",
+            )
             .await
             .unwrap_err();
         assert!(matches!(move_error, Error::ConcurrencyError { .. }));

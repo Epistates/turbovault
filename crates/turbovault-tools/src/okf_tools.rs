@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use turbovault_core::Precondition;
 use turbovault_core::Result;
 use turbovault_core::okf::{self, ReservedFile};
 use turbovault_parser::parse_citations;
@@ -318,7 +319,14 @@ impl OkfTools {
             if !dry_run {
                 let existing = self.manager.read_file(&index_abs).await.ok();
                 if existing.as_deref() != Some(content.as_str()) {
-                    self.manager.write_file(&index_abs, &content, None).await?;
+                    self.manager
+                        .write_file(
+                            &index_abs,
+                            &content,
+                            Precondition::for_replace(None, true),
+                            &format!("generate_index {index_rel}"),
+                        )
+                        .await?;
                     written = true;
                 }
             }
@@ -459,7 +467,14 @@ impl OkfTools {
         };
         let (content, created_file, created_section) =
             build_log_content(&existing, &date, kind, text);
-        self.manager.write_file(&log_path, &content, None).await?;
+        self.manager
+            .write_file(
+                &log_path,
+                &content,
+                Precondition::for_replace(None, true),
+                &format!("append_log_entry {log_rel}"),
+            )
+            .await?;
 
         Ok(LogEntryResult {
             path: log_rel,

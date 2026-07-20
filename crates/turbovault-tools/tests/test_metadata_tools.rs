@@ -581,7 +581,7 @@ async fn test_get_metadata_value_partial_dot_key_missing() {
 /// without a second initialize() call.
 #[tokio::test]
 async fn test_query_metadata_visible_after_write_without_reinitialize() {
-    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_core::{Precondition, ServerConfig, VaultConfig};
     use turbovault_vault::VaultManager;
 
     let temp_dir = TempDir::new().unwrap();
@@ -601,7 +601,8 @@ async fn test_query_metadata_visible_after_write_without_reinitialize() {
         .write_file(
             std::path::Path::new("fresh.md"),
             "---\nstatus: \"active\"\n---\n# Fresh note",
-            None,
+            Precondition::Blind,
+            "test",
         )
         .await
         .unwrap();
@@ -622,7 +623,7 @@ async fn test_query_metadata_visible_after_write_without_reinitialize() {
 /// without a second initialize() call.
 #[tokio::test]
 async fn test_query_metadata_visible_at_new_path_after_move_without_reinitialize() {
-    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_core::{Precondition, ServerConfig, VaultConfig};
     use turbovault_vault::VaultManager;
 
     let temp_dir = TempDir::new().unwrap();
@@ -648,7 +649,9 @@ async fn test_query_metadata_visible_at_new_path_after_move_without_reinitialize
         .move_file(
             std::path::Path::new("source.md"),
             std::path::Path::new("dest.md"),
-            None,
+            Precondition::ExpectExists,
+            Precondition::Blind,
+            "test",
         )
         .await
         .unwrap();
@@ -669,7 +672,7 @@ async fn test_query_metadata_visible_at_new_path_after_move_without_reinitialize
 /// query_metadata results without requiring a full reinitialize().
 #[tokio::test]
 async fn test_query_metadata_not_visible_after_delete() {
-    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_core::{Precondition, ServerConfig, VaultConfig};
     use turbovault_vault::VaultManager;
 
     let temp_dir = TempDir::new().unwrap();
@@ -696,7 +699,11 @@ async fn test_query_metadata_not_visible_after_delete() {
     assert_eq!(before["matched"], 1, "note must be visible before deletion");
 
     manager
-        .delete_file(std::path::Path::new("victim.md"), None)
+        .delete_file(
+            std::path::Path::new("victim.md"),
+            Precondition::ExpectExists,
+            "test",
+        )
         .await
         .unwrap();
 
@@ -711,7 +718,7 @@ async fn test_query_metadata_not_visible_after_delete() {
 /// must reflect the new values and stop matching the old ones — no reinitialize().
 #[tokio::test]
 async fn test_query_metadata_reflects_overwrite_without_reinitialize() {
-    use turbovault_core::{ServerConfig, VaultConfig};
+    use turbovault_core::{Precondition, ServerConfig, VaultConfig};
     use turbovault_vault::VaultManager;
 
     let temp_dir = TempDir::new().unwrap();
@@ -735,7 +742,8 @@ async fn test_query_metadata_reflects_overwrite_without_reinitialize() {
         .write_file(
             std::path::Path::new("note.md"),
             "---\nstatus: \"published\"\n---\n# Note",
-            None,
+            Precondition::Blind,
+            "test",
         )
         .await
         .unwrap();
