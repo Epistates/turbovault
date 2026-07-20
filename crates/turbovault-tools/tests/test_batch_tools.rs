@@ -1,9 +1,10 @@
 //! Unit tests for BatchTools
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use tempfile::TempDir;
-use turbovault_core::{ConfigProfile, VaultConfig};
-use turbovault_tools::{BatchOperation, BatchTools};
+use turbovault_core::{Change, ConfigProfile, Precondition, VaultConfig};
+use turbovault_tools::{BatchOperation, BatchTools, MetadataTools};
 use turbovault_vault::VaultManager;
 
 async fn setup_test_vault() -> (TempDir, Arc<VaultManager>) {
@@ -16,6 +17,31 @@ async fn setup_test_vault() -> (TempDir, Arc<VaultManager>) {
     )
     .await
     .unwrap();
+
+    let mut config = ConfigProfile::Development.create_config();
+    let vault_config = VaultConfig::builder("test", vault_path).build().unwrap();
+    config.vaults.push(vault_config);
+
+    let manager = VaultManager::new(config).unwrap();
+    manager.initialize().await.unwrap();
+
+    (temp_dir, Arc::new(manager))
+}
+
+/// Like [`setup_test_vault`], but takes the seed files directly and
+/// initializes AFTER writing them, so the link graph resolves backlinks
+/// among them (write-substrate-layering M4a link-aware plan tests).
+async fn setup_vault_with_files(files: &[(&str, &str)]) -> (TempDir, Arc<VaultManager>) {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let vault_path = temp_dir.path();
+
+    for (path, content) in files {
+        let full = vault_path.join(path);
+        if let Some(parent) = full.parent() {
+            tokio::fs::create_dir_all(parent).await.unwrap();
+        }
+        tokio::fs::write(full, content).await.unwrap();
+    }
 
     let mut config = ConfigProfile::Development.create_config();
     let vault_config = VaultConfig::builder("test", vault_path).build().unwrap();
@@ -298,4 +324,197 @@ async fn test_async_error_path_concurrent_batch_operations() {
         let result = handle.await.expect("Task panicked");
         assert!(result.is_ok());
     }
+}
+
+// ==================== write-substrate-layering M4a: ChangePlan translation ====================
+//
+// `BatchTools::plan`/`plan_move_with_links`/`plan_delete_with_stale_links` are pure builders —
+// additive and dormant (no production caller yet). These assert PLAN STRUCTURE, not disk
+// effects: nothing here applies the plan.
+
+#[tokio::test]
+async fn test_plan_mixed_ops_builds_expected_changes_and_preconditions() {
+    let (temp_dir, manager) = setup_test_vault().await;
+    tokio::fs::write(temp_dir.path().join("tagged.md"), "# Tagged\n")
+        .await
+        .unwrap();
+    let tools = BatchTools::new(manager.clone());
+
+    let mut frontmatter = HashMap::new();
+    frontmatter.insert("status".to_string(), serde_json::json!("done"));
+
+    let ops = vec![
+        BatchOperation::CreateNote {
+            path: "new.md".to_string(),
+            content: "# New\n".to_string(),
+            force: None,
+        },
+        BatchOperation::UpdateFrontmatter {
+            path: "existing.md".to_string(),
+            frontmatter: frontmatter.clone(),
+            merge: Some(true),
+            expected_hash: Some("cafebabe".to_string()),
+        },
+        BatchOperation::ManageTags {
+            path: "tagged.md".to_string(),
+            operation: "add".to_string(),
+            tags: vec!["foo".to_string()],
+            expected_hash: None,
+        },
+    ];
+
+    // Ground truth for the two compute_*-backed arms — the translation must
+    // reuse these helpers verbatim, not reimplement them.
+    let mt = MetadataTools::new(manager.clone());
+    let (expected_fm_content, _) = mt
+        .compute_update_frontmatter("existing.md", frontmatter.into_iter().collect(), true)
+        .await
+        .unwrap();
+    let (expected_tags_content, _) = mt
+        .compute_manage_tags("tagged.md", "add", Some(&["foo".to_string()]))
+        .await
+        .unwrap();
+    let expected_tags_content = expected_tags_content.expect("'add' produces a write");
+
+    let plan = tools.plan(&ops).await.unwrap();
+
+    assert_eq!(
+        plan.changes,
+        vec![
+            Change::Upsert {
+                path: "new.md".to_string(),
+                content: b"# New\n".to_vec(),
+            },
+            Change::Upsert {
+                path: "existing.md".to_string(),
+                content: expected_fm_content.into_bytes(),
+            },
+            Change::Upsert {
+                path: "tagged.md".to_string(),
+                content: expected_tags_content.into_bytes(),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.preconditions,
+        vec![
+            ("new.md".to_string(), Precondition::ExpectAbsent),
+            (
+                "existing.md".to_string(),
+                Precondition::ExpectBlob("cafebabe".to_string())
+            ),
+        ],
+        "tagged.md carries no precondition — its op passed expected_hash: None"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_move_with_links_rewrites_backlink_and_carries_precondition() {
+    let (_temp_dir, manager) =
+        setup_vault_with_files(&[("old.md", "# Old\n"), ("linker.md", "see [[old]] here\n")]).await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("old.md", "new.md", None, "move old.md to new.md")
+        .await
+        .unwrap();
+
+    let rewritten_linker = turbovault_tools::wikilink_rewriter::rewrite_wikilinks(
+        "see [[old]] here\n",
+        "old.md",
+        "new.md",
+    );
+    assert_eq!(
+        plan.changes,
+        vec![
+            Change::Remove {
+                path: "old.md".to_string(),
+            },
+            Change::Upsert {
+                path: "new.md".to_string(),
+                content: b"# Old\n".to_vec(),
+            },
+            Change::Upsert {
+                path: "linker.md".to_string(),
+                content: rewritten_linker.clone().into_bytes(),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.preconditions,
+        vec![
+            ("new.md".to_string(), Precondition::ExpectAbsent),
+            (
+                "linker.md".to_string(),
+                Precondition::ExpectBlob(turbovault_vault::compute_hash("see [[old]] here\n"))
+            ),
+        ],
+        "old.md carries no precondition — expected_hash was None"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_delete_with_stale_links_rewrites_backlink_and_carries_precondition() {
+    let (_temp_dir, manager) = setup_vault_with_files(&[
+        ("doomed.md", "# Doomed\n"),
+        ("linker.md", "see [[doomed]] here\n"),
+    ])
+    .await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_delete_with_stale_links("doomed.md", None, "delete doomed.md")
+        .await
+        .unwrap();
+
+    let rewritten_linker = turbovault_tools::wikilink_rewriter::wrap_wikilinks_as_stale(
+        "see [[doomed]] here\n",
+        "doomed.md",
+    );
+    assert_eq!(
+        plan.changes,
+        vec![
+            Change::Remove {
+                path: "doomed.md".to_string(),
+            },
+            Change::Upsert {
+                path: "linker.md".to_string(),
+                content: rewritten_linker.clone().into_bytes(),
+            },
+        ]
+    );
+    assert_eq!(
+        plan.preconditions,
+        vec![(
+            "linker.md".to_string(),
+            Precondition::ExpectBlob(turbovault_vault::compute_hash("see [[doomed]] here\n"))
+        )],
+        "doomed.md carries no precondition — expected_hash was None"
+    );
+}
+
+#[tokio::test]
+async fn test_plan_rejects_intra_batch_same_path_collision() {
+    let (_temp_dir, manager) = setup_test_vault().await;
+    let tools = BatchTools::new(manager.clone());
+
+    let ops = vec![
+        BatchOperation::WriteNote {
+            path: "a.md".to_string(),
+            content: "v1".to_string(),
+            expected_hash: None,
+        },
+        BatchOperation::WriteNote {
+            path: "a.md".to_string(),
+            content: "v2".to_string(),
+            expected_hash: None,
+        },
+    ];
+
+    let err = tools.plan(&ops).await.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("intra-batch path collision") && msg.contains("a.md"),
+        "got: {msg}"
+    );
 }

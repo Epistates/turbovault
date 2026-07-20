@@ -60,6 +60,23 @@ impl WriteSubstrate {
             WriteSubstrate::Git(git) => git.apply(plan).await,
         }
     }
+
+    /// The version token THIS substrate would compute for `bytes` if they
+    /// were a path's current content — Direct: NFC-normalized sha256 hex (or
+    /// raw sha256 for non-UTF-8); Git: git blob oid hex. For a caller that
+    /// already has content in hand and wants to mint its own
+    /// `Precondition::ExpectBlob` (e.g. a batch fold hashing a backlink
+    /// source it just read), asking the manager's own substrate for the
+    /// token — rather than assuming one hash convention — keeps the token
+    /// valid whichever backend eventually applies the plan.
+    pub fn hash_bytes(&self, bytes: &[u8]) -> Result<String> {
+        match self {
+            WriteSubstrate::Direct(_) => Ok(hash_bytes(bytes)),
+            WriteSubstrate::Git(_) => VaultRepo::blob_oid_of(bytes)
+                .map(|oid| oid.to_string())
+                .map_err(git_err_to_core),
+        }
+    }
 }
 
 /// Derive `ApplyOutcome.changed` from a plan's changes alone (design §6.3):

@@ -206,6 +206,17 @@ impl VaultManager {
         Ok(content)
     }
 
+    /// The version token this vault's active substrate would compute for
+    /// `bytes` if they were a path's current content (design §6.3's
+    /// `WriteSubstrate::hash_bytes`). For a caller that already has content
+    /// in hand and wants to build its own `Precondition::ExpectBlob` (e.g. a
+    /// batch fold hashing a backlink source it just read) — asking the
+    /// manager rather than hardcoding one backend's hash convention keeps
+    /// the token valid for whichever substrate this vault is configured for.
+    pub fn hash_bytes(&self, bytes: &[u8]) -> Result<String> {
+        self.substrate.hash_bytes(bytes)
+    }
+
     /// Write file to disk atomically, guarded by an explicit [`Precondition`].
     ///
     /// write-substrate-layering M3b: the old hash-option-plus-implicit-
