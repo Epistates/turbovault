@@ -208,7 +208,7 @@ pub use graph_tools::{BrokenLinkInfo, GraphTools, HealthInfo};
 pub use grounding::{GroundingAnalysis, GroundingTools, UngroundedNote, UngroundedReport};
 pub use metadata_tools::MetadataTools;
 pub use okf_tools::{
-    GenerateIndexReport, GeneratedIndex, OkfConceptInfo, OkfTools, OkfValidateReport,
+    GenerateIndexReport, GeneratedIndex, OkfConceptInfo, OkfTools, OkfValidateReport, log_rel_for,
 };
 pub use output_formatter::{OutputFormat, ResponseFormatter};
 pub use quality_tools::{QualityScore, QualityTools, VaultQualityReport};

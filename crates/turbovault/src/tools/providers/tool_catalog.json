@@ -2259,6 +2259,14 @@
             "boolean",
             "null"
           ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
@@ -2305,6 +2313,14 @@
             "string",
             "null"
           ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2335,6 +2351,14 @@
           ]
         },
         "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_message": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_string",
           "type": [

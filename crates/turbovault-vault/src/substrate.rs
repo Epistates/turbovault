@@ -835,4 +835,52 @@ mod tests {
             "stale precondition must not apply the change"
         );
     }
+
+    /// turbovault-qae.5.2 gap #1: two `GitSubstrate`s over the SAME
+    /// worktree, each with its OWN private `CommitLocks` registry
+    /// (`GitSubstrate::new` never shares one — this mirrors the manager's
+    /// `GitSubstrate` racing the server's independently-registried
+    /// `GitFileTools` on a git-backend vault), must still serialize their
+    /// commit critical sections rather than corrupt the worktree or drop a
+    /// commit. The actual cross-registry safety net is `VaultRepo::
+    /// with_commit_lock`'s cross-process `flock` on `.git/turbovault-
+    /// write.lock` (repo.rs), keyed by the physical `.git` path rather than
+    /// `Arc` identity — NOT a ref-CAS retry (there is no retry loop for two
+    /// non-conflicting creates).
+    #[tokio::test]
+    async fn independent_commit_locks_registries_still_serialize_on_one_worktree() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let a = Arc::new(GitSubstrate::new(tmp.path().to_path_buf(), true));
+        let b = Arc::new(GitSubstrate::new(tmp.path().to_path_buf(), true));
+        let plan_a = ChangePlan::new("from a").create("a.md", "alpha");
+        let plan_b = ChangePlan::new("from b").create("b.md", "beta");
+
+        let (ra, rb) = tokio::join!(a.apply(&plan_a), b.apply(&plan_b));
+
+        ra.expect("substrate a's independently-registried commit must land");
+        rb.expect("substrate b's independently-registried commit must land");
+
+        let repo = git2::Repository::open(tmp.path()).unwrap();
+        let mut walk = repo.revwalk().unwrap();
+        walk.push_head().unwrap();
+        assert_eq!(
+            walk.count(),
+            2,
+            "both substrates' commits must land as two commits on one \
+             history, not race into a lost update"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(tmp.path().join("a.md"))
+                .await
+                .unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(tmp.path().join("b.md"))
+                .await
+                .unwrap(),
+            "beta"
+        );
+    }
 }

@@ -9,11 +9,11 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
-use turbovault_core::{Change, ChangePlan, Precondition};
+use turbovault_core::{Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend};
 use turbovault_graph::LinkGraph;
 use turbovault_parser::Parser;
 
-use crate::substrate::{ApplyOutcome, DirectSubstrate, WriteSubstrate};
+use crate::substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
 
 /// File cache entry with timestamp
 /// Used during initialization to populate link graph; read path bypasses cache
@@ -47,21 +47,55 @@ impl VaultManager {
         let vault_path = default_vault.path.clone();
         let parser = Parser::new(vault_path.clone());
 
-        // write-substrate-layering M3a (deliverable decision 1): only the
-        // Direct arm sits on a production path here — regardless of the
-        // vault's configured `write_backend`. `GitSubstrate` is built and
-        // unit-tested directly (substrate.rs) but MUST NOT be constructed
-        // here yet: pre-M3a, `write_file`/`delete_file`/`move_file` never
-        // looked at `write_backend` at all, and several already-shipped
-        // tools (`generate_index`, `append_log_entry`, `visualize`) call
-        // these mutators directly rather than through the server's
-        // git-aware `WriteTools`/`GitFileTools` dispatch. Selecting
-        // `WriteSubstrate::Git` from config here would silently hand those
-        // callers a second, uncoordinated git-write path (its own
-        // `CommitLocks` domain, no cached repo, no reindex hook) racing the
-        // real one. Wiring a live Git arm is M4's job, once those call
-        // sites are migrated onto the server's shared repo/lock/hook.
-        let substrate = WriteSubstrate::Direct(DirectSubstrate::new(vault_path.clone()));
+        // write-substrate-layering M4b (bite 2 of M4, turbovault-qae.5.2):
+        // the substrate now follows the vault's configured `write_backend`
+        // instead of M3a's always-Direct placeholder. On a git vault, this
+        // closes the footgun M3a's comment warned about — direct callers
+        // like `generate_index`/`append_log_entry`/`visualize`, which write
+        // through the manager rather than the server's `WriteTools`/
+        // `GitFileTools` dispatch, now commit instead of silently bypassing
+        // git.
+        //
+        // This `GitSubstrate` OWNS its own `CommitLocks` (the END-STATE
+        // ownership — M3a already built it that way) rather than sharing
+        // locks with the server's still-live `GitFileTools`; that sharing,
+        // a reindex-hook wire, and a cached repo handle are deliberately
+        // NOT built here (M4b DoD — all three are either thrown away when
+        // `GitFileTools` dies in bite 4, or are bite 3's job). Until then,
+        // this creates three KNOWN, ACCEPTED, bite-3-closed gaps:
+        //   1. A manager-git write (this substrate's lock) and a
+        //      handler-git write (`GitFileTools`'s lock) are two distinct
+        //      `CommitLocks` registries on the same worktree — contradicting
+        //      locks.rs's "one lock per worktree" invariant. Commits stay
+        //      safe anyway, but NOT via ref-CAS retry (there is no retry
+        //      loop here): `VaultRepo::commit_changeset` always runs inside
+        //      `with_commit_lock` (repo.rs), which layers a cross-process
+        //      `flock` on `<repo>/.git/turbovault-write.lock` under the
+        //      in-process mutex. That advisory lock is keyed by the
+        //      physical `.git` path, not by `Arc` identity, so it
+        //      serializes both registries regardless of which one a caller
+        //      holds. This is real complexity riding on that file lock
+        //      staying load-bearing; sharing one `CommitLocks` `Arc` (the
+        //      documented invariant) is bite 3's job.
+        //   2. The tantivy search index (server-owned, fed by the reindex
+        //      drainer) won't see a manager-git write until reindex
+        //      relocates into the manager — the link graph stays correct
+        //      regardless, since `sync_index` (R7) runs on every apply here.
+        //   3. `GitSubstrate::cached_repo` stays `None` (per-call open) —
+        //      correct, just unoptimized; the cache lands in bite 3.
+        let substrate = match default_vault.write_backend {
+            WriteBackend::Direct => {
+                WriteSubstrate::Direct(DirectSubstrate::new(vault_path.clone()))
+            }
+            WriteBackend::Git => {
+                let include_ignored = default_vault
+                    .git
+                    .as_ref()
+                    .map(|git| git.include_ignored)
+                    .unwrap_or_else(|| VaultGitConfig::default().include_ignored);
+                WriteSubstrate::Git(GitSubstrate::new(vault_path.clone(), include_ignored))
+            }
+        };
 
         Ok(Self {
             config,
@@ -2162,5 +2196,150 @@ mod tests {
             "keep me"
         );
         assert!(!temp_dir.path().join("moved.md").exists());
+    }
+
+    // -------------------------------------------------------------------------
+    // M4b: VaultManager::new builds a live Git substrate from write_backend
+    // -------------------------------------------------------------------------
+
+    /// A born-HEAD git repo (mirrors `substrate.rs`'s own `init_repo` test
+    /// helper) — required before `commit_changeset` can build a parent chain.
+    fn init_git_repo(dir: &Path) {
+        let mut opts = git2::RepositoryInitOptions::new();
+        opts.initial_head("main");
+        git2::Repository::init_opts(dir, &opts).unwrap();
+    }
+
+    /// A `write_backend: git` vault config, the M4b construction path.
+    fn create_git_test_config(vault_dir: &Path) -> ServerConfig {
+        let mut config = ServerConfig::new();
+        let vault_config = VaultConfig::builder("git_vault", vault_dir)
+            .write_backend(WriteBackend::Git)
+            .build()
+            .unwrap();
+        config.vaults.push(vault_config);
+        config
+    }
+
+    fn head_oid(dir: &Path) -> Option<git2::Oid> {
+        git2::Repository::open(dir).ok()?.head().ok()?.target()
+    }
+
+    /// The blob content at `rel_path` in HEAD's tree, for asserting working
+    /// tree == HEAD independent of what's on disk.
+    fn head_blob_content(dir: &Path, rel_path: &str) -> Option<String> {
+        let repo = git2::Repository::open(dir).ok()?;
+        let tree = repo.head().ok()?.peel_to_commit().ok()?.tree().ok()?;
+        let entry = tree.get_path(Path::new(rel_path)).ok()?;
+        let blob = repo.find_blob(entry.id()).ok()?;
+        Some(String::from_utf8_lossy(blob.content()).into_owned())
+    }
+
+    /// A `VaultManager` built over a `write_backend: git` vault routes
+    /// `write_file` through `GitSubstrate`: the write lands as a commit, the
+    /// working tree agrees with HEAD, and the link graph picks up the note
+    /// via `sync_index` (R7) — all without touching `GitFileTools`.
+    #[tokio::test]
+    async fn test_git_backend_write_file_commits_and_syncs_index() {
+        let temp_dir = TempDir::new().unwrap();
+        init_git_repo(temp_dir.path());
+        let manager = VaultManager::new(create_git_test_config(temp_dir.path())).unwrap();
+
+        assert!(
+            head_oid(temp_dir.path()).is_none(),
+            "repo starts unborn (no commits yet)"
+        );
+
+        manager
+            .write_file(
+                Path::new("note.md"),
+                "# Git Note",
+                Precondition::Blind,
+                "test commit",
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            head_oid(temp_dir.path()).is_some(),
+            "write_file on a git vault must land a commit"
+        );
+        assert_eq!(
+            manager.read_file(Path::new("note.md")).await.unwrap(),
+            "# Git Note"
+        );
+        assert_eq!(
+            head_blob_content(temp_dir.path(), "note.md").as_deref(),
+            Some("# Git Note"),
+            "working tree must agree with HEAD after a git-backend apply"
+        );
+
+        // sync_index (R7) ran off the substrate's ApplyOutcome, not a
+        // separate `initialize()` scan.
+        let stats = manager.get_stats().await.unwrap();
+        assert_eq!(stats.total_files, 1);
+    }
+
+    /// `apply_changes` on a git vault is the same GitSubstrate path as
+    /// `write_file` — exercise it directly, matching
+    /// `test_apply_changes_multi_change_plan`'s direct-backend coverage.
+    #[tokio::test]
+    async fn test_git_backend_apply_changes_commits_multi_change_plan() {
+        let temp_dir = TempDir::new().unwrap();
+        init_git_repo(temp_dir.path());
+        let manager = VaultManager::new(create_git_test_config(temp_dir.path())).unwrap();
+
+        let plan = ChangePlan::new("multi-change git test")
+            .create("a.md", "# A")
+            .create("b.md", "# B");
+        let outcome = manager.apply_changes(&plan).await.unwrap();
+
+        assert!(outcome.commit.is_some());
+        assert_eq!(
+            head_blob_content(temp_dir.path(), "a.md").as_deref(),
+            Some("# A")
+        );
+        assert_eq!(
+            head_blob_content(temp_dir.path(), "b.md").as_deref(),
+            Some("# B")
+        );
+    }
+
+    /// A stale `ExpectBlob` against a git vault aborts the whole plan with
+    /// `ConcurrencyError` and lands zero commits — the manager's GitSubstrate
+    /// enforces the same CAS guarantee `GitFileTools` does today.
+    #[tokio::test]
+    async fn test_git_backend_stale_precondition_aborts_no_commit() {
+        let temp_dir = TempDir::new().unwrap();
+        init_git_repo(temp_dir.path());
+        let manager = VaultManager::new(create_git_test_config(temp_dir.path())).unwrap();
+
+        manager
+            .write_file(Path::new("note.md"), "v1", Precondition::Blind, "seed")
+            .await
+            .unwrap();
+        let head_after_seed = head_oid(temp_dir.path());
+
+        let err = manager
+            .write_file(
+                Path::new("note.md"),
+                "v2",
+                Precondition::ExpectBlob("deadbeef".to_string()),
+                "stale update",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, Error::ConcurrencyError { .. }));
+        assert_eq!(
+            head_oid(temp_dir.path()),
+            head_after_seed,
+            "a stale precondition must not land a commit"
+        );
+        assert_eq!(
+            head_blob_content(temp_dir.path(), "note.md").as_deref(),
+            Some("v1"),
+            "HEAD must still hold the pre-abort content"
+        );
     }
 }

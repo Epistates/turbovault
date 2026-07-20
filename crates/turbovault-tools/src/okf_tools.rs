@@ -211,11 +211,16 @@ impl OkfTools {
     ///   root.
     /// - `recursive`: also index every subdirectory.
     /// - `dry_run`: compute the indexes but do not write them.
+    /// - `commit_message`: overrides the auto-derived `generate_index <path>`
+    ///   subject for every index written by this call (turbovault-qae.5.2 —
+    ///   lets the MCP layer's `git.require_commit_message` gate apply here
+    ///   the same way it does for every other mutation tool).
     pub async fn generate_index(
         &self,
         directory: Option<&str>,
         recursive: bool,
         dry_run: bool,
+        commit_message: Option<&str>,
     ) -> Result<GenerateIndexReport> {
         // Cache-first: parsed notes (validated against disk mtime) instead of a
         // fresh scan + re-parse of every file.
@@ -319,12 +324,13 @@ impl OkfTools {
             if !dry_run {
                 let existing = self.manager.read_file(&index_abs).await.ok();
                 if existing.as_deref() != Some(content.as_str()) {
+                    let auto_message = format!("generate_index {index_rel}");
                     self.manager
                         .write_file(
                             &index_abs,
                             &content,
                             Precondition::for_replace(None, true),
-                            &format!("generate_index {index_rel}"),
+                            commit_message.unwrap_or(&auto_message),
                         )
                         .await?;
                     written = true;
@@ -427,6 +433,9 @@ impl OkfTools {
     ///   Defaults to `Update`.
     /// - `text`: the entry prose.
     /// - `date`: ISO `YYYY-MM-DD`. Defaults to today (local time).
+    /// - `commit_message`: overrides the auto-derived `append_log_entry
+    ///   <path>` subject (turbovault-qae.5.2 — same rationale as
+    ///   [`Self::generate_index`]'s `commit_message`).
     ///
     /// Entries are filed newest-first: a new date becomes the first `##`
     /// section; an existing date gains another bullet.
@@ -436,6 +445,7 @@ impl OkfTools {
         kind: Option<&str>,
         text: &str,
         date: Option<&str>,
+        commit_message: Option<&str>,
     ) -> Result<LogEntryResult> {
         let date = match date {
             Some(d) => {
@@ -450,10 +460,7 @@ impl OkfTools {
         };
         let kind = kind.unwrap_or("Update");
 
-        let log_rel = match directory {
-            Some(d) if !d.is_empty() && d != "." => format!("{}/log.md", d.trim_end_matches('/')),
-            _ => "log.md".to_string(),
-        };
+        let log_rel = log_rel_for(directory);
         let log_path = std::path::PathBuf::from(&log_rel);
 
         // Read the existing log, distinguishing "absent" (create fresh) from
@@ -467,12 +474,13 @@ impl OkfTools {
         };
         let (content, created_file, created_section) =
             build_log_content(&existing, &date, kind, text);
+        let auto_message = format!("append_log_entry {log_rel}");
         self.manager
             .write_file(
                 &log_path,
                 &content,
                 Precondition::for_replace(None, true),
-                &format!("append_log_entry {log_rel}"),
+                commit_message.unwrap_or(&auto_message),
             )
             .await?;
 
@@ -482,6 +490,18 @@ impl OkfTools {
             created_file,
             created_section,
         })
+    }
+}
+
+/// Vault-relative path of `directory`'s `log.md` (spec §7 naming: the bundle
+/// root's `log.md` when `directory` is `None`/empty/`"."`, else
+/// `<directory>/log.md`). Exposed so the MCP tool layer can compute the same
+/// name `append_log_entry`'s auto-derived commit-message fallback uses,
+/// without duplicating the match (turbovault-qae.5.2).
+pub fn log_rel_for(directory: Option<&str>) -> String {
+    match directory {
+        Some(d) if !d.is_empty() && d != "." => format!("{}/log.md", d.trim_end_matches('/')),
+        _ => "log.md".to_string(),
     }
 }
 
@@ -663,7 +683,7 @@ mod tests {
         let tools = OkfTools::new(manager);
 
         // Root index (non-recursive): one subdirectory entry, no concepts.
-        let report = tools.generate_index(None, false, true).await.unwrap();
+        let report = tools.generate_index(None, false, true, None).await.unwrap();
         assert!(report.dry_run);
         let root_index = report
             .indexes
@@ -691,7 +711,7 @@ mod tests {
         manager.initialize().await.unwrap();
         let tools = OkfTools::new(manager);
 
-        let report = tools.generate_index(None, true, false).await.unwrap();
+        let report = tools.generate_index(None, true, false, None).await.unwrap();
         assert!(!report.dry_run);
 
         // tables/index.md should now list Orders with its description.
@@ -700,7 +720,7 @@ mod tests {
         assert!(tables_index.contains("* [Orders](orders.md) - One per order."));
 
         // Re-running should be idempotent (no rewrite when content is unchanged).
-        let rerun = tools.generate_index(None, true, false).await.unwrap();
+        let rerun = tools.generate_index(None, true, false, None).await.unwrap();
         let tables = rerun
             .indexes
             .iter()
@@ -766,7 +786,13 @@ mod tests {
         let tools = OkfTools::new(manager);
 
         let result = tools
-            .append_log_entry(None, Some("Creation"), "Bootstrapped.", Some("2026-06-13"))
+            .append_log_entry(
+                None,
+                Some("Creation"),
+                "Bootstrapped.",
+                Some("2026-06-13"),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(result.path, "log.md");
@@ -778,7 +804,7 @@ mod tests {
 
         // A second entry on the same day appends under the same section.
         tools
-            .append_log_entry(None, None, "Refined.", Some("2026-06-13"))
+            .append_log_entry(None, None, "Refined.", Some("2026-06-13"), None)
             .await
             .unwrap();
         let written = std::fs::read_to_string(temp.path().join("log.md")).unwrap();
@@ -821,7 +847,7 @@ mod tests {
         let tools = OkfTools::new(manager);
 
         let err = tools
-            .append_log_entry(None, None, "x", Some("June 13"))
+            .append_log_entry(None, None, "x", Some("June 13"), None)
             .await;
         assert!(err.is_err());
     }

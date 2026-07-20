@@ -267,7 +267,7 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Generate or refresh OKF index.md files for progressive disclosure: each indexed directory gets an index.md listing its concept notes (with their frontmatter descriptions) and subdirectories, so agents and humans can navigate the bundle one level at a time instead of loading everything. Idempotent — unchanged indexes are not rewritten",
-        usage = "Use after adding or editing notes to keep navigation indexes current, or to bootstrap progressive disclosure for an OKF bundle. `directory` (vault-relative, default = bundle root) scopes which directory to index; set `recursive=true` to index every subdirectory; set `dry_run=true` to preview what would be written without changing files",
+        usage = "Use after adding or editing notes to keep navigation indexes current, or to bootstrap progressive disclosure for an OKF bundle. `directory` (vault-relative, default = bundle root) scopes which directory to index; set `recursive=true` to index every subdirectory; set `dry_run=true` to preview what would be written without changing files. `commit_message` overrides the auto-derived subject for every index this call writes; required on write_backend=git vaults with git.require_commit_message=true",
         performance = "Moderate (parses concept notes in the targeted directories to read titles/descriptions)",
         related = ["okf_validate", "explain_vault", "write_note"],
         examples = ["generate_index(recursive=true)", "generate_index(directory=\"tables\")", "generate_index(recursive=true, dry_run=true)"],
@@ -278,13 +278,32 @@ impl AnalysisProvider {
         directory: Option<String>,
         recursive: Option<bool>,
         dry_run: Option<bool>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let dry_run = dry_run.unwrap_or(false);
         let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        // turbovault-qae.5.2: `generate_index` can write several index.md
+        // files in one call (recursive), each with its own auto-derived
+        // subject — so unlike a single-write tool this doesn't compute one
+        // fallback subject via `resolve_commit_message` (that would flatten
+        // every file's message to the same string). It still reuses
+        // `require_commit_message` for the trim/filter/gate itself. A dry
+        // run writes nothing (the tool layer below never reads
+        // `commit_message` when `dry_run`), so the gate does not apply.
+        let commit_message = if dry_run {
+            commit_message
+        } else {
+            self.require_commit_message(commit_message).await?
+        };
         let tools = OkfTools::new(manager);
         let result = tools
-            .generate_index(directory.as_deref(), recursive.unwrap_or(false), dry_run)
+            .generate_index(
+                directory.as_deref(),
+                recursive.unwrap_or(false),
+                dry_run,
+                commit_message.as_deref(),
+            )
             .await
             .map_err(to_mcp_error)?;
 
@@ -308,7 +327,7 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Append an entry to an OKF log.md update history (spec §7). Files the entry under a `## YYYY-MM-DD` date section, newest-first — a new date becomes the top section, an existing date gains another bullet. Creates log.md (with a title) if absent",
-        usage = "Use to record a change to a directory's knowledge (e.g. after enriching or restructuring notes). `directory` (vault-relative, default = bundle root) selects which log.md; `kind` is the leading bold word (Update/Creation/Deprecation, default Update); `date` is ISO YYYY-MM-DD (default today)",
+        usage = "Use to record a change to a directory's knowledge (e.g. after enriching or restructuring notes). `directory` (vault-relative, default = bundle root) selects which log.md; `kind` is the leading bold word (Update/Creation/Deprecation, default Update); `date` is ISO YYYY-MM-DD (default today). commit_message controls the Git commit subject when using write_backend=git",
         performance = "Fast (<20ms) — reads and rewrites one log.md",
         related = ["generate_index", "okf_validate"],
         examples = [
@@ -323,9 +342,18 @@ impl AnalysisProvider {
         directory: Option<String>,
         kind: Option<String>,
         date: Option<String>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let message = self
+            .resolve_commit_message(commit_message, || {
+                format!(
+                    "append_log_entry {}",
+                    turbovault_tools::log_rel_for(directory.as_deref())
+                )
+            })
+            .await?;
         let tools = OkfTools::new(manager);
         let result = tools
             .append_log_entry(
@@ -333,6 +361,7 @@ impl AnalysisProvider {
                 kind.as_deref(),
                 &text,
                 date.as_deref(),
+                Some(&message),
             )
             .await
             .map_err(to_mcp_error)?;
@@ -349,7 +378,7 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Render the vault's concept graph as a single self-contained HTML file: a force-directed graph of every note, a detail panel with the rendered markdown body and 'cited by' backlinks, plus type filter and search. The bundle is embedded as JSON; the graph/markdown libraries load from a CDN. Shareable as a static artifact — open in any browser, no backend. Covers both OKF cross-links and Obsidian wikilinks",
-        usage = "Use to produce a browsable/shareable visualization of a vault or OKF bundle. Writes the HTML to `output` (vault-relative, default `viz.html` at the bundle root) and returns node/edge counts and the file size. `name` overrides the header title (defaults to the vault folder name)",
+        usage = "Use to produce a browsable/shareable visualization of a vault or OKF bundle. Writes the HTML to `output` (vault-relative, default `viz.html` at the bundle root) and returns node/edge counts and the file size. `name` overrides the header title (defaults to the vault folder name). commit_message controls the Git commit subject when using write_backend=git",
         performance = "Moderate (parses every note to embed titles/bodies; proportional to vault size)",
         related = ["explain_vault", "get_centrality_ranking", "okf_validate"],
         examples = ["visualize()", "visualize(output=\"reports/graph.html\", name=\"Sales Bundle\")"],
@@ -359,6 +388,7 @@ impl AnalysisProvider {
         &self,
         output: Option<String>,
         name: Option<String>,
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
@@ -369,12 +399,15 @@ impl AnalysisProvider {
             .map_err(to_mcp_error)?;
 
         let out_rel = output.unwrap_or_else(|| "viz.html".to_string());
+        let message = self
+            .resolve_commit_message(commit_message, || format!("visualize {out_rel}"))
+            .await?;
         manager
             .write_file(
                 std::path::Path::new(&out_rel),
                 &html,
                 Precondition::for_replace(None, true),
-                &format!("visualize {out_rel}"),
+                &message,
             )
             .await
             .map_err(to_mcp_error)?;

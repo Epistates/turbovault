@@ -818,6 +818,32 @@ impl CoreToolHandler {
             .unwrap_or(false)
     }
 
+    /// turbovault-qae.5.2: check-only half of the commit-message gate —
+    /// trims/filters the caller-supplied message (whitespace-only counts as
+    /// missing) and, when none remains, refuses if the active vault requires
+    /// one. Returns `Ok(None)` when no message was given and none is
+    /// required, leaving the fallback to the caller. Single-write tools go
+    /// through `resolve_commit_message` below; multi-write tools (e.g.
+    /// `generate_index`, which can't collapse several auto-derived subjects
+    /// into one fallback) call this directly.
+    async fn require_commit_message(
+        &self,
+        commit_message: Option<String>,
+    ) -> McpResult<Option<String>> {
+        let provided = commit_message
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        match provided {
+            Some(m) => Ok(Some(m)),
+            None if self.active_vault_requires_commit_message().await => {
+                Err(McpError::invalid_request(
+                    "this vault requires an explicit commit message (git.require_commit_message = true); pass a non-empty `commit_message` for this operation".to_string(),
+                ))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// turbovault-5nn: resolve a mutation's commit subject. A caller-supplied
     /// message (trimmed; whitespace-only counts as missing) always wins. When
     /// none is given, the active vault's `git.require_commit_message` decides:
@@ -828,18 +854,10 @@ impl CoreToolHandler {
         commit_message: Option<String>,
         fallback: impl FnOnce() -> String,
     ) -> McpResult<String> {
-        let provided = commit_message
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty());
-        match provided {
-            Some(m) => Ok(m),
-            None if self.active_vault_requires_commit_message().await => {
-                Err(McpError::invalid_request(
-                    "this vault requires an explicit commit message (git.require_commit_message = true); pass a non-empty `commit_message` for this operation".to_string(),
-                ))
-            }
-            None => Ok(fallback()),
-        }
+        Ok(self
+            .require_commit_message(commit_message)
+            .await?
+            .unwrap_or_else(fallback))
     }
 
     /// Helper to get both vault name and manager (eliminates 31 repeated preambles)
