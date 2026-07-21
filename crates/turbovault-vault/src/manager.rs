@@ -985,8 +985,28 @@ impl VaultManager {
     }
 
     /// Get a reference to the link graph (read-only access)
+    ///
+    /// NOT self-flushing — internal reindex/drain machinery
+    /// (`flush_reindex`/`apply_commit_diff`) calls this directly and must
+    /// keep doing so: `flush_reindex` already holds the queue's flush lock
+    /// while draining, so routing it through [`Self::link_graph_flushed`]
+    /// here would re-enter that lock and deadlock. Read-only consumers
+    /// outside the manager (tool implementations) should prefer
+    /// `link_graph_flushed()` instead.
     pub fn link_graph(&self) -> Arc<RwLock<LinkGraph>> {
         Arc::clone(&self.link_graph)
+    }
+
+    /// Self-flushing link-graph accessor (see `get_backlinks`): drains any
+    /// queued out-of-band commits before handing back the graph handle. This
+    /// is the shared primitive read-only tool implementations (graph/export/
+    /// relationship/viewer) should call instead of the bare `link_graph()`,
+    /// so every such reader gets the same out-of-band-commit coherence
+    /// guarantee as `get_backlinks`/`get_stats`/etc. without each call site
+    /// having to remember to flush itself.
+    pub async fn link_graph_flushed(&self) -> Arc<RwLock<LinkGraph>> {
+        self.flush_reindex().await;
+        self.link_graph()
     }
 
     /// Parse a single file and return VaultFile

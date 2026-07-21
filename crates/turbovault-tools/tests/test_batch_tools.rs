@@ -64,7 +64,7 @@ async fn test_batch_execute_single_write() {
         expected_hash: None,
     }];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(batch_result.success);
@@ -98,7 +98,7 @@ async fn test_batch_execute_multiple_writes() {
         },
     ];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(batch_result.success);
@@ -116,7 +116,7 @@ async fn test_batch_execute_delete() {
         on_backlinks: None,
     }];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(batch_result.success);
@@ -138,7 +138,7 @@ async fn test_batch_execute_move() {
         update_backlinks: None,
     }];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(batch_result.success);
@@ -173,7 +173,7 @@ async fn test_batch_execute_mixed_operations() {
         },
     ];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(batch_result.success);
@@ -203,15 +203,20 @@ async fn test_batch_execute_rollback_on_error() {
         },
     ];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     // Implementation returns Ok(BatchResult { success: false }), not Err
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(!batch_result.success);
-    assert_eq!(batch_result.executed, 1); // Stopped at operation 1 (delete)
+    // write-substrate-layering M4d/M4e: the manager-routed batch folds every
+    // op into ONE ChangePlan and reports `executed: 0` on any apply failure
+    // (per-index `failed_at` tracking on the direct backend is M5.2 future
+    // work) — it does NOT mean nothing landed on disk; see below.
+    assert_eq!(batch_result.executed, 0);
 
-    // Note: Current implementation does NOT rollback - it's fail-fast
-    // Operation 0 (success1.md) was written before the failure
+    // Note: the direct backend's apply loop is sequential with no rollback
+    // (only the precondition GATE is atomic) — operation 0 (success1.md) was
+    // written before the delete of a nonexistent file failed mid-loop.
     let vault_path = manager.vault_path();
     assert!(vault_path.join("success1.md").exists()); // Written before failure
     assert!(!vault_path.join("success2.md").exists()); // Not executed after failure
@@ -224,7 +229,7 @@ async fn test_batch_execute_empty_operations() {
 
     let ops: Vec<BatchOperation> = vec![];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     // Should handle empty operations gracefully
     assert!(result.is_err() || result.unwrap().executed == 0);
 }
@@ -240,7 +245,7 @@ async fn test_batch_execute_creates_directories() {
         expected_hash: None,
     }];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "test batch").await;
     assert!(result.is_ok());
 
     // Verify nested directories were created
@@ -267,7 +272,7 @@ async fn test_batch_execute_atomic_guarantees() {
         },
     ];
 
-    let result1 = tools.batch_execute(ops1).await;
+    let result1 = tools.batch_execute(ops1, "test batch 1").await;
     assert!(result1.is_ok());
 
     // Second batch with error should not affect first batch
@@ -284,12 +289,16 @@ async fn test_batch_execute_atomic_guarantees() {
         },
     ];
 
-    let result2 = tools.batch_execute(ops2).await;
+    let result2 = tools.batch_execute(ops2, "test batch 2").await;
     // Implementation returns Ok(BatchResult { success: false }), not Err
     assert!(result2.is_ok());
     let batch_result2 = result2.unwrap();
     assert!(!batch_result2.success);
-    assert_eq!(batch_result2.executed, 1); // Stopped at operation 1 (delete)
+    // See test_batch_execute_rollback_on_error: the manager-routed batch
+    // reports `executed: 0` on any apply failure (M5.2 adds per-index
+    // `failed_at`); atomic3.md still landed (asserted below) since the
+    // direct backend's apply loop is sequential with no rollback.
+    assert_eq!(batch_result2.executed, 0);
 
     // Verify first batch files still exist (different batch, unaffected)
     let vault_path = manager.vault_path();
@@ -314,7 +323,7 @@ async fn test_async_error_path_concurrent_batch_operations() {
                     content: format!("# Concurrent {}", i),
                     expected_hash: None,
                 }];
-                tools.batch_execute(ops).await
+                tools.batch_execute(ops, "test batch").await
             })
         })
         .collect();

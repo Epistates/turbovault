@@ -44,7 +44,7 @@ impl RelationshipProvider {
         file: String,
         limit: Option<i32>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = RelationshipTools::new(manager);
         let limit = usize::try_from(limit.unwrap_or(5)).unwrap_or(0);
         let suggestions = tools
@@ -82,7 +82,7 @@ impl RelationshipProvider {
         source: String,
         target: String,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = RelationshipTools::new(manager);
         let strength = tools
             .get_link_strength(&source, &target)
@@ -114,7 +114,7 @@ impl RelationshipProvider {
         read_only = true,
     )]
     async fn get_centrality_ranking(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = RelationshipTools::new(manager);
         let ranking = tools.get_centrality_ranking().await.map_err(to_mcp_error)?;
 

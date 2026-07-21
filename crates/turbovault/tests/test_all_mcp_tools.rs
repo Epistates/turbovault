@@ -286,7 +286,7 @@ async fn integration_test_batch_operations() {
         },
     ];
 
-    let result = tools.batch_execute(ops).await;
+    let result = tools.batch_execute(ops, "integration test batch").await;
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(batch_result.success);

@@ -37,7 +37,7 @@ impl AnalysisProvider {
     )]
     async fn diff_notes(&self, left: String, right: String) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = DiffTools::new(manager);
         let result = tools
             .diff_notes(&left, &right)
@@ -70,7 +70,7 @@ impl AnalysisProvider {
         self.refuse_audit_on_git_backend("diff_note_version")
             .await?;
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let audit_tools = self.get_audit_tools().await?;
 
         // Get the snapshot from the audit entry
@@ -137,7 +137,7 @@ impl AnalysisProvider {
     )]
     async fn evaluate_note_quality(&self, path: String) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
         let result = tools.evaluate_note(&path).await.map_err(to_mcp_error)?;
         StandardResponse::new(
@@ -161,7 +161,7 @@ impl AnalysisProvider {
     )]
     async fn vault_quality_report(&self, bottom_n: Option<usize>) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
         let result = tools
             .vault_quality_report(bottom_n.unwrap_or(10))
@@ -189,7 +189,7 @@ impl AnalysisProvider {
     )]
     async fn analyze_note_grounding(&self, path: String) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GroundingTools::new(manager);
         let result = tools.analyze_note(&path).await.map_err(to_mcp_error)?;
         StandardResponse::new(
@@ -213,7 +213,7 @@ impl AnalysisProvider {
     )]
     async fn find_ungrounded_notes(&self, limit: Option<usize>) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GroundingTools::new(manager);
         let result = tools
             .find_ungrounded_notes(limit.unwrap_or(50))
@@ -244,7 +244,7 @@ impl AnalysisProvider {
     )]
     async fn okf_validate(&self, subtree: Option<String>) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = OkfTools::new(manager);
         let result = tools
             .validate(subtree.as_deref())
@@ -282,7 +282,7 @@ impl AnalysisProvider {
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let dry_run = dry_run.unwrap_or(false);
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         // turbovault-qae.5.2: `generate_index` can write several index.md
         // files in one call (recursive), each with its own auto-derived
         // subject — so unlike a single-write tool this doesn't compute one
@@ -345,7 +345,7 @@ impl AnalysisProvider {
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let message = self
             .resolve_commit_message(commit_message, || {
                 format!(
@@ -391,7 +391,7 @@ impl AnalysisProvider {
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = ViewerTools::new(manager.clone());
         let (html, mut summary) = tools
             .generate(name.as_deref())
@@ -441,7 +441,7 @@ impl AnalysisProvider {
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
         let result = tools
             .find_stale_notes(threshold_days.unwrap_or(90), limit.unwrap_or(20))
@@ -538,7 +538,7 @@ impl AnalysisProvider {
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = DuplicateTools::new(manager);
         let result = tools
             .find_duplicates(threshold.unwrap_or(0.8), limit.unwrap_or(20))
@@ -567,7 +567,7 @@ impl AnalysisProvider {
     )]
     async fn compare_notes(&self, left: String, right: String) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = DuplicateTools::new(manager);
         let result = tools
             .compare_notes(&left, &right)

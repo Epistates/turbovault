@@ -1,30 +1,65 @@
 //! turbovault-6fo.18 (GWS.17): MCP-surface end-to-end tests for the
 //! git substrate. Each test sets up a real `ObsidianMcpServer` with a
 //! real git-repo vault registered as `write_backend: Git`, drives
-//! operations through the server's dispatch surface, and asserts the
-//! end-to-end effects:
+//! operations through the server's `call_tool` dispatch (the SAME path
+//! turbomcp routes a wire request to, minus the JSON-RPC/stdio framing),
+//! and asserts the end-to-end effects:
 //!
 //! - Git commits land as expected (HEAD advances; subject matches).
 //! - Working tree stays coherent with HEAD.
-//! - In-memory link graph reflects committed state after the per-vault
-//!   reindex queue drains.
 //! - Substrate-killer features (atomic move + link updates, atomic
-//!   delete + stale-callout wrap, batch CAS) work through the
-//!   server-side dispatcher.
-//! - The HEAD-ref listener (turbovault-bou) absorbs out-of-band
-//!   commits.
+//!   delete + stale-callout wrap, batch CAS) work through the real
+//!   `#[tool]` handlers.
 //!
-//! These tests exercise the SAME path the MCP `#[tool]` handlers use
-//! internally — they call `get_active_write_tools().await?` and
-//! invoke the WriteTools dispatcher, just like the MCP layer does.
-//! The turbomcp wire-protocol layer above is exercised separately by
-//! the `turbomcp` crate's own test suite.
+//! write-substrate-layering M4e: previously this suite drove the deleted
+//! `WriteTools` dispatcher in-process via a test-only shim
+//! (`get_active_write_tools_test`) — one layer below the server, per design
+//! decision 8 ("known-bad"). It now calls `ObsidianMcpServer::call_tool`
+//! directly (the same public method `test_mcp_provider_workflows.rs` uses),
+//! so every scenario here exercises the real handler. The turbomcp
+//! wire-protocol layer above (JSON-RPC framing, child-process spawn) is
+//! exercised separately by `test_mcp_wire_e2e.rs`; scenarios already covered
+//! there byte-for-byte were deleted from this file rather than duplicated.
+//! Scenarios that depended on the deleted server-side reindex test shims
+//! (`get_reindex_queue_test` / `has_git_drainer_test` /
+//! `has_git_ref_listener_test` / `flush_reindex_for_active_vault_test`) were
+//! also deleted — that machinery's coverage now lives in
+//! `turbovault-vault/src/reindex.rs`'s own unit tests (the manager owns
+//! reindex since bite 3a).
 
-use std::time::Duration;
 use tempfile::TempDir;
+use turbomcp::{McpHandler, RequestContext};
 use turbovault::ObsidianMcpServer;
 use turbovault_core::config::{VaultConfig, VaultGitConfig, WriteBackend};
-use turbovault_tools::{BatchOperation, VaultRepo};
+use turbovault_tools::VaultRepo;
+
+fn ctx() -> RequestContext {
+    RequestContext::new()
+}
+
+/// Call a tool in-process through the real `#[tool]` handler dispatch and
+/// return its structured `StandardResponse` JSON. Panics loudly on any
+/// error — every call in this file is expected to succeed.
+async fn call(
+    server: &ObsidianMcpServer,
+    name: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let result = server
+        .call_tool(name, arguments, &ctx())
+        .await
+        .unwrap_or_else(|error| panic!("tool {name:?} failed: {error}"));
+    assert!(
+        !result.is_error(),
+        "tool {name:?} returned an error: {}",
+        result
+            .first_text()
+            .unwrap_or("tool returned an error without text")
+    );
+    result
+        .structured_content
+        .unwrap_or_else(|| panic!("tool {name:?} returned no structured content"))
+}
 
 /// Set up a real git repo with an initial commit + a server with the
 /// vault registered as `write_backend: Git`. Returns the temp dir
@@ -46,6 +81,9 @@ async fn setup_git_vault() -> (TempDir, &'static str, ObsidianMcpServer) {
     repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
         .unwrap();
 
+    // Registered directly through the multi-vault manager (not the
+    // `add_vault` MCP tool, which only exposes name+path = Direct;
+    // turbovault-xj8) so this suite can select `write_backend: git`.
     let vault_config = VaultConfig::builder("e2e", tmp.path())
         .write_backend(WriteBackend::Git)
         .git(VaultGitConfig::default())
@@ -78,19 +116,14 @@ fn head_message(path: &std::path::Path) -> String {
 #[serial_test::serial]
 async fn e2e_write_note_commits_to_git_with_tool_name_verb() {
     let (tmp, _name, server) = setup_git_vault().await;
-    let tools = server.get_active_write_tools_test().await.unwrap();
 
     let head_before = head_oid(tmp.path()).unwrap();
-    tools
-        .write_file_with_mode_and_message(
-            "concepts/foo.md",
-            "# Foo\n\nplaceholder\n",
-            turbovault_tools::WriteMode::Overwrite,
-            None,
-            "write_note concepts/foo.md",
-        )
-        .await
-        .unwrap();
+    call(
+        &server,
+        "write_note",
+        serde_json::json!({ "path": "concepts/foo.md", "content": "# Foo\n\nplaceholder\n" }),
+    )
+    .await;
     let head_after = head_oid(tmp.path()).unwrap();
     assert_ne!(Some(head_after), Some(head_before));
     assert_eq!(
@@ -178,42 +211,39 @@ async fn e2e_commit_message_optional_by_default() {
     );
 }
 
-/// turbovault-6fo.18: move with link updates is one atomic commit.
-/// HEAD advances by exactly one commit; the rename + every linker
-/// rewrite land together.
+/// turbovault-6fo.18: move_note with update_backlinks is one atomic commit.
+/// HEAD advances by exactly one commit; the rename + the linker rewrite land
+/// together. `move_note` self-flushes its own reindex queue (turbovault-78w)
+/// before resolving backlinks, so no manual drain is needed here.
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_move_note_with_link_updates_one_commit() {
     let (tmp, _name, server) = setup_git_vault().await;
-    let tools = server.get_active_write_tools_test().await.unwrap();
-    let mgr = server.get_active_vault_manager_test().await.unwrap();
 
-    tools.write_file("old.md", "# Old\n").await.unwrap();
-    tools
-        .write_file("linker.md", "see [[old]] here\n")
-        .await
-        .unwrap();
-    // Ensure the link graph reflects the just-committed writes before
-    // we run a move that asks the substrate to consult it. Calling
-    // initialize() first guarantees the working-tree scan completes
-    // even if the substrate's drainer hasn't drained yet (the lqr
-    // move path consults the graph, not the queue).
-    // Drain queued reindex work + then bootstrap the link graph from
-    // disk. Sleep + flush + initialize together make the link graph
-    // fully reflect the just-committed writes; the substrate's
-    // background drainer + initialize() compete for the link-graph
-    // write lock and interleave non-deterministically without this
-    // priming.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    server.flush_reindex_for_active_vault_test().await.unwrap();
-    mgr.initialize().await.unwrap();
+    call(
+        &server,
+        "write_note",
+        serde_json::json!({ "path": "old.md", "content": "# Old\n" }),
+    )
+    .await;
+    call(
+        &server,
+        "write_note",
+        serde_json::json!({ "path": "linker.md", "content": "see [[old]] here\n" }),
+    )
+    .await;
     let head_before = head_oid(tmp.path()).unwrap();
 
-    let result = tools
-        .move_file_with_link_updates("old.md", "new.md", None, "atomic rename test")
-        .await
-        .unwrap();
-    assert_eq!(result.link_sources_updated, vec!["linker.md".to_string()]);
+    let result = call(
+        &server,
+        "move_note",
+        serde_json::json!({ "from": "old.md", "to": "new.md", "update_backlinks": true }),
+    )
+    .await;
+    assert_eq!(
+        result["data"]["link_sources_updated"],
+        serde_json::json!(["linker.md"])
+    );
     let head_after = head_oid(tmp.path()).unwrap();
     assert_ne!(head_after, head_before);
 
@@ -232,32 +262,41 @@ async fn e2e_move_note_with_link_updates_one_commit() {
     );
 }
 
-/// turbovault-6fo.18: delete with rewrite-stale callout wraps the
-/// linker as part of the same commit. The strikethrough breadcrumb
-/// survives.
+/// turbovault-6fo.18: delete_note with on_backlinks='rewrite-stale-callout'
+/// wraps the linker as part of the same commit. The strikethrough
+/// breadcrumb survives.
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_delete_note_rewrite_stale_callout_atomic() {
     let (tmp, _name, server) = setup_git_vault().await;
-    let tools = server.get_active_write_tools_test().await.unwrap();
-    let mgr = server.get_active_vault_manager_test().await.unwrap();
 
-    tools.write_file("doomed.md", "# Doomed").await.unwrap();
-    tools
-        .write_file("a.md", "see [[doomed]] for details\n")
-        .await
-        .unwrap();
-    // Same sleep+flush+initialize pattern as the move test (drainer
-    // wake-up races otherwise).
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    server.flush_reindex_for_active_vault_test().await.unwrap();
-    mgr.initialize().await.unwrap();
+    call(
+        &server,
+        "write_note",
+        serde_json::json!({ "path": "doomed.md", "content": "# Doomed" }),
+    )
+    .await;
+    call(
+        &server,
+        "write_note",
+        serde_json::json!({ "path": "a.md", "content": "see [[doomed]] for details\n" }),
+    )
+    .await;
 
-    let result = tools
-        .delete_file_with_link_rewrite_to_stale("doomed.md", None, "delete + wrap")
-        .await
-        .unwrap();
-    assert_eq!(result.link_sources_updated, vec!["a.md".to_string()]);
+    let result = call(
+        &server,
+        "delete_note",
+        serde_json::json!({
+            "path": "doomed.md",
+            "confirm_path": "doomed.md",
+            "on_backlinks": "rewrite-stale-callout",
+        }),
+    )
+    .await;
+    assert_eq!(
+        result["data"]["link_sources_updated"],
+        serde_json::json!(["a.md"])
+    );
     assert!(!tmp.path().join("doomed.md").exists());
     assert_eq!(
         std::fs::read_to_string(tmp.path().join("a.md")).unwrap(),
@@ -265,74 +304,31 @@ async fn e2e_delete_note_rewrite_stale_callout_atomic() {
     );
 }
 
-/// turbovault-6fo.18: batch_execute is atomic on a stale-CAS abort.
-/// Zero files change; HEAD doesn't advance; the substrate folds the
-/// failure into BatchResult{success:false, executed:0}.
-#[tokio::test]
-#[serial_test::serial]
-async fn e2e_batch_execute_per_op_cas_aborts_atomically() {
-    let (tmp, _name, server) = setup_git_vault().await;
-    let tools = server.get_active_write_tools_test().await.unwrap();
-
-    tools.write_file("a.md", "v1\n").await.unwrap();
-    let stale = VaultRepo::blob_oid_of(b"NEVER").unwrap().to_string();
-    let head_before = head_oid(tmp.path()).unwrap();
-
-    let ops = vec![
-        BatchOperation::CreateNote {
-            path: "fresh.md".into(),
-            content: "ok".into(),
-            force: None,
-        },
-        BatchOperation::WriteNote {
-            path: "a.md".into(),
-            content: "v2\n".into(),
-            expected_hash: Some(stale),
-        },
-    ];
-    let res = tools.batch_execute(ops).await.unwrap();
-    assert!(!res.success);
-    assert_eq!(res.executed, 0);
-    assert!(!tmp.path().join("fresh.md").exists());
-    assert_eq!(
-        std::fs::read_to_string(tmp.path().join("a.md")).unwrap(),
-        "v1\n"
-    );
-    assert_eq!(head_oid(tmp.path()), Some(head_before));
-}
-
-/// turbovault-6fo.18: batch_execute with all-matching preconditions
-/// lands as ONE commit (architecture §5.4: "1 changeset = 1 commit").
+/// turbovault-6fo.18: batch_execute with all-matching preconditions lands
+/// as ONE commit (architecture §5.4: "1 changeset = 1 commit"), carrying
+/// the MCP layer's auto-derived op-tally subject.
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_batch_execute_lands_as_one_commit() {
     let (tmp, _name, server) = setup_git_vault().await;
-    let tools = server.get_active_write_tools_test().await.unwrap();
 
     let head_before = head_oid(tmp.path()).unwrap();
-    let ops = vec![
-        BatchOperation::CreateNote {
-            path: "x.md".into(),
-            content: "x".into(),
-            force: None,
-        },
-        BatchOperation::CreateNote {
-            path: "y.md".into(),
-            content: "y".into(),
-            force: None,
-        },
-        BatchOperation::CreateNote {
-            path: "z.md".into(),
-            content: "z".into(),
-            force: None,
-        },
-    ];
-    let res = tools.batch_execute(ops).await.unwrap();
-    assert!(res.success);
-    assert_eq!(res.executed, 3);
+    let operations = serde_json::json!([
+        { "type": "CreateNote", "path": "x.md", "content": "x" },
+        { "type": "CreateNote", "path": "y.md", "content": "y" },
+        { "type": "CreateNote", "path": "z.md", "content": "z" },
+    ]);
+    let res = call(
+        &server,
+        "batch_execute",
+        serde_json::json!({ "operations": operations }),
+    )
+    .await;
+    assert_eq!(res["success"], true);
+    assert_eq!(res["data"]["executed"], 3);
+
     let head_after = head_oid(tmp.path()).unwrap();
     assert_ne!(head_after, head_before);
-
     let repo = git2::Repository::open(tmp.path()).unwrap();
     let commit = repo.find_commit(head_after).unwrap();
     assert_eq!(
@@ -340,147 +336,30 @@ async fn e2e_batch_execute_lands_as_one_commit() {
         1,
         "exactly one new commit for the 3-op batch"
     );
-    // Substrate-default batch subject (the MCP-layer's op-tally derive
-    // only runs through the `#[tool]` handler; this e2e drives
-    // WriteTools::batch_execute directly which uses the substrate's
-    // default `batch_execute (N ops)` format).
     let msg = head_message(tmp.path());
     assert!(
-        msg.contains("batch_execute"),
-        "expected substrate-default batch subject, got: {msg:?}"
+        msg.contains("batch:") && msg.contains("create"),
+        "expected the MCP layer's auto-derived batch subject, got: {msg:?}"
     );
 }
 
-/// turbovault-6fo.18 (+ bou): the HEAD-ref listener detects a commit
-/// made out-of-band (via direct git2) and pushes the new oid onto the
-/// per-vault reindex queue. Server-side wiring covered.
-///
-/// Note: the production listener polls at 5s default. The substrate
-/// commit-hook (which fires on writes via this server's WriteTools)
-/// also pushes to the queue immediately, so the test does NOT do any
-/// substrate write between baseline and the external commit — the
-/// only oid that can land in the queue must come from the listener.
-#[tokio::test]
-#[serial_test::serial]
-async fn e2e_external_commit_observed_by_ref_listener() {
-    let (tmp, _name, server) = setup_git_vault().await;
-    // Spawn listener with a SHORT interval so the test doesn't waste
-    // wallclock on 5s production polls. The interval is the only knob
-    // that differs from the production wiring.
-    server
-        .spawn_ref_listener_with_interval_test("e2e", Duration::from_millis(50))
-        .await;
-    // Give the listener one tick to set its baseline.
-    tokio::time::sleep(Duration::from_millis(120)).await;
-    let queue = server.get_reindex_queue_test("e2e").await.unwrap();
-    assert_eq!(
-        queue.pending_count(),
-        0,
-        "queue should be empty at listener start"
-    );
-
-    // External commit via direct git2 (bypasses the substrate's
-    // CommitHook — only the listener can observe this).
-    let repo = git2::Repository::open(tmp.path()).unwrap();
-    std::fs::write(tmp.path().join("external.md"), "external content").unwrap();
-    let mut idx = repo.index().unwrap();
-    idx.add_path(std::path::Path::new("external.md")).unwrap();
-    let tree_oid = idx.write_tree().unwrap();
-    idx.write().unwrap();
-    let tree = repo.find_tree(tree_oid).unwrap();
-    let sig = git2::Signature::now("Ext", "ext@example").unwrap();
-    let parent_oid = repo.head().unwrap().target().unwrap();
-    let parent = repo.find_commit(parent_oid).unwrap();
-    let external_oid = repo
-        .commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            "external commit (bou test)",
-            &tree,
-            &[&parent],
-        )
-        .unwrap();
-
-    // Listener polls at 50ms in this test — generous 2s ceiling.
-    let start = std::time::Instant::now();
-    let mut detected = false;
-    while start.elapsed() < Duration::from_secs(2) {
-        if queue.pending_count() > 0 {
-            detected = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(
-        detected,
-        "HEAD-ref listener should have detected the external commit within the poll window"
-    );
-    // The single pushed oid must be the external commit (no substrate
-    // writes happened in this test, so the listener is the only
-    // pusher).
-    assert_eq!(queue.pop_front(), Some(external_oid));
-}
-
-/// turbovault-6fo.18: after a substrate write, the reindex queue
-/// drains successfully via the server's `flush_reindex_for_active_vault`
-/// helper. End-to-end check that the queue + drainer + flush helpers
-/// compose without panicking. Doesn't assert the post-drain graph
-/// shape (those are covered by `turbovault-tools` integration tests
-/// at the substrate level); this test cares about the
-/// server-side wiring.
-#[tokio::test]
-#[serial_test::serial]
-async fn e2e_reindex_queue_drains_after_substrate_writes() {
-    let (_tmp, _name, server) = setup_git_vault().await;
-    let tools = server.get_active_write_tools_test().await.unwrap();
-
-    tools
-        .write_file("home.md", "see [[concept-x]]\n")
-        .await
-        .unwrap();
-    tools
-        .write_file("concept-x.md", "# Concept X\n")
-        .await
-        .unwrap();
-
-    // The background drainer task may have already pulled the pending
-    // pushes by the time we observe (race vs. tokio::Notify wake-ups
-    // is intentional — drains happen asap). We don't assert "queue had
-    // > 0 pending" because that's inherently racy. We DO assert the
-    // server-side flush helper completes without error and the queue
-    // is empty afterwards (which is the e2e wiring contract).
-    server.flush_reindex_for_active_vault_test().await.unwrap();
-
-    let queue = server.get_reindex_queue_test("e2e").await.unwrap();
-    assert_eq!(queue.pending_count(), 0, "flush should leave queue empty");
-}
-
-/// turbovault-1ne: remove_vault refuses while a fanout is active
-/// (symmetric with begin_fanout's nested-fanout refusal), and
-/// cleanly aborts the drainer + ref-listener tasks + drops the
-/// lock/queue entries when allowed.
+/// turbovault-1ne: remove_vault cleanly drops the fanout `CommitLocks` entry
+/// once no fanout is active (`git_repos`/`git_reindex_queues`/`git_drainers`/
+/// `git_ref_listeners` were the server's own now-deleted reindex duplicate;
+/// `git_locks` alone survives write-substrate-layering M4e — fanout is now
+/// its ONLY populator: ordinary writes route straight through the manager,
+/// which owns its own internal `CommitLocks` independent of this map).
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_remove_vault_cleans_up_git_backend_state() {
     let (tmp, name, server) = setup_git_vault().await;
 
-    // Drive one write so the lazy drainer + ref listener spawn,
-    // and the lock/queue entries materialize.
-    let tools = server.get_active_write_tools_test().await.unwrap();
-    tools.write_file("seed.md", "seed\n").await.unwrap();
-    server
-        .spawn_ref_listener_with_interval_test(name, Duration::from_millis(50))
-        .await;
+    // begin_fanout is what populates `git_locks` now (fanout.rs calls
+    // `get_or_init_git_locks`); abandon it immediately so remove_vault isn't
+    // blocked by an active fanout.
+    call(&server, "begin_fanout", serde_json::json!({})).await;
+    call(&server, "abandon_fanout", serde_json::json!({})).await;
 
-    assert!(
-        server.has_git_drainer_test(name).await,
-        "drainer should be live"
-    );
-    assert!(
-        server.has_git_ref_listener_test(name).await,
-        "ref listener should be live"
-    );
     assert!(
         server.has_git_locks_test(name).await,
         "locks entry should be live"
@@ -488,14 +367,6 @@ async fn e2e_remove_vault_cleans_up_git_backend_state() {
 
     server.remove_vault_test(name).await.unwrap();
 
-    assert!(
-        !server.has_git_drainer_test(name).await,
-        "drainer entry should be dropped after remove_vault"
-    );
-    assert!(
-        !server.has_git_ref_listener_test(name).await,
-        "ref listener entry should be dropped after remove_vault"
-    );
     assert!(
         !server.has_git_locks_test(name).await,
         "locks entry should be dropped after remove_vault"
@@ -518,9 +389,13 @@ async fn e2e_remove_vault_cleans_up_git_backend_state() {
 async fn e2e_remove_vault_blocked_while_fanout_active() {
     let (_tmp, name, server) = setup_git_vault().await;
 
-    // Bring up the drainer + lock entries with a seed write.
-    let tools = server.get_active_write_tools_test().await.unwrap();
-    tools.write_file("seed.md", "seed\n").await.unwrap();
+    // Bring up the lock entry with a seed write.
+    call(
+        &server,
+        "write_note",
+        serde_json::json!({ "path": "seed.md", "content": "seed\n" }),
+    )
+    .await;
 
     // Open a fanout worktree directly through the substrate-side
     // path so the e2e test doesn't depend on the full
@@ -564,60 +439,39 @@ async fn e2e_remove_vault_blocked_while_fanout_active() {
     .unwrap();
 }
 
-/// turbovault-gje: update_frontmatter, manage_tags, and
-/// create_from_template were previously bypassing the git substrate
-/// by calling VaultManager::write_file directly. Verify that the new
-/// MCP-layer routing through WriteTools produces a real git commit
-/// for each. (The compute helpers are unit-tested in turbovault-tools;
-/// this exercises the full server-side write path so a regression
-/// would surface.)
+/// turbovault-gje: update_frontmatter previously bypassed the git substrate
+/// by calling VaultManager::write_file directly from the tool layer. Now
+/// that the handler is a thin call into `MetadataTools` over the manager
+/// (write-substrate-layering M4d), drive it through the REAL handler and
+/// verify it produces a real git commit.
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_update_frontmatter_routed_through_substrate() {
     let (tmp, _name, server) = setup_git_vault().await;
 
-    // Seed a note via the substrate so HEAD has a known starting point.
-    let write_tools = server.get_active_write_tools_test().await.unwrap();
-    write_tools
-        .write_file_with_mode_and_message(
-            "notes/sample.md",
-            "---\ntags: [a]\n---\nbody\n",
-            turbovault_tools::WriteMode::Overwrite,
-            None,
-            "seed sample",
-        )
-        .await
-        .unwrap();
+    call(
+        &server,
+        "write_note",
+        serde_json::json!({ "path": "notes/sample.md", "content": "---\ntags: [a]\n---\nbody\n" }),
+    )
+    .await;
     let head_after_seed = head_oid(tmp.path()).unwrap();
 
-    // Drive update_frontmatter the same way the MCP handler does:
-    // compute new content via MetadataTools, write through WriteTools.
-    let manager = server.get_active_vault_manager_test().await.unwrap();
-    let metadata_tools = turbovault_tools::MetadataTools::new(manager);
-    let mut fm = serde_json::Map::new();
-    fm.insert(
-        "title".to_string(),
-        serde_json::Value::String("hello".to_string()),
-    );
-    let (new_content, _info) = metadata_tools
-        .compute_update_frontmatter("notes/sample.md", fm, true)
-        .await
-        .unwrap();
-    write_tools
-        .write_file_with_mode_and_message(
-            "notes/sample.md",
-            &new_content,
-            turbovault_tools::WriteMode::Overwrite,
-            None,
-            "update_frontmatter notes/sample.md",
-        )
-        .await
-        .unwrap();
+    call(
+        &server,
+        "update_frontmatter",
+        serde_json::json!({
+            "path": "notes/sample.md",
+            "frontmatter": { "title": "hello" },
+            "merge": true,
+        }),
+    )
+    .await;
 
     let head_after_update = head_oid(tmp.path()).unwrap();
     assert_ne!(
         head_after_update, head_after_seed,
-        "update_frontmatter via WriteTools should advance HEAD"
+        "update_frontmatter should advance HEAD"
     );
     let msg = head_message(tmp.path());
     assert!(
@@ -625,7 +479,6 @@ async fn e2e_update_frontmatter_routed_through_substrate() {
         "commit subject should reflect tool, got: {}",
         msg
     );
-    // Working tree reflects the new frontmatter.
     let on_disk = std::fs::read_to_string(tmp.path().join("notes/sample.md")).unwrap();
     assert!(
         on_disk.contains("title: hello") || on_disk.contains("title:hello"),
@@ -634,52 +487,35 @@ async fn e2e_update_frontmatter_routed_through_substrate() {
     );
 }
 
-/// turbovault-gje: same routing test for create_from_template — the
-/// template path used to call manager.write_file directly. Verify it
-/// now commits.
+/// turbovault-gje: same routing proof for create_from_template — the
+/// template path used to call manager.write_file directly. Drive it
+/// through the real handler with a built-in template ("doc") and verify
+/// it now commits.
 #[tokio::test]
 #[serial_test::serial]
 async fn e2e_create_from_template_routed_through_substrate() {
     let (tmp, _name, server) = setup_git_vault().await;
     let head_before = head_oid(tmp.path()).unwrap();
 
-    let manager = server.get_active_vault_manager_test().await.unwrap();
-    let mut engine = turbovault_tools::TemplateEngine::new(manager);
-    let template = turbovault_tools::TemplateDefinition::builder("t1", "Test Template")
-        .description("test")
-        .content_template("# {title}\n\nbody\n")
-        .add_field(turbovault_tools::TemplateField {
-            name: "title".to_string(),
-            description: "title".to_string(),
-            field_type: turbovault_tools::TemplateFieldType::Text,
-            required: true,
-            default_value: None,
-            example: None,
-        })
-        .build();
-    engine.register_template(template);
-
-    let mut field_values = std::collections::HashMap::new();
-    field_values.insert("title".to_string(), "hello".to_string());
-    let (full_content, _info) = engine
-        .compute_from_template("t1", "templated/n.md", field_values)
-        .await
-        .unwrap();
-    let write_tools = server.get_active_write_tools_test().await.unwrap();
-    write_tools
-        .create_file_with_message(
-            "templated/n.md",
-            &full_content,
-            "create_from_template t1 -> templated/n.md",
-        )
-        .await
-        .unwrap();
+    call(
+        &server,
+        "create_from_template",
+        serde_json::json!({
+            "template_id": "doc",
+            "file_path": "templated/n.md",
+            "fields": serde_json::to_string(&serde_json::json!({
+                "title": "hello",
+                "summary": "a summary",
+            })).unwrap(),
+        }),
+    )
+    .await;
 
     let head_after = head_oid(tmp.path()).unwrap();
     assert_ne!(
         Some(head_after),
         Some(head_before),
-        "create_from_template via WriteTools should advance HEAD"
+        "create_from_template should advance HEAD"
     );
     let msg = head_message(tmp.path());
     assert!(
@@ -687,4 +523,18 @@ async fn e2e_create_from_template_routed_through_substrate() {
         "commit subject should reflect tool, got: {}",
         msg
     );
+    assert!(tmp.path().join("templated/n.md").exists());
 }
+
+// Deliberately not migrated (write-substrate-layering M4e):
+// - e2e_batch_execute_per_op_cas_aborts_atomically — byte-for-byte covered
+//   by `wire_batch_execute_stale_cas_aborts_atomically` in
+//   test_mcp_wire_e2e.rs (the real child-process wire path).
+// - e2e_external_commit_observed_by_ref_listener /
+//   e2e_reindex_queue_drains_after_substrate_writes — drove the server's
+//   OWN now-deleted reindex duplicate (`get_reindex_queue_test` /
+//   `flush_reindex_for_active_vault_test` / the HEAD-ref listener test
+//   shim). The manager now owns reindex end-to-end (bite 3a); the
+//   underlying `watch_ref_changes`/drain guarantees are unit-tested in
+//   `turbovault-vault/src/reindex.rs`, and every derived-state assertion
+//   in the wire suite already exercises the manager's self-flushing reads.

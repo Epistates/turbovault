@@ -58,7 +58,7 @@ impl BatchProvider {
             .resolve_commit_message(commit_message, || derive_batch_message(&operations))
             .await?;
         let result = BatchTools::new(manager)
-            .batch_apply(operations, &message)
+            .batch_execute(operations, &message)
             .await
             .map_err(to_mcp_error)?;
 

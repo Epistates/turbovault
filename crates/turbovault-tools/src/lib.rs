@@ -173,7 +173,6 @@ pub mod diff_tools;
 pub mod duplicate_tools;
 pub mod export_tools;
 pub mod file_tools;
-pub mod git_file_tools;
 pub mod graph_tools;
 pub mod grounding;
 pub mod metadata_tools;
@@ -190,7 +189,6 @@ pub mod validation_tools;
 pub mod vault_lifecycle;
 pub mod viewer;
 pub mod wikilink_rewriter;
-pub mod write_tools;
 
 #[cfg(feature = "sql")]
 pub mod sql_engine;
@@ -202,7 +200,6 @@ pub use diff_tools::{DiffResult, DiffSummary, DiffTools};
 pub use duplicate_tools::{CompareResult, DuplicateGroup, DuplicateTools};
 pub use export_tools::ExportTools;
 pub use file_tools::{FileTools, NoteInfo, WriteMode, obsidian_uri};
-pub use git_file_tools::{CachedRepo, CasCollisionFlush, GitFileTools, MoveWithLinksResult};
 pub use graph_tools::{BrokenLinkInfo, GraphTools, HealthInfo};
 pub use grounding::{GroundingAnalysis, GroundingTools, UngroundedNote, UngroundedReport};
 pub use metadata_tools::MetadataTools;
@@ -219,19 +216,11 @@ pub use templates::{TemplateDefinition, TemplateEngine, TemplateField, TemplateF
 pub use turbovault_batch::{BatchOperation, BatchResult};
 pub use turbovault_core::prelude::*;
 pub use turbovault_git::{
-    CommitHook, CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, OrphanFanout,
-    VaultRepo,
+    CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, OrphanFanout, VaultRepo,
 };
-// write-substrate-layering M4c (bite 3a, turbovault-qae.5.3): the reindex
-// machinery relocated into `turbovault-vault` (VaultManager owns the queue +
-// background tasks). Kept re-exported here so the server's still-live
-// `GitFileTools` reindex path + the concurrency tests compile unchanged; the
-// server-side copy is deleted in bite 3b+4.
-pub use turbovault_vault::reindex::{ReindexQueue, apply_commit_diff, watch_ref_changes};
 pub use validation_tools::{ValidationReportInfo, ValidationTools};
 pub use vault_lifecycle::VaultLifecycleTools;
 pub use viewer::{ViewerTools, VisualizationResult};
-pub use write_tools::WriteTools;
 
 #[cfg(feature = "sql")]
 pub use sql_engine::FrontmatterSqlEngine;

@@ -176,7 +176,10 @@ fn bench_batch_operations(c: &mut Criterion) {
                             expected_hash: None,
                         })
                         .collect();
-                    tools.batch_execute(black_box(ops)).await.unwrap()
+                    tools
+                        .batch_execute(black_box(ops), "bench batch")
+                        .await
+                        .unwrap()
                 })
             },
         );

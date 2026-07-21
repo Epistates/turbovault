@@ -1,15 +1,20 @@
 //! GWS.16 — Concurrency / isolation integration tests for the git substrate.
 //!
-//! Exercises end-to-end scenarios that span the `WriteTools` dispatch layer +
-//! `GitFileTools` + the bare substrate (`VaultRepo::commit_changeset`) +
-//! `ReindexQueue`. The substrate's unit tests live in `turbovault-git/src/`
-//! and exercise the primitives directly; this file proves the same
-//! correctness guarantees survive the trip through the tool layer that the
-//! MCP server sits on.
+//! write-substrate-layering M4e: exercises end-to-end scenarios through
+//! `VaultManager`'s domain tools (`FileTools`/`BatchTools`) + the bare
+//! substrate (`VaultRepo::commit_changeset`) — the surface that survives
+//! `WriteTools`/`GitFileTools`'s deletion. Two callers sharing one
+//! `Arc<VaultManager>` model what the MCP server's per-vault cache gives
+//! every call today (the manager owns its own `CommitLocks` + cached repo
+//! internally, so no test-level lock-registry plumbing is needed anymore).
+//! `ReindexQueue`'s own drain/notify guarantees are unit-tested directly in
+//! `turbovault-vault/src/reindex.rs`; this file only proves the
+//! CAS/atomicity guarantees survive the trip through the domain tools that
+//! sit on top of the manager.
 //!
 //! Scenarios:
-//! 1. Disjoint concurrent writers — two tasks writing to distinct files via
-//!    one shared `CommitLocks` registry both succeed.
+//! 1. Disjoint concurrent writers — two tasks writing to distinct files
+//!    through one shared `Arc<VaultManager>` both succeed.
 //! 2. Same-file CAS abort — two writers, both with `expected_hash` of the
 //!    same base bytes; first wins, second's precondition stalemates loudly.
 //! 3. Reconsideration domino — a multi-file batch with an `expect_blob` on a
@@ -17,8 +22,8 @@
 //!    materialize, no partial state).
 //! 4. Move + link-update atomicity — `rename` chained with link-target
 //!    `update`s lands as ONE commit.
-//! 5. Reindex queue stays coherent under contention — both writers' commits
-//!    end up in the queue + drainer applies all of them.
+//! 5. Batch atomicity through the manager-routed `BatchTools::batch_execute`
+//!    — a mid-batch failure leaves zero partial state.
 //!
 //! Cross-process scenarios (Workflow B) are §8.4 territory and NOT covered
 //! here — they require the future git-event listener.
@@ -27,10 +32,8 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 use turbovault_batch::BatchOperation;
-use turbovault_core::config::{ServerConfig, VaultConfig};
-use turbovault_tools::{
-    CommitHook, CommitLocks, GitFileTools, Oid, ReindexQueue, VaultRepo, WriteMode, WriteTools,
-};
+use turbovault_core::config::{ServerConfig, VaultConfig, WriteBackend};
+use turbovault_tools::{BatchTools, CommitLocks, FileTools, VaultRepo, WriteMode};
 use turbovault_vault::VaultManager;
 
 fn init_repo(dir: &Path) {
@@ -39,46 +42,36 @@ fn init_repo(dir: &Path) {
     git2::Repository::init_opts(dir, &opts).unwrap();
 }
 
+/// write_backend: git — these tests exercise the git substrate's CAS/
+/// atomicity guarantees specifically (the direct backend has its own
+/// coverage in turbovault-vault/src/substrate.rs).
 fn test_server_config(vault_dir: &Path) -> ServerConfig {
     let mut cfg = ServerConfig::new();
-    cfg.vaults
-        .push(VaultConfig::builder("c", vault_dir).build().unwrap());
+    cfg.vaults.push(
+        VaultConfig::builder("c", vault_dir)
+            .write_backend(WriteBackend::Git)
+            .build()
+            .unwrap(),
+    );
     cfg
 }
 
-/// Two `WriteTools` handles sharing the same `CommitLocks` registry — what
-/// the MCP server cache gives every per-call open. Models the per-vault
-/// in-process contention the substrate is designed for.
-fn two_writers(tmp: &TempDir) -> (Arc<VaultManager>, WriteTools, WriteTools, Arc<ReindexQueue>) {
+/// Two `FileTools` handles wrapping the SAME `Arc<VaultManager>` — what the
+/// MCP server's per-vault cache gives every call today (one manager, one
+/// internal `CommitLocks` + cached repo). Models the per-vault in-process
+/// contention the substrate is designed for.
+fn two_writers(tmp: &TempDir) -> (Arc<VaultManager>, FileTools, FileTools) {
     init_repo(tmp.path());
     let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
-    let locks = Arc::new(CommitLocks::new());
-    let queue = Arc::new(ReindexQueue::new());
-
-    let q1 = Arc::clone(&queue);
-    let hook1: CommitHook = Arc::new(move |_p, c| q1.push(c));
-    let q2 = Arc::clone(&queue);
-    let hook2: CommitHook = Arc::new(move |_p, c| q2.push(c));
-
-    let a = WriteTools::git_with_hook(
-        Arc::clone(&manager),
-        tmp.path().to_path_buf(),
-        Arc::clone(&locks),
-        hook1,
-    );
-    let b = WriteTools::git_with_hook(
-        Arc::clone(&manager),
-        tmp.path().to_path_buf(),
-        Arc::clone(&locks),
-        hook2,
-    );
-    (manager, a, b, queue)
+    let a = FileTools::new(Arc::clone(&manager));
+    let b = FileTools::new(Arc::clone(&manager));
+    (manager, a, b)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn disjoint_writers_both_succeed() {
     let tmp = TempDir::new().unwrap();
-    let (_mgr, a, b, queue) = two_writers(&tmp);
+    let (manager, a, b) = two_writers(&tmp);
 
     let ja = tokio::spawn(async move {
         for i in 0..20 {
@@ -102,14 +95,17 @@ async fn disjoint_writers_both_succeed() {
         assert!(tmp.path().join(format!("a_{i}.md")).exists());
         assert!(tmp.path().join(format!("b_{i}.md")).exists());
     }
-    // Reindex queue saw all 40 commits.
-    assert_eq!(queue.pending_count(), 40);
+    // Reindex queue saw every commit — draining must not error, and the link
+    // graph must end up with all 40 files (ReindexQueue's own drain/notify
+    // unit tests live in turbovault-vault/src/reindex.rs).
+    manager.flush_reindex().await;
+    assert_eq!(manager.link_graph().read().await.node_count(), 40);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_file_cas_one_wins_other_aborts() {
     let tmp = TempDir::new().unwrap();
-    let (_mgr, a, b, _q) = two_writers(&tmp);
+    let (_mgr, a, b) = two_writers(&tmp);
 
     // Seed v1 so both writers can compute a (stale-by-the-time-of-write)
     // blob oid for the precondition.
@@ -121,11 +117,11 @@ async fn same_file_cas_one_wins_other_aborts() {
     let v1a = v1_blob.clone();
     let v1b = v1_blob.clone();
     let ja = tokio::spawn(async move {
-        a.write_file_with_mode("a.md", "WA", WriteMode::Overwrite, Some(&v1a))
+        a.write_file_with_mode("a.md", "WA", WriteMode::Overwrite, Some(&v1a), "writer A")
             .await
     });
     let jb = tokio::spawn(async move {
-        b.write_file_with_mode("a.md", "WB", WriteMode::Overwrite, Some(&v1b))
+        b.write_file_with_mode("a.md", "WB", WriteMode::Overwrite, Some(&v1b), "writer B")
             .await
     });
     let ra = ja.await.unwrap();
@@ -153,7 +149,7 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
     // write. If the read-set changes underneath, the WHOLE batch aborts —
     // no partial state, no spurious writes.
     let tmp = TempDir::new().unwrap();
-    let (_mgr, a, b, _q) = two_writers(&tmp);
+    let (_mgr, a, b) = two_writers(&tmp);
 
     a.write_file("watched.md", "W1").await.unwrap();
     let watched_v1 = VaultRepo::blob_oid_of(b"W1").unwrap();
@@ -165,6 +161,7 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
         "W2",
         WriteMode::Overwrite,
         Some(&watched_v1_str),
+        "writer B races",
     )
     .await
     .unwrap();
@@ -206,26 +203,17 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
 
 #[tokio::test]
 async fn move_with_link_updates_lands_as_one_commit() {
-    // The case the direct batch couldn't deliver atomically: rename a page
-    // AND update its inbound wikilinks in ONE commit. This is the substrate's
-    // headline win.
+    // The case a purely sequential direct backend couldn't deliver
+    // atomically: rename a page AND update its inbound wikilinks in ONE
+    // commit. This is the substrate's headline win.
     let tmp = TempDir::new().unwrap();
     init_repo(tmp.path());
     let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
-    let locks = Arc::new(CommitLocks::new());
-    let queue = Arc::new(ReindexQueue::new());
-    let q = Arc::clone(&queue);
-    let hook: CommitHook = Arc::new(move |_p, c| q.push(c));
-    let tools = GitFileTools::new_with_hook(
-        Arc::clone(&manager),
-        tmp.path().to_path_buf(),
-        Arc::clone(&locks),
-        hook,
-    );
+    let files = FileTools::new(Arc::clone(&manager));
 
-    tools.write_file("old.md", "body").await.unwrap();
-    tools.write_file("link1.md", "see [[old]]").await.unwrap();
-    tools
+    files.write_file("old.md", "body").await.unwrap();
+    files.write_file("link1.md", "see [[old]]").await.unwrap();
+    files
         .write_file("link2.md", "ref [[old]] here")
         .await
         .unwrap();
@@ -236,8 +224,9 @@ async fn move_with_link_updates_lands_as_one_commit() {
     };
 
     // Drive a single changeset directly through the substrate (the
-    // move-with-links composition isn't yet wrapped by GitFileTools — the
-    // batch surface gets close, but doesn't accept preconditions yet).
+    // move-with-links composition is exercised end-to-end via
+    // `BatchTools::move_file_with_link_updates` in batch_tools.rs' own
+    // tests; this proves the underlying commit stays a single HEAD advance).
     use turbovault_core::ChangePlan;
     let body_blob = VaultRepo::blob_oid_of(b"body").unwrap();
     let l1_blob = VaultRepo::blob_oid_of(b"see [[old]]").unwrap();
@@ -246,12 +235,8 @@ async fn move_with_link_updates_lands_as_one_commit() {
         .rename("old.md", "new.md", body_blob.to_string())
         .update("link1.md", "see [[new]]", l1_blob.to_string())
         .update("link2.md", "ref [[new]] here", l2_blob.to_string());
-    let repo = VaultRepo::open_with_locks_and_hook(
-        tmp.path(),
-        Arc::clone(&locks),
-        Arc::new(move |_p, c| Arc::clone(&queue).push(c)),
-    )
-    .unwrap();
+    let locks = Arc::new(CommitLocks::new());
+    let repo = VaultRepo::open_with_locks(tmp.path(), Arc::clone(&locks)).unwrap();
     let _res = repo.commit_changeset(&txn).unwrap();
 
     // HEAD advanced exactly ONCE for all four file changes (rename = remove
@@ -282,51 +267,15 @@ async fn move_with_link_updates_lands_as_one_commit() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn reindex_queue_receives_every_commit_under_contention() {
-    let tmp = TempDir::new().unwrap();
-    let (_mgr, a, b, queue) = two_writers(&tmp);
-
-    // Two writers, distinct files, 25 each — all should land in the queue.
-    let ja = tokio::spawn(async move {
-        for i in 0..25 {
-            a.write_file(&format!("a_{i}.md"), "x").await.unwrap();
-        }
-    });
-    let jb = tokio::spawn(async move {
-        for i in 0..25 {
-            b.write_file(&format!("b_{i}.md"), "y").await.unwrap();
-        }
-    });
-    ja.await.unwrap();
-    jb.await.unwrap();
-    assert_eq!(queue.pending_count(), 50);
-
-    // Drain everything synchronously; cursor advances to the last commit.
-    let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
-    let repo = VaultRepo::open_with_locks(tmp.path(), Arc::new(CommitLocks::new())).unwrap();
-    let drained = queue.drain_through(&repo, &manager).await.unwrap();
-    assert_eq!(drained.len(), 50);
-    assert_eq!(queue.pending_count(), 0);
-    assert!(queue.cursor().is_some());
-
-    // Ensure no Oid was reused or dropped — the drainer covers all of them.
-    let _: Oid = queue.cursor().unwrap();
-}
-
 #[tokio::test]
 async fn batch_failure_leaves_zero_partial_state() {
-    // Equivalent of the WriteTools test but at the integration boundary —
-    // proves the atomicity claim survives the dispatch layer.
+    // Proves the atomicity claim survives the manager-routed batch surface
+    // (write-substrate-layering M4d: `BatchTools::batch_execute` folds every
+    // op into ONE ChangePlan and applies it via `VaultManager::apply_changes`).
     let tmp = TempDir::new().unwrap();
     init_repo(tmp.path());
     let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
-    let locks = Arc::new(CommitLocks::new());
-    let tools = WriteTools::git(
-        Arc::clone(&manager),
-        tmp.path().to_path_buf(),
-        Arc::clone(&locks),
-    );
+    let batch = BatchTools::new(manager);
 
     let ops = vec![
         BatchOperation::WriteNote {
@@ -346,7 +295,10 @@ async fn batch_failure_leaves_zero_partial_state() {
             expected_hash: None,
         },
     ];
-    let res = tools.batch_execute(ops).await.unwrap();
+    let res = batch
+        .batch_execute(ops, "batch atomicity proof")
+        .await
+        .unwrap();
     assert!(!res.success);
 
     // Zero files from the failed batch materialized — proof of atomicity.

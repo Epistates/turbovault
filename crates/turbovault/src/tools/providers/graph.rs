@@ -36,7 +36,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn get_backlinks(&self, path: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = SearchTools::new(manager);
         let backlinks = tools.find_backlinks(&path).await.map_err(to_mcp_error)?;
 
@@ -67,7 +67,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn get_forward_links(&self, path: String) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = SearchTools::new(manager);
         let links = tools
             .find_forward_links(&path)
@@ -99,7 +99,7 @@ impl GraphProvider {
         path: String,
         max_hops: Option<usize>,
     ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = SearchTools::new(manager);
         let max_hops = max_hops.unwrap_or(2).min(5); // Cap at 5 hops to prevent runaway traversal
         let related = tools
@@ -130,7 +130,7 @@ impl GraphProvider {
     )]
     async fn get_hub_notes(&self, top_n: Option<usize>) -> McpResult<serde_json::Value> {
         let top_n = top_n.unwrap_or(10);
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let hubs = tools.get_hub_notes(top_n).await.map_err(to_mcp_error)?;
 
@@ -157,7 +157,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn get_dead_end_notes(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let dead_ends = tools.get_dead_end_notes().await.map_err(to_mcp_error)?;
 
@@ -183,7 +183,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn get_isolated_clusters(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let clusters = tools.get_isolated_clusters().await.map_err(to_mcp_error)?;
 
@@ -211,7 +211,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn quick_health_check(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let health = tools.quick_health_check().await.map_err(to_mcp_error)?;
 
@@ -241,7 +241,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn full_health_analysis(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let health = tools.full_health_analysis().await.map_err(to_mcp_error)?;
 
@@ -276,7 +276,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn get_broken_links(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let broken = tools.get_broken_links().await.map_err(to_mcp_error)?;
 
@@ -307,7 +307,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn detect_cycles(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let cycles = tools.detect_cycles().await.map_err(to_mcp_error)?;
 
@@ -339,7 +339,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn explain_vault(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair_with_reindex().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let graph_tools = GraphTools::new(manager.clone());
         let analysis_tools = AnalysisTools::new(manager.clone());
 

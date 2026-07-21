@@ -405,7 +405,7 @@ impl SearchQuery {
             .map_err(|e| Error::config_error(format!("Failed to create reader: {}", e)))?;
 
         let searcher = reader.searcher();
-        let graph = engine.manager.link_graph();
+        let graph = engine.manager.link_graph_flushed().await;
         let graph_read = graph.read().await;
 
         // Parse query using tantivy's QueryParser with fuzzy search enabled

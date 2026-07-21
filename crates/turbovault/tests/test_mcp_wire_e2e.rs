@@ -6,15 +6,17 @@
 //! purely against `CallToolResult`s coming back over the wire.
 //!
 //! This complements `test_mcp_e2e_git_substrate.rs` (turbovault-6fo.18 /
-//! GWS.17), which deliberately stops one layer below the wire (it calls the
-//! `WriteTools` dispatcher in-process via `get_active_write_tools_test()`).
-//! This suite exercises what that one skips: tool schema/registration, JSON
-//! argument (de)serialization, MCP response framing, AND — crucially — the
-//! REAL lazy-reindex flush-on-query path. There is no `flush_*_test`
-//! backdoor reachable over the wire, so every derived-state assertion below
-//! goes through a read tool (`get_backlinks` / `get_forward_links` /
-//! `search`) whose handler drains the per-vault `ReindexQueue` via
-//! `get_vault_pair_with_reindex` before answering (turbovault-brs / GWS.14).
+//! GWS.17), which deliberately stops one layer below the wire (it calls
+//! `ObsidianMcpServer::call_tool` directly, in-process — no JSON-RPC/stdio
+//! framing). This suite exercises what that one skips: tool
+//! schema/registration, JSON argument (de)serialization, MCP response
+//! framing, AND — crucially — the REAL lazy-reindex flush-on-query path.
+//! There is no `flush_*_test` backdoor reachable over the wire, so every
+//! derived-state assertion below goes through a read tool (`get_backlinks` /
+//! `get_forward_links` / `search`) whose handler resolves the active
+//! `VaultManager`, which self-flushes any queued out-of-band commits into
+//! the link graph before the read answers (turbovault-brs / GWS.14; design
+//! §6.3 deliverable E).
 //!
 //! The git-backed vault is registered through a temp `--config` YAML, the
 //! only over-wire route to `write_backend: git` (the `add_vault` MCP tool

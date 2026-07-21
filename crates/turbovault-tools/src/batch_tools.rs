@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use turbovault_batch::{BatchExecutor, BatchOperation, BatchResult, OperationRecord};
+use turbovault_batch::{BatchOperation, BatchResult, OperationRecord};
 use turbovault_core::ChangePlan;
 use turbovault_core::prelude::*;
 use turbovault_vault::{EditEngine, VaultManager};
@@ -23,16 +23,6 @@ impl BatchTools {
     /// Read a file from the vault (mirrors `GitFileTools::read_file`).
     async fn read_file(&self, path: &str) -> Result<String> {
         self.manager.read_file(&PathBuf::from(path)).await
-    }
-
-    /// Execute batch operations sequentially, stopping at the first failure.
-    ///
-    /// Each individual file mutation is atomic, but the batch as a whole is
-    /// not transactional: operations completed before a failure remain
-    /// applied and are reported in [`BatchResult::changes`].
-    pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
-        let executor = BatchExecutor::from_manager(self.manager.clone());
-        executor.execute(operations).await
     }
 
     /// write-substrate-layering M4d (R3/R4): the manager-routed batch. Folds
@@ -55,7 +45,7 @@ impl BatchTools {
     /// GATE is atomic — the apply loop is sequential with no rollback, so a
     /// mid-loop failure can leave partial state while this still reports
     /// `executed: 0`; true direct best-effort/`failed_at` reporting is M5.2.
-    pub async fn batch_apply(
+    pub async fn batch_execute(
         &self,
         operations: Vec<BatchOperation>,
         message: &str,
@@ -133,9 +123,9 @@ impl BatchTools {
 
     /// Translate a batch of [`BatchOperation`]s into ONE [`ChangePlan`],
     /// reusing the same `compute_*` helpers `MetadataTools`/`TemplateEngine`
-    /// use in their own single-op mutators (not the live [`BatchExecutor`]
-    /// batch path, which rejects `EditNote`/`UpdateFrontmatter`/
-    /// `ManageTags`/`CreateFromTemplate` up front via `op.git_only_kind()`).
+    /// use in their own single-op mutators — `EditNote`/`UpdateFrontmatter`/
+    /// `ManageTags`/`CreateFromTemplate` run on both backends (write-
+    /// substrate-layering deleted the old git-only refusal, decision 1).
     /// Pure builder — does not write. Rejects an intra-batch path collision
     /// (turbovault-0g4.5): a path may be mutated by at most one operation
     /// per batch.
