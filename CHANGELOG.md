@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Compiled-in plugin boundary** ([#34](https://github.com/Epistates/turbovault/issues/34)): Added the default-off `plugin-api` feature and the publishable `turbovault-plugin-api` crate. Plugins receive a curated CAS-only `VaultApi`, an object-safe tool provider contract, redacted request context, strict MCP namespaces, and a bounded hook bus with explicit lag/resync and close semantics.
 - **Best-effort hook provenance** ([#33](https://github.com/Epistates/turbovault/issues/33)): Plugin writes can carry source and correlation metadata into advisory event envelopes. Attribution is explicitly not an authentication boundary, and uncorrelated events fail open as external-or-unknown.
 
+### Changed
+
+- **Plugin contract review follow-up**: Plugin-local and fully namespaced tool names are centrally validated against MCP SEP-986, enabled namespaces are described during MCP initialization only when plugins are registered, feature-on tests are required for every vertical, and core/plugin complete-note writes share preparation and cache-finalization orchestration.
+
 ## [1.6.0] - 2026-07-17
 
 ### Added

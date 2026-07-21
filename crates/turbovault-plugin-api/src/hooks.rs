@@ -278,7 +278,9 @@ mod tests {
 
     #[tokio::test]
     async fn sequences_events_and_closes_after_buffered_delivery() {
-        let bus = HookBus::new(2);
+        // Capacity two retains both events until this subscriber reads them.
+        const CAPACITY: usize = 2;
+        let bus = HookBus::new(CAPACITY);
         let mut subscription = bus.subscribe().expect("subscribe");
         assert_eq!(publish(&bus, "a.md").sequence, 1);
         assert_eq!(publish(&bus, "b.md").sequence, 2);
@@ -293,7 +295,9 @@ mod tests {
 
     #[tokio::test]
     async fn reports_lag_and_requires_resync() {
-        let bus = HookBus::new(1);
+        // Capacity one intentionally evicts the first of two unread events.
+        const CAPACITY: usize = 1;
+        let bus = HookBus::new(CAPACITY);
         let mut subscription = bus.subscribe().expect("subscribe");
         publish(&bus, "a.md");
         publish(&bus, "b.md");

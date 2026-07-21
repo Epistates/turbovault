@@ -33,7 +33,8 @@ use turbovault_core::prelude::MultiVaultManager;
 #[cfg(feature = "plugin-api")]
 use turbovault_plugin_api::{
     HookBus, Plugin, PluginContext, PluginError, PluginErrorCode, PluginProvider,
-    PluginRequestContext, ToolResult as PluginToolResult, VaultApi,
+    PluginRequestContext, ToolResult as PluginToolResult, VaultApi, namespaced_tool_name,
+    validate_mcp_tool_name,
 };
 
 use self::analysis::AnalysisProvider;
@@ -69,17 +70,12 @@ impl PluginProviderAdapter {
         let tools = provider.tools();
         let mut names = std::collections::HashSet::new();
         for tool in &tools {
-            let valid_name = !tool.name.is_empty()
-                && tool.name.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || character == '_' || character == '-'
-                });
-            if !valid_name {
-                return Err(anyhow!(
-                    "plugin {:?} has invalid local tool name {:?}",
-                    descriptor.id,
-                    tool.name
-                ));
-            }
+            validate_mcp_tool_name(&tool.name).map_err(|error| {
+                anyhow!(
+                    "plugin {:?} has an invalid local tool name: {error}",
+                    descriptor.id
+                )
+            })?;
             if !names.insert(tool.name.clone()) {
                 return Err(anyhow!(
                     "plugin {:?} advertises tool {:?} more than once",
@@ -187,6 +183,8 @@ pub struct ObsidianMcpServer {
     prompt_routes: Arc<HashMap<String, String>>,
     #[cfg(feature = "plugin-api")]
     hooks: HookBus,
+    #[cfg(feature = "plugin-api")]
+    plugins: Arc<Vec<turbovault_plugin_api::PluginDescriptor>>,
 }
 
 impl ObsidianMcpServer {
@@ -295,10 +293,11 @@ impl ObsidianMcpServer {
         mount!(AuditProvider::new(core.clone()), "audit");
 
         #[cfg(feature = "plugin-api")]
-        let hooks = {
+        let (hooks, plugin_descriptors) = {
             const DEFAULT_HOOK_CAPACITY: usize = 1_024;
             let hooks = HookBus::new(DEFAULT_HOOK_CAPACITY);
             let vault = VaultApi::new(super::plugin_host::vault_host(core.clone(), hooks.clone()));
+            let mut plugin_descriptors = Vec::new();
 
             for plugin in plugins {
                 let descriptor = plugin.descriptor();
@@ -312,11 +311,16 @@ impl ObsidianMcpServer {
                         hooks: hooks.clone(),
                     })
                     .map_err(|error| anyhow!("plugin {prefix:?} failed to build: {error}"))?;
-                let adapter = PluginProviderAdapter::new(descriptor, provider)?;
+                let adapter = PluginProviderAdapter::new(descriptor.clone(), provider)?;
 
                 for mut tool in adapter.list_tools() {
                     let local_name = tool.name.clone();
-                    let public_name = format!("{prefix}_{local_name}");
+                    let public_name =
+                        namespaced_tool_name(&prefix, &local_name).map_err(|error| {
+                            anyhow!(
+                                "plugin {prefix:?} tool {local_name:?} has an invalid public name: {error}"
+                            )
+                        })?;
                     tool.name = public_name.clone();
                     if tool_routes
                         .insert(public_name.clone(), public_name.clone())
@@ -332,8 +336,9 @@ impl ObsidianMcpServer {
                 composite = composite
                     .try_mount(adapter, &prefix)
                     .map_err(|error| anyhow!("could not mount plugin {prefix:?}: {error}"))?;
+                plugin_descriptors.push(descriptor);
             }
-            hooks
+            (hooks, plugin_descriptors)
         };
 
         Ok(Self {
@@ -348,6 +353,8 @@ impl ObsidianMcpServer {
             prompt_routes: Arc::new(prompt_routes),
             #[cfg(feature = "plugin-api")]
             hooks,
+            #[cfg(feature = "plugin-api")]
+            plugins: Arc::new(plugin_descriptors),
         })
     }
 
@@ -485,7 +492,20 @@ impl Default for ObsidianMcpServer {
 #[allow(clippy::manual_async_fn)]
 impl McpHandler for ObsidianMcpServer {
     fn server_info(&self) -> ServerInfo {
-        ServerInfo::new("obsidian-vault", env!("CARGO_PKG_VERSION"))
+        let info = ServerInfo::new("obsidian-vault", env!("CARGO_PKG_VERSION"));
+        #[cfg(feature = "plugin-api")]
+        if !self.plugins.is_empty() {
+            let namespaces = self
+                .plugins
+                .iter()
+                .map(|plugin| plugin.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return info.with_description(format!(
+                "TurboVault with optional plugin namespaces: {namespaces}. Plugin tools use <plugin_id>_<local_tool>; use tools/list for the exact enabled catalog."
+            ));
+        }
+        info
     }
 
     fn server_capabilities(&self) -> ServerCapabilities {
@@ -574,6 +594,30 @@ mod tests {
                 name: "Contract Test Plugin".to_string(),
                 version: "1.0.0".to_string(),
                 description: "Exercises the stable plugin boundary".to_string(),
+            }
+        }
+
+        fn build(
+            &self,
+            context: PluginContext,
+        ) -> turbovault_plugin_api::PluginResult<Arc<dyn PluginProvider>> {
+            Ok(Arc::new(ContractProvider {
+                vault: context.vault,
+            }))
+        }
+    }
+
+    #[cfg(feature = "plugin-api")]
+    struct OversizedNamespacePlugin;
+
+    #[cfg(feature = "plugin-api")]
+    impl Plugin for OversizedNamespacePlugin {
+        fn descriptor(&self) -> turbovault_plugin_api::PluginDescriptor {
+            turbovault_plugin_api::PluginDescriptor {
+                id: "p".repeat(turbovault_plugin_api::MCP_TOOL_NAME_MAX_LEN),
+                name: "Oversized Namespace".to_string(),
+                version: "1.0.0".to_string(),
+                description: "Exercises final public-name validation".to_string(),
             }
         }
 
@@ -682,6 +726,12 @@ mod tests {
                 .any(|tool| tool.name == "contract_round_trip")
         );
         assert!(!advertised.iter().any(|tool| tool.name == "round_trip"));
+        let description = server
+            .server_info()
+            .description
+            .expect("enabled plugins should be described during MCP initialization");
+        assert!(description.contains("contract"));
+        assert!(description.contains("<plugin_id>_<local_tool>"));
 
         let mut events = server.hook_bus().subscribe().expect("hook subscription");
         let ctx = RequestContext::with_id("plugin-request");
@@ -788,6 +838,18 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "plugin-api")]
+    #[test]
+    fn final_namespaced_tool_names_must_conform_to_mcp_sep_986() {
+        let error = ObsidianMcpServer::new_with_plugins(vec![Arc::new(OversizedNamespacePlugin)])
+            .err()
+            .expect("oversized public name must fail");
+        assert!(
+            error.to_string().contains("invalid public name"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn tools_list_is_byte_for_byte_equivalent_to_the_pre_split_catalog() {
         let server = ObsidianMcpServer::new().expect("provider composition");
@@ -814,6 +876,14 @@ mod tests {
             );
         }
         assert_eq!(server.tool_routes.len(), 74);
+        assert!(
+            server.server_info().description.is_none(),
+            "default server must not inject plugin guidance"
+        );
+        #[cfg(feature = "plugin-api")]
+        for tool in server.list_tools() {
+            validate_mcp_tool_name(&tool.name).expect("core tool name must conform to MCP SEP-986");
+        }
     }
 
     #[tokio::test]

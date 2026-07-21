@@ -71,18 +71,18 @@ impl FileProvider {
         force: Option<bool>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
-        let vault_name = self.get_active_vault_name().await?;
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
-        let tools = self.get_active_write_tools().await?;
-        let message = self
-            .resolve_commit_message(commit_message, || format!("write_note {path}"))
+        let prepared = self
+            .prepare_complete_note_write(&path, commit_message, "write_note")
             .await?;
+        let vault_name = prepared.vault_name;
+        let tools = prepared.tools;
+        let message = prepared.message;
         let force = force.unwrap_or(false);
 
         if tools.is_git() && !force && expected_hash.is_none() && write_mode == WriteMode::Overwrite
         {
-            let manager = self.get_active_vault_manager().await?;
-            if tokio::fs::try_exists(manager.vault_path().join(&path))
+            if tokio::fs::try_exists(prepared.manager.vault_path().join(&path))
                 .await
                 .unwrap_or(false)
             {
@@ -107,8 +107,7 @@ impl FileProvider {
                 .map_err(to_mcp_error)?;
         }
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        self.finish_complete_note_write().await;
         let mode_str = mode.as_deref().unwrap_or("overwrite");
         StandardResponse::new(
             vault_name,
