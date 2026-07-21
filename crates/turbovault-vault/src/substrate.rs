@@ -358,14 +358,14 @@ impl DirectSubstrate {
 
 /// turbovault-a0l (PERF-1): a per-vault cached substrate handle. `VaultRepo`
 /// wraps a `git2::Repository`, which is `Send + !Sync`, so it lives behind a
-/// `std::sync::Mutex`. Duplicated from `turbovault-tools::git_file_tools`
+/// `std::sync::Mutex`. Duplicated from the tools-layer `GitFileTools`
 /// (deliberate temporary duplication — M4 deletes `GitFileTools`).
-type CachedRepo = Arc<std::sync::Mutex<VaultRepo>>;
+pub type CachedRepo = Arc<std::sync::Mutex<VaultRepo>>;
 
 /// Callback invoked **before** returning a `ConcurrencyError` from
-/// [`GitSubstrate::apply`] (GWS.14b). Duplicated from
-/// `turbovault-tools::git_file_tools::CasCollisionFlush`.
-type CasCollisionFlush = Arc<dyn Fn() -> BoxFuture<'static, Result<()>> + Send + Sync>;
+/// [`GitSubstrate::apply`] (GWS.14b). Duplicated from the tools-layer
+/// `GitFileTools::CasCollisionFlush`.
+pub type CasCollisionFlush = Arc<dyn Fn() -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
 /// The git write path (design §6.5) — `GitFileTools::apply_txn` +
 /// `run_txn` (`git_file_tools.rs:1132`/`:1205`), relocated. **Dormant in
@@ -392,6 +392,32 @@ impl GitSubstrate {
             flush_on_collision: None,
             include_ignored,
             cached_repo: None,
+        }
+    }
+
+    /// write-substrate-layering M4c (bite 3a, turbovault-qae.5.3): the
+    /// reindex-wired constructor `VaultManager::new` uses on a git vault.
+    /// Binds the commit hook (enqueues each commit onto the manager's
+    /// `ReindexQueue`), a pre-opened cached repo (closes M4b gap #3 —
+    /// per-call open), and the CAS-collision flush (drains the queue before a
+    /// `ConcurrencyError` surfaces, GWS.14b). `commit_locks` is the registry
+    /// baked into `cached_repo`; it is kept in the field for the
+    /// never-taken per-call-open branch so both agree.
+    pub fn with_reindex(
+        vault_path: PathBuf,
+        include_ignored: bool,
+        commit_locks: Arc<CommitLocks>,
+        commit_hook: CommitHook,
+        cached_repo: CachedRepo,
+        flush_on_collision: CasCollisionFlush,
+    ) -> Self {
+        Self {
+            vault_path,
+            commit_locks,
+            commit_hook: Some(commit_hook),
+            flush_on_collision: Some(flush_on_collision),
+            include_ignored,
+            cached_repo: Some(cached_repo),
         }
     }
 

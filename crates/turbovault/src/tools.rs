@@ -18,7 +18,7 @@ use turbovault_tools::{
     RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine, TemplateEngine,
     VaultLifecycleTools, VaultRepo, ViewerTools, WriteMode, WriteTools, obsidian_uri,
 };
-use turbovault_vault::VaultManager;
+use turbovault_vault::{ChangeListener, VaultManager};
 
 mod providers;
 pub use providers::ObsidianMcpServer;
@@ -407,6 +407,9 @@ impl CoreToolHandler {
                 .await
                 .map_err(|e| Error::config_error(format!("initialize({name}): {e}")))?;
             let manager = Arc::new(manager);
+            // M4c (bite 3a): wire before publishing (git vaults; no-op on
+            // Direct), same as the lazy `get_active_vault_manager` path.
+            self.wire_manager_reindex(&name, &manager).await;
             self.vault_managers
                 .write()
                 .await
@@ -669,6 +672,14 @@ impl CoreToolHandler {
 
         let manager = Arc::new(manager);
 
+        // M4c (bite 3a, turbovault-qae.5.3): wire the manager-owned reindex
+        // tasks + change-listener (git vaults; no-op on Direct) BEFORE
+        // publishing to the cache, so no concurrent first-access caller can
+        // cache-hit and observe an unwired manager. If we lose the
+        // double-check race below, our wired manager is dropped and its `Drop`
+        // aborts the tasks it started.
+        self.wire_manager_reindex(&vault_name, &manager).await;
+
         // Cache it — double-check to handle concurrent initialization races
         {
             let mut cache = self.vault_managers.write().await;
@@ -676,10 +687,70 @@ impl CoreToolHandler {
             if let Some(existing) = cache.get(&vault_name) {
                 return Ok(existing.clone());
             }
-            cache.insert(vault_name, manager.clone());
+            cache.insert(vault_name.clone(), manager.clone());
         }
 
         Ok(manager)
+    }
+
+    /// M4c (bite 3a, turbovault-qae.5.3): ADDITIVE wiring for a freshly-built
+    /// git-backend manager — start its OWN reindex tasks (drainer +
+    /// HEAD-ref listener, now manager-owned) and register the R7
+    /// change-listener that feeds THIS server's tantivy + similarity engines.
+    /// Runs ALONGSIDE the server's own still-live reindex machinery (the
+    /// `GitFileTools` path); both apply the same `(path, present)` deltas
+    /// idempotently. The server-side copy is deleted in bite 3b+4. No-op on a
+    /// Direct vault.
+    async fn wire_manager_reindex(&self, vault_name: &str, manager: &Arc<VaultManager>) {
+        let is_git = self
+            .multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .map(|c| matches!(c.write_backend, WriteBackend::Git))
+            .unwrap_or(false);
+        if !is_git {
+            return;
+        }
+
+        // Register the R7 change-listener BEFORE starting the drainer, so a
+        // drain pass can't fire into an unset listener. The listener captures
+        // ONLY the search + similarity engine maps — NOT a whole `self` clone,
+        // which would hold `vault_managers` → the `Arc<VaultManager>` → this
+        // listener: a reference cycle that defeats the manager's `Drop`-based
+        // task teardown (the manager would never drop absent an explicit
+        // `remove_vault`, undoing the `Weak<Self>` care the tasks take). Those
+        // two maps never hold the manager, so there is no cycle; search /
+        // similarity stay ABOVE the vault layer — the manager only invokes this
+        // callback (R2 dependency inversion). Same per-vault work as
+        // `apply_collapsed_to_search`.
+        let search_engines = Arc::clone(&self.search_engines);
+        let similarity_engines = Arc::clone(&self.similarity_engines);
+        let name = vault_name.to_string();
+        let listener: ChangeListener = Arc::new(move |changed: Vec<(String, bool)>| {
+            let search_engines = Arc::clone(&search_engines);
+            let similarity_engines = Arc::clone(&similarity_engines);
+            let name = name.clone();
+            // The listener is a synchronous `Fn`; spawn the async index work.
+            tokio::spawn(async move {
+                if !changed.is_empty() {
+                    let cached = { search_engines.read().await.get(&name).cloned() };
+                    if let Some(engine) = cached
+                        && let Err(e) = engine.apply_changes(changed).await
+                    {
+                        log::warn!(
+                            "M4c change-listener: search apply failed for '{name}', evicting: {e}"
+                        );
+                        search_engines.write().await.remove(&name);
+                    }
+                }
+                similarity_engines.write().await.remove(&name);
+            });
+        });
+        manager.set_change_listener(listener);
+
+        // Start the background drainer + HEAD-ref listener only after the
+        // change-listener is registered.
+        manager.ensure_reindex_started();
     }
 
     /// Get audit tools for the active vault

@@ -2,30 +2,35 @@
 //!
 //! When the git substrate commits, its `CommitHook` pushes the new commit's
 //! oid onto a per-vault [`ReindexQueue`]. The actual index work is deferred:
-//! a background drainer (see [`crate::WriteTools`] integration) and/or a
-//! "flush before relevant query" call processes the queue, asking the
+//! [`VaultManager`]'s background drainer (spawned by
+//! `VaultManager::ensure_reindex_started`) and/or a "flush before relevant
+//! query" call (`VaultManager::flush_reindex`) processes the queue, asking the
 //! substrate for each commit's `(path, present)` diff and re-running the
-//! parser → link graph delta.
+//! parser → link-graph delta.
 //!
-//! Search and similarity engines are NOT incrementally updated here; the
-//! server's existing cache-evict + cold-rebuild pattern is reused (flush
-//! callers invalidate the cached engines, the next query rebuilds). True
-//! incremental tantivy/similarity updates are a follow-up.
+//! The derived search/similarity indexes are NOT touched here. `VaultManager`
+//! fires its change-listener with the collapsed `(path, present)` set after
+//! each drain pass; the server-registered listener feeds those engines
+//! (design R2 keeps them ABOVE the vault layer — the manager only invokes the
+//! callback).
 //!
 //! Coherence guarantees this layer provides:
-//! - Within one process, after a successful `commit_changeset` + drain,
-//!   the link graph reflects every committed change.
+//! - Within one process, after a successful commit + drain, the link graph
+//!   reflects every committed change.
 //! - The drainer is idempotent (replaying a commit is a no-op modulo the
 //!   timing of working-tree reads).
-//! - Out-of-band changes (manual `git pull`, direct Obsidian edits) are
-//!   NOT captured — architecture §8.4, unchanged limitation.
+//! - Out-of-band changes (manual `git pull`, another process committing) are
+//!   captured only via the HEAD-ref listener ([`watch_ref_changes`]); a direct
+//!   working-tree edit that never advances HEAD is not seen (architecture
+//!   §8.4, unchanged limitation).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 use turbovault_core::prelude::*;
 use turbovault_git::{Oid, VaultRepo};
-use turbovault_vault::VaultManager;
+
+use crate::VaultManager;
 
 /// Per-vault queue of commit oids awaiting graph/search reindex.
 ///
@@ -104,8 +109,10 @@ impl ReindexQueue {
         *self.cursor.lock().unwrap() = Some(commit);
     }
 
-    /// Drain ALL pending commits through derived indexes, advancing the
-    /// cursor as each one lands. Returns the number of commits applied.
+    /// Drain ALL pending commits through the link graph, advancing the cursor
+    /// as each one lands. Returns the concatenated `(path, present)` sets the
+    /// applied commits touched, so the manager's drainer can feed its
+    /// change-listener (design R7).
     ///
     /// Errors from any single commit's diff/parse are logged and SKIPPED —
     /// a malformed file or a transient libgit2 error should NOT brick the
@@ -115,12 +122,12 @@ impl ReindexQueue {
         &self,
         repo: &VaultRepo,
         manager: &Arc<VaultManager>,
-    ) -> Result<usize> {
+    ) -> Result<Vec<(String, bool)>> {
         // turbovault-9zr: hold the flush lock for the whole pass so this drain
-        // can't interleave with the server's read-path flush (which also pops
+        // can't interleave with a concurrent read-path flush (which also pops
         // before applying).
         let _flush_guard = self.lock_flush().await;
-        let mut applied = 0usize;
+        let mut changed: Vec<(String, bool)> = Vec::new();
         while let Some(commit) = self.pop_front() {
             let parent = match repo.git_commit_first_parent(commit) {
                 Ok(parent) => parent,
@@ -138,17 +145,16 @@ impl ReindexQueue {
                         e
                     );
                     self.advance_cursor(commit);
-                    applied += 1;
                     continue;
                 }
             };
-            if let Err(e) = apply_commit_diff(repo, parent, commit, manager).await {
-                log::warn!("reindex: skipping commit {} after error: {}", commit, e);
+            match apply_commit_diff(repo, parent, commit, manager).await {
+                Ok(mut applied) => changed.append(&mut applied),
+                Err(e) => log::warn!("reindex: skipping commit {} after error: {}", commit, e),
             }
             self.advance_cursor(commit);
-            applied += 1;
         }
-        Ok(applied)
+        Ok(changed)
     }
 }
 
@@ -163,14 +169,14 @@ impl ReindexQueue {
 /// instance writing through its own substrate — and pushes the new HEAD
 /// oid onto the per-vault [`ReindexQueue`] so the next drain absorbs the
 /// change. Without this listener, a multi-instance dogfood setup silently
-/// desyncs the in-memory link graph + tantivy index from disk for every
-/// commit the other instance lands.
+/// desyncs the in-memory link graph from disk for every commit the other
+/// instance lands.
 ///
 /// **Does NOT detect uncommitted working-tree edits.** A direct Obsidian
 /// edit (or a CC `Edit` outside MCP) changes bytes on disk without
 /// advancing HEAD; the polling listener can't see it. Architecture §8.4
 /// limitation; a working-tree inotify listener (resurrecting the dormant
-/// `turbovault_vault::watcher::VaultWatcher`) is the documented Phase 2.
+/// `crate::watcher::VaultWatcher`) is the documented Phase 2.
 ///
 /// Initial HEAD is snapshotted at startup, so the listener won't re-push
 /// commits that landed before it started. A commit advanced by THIS
@@ -179,8 +185,9 @@ impl ReindexQueue {
 /// (the drainer's `apply_commit_diff` is a function of `(parent, commit)`
 /// and produces the same delta on a replay).
 ///
-/// Runs forever; cancellation is via task abort (the server stores the
-/// `JoinHandle` and calls `abort()` on `remove_vault` / shutdown).
+/// Runs forever; cancellation is via task abort — the owner stores the
+/// `JoinHandle` and calls `abort()` on drop (`VaultManager` aborts it in its
+/// `Drop`).
 pub async fn watch_ref_changes(
     vault_path: std::path::PathBuf,
     queue: Arc<ReindexQueue>,
@@ -239,19 +246,19 @@ async fn read_head_oid(vault_path: &std::path::Path) -> Option<Oid> {
     .flatten()
 }
 
-/// Apply one commit's diff to the link graph. Reads the working tree for
-/// changed/added paths (working-tree == HEAD invariant) and removes deleted
-/// paths from the graph.
+/// Apply one commit's diff to the link graph and return the `(path, present)`
+/// set it processed. Reads the working tree for changed/added paths
+/// (working-tree == HEAD invariant) and removes deleted paths from the graph.
 ///
-/// **Does NOT touch search/similarity engines.** Those are cache-evicted at
-/// flush time by the integration layer (cold rebuild on next query). Folding
-/// incremental tantivy/similarity updates in here is a follow-up.
+/// **Does NOT touch the search/similarity indexes.** `VaultManager` fires its
+/// change-listener with the returned set after the drain pass, and the
+/// server-side listener updates those engines (design R2).
 pub async fn apply_commit_diff(
     repo: &VaultRepo,
     parent: Option<Oid>,
     commit: Oid,
     manager: &Arc<VaultManager>,
-) -> Result<()> {
+) -> Result<Vec<(String, bool)>> {
     let changes = repo
         .diff_path_statuses(parent, commit)
         .map_err(|e| Error::config_error(format!("git diff failed: {}", e)))?;
@@ -259,13 +266,13 @@ pub async fn apply_commit_diff(
     let vault_root = manager.vault_path().clone();
     let graph_handle = manager.link_graph();
 
-    for (rel_path, present_in_commit) in changes {
-        let full_path = vault_root.join(&rel_path);
+    for (rel_path, present_in_commit) in &changes {
+        let full_path = vault_root.join(rel_path);
 
-        if present_in_commit {
+        if *present_in_commit {
             // Re-parse from the working tree (which is HEAD post-materialize).
             // Then remove + add to clear stale edges from a prior version.
-            match manager.parse_file(std::path::Path::new(&rel_path)).await {
+            match manager.parse_file(std::path::Path::new(rel_path)).await {
                 Ok(vault_file) => {
                     let mut graph = graph_handle.write().await;
                     // remove_file is a no-op if the path is unknown — safe.
@@ -289,7 +296,7 @@ pub async fn apply_commit_diff(
             let _ = graph.remove_file(&full_path);
         }
     }
-    Ok(())
+    Ok(changes)
 }
 
 #[cfg(test)]
@@ -366,8 +373,8 @@ mod tests {
             .unwrap();
         assert_eq!(queue.pending_count(), 1);
 
-        let n = queue.drain_through(&repo, &manager).await.unwrap();
-        assert_eq!(n, 1);
+        let changed = queue.drain_through(&repo, &manager).await.unwrap();
+        assert_eq!(changed.len(), 1);
         assert_eq!(queue.pending_count(), 0);
 
         // Graph now knows about hub.md (added) and tracks the unresolved link.
@@ -412,8 +419,8 @@ mod tests {
             .unwrap();
         assert_eq!(queue.pending_count(), 3);
 
-        let n = queue.drain_through(&repo, &manager).await.unwrap();
-        assert_eq!(n, 3);
+        let changed = queue.drain_through(&repo, &manager).await.unwrap();
+        assert_eq!(changed.len(), 3);
         assert_eq!(manager.link_graph().read().await.node_count(), 3);
     }
 
@@ -434,15 +441,25 @@ mod tests {
         assert_eq!(queue.pending_count(), 2, "[bogus, real] queued");
 
         // Before tlx.1 this returned Err and the real commit never applied.
-        let n = queue.drain_through(&repo, &manager).await.unwrap();
-        assert_eq!(n, 2, "both the bogus and the real commit are drained");
+        // The bogus commit contributes no changes (its diff is skipped); only
+        // the real commit's single change lands in the returned set.
+        let changed = queue.drain_through(&repo, &manager).await.unwrap();
+        assert_eq!(
+            changed.len(),
+            1,
+            "only the real commit contributes a change; the bogus one is skipped"
+        );
         assert_eq!(queue.pending_count(), 0);
         assert_eq!(
             manager.link_graph().read().await.node_count(),
             1,
             "the real commit applied despite the bogus one ahead of it"
         );
-        assert_eq!(queue.cursor(), Some(real.commit));
+        assert_eq!(
+            queue.cursor(),
+            Some(real.commit),
+            "the cursor advanced past the bogus commit to the real one"
+        );
     }
 
     /// turbovault-9zr: a single commit that adds a file AND a file linking to it
@@ -588,8 +605,8 @@ mod tests {
     #[tokio::test]
     async fn push_wakes_notify_so_background_drainer_does_not_poll() {
         // Smoke test the notify path on ReindexQueue. A real drainer is
-        // started by ObsidianMcpServer; here we verify a parked notified()
-        // future fires immediately when push() runs.
+        // started by VaultManager::ensure_reindex_started; here we verify a
+        // parked notified() future fires immediately when push() runs.
         let q = Arc::new(ReindexQueue::new());
         let q2 = Arc::clone(&q);
         let woken = Arc::new(std::sync::atomic::AtomicBool::new(false));

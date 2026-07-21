@@ -306,7 +306,7 @@ async fn reindex_queue_receives_every_commit_under_contention() {
     let manager = Arc::new(VaultManager::new(test_server_config(tmp.path())).unwrap());
     let repo = VaultRepo::open_with_locks(tmp.path(), Arc::new(CommitLocks::new())).unwrap();
     let drained = queue.drain_through(&repo, &manager).await.unwrap();
-    assert_eq!(drained, 50);
+    assert_eq!(drained.len(), 50);
     assert_eq!(queue.pending_count(), 0);
     assert!(queue.cursor().is_some());
 

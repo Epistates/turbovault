@@ -3,17 +3,29 @@
 use path_trav::PathTrav;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
 use turbovault_core::{Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend};
+use turbovault_git::{CommitHook, CommitLocks, Oid, VaultRepo};
 use turbovault_graph::LinkGraph;
 use turbovault_parser::Parser;
 
-use crate::substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
+use crate::reindex::{ReindexQueue, watch_ref_changes};
+use crate::substrate::{
+    ApplyOutcome, CachedRepo, CasCollisionFlush, DirectSubstrate, GitSubstrate, WriteSubstrate,
+};
+
+/// R2 change-listener (design §6.3): a callback fired with the collapsed
+/// `(path, present)` set after every `sync_index` (both backends) and every
+/// reindex drain pass. The server registers one that feeds its full-text
+/// search + similarity indexes — those engines stay ABOVE the vault layer;
+/// `VaultManager` only invokes the callback (the R2 dependency inversion,
+/// design §6.6/§6.7).
+pub type ChangeListener = Arc<dyn Fn(Vec<(String, bool)>) + Send + Sync>;
 
 /// File cache entry with timestamp
 /// Used during initialization to populate link graph; read path bypasses cache
@@ -38,6 +50,24 @@ pub struct VaultManager {
     /// §6.3). Selected once, at construction, from `write_backend` — layers
     /// above `VaultManager` stay backend-agnostic (R2).
     substrate: WriteSubstrate,
+    /// M4c (bite 3a, design §6.6): the git reindex queue the `GitSubstrate`'s
+    /// commit hook pushes onto and the HEAD-ref listener enqueues out-of-band
+    /// advances onto. `None` on a Direct vault (nothing queues).
+    reindex_queue: Option<Arc<ReindexQueue>>,
+    /// Weak self-handle published by [`Self::ensure_reindex_started`]. The
+    /// CAS-collision flush closure is built in `new()` — before any
+    /// `Arc<Self>` exists — so it reaches the manager at fire time through
+    /// this set-once slot instead of an `Arc` capture (which would cycle and
+    /// leak the manager). `OnceLock` = lock-free reads after the one publish.
+    self_ref: Arc<OnceLock<Weak<VaultManager>>>,
+    /// Drainer + HEAD-ref-listener `JoinHandle`s, aborted in `Drop`. std
+    /// `Mutex` — the critical section is pure `Vec` pushes, no `await`.
+    /// The spawned tasks hold `Weak<Self>` (not `Arc`), so this abort is the
+    /// sole thing that stops them (there is no other shutdown path).
+    reindex_tasks: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// R7 change-listener slot (design §6.3). Fired after every `sync_index`
+    /// and drain pass; both backends. See [`ChangeListener`].
+    change_listener: StdMutex<Option<ChangeListener>>,
 }
 
 impl VaultManager {
@@ -47,53 +77,99 @@ impl VaultManager {
         let vault_path = default_vault.path.clone();
         let parser = Parser::new(vault_path.clone());
 
-        // write-substrate-layering M4b (bite 2 of M4, turbovault-qae.5.2):
-        // the substrate now follows the vault's configured `write_backend`
-        // instead of M3a's always-Direct placeholder. On a git vault, this
-        // closes the footgun M3a's comment warned about — direct callers
-        // like `generate_index`/`append_log_entry`/`visualize`, which write
-        // through the manager rather than the server's `WriteTools`/
-        // `GitFileTools` dispatch, now commit instead of silently bypassing
-        // git.
-        //
-        // This `GitSubstrate` OWNS its own `CommitLocks` (the END-STATE
-        // ownership — M3a already built it that way) rather than sharing
-        // locks with the server's still-live `GitFileTools`; that sharing,
-        // a reindex-hook wire, and a cached repo handle are deliberately
-        // NOT built here (M4b DoD — all three are either thrown away when
-        // `GitFileTools` dies in bite 4, or are bite 3's job). Until then,
-        // this creates three KNOWN, ACCEPTED, bite-3-closed gaps:
-        //   1. A manager-git write (this substrate's lock) and a
-        //      handler-git write (`GitFileTools`'s lock) are two distinct
-        //      `CommitLocks` registries on the same worktree — contradicting
-        //      locks.rs's "one lock per worktree" invariant. Commits stay
-        //      safe anyway, but NOT via ref-CAS retry (there is no retry
-        //      loop here): `VaultRepo::commit_changeset` always runs inside
-        //      `with_commit_lock` (repo.rs), which layers a cross-process
-        //      `flock` on `<repo>/.git/turbovault-write.lock` under the
-        //      in-process mutex. That advisory lock is keyed by the
-        //      physical `.git` path, not by `Arc` identity, so it
-        //      serializes both registries regardless of which one a caller
-        //      holds. This is real complexity riding on that file lock
-        //      staying load-bearing; sharing one `CommitLocks` `Arc` (the
-        //      documented invariant) is bite 3's job.
-        //   2. The tantivy search index (server-owned, fed by the reindex
-        //      drainer) won't see a manager-git write until reindex
-        //      relocates into the manager — the link graph stays correct
-        //      regardless, since `sync_index` (R7) runs on every apply here.
-        //   3. `GitSubstrate::cached_repo` stays `None` (per-call open) —
-        //      correct, just unoptimized; the cache lands in bite 3.
-        let substrate = match default_vault.write_backend {
-            WriteBackend::Direct => {
-                WriteSubstrate::Direct(DirectSubstrate::new(vault_path.clone()))
-            }
+        // Set-once weak self-handle. The git arm's CAS-collision flush closure
+        // is built below — BEFORE any `Arc<Self>` exists — so it reaches the
+        // manager at fire time through this slot (published by
+        // `ensure_reindex_started`) instead of an `Arc` capture that would
+        // cycle and leak the manager. No-op flush until published.
+        let self_ref: Arc<OnceLock<Weak<VaultManager>>> = Arc::new(OnceLock::new());
+
+        // write-substrate-layering M4c (bite 3a, turbovault-qae.5.3): the git
+        // arm now OWNS its reindex machinery — a `ReindexQueue` fed by the
+        // substrate's commit hook, a cached repo, and a CAS-collision flush.
+        // `ensure_reindex_started` (called by the server once an `Arc<Self>`
+        // exists) spawns the background drainer + HEAD-ref listener over this
+        // queue. That closes two of the three M4b (bite 2) gaps:
+        //   - gap #2 (search staleness): CLOSED. Every apply fires the R7
+        //     change-listener (both backends), and each drain pass fires it
+        //     too, so the server's search + similarity indexes see a
+        //     manager-git write. The link graph was already correct (sync_index
+        //     runs on every apply).
+        //   - gap #3 (per-call open): CLOSED. The repo is opened ONCE here
+        //     (hook + locks bound) and cached; writes reuse it.
+        // The one gap that STAYS open until bite 3b+4 (qae.5.4):
+        //   - gap #1 (two `CommitLocks` registries + two drainers on one
+        //     worktree). This substrate still holds its OWN `CommitLocks`,
+        //     independent of the server's still-live `GitFileTools`, and both
+        //     run a drainer/ref-listener over the same worktree. Commits stay
+        //     linearizable NOT via a shared `Arc` but via
+        //     `VaultRepo::commit_changeset`'s cross-process `flock` on
+        //     `<repo>/.git/turbovault-write.lock` (keyed by the physical `.git`
+        //     path, so it serializes both registries); the double reindex is
+        //     idempotent (`apply` is a function of `(path, present)`). Sharing
+        //     one registry + one drainer — repointing the handlers onto this
+        //     manager — is bite 3b+4's job. Do NOT add dedup/sharing here.
+        let (substrate, reindex_queue) = match default_vault.write_backend {
+            WriteBackend::Direct => (
+                WriteSubstrate::Direct(DirectSubstrate::new(vault_path.clone())),
+                None,
+            ),
             WriteBackend::Git => {
                 let include_ignored = default_vault
                     .git
                     .as_ref()
                     .map(|git| git.include_ignored)
                     .unwrap_or_else(|| VaultGitConfig::default().include_ignored);
-                WriteSubstrate::Git(GitSubstrate::new(vault_path.clone(), include_ignored))
+
+                // The manager-owned queue: the commit hook enqueues every
+                // commit; the drainer + read-path flush apply them (design §6.6).
+                let queue = Arc::new(ReindexQueue::new());
+                let queue_for_hook = Arc::clone(&queue);
+                let commit_hook: CommitHook =
+                    Arc::new(move |_parent, commit| queue_for_hook.push(commit));
+
+                // This substrate's OWN lock registry (gap #1, still open).
+                let commit_locks = Arc::new(CommitLocks::new());
+
+                // gap #3 closed: open the repo ONCE with the hook + locks
+                // bound, and cache it (git-openability validated here — a
+                // non-git path fails at construction, design §11.12 fail-fast).
+                let repo = VaultRepo::open_with_locks_and_hook(
+                    &vault_path,
+                    Arc::clone(&commit_locks),
+                    Arc::clone(&commit_hook),
+                )
+                .map_err(|e| {
+                    Error::config_error(format!(
+                        "vault '{}' has write_backend=git but {:?} is not a usable git repo: {}",
+                        default_vault.name, vault_path, e
+                    ))
+                })?;
+                let cached_repo: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
+
+                // GWS.14b: drain the queue before a ConcurrencyError surfaces
+                // so a re-read sees coherent derived state. Reaches the manager
+                // via the set-once weak handle; a no-op until it is published.
+                let self_ref_for_flush = Arc::clone(&self_ref);
+                let flush_on_collision: CasCollisionFlush = Arc::new(move || {
+                    let self_ref = Arc::clone(&self_ref_for_flush);
+                    Box::pin(async move {
+                        if let Some(mgr) = self_ref.get().and_then(Weak::upgrade) {
+                            mgr.flush_reindex().await;
+                        }
+                        Ok(())
+                    })
+                });
+
+                let git = GitSubstrate::with_reindex(
+                    vault_path.clone(),
+                    include_ignored,
+                    commit_locks,
+                    commit_hook,
+                    cached_repo,
+                    flush_on_collision,
+                );
+                (WriteSubstrate::Git(git), Some(queue))
             }
         };
 
@@ -106,7 +182,190 @@ impl VaultManager {
             audit_log: None,
             snapshot_store: None,
             substrate,
+            reindex_queue,
+            self_ref,
+            reindex_tasks: StdMutex::new(Vec::new()),
+            change_listener: StdMutex::new(None),
         })
+    }
+
+    /// M4c (bite 3a, design §6.3/§6.6): spawn the git reindex background tasks
+    /// — the drainer (applies queued commits to the link graph + fires the
+    /// change-listener) and the HEAD-ref listener (enqueues out-of-band
+    /// advances). Idempotent; a no-op on a Direct vault or once already
+    /// started. MUST be called through an `Arc` (the server does, right after
+    /// it caches the manager) — the spawned tasks hold `Weak<Self>`, never an
+    /// `Arc<Self>`, so they can't keep the manager alive; an `Arc` capture
+    /// would cycle → the manager never drops → the `Drop` abort never runs →
+    /// leak. `new()` has no `Arc<Self>` to downgrade, which is why this is
+    /// separate.
+    pub fn ensure_reindex_started(self: &Arc<Self>) {
+        let Some(queue) = self.reindex_queue.clone() else {
+            return; // Direct backend — nothing to drain.
+        };
+        let mut tasks = self.reindex_tasks.lock().unwrap();
+        if !tasks.is_empty() {
+            return; // already started
+        }
+        // Publish the weak self-handle for the CAS-collision flush closure.
+        let _ = self.self_ref.set(Arc::downgrade(self));
+
+        self.start_reindex_tasks(&queue, Duration::from_secs(5), &mut tasks);
+    }
+
+    /// Test-only: like [`Self::ensure_reindex_started`] but with a caller-
+    /// chosen HEAD-ref poll interval, so tests don't wait the production 5s.
+    #[cfg(test)]
+    pub(crate) fn ensure_reindex_started_with_interval(self: &Arc<Self>, ref_poll: Duration) {
+        let Some(queue) = self.reindex_queue.clone() else {
+            return;
+        };
+        let mut tasks = self.reindex_tasks.lock().unwrap();
+        if !tasks.is_empty() {
+            return;
+        }
+        let _ = self.self_ref.set(Arc::downgrade(self));
+        self.start_reindex_tasks(&queue, ref_poll, &mut tasks);
+    }
+
+    /// Spawn the drainer + ref-listener over `queue` and store their handles.
+    /// `ref_poll` is the HEAD-ref listener's poll interval (5s in production;
+    /// tests override it). Caller holds the `reindex_tasks` lock + has
+    /// published `self_ref`.
+    fn start_reindex_tasks(
+        self: &Arc<Self>,
+        queue: &Arc<ReindexQueue>,
+        ref_poll: Duration,
+        tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    ) {
+        // Background drainer (mirrors the server's GWS.14a loop): park on the
+        // queue notifier / 100ms safety-net poll, drain when pending. Holds
+        // `Weak<Self>` and exits the instant the manager drops.
+        let weak = Arc::downgrade(self);
+        let drain_queue = Arc::clone(queue);
+        let drainer = tokio::spawn(async move {
+            loop {
+                let notified = drain_queue.notify().notified();
+                tokio::pin!(notified);
+                tokio::select! {
+                    _ = &mut notified => {}
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+                let Some(mgr) = weak.upgrade() else {
+                    return; // manager dropped — stop.
+                };
+                if drain_queue.pending_count() == 0 {
+                    continue;
+                }
+                mgr.flush_reindex().await;
+            }
+        });
+
+        // HEAD-ref listener (turbovault-bou): enqueue out-of-band advances.
+        // It holds only the path + queue (never `Self`), so it can't keep the
+        // manager alive; `Drop` aborts its handle.
+        let path = self.vault_path.clone();
+        let listen_queue = Arc::clone(queue);
+        let listener = tokio::spawn(async move {
+            watch_ref_changes(path, listen_queue, ref_poll).await;
+        });
+
+        tasks.push(drainer);
+        tasks.push(listener);
+    }
+
+    /// Register the R7 change-listener (design §6.3). Fired after every
+    /// `sync_index` and every drain pass with the collapsed `(path, present)`
+    /// set. The server registers one that updates its full-text search index +
+    /// invalidates similarity — those engines live ABOVE the vault layer; the
+    /// manager only invokes this callback (the R2 dependency inversion).
+    /// Both backends fire it.
+    pub fn set_change_listener(&self, listener: ChangeListener) {
+        *self.change_listener.lock().unwrap() = Some(listener);
+    }
+
+    /// Invoke the change-listener (if registered) with `changed`. Cheap no-op
+    /// when nothing changed or none is set. The listener is a synchronous
+    /// `Fn`; the server's registered listener spawns its own async work.
+    fn fire_change_listener(&self, changed: Vec<(String, bool)>) {
+        if changed.is_empty() {
+            return;
+        }
+        let listener = self.change_listener.lock().unwrap().clone();
+        if let Some(listener) = listener {
+            listener(changed);
+        }
+    }
+
+    /// M4c (design §6.6): drain the git reindex queue — apply every pending
+    /// commit's diff to the link graph + note cache, then fire the
+    /// change-listener with the collapsed `(path, present)` set. Holds the
+    /// queue's flush lock across the whole pass so it can't interleave with a
+    /// concurrent flush (turbovault-9zr). A no-op on Direct or an empty queue.
+    ///
+    /// This is what makes the manager's derived reads self-flushing and closes
+    /// the M4b search-staleness gap for out-of-band commits (the ref-listener
+    /// enqueues; this applies).
+    pub async fn flush_reindex(&self) {
+        let Some(queue) = self.reindex_queue.clone() else {
+            return; // Direct backend
+        };
+        let _flush_guard = queue.lock_flush().await;
+        if queue.pending_count() == 0 {
+            return;
+        }
+
+        // Open the repo + collect per-commit diffs inside spawn_blocking:
+        // `VaultRepo` is `!Sync`, so its libgit2 handle must never cross an
+        // await (mirrors the server's `drain_pending_diffs`). The graph apply
+        // runs back here, async, via `sync_index` — the SAME applier the
+        // manager's own mutators use.
+        let path = self.vault_path.clone();
+        let drain_queue = Arc::clone(&queue);
+        let drained = tokio::task::spawn_blocking(move || -> Vec<(Oid, Vec<(String, bool)>)> {
+            let Ok(repo) = VaultRepo::open(&path) else {
+                return Vec::new();
+            };
+            let mut batches = Vec::new();
+            while let Some(commit) = drain_queue.pop_front() {
+                // A commit the ref-watcher enqueued may no longer be reachable
+                // (GC / non-ff move). A first-parent or diff failure SKIPS that
+                // commit — advance the cursor, keep draining — rather than
+                // bricking the whole pass (unify with drain_through's tlx.1).
+                let parent = match repo.git_commit_first_parent(commit) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!(
+                            "flush_reindex: skipping commit {commit} after first-parent error: {e}"
+                        );
+                        drain_queue.advance_cursor(commit);
+                        continue;
+                    }
+                };
+                match repo.diff_path_statuses(parent, commit) {
+                    Ok(changes) => batches.push((commit, changes)),
+                    Err(e) => {
+                        log::warn!("flush_reindex: skipping commit {commit} after diff error: {e}");
+                        drain_queue.advance_cursor(commit);
+                    }
+                }
+            }
+            batches
+        })
+        .await
+        .unwrap_or_default();
+
+        if drained.is_empty() {
+            return;
+        }
+
+        let mut collapsed: Vec<(String, bool)> = Vec::new();
+        for (commit, changes) in drained {
+            self.sync_index(&changes).await;
+            collapsed.extend(changes);
+            queue.advance_cursor(commit);
+        }
+        self.fire_change_listener(collapsed);
     }
 
     /// Get vault path
@@ -278,6 +537,7 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
+        self.fire_change_listener(outcome.changed);
         Ok(())
     }
 
@@ -297,6 +557,7 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(plan).await?;
         self.sync_index(&outcome.changed).await;
+        self.fire_change_listener(outcome.changed.clone());
         Ok(outcome)
     }
 
@@ -406,6 +667,7 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
+        self.fire_change_listener(outcome.changed);
         Ok(())
     }
 
@@ -443,40 +705,51 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
+        self.fire_change_listener(outcome.changed);
         Ok(())
     }
 
     /// Get backlinks for a file
+    ///
+    /// M4c (design §6.3, deliverable E): self-flushing — drains any queued
+    /// out-of-band commits into the link graph first, so the read reflects
+    /// them without the server's `get_vault_pair_with_reindex` wrapper.
+    /// A no-op on Direct / an empty queue.
     pub async fn get_backlinks(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.flush_reindex().await;
         let vault_path = self.resolve_path(path)?;
         let graph = self.link_graph.read().await;
         let backlinks = graph.backlinks(&vault_path)?;
         Ok(backlinks.into_iter().map(|(p, _)| p).collect())
     }
 
-    /// Get forward links for a file
+    /// Get forward links for a file (self-flushing — see `get_backlinks`).
     pub async fn get_forward_links(&self, path: &Path) -> Result<Vec<PathBuf>> {
+        self.flush_reindex().await;
         let vault_path = self.resolve_path(path)?;
         let graph = self.link_graph.read().await;
         let forward_links = graph.forward_links(&vault_path)?;
         Ok(forward_links.into_iter().map(|(p, _)| p).collect())
     }
 
-    /// Get orphaned notes
+    /// Get orphaned notes (self-flushing — see `get_backlinks`).
     pub async fn get_orphaned_notes(&self) -> Result<Vec<PathBuf>> {
+        self.flush_reindex().await;
         let graph = self.link_graph.read().await;
         Ok(graph.orphaned_notes())
     }
 
-    /// Get related notes
+    /// Get related notes (self-flushing — see `get_backlinks`).
     pub async fn get_related_notes(&self, path: &Path, max_hops: usize) -> Result<Vec<PathBuf>> {
+        self.flush_reindex().await;
         let vault_path = self.resolve_path(path)?;
         let graph = self.link_graph.read().await;
         graph.related_notes(&vault_path, max_hops)
     }
 
-    /// Get graph statistics
+    /// Get graph statistics (self-flushing — see `get_backlinks`).
     pub async fn get_stats(&self) -> Result<turbovault_graph::GraphStats> {
+        self.flush_reindex().await;
         let graph = self.link_graph.read().await;
         Ok(graph.stats())
     }
@@ -908,6 +1181,23 @@ impl VaultManager {
         // Phase 4: return the validated cache contents.
         let cache = self.file_cache.read().await;
         cache.values().map(|e| e.file.clone()).collect()
+    }
+}
+
+impl Drop for VaultManager {
+    /// M4c (design fork #3): abort the git reindex background tasks so they
+    /// don't outlive the manager. The drainer holds `Weak<Self>` and self-exits,
+    /// but the HEAD-ref listener holds only the queue and is stopped SOLELY by
+    /// this abort — so recover the guard even if the lock was poisoned rather
+    /// than skip the abort and leak the listener (mirrors `substrate.rs`).
+    fn drop(&mut self) {
+        let tasks = self
+            .reindex_tasks
+            .get_mut()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for handle in tasks.iter() {
+            handle.abort();
+        }
     }
 }
 
@@ -2341,5 +2631,154 @@ mod tests {
             Some("v1"),
             "HEAD must still hold the pre-abort content"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // M4c (bite 3a): manager-owned reindex — change-listener, out-of-band
+    // drain, and background-task lifecycle (turbovault-qae.5.3, deliverable F)
+    // -------------------------------------------------------------------------
+
+    /// Create a commit with bare git2, bypassing the substrate — an
+    /// out-of-band ref advance (another process / manual git commit).
+    fn make_external_commit(repo_path: &Path, file_name: &str, content: &str) {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        std::fs::write(repo_path.join(file_name), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new(file_name)).unwrap();
+        let tree_oid = index.write_tree().unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        let sig = git2::Signature::now("Ext", "ext@example").unwrap();
+        let parent = repo
+            .head()
+            .ok()
+            .and_then(|h| h.target())
+            .and_then(|oid| repo.find_commit(oid).ok());
+        match parent {
+            Some(parent) => repo
+                .commit(Some("HEAD"), &sig, &sig, content, &tree, &[&parent])
+                .unwrap(),
+            None => repo
+                .commit(Some("HEAD"), &sig, &sig, content, &tree, &[])
+                .unwrap(),
+        };
+    }
+
+    /// A `write_file` through a git-backend manager fires the R7
+    /// change-listener with the written path — the search-staleness close
+    /// (the server registers a listener that feeds search + similarity off
+    /// exactly this set).
+    #[tokio::test]
+    async fn git_write_fires_change_listener_with_written_path() {
+        let temp_dir = TempDir::new().unwrap();
+        init_git_repo(temp_dir.path());
+        let manager = Arc::new(VaultManager::new(create_git_test_config(temp_dir.path())).unwrap());
+        manager.ensure_reindex_started();
+
+        let captured: Arc<std::sync::Mutex<Vec<(String, bool)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(changed);
+        }));
+
+        manager
+            .write_file(
+                Path::new("note.md"),
+                "# Note",
+                Precondition::Blind,
+                "commit",
+            )
+            .await
+            .unwrap();
+
+        let got = captured.lock().unwrap();
+        assert!(
+            got.iter().any(|(p, present)| p == "note.md" && *present),
+            "change-listener must fire with (note.md, present=true); got {got:?}"
+        );
+    }
+
+    /// An out-of-band commit (bare git2) is detected by the manager's
+    /// ref-listener and, after `flush_reindex()`, is reflected in the link
+    /// graph AND fired to the change-listener.
+    #[tokio::test]
+    async fn git_out_of_band_commit_drains_into_graph_and_listener() {
+        let temp_dir = TempDir::new().unwrap();
+        init_git_repo(temp_dir.path());
+        // Seed a committed note: a non-None ref baseline + one graph node.
+        make_external_commit(temp_dir.path(), "seed.md", "# Seed\n");
+        let manager = Arc::new(VaultManager::new(create_git_test_config(temp_dir.path())).unwrap());
+        manager.initialize().await.unwrap();
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
+
+        let captured: Arc<std::sync::Mutex<Vec<(String, bool)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(changed);
+        }));
+
+        // Fast ref poll so the test doesn't wait the production 5s.
+        manager.ensure_reindex_started_with_interval(std::time::Duration::from_millis(25));
+        // Let the listener snapshot its HEAD baseline (= the seed commit)
+        // BEFORE the out-of-band commit lands, so it registers as an advance.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Out-of-band commit adds external.md (links back to seed).
+        make_external_commit(
+            temp_dir.path(),
+            "external.md",
+            "# External\n\nsee [[seed]]\n",
+        );
+
+        // The ref-listener enqueues within a poll; the drainer and/or this
+        // flush apply it (idempotent). Poll until the graph reflects it.
+        let mut reflected = false;
+        for _ in 0..80 {
+            manager.flush_reindex().await;
+            if manager.get_stats().await.unwrap().total_files == 2 {
+                reflected = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(
+            reflected,
+            "out-of-band commit must be reflected in the link graph after flush"
+        );
+
+        let got = captured.lock().unwrap();
+        assert!(
+            got.iter()
+                .any(|(p, present)| p == "external.md" && *present),
+            "change-listener must fire with the out-of-band path; got {got:?}"
+        );
+    }
+
+    /// Dropping the manager aborts its background tasks (no leak). The tasks
+    /// hold `Weak<Self>`, never `Arc<Self>`, so the caller's ref is the last
+    /// strong one — an `Arc` capture would keep this upgrade succeeding.
+    #[tokio::test]
+    async fn dropping_manager_aborts_reindex_tasks_no_leak() {
+        let temp_dir = TempDir::new().unwrap();
+        init_git_repo(temp_dir.path());
+        let manager = Arc::new(VaultManager::new(create_git_test_config(temp_dir.path())).unwrap());
+        manager.ensure_reindex_started();
+
+        let weak = Arc::downgrade(&manager);
+        drop(manager);
+
+        // A drainer iteration may briefly hold an upgraded Arc; once Drop's
+        // abort lands the last strong ref is gone for good.
+        let mut gone = false;
+        for _ in 0..100 {
+            if weak.upgrade().is_none() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(gone, "manager leaked: a background task holds a strong ref");
     }
 }
