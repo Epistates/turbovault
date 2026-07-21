@@ -909,4 +909,116 @@ mod tests {
             "beta"
         );
     }
+
+    // -------- GWS.14b CAS-collision flush (turbovault-qae.6.2) --------
+    // Ported onto GitSubstrate from the three deleted GitFileTools tests
+    // (bite D removed them with no survivor; the M4 deleted-surface coverage
+    // audit flagged this as the one risky PORTED-ONLY gap). The flush logic
+    // lives in `GitSubstrate::apply` — fire `flush_on_collision` only on a
+    // `ConcurrencyError`, before returning it; a flush error is warn-logged and
+    // dropped so it can't mask the original error.
+
+    /// Build a `GitSubstrate` with a caller-supplied CAS-collision `flush`,
+    /// mirroring `VaultManager::new`'s git arm: its own `CommitLocks` + a cached
+    /// repo bound to a no-op commit hook.
+    fn git_sub_with_flush(tmp: &TempDir, flush: CasCollisionFlush) -> GitSubstrate {
+        let locks = Arc::new(CommitLocks::new());
+        let hook: CommitHook = Arc::new(|_p, _c| {});
+        let repo =
+            VaultRepo::open_with_locks_and_hook(tmp.path(), Arc::clone(&locks), Arc::clone(&hook))
+                .unwrap();
+        let cached: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
+        GitSubstrate::with_reindex(tmp.path().to_path_buf(), true, locks, hook, cached, flush)
+    }
+
+    #[tokio::test]
+    async fn cas_collision_flush_fires_before_concurrency_error_returns() {
+        // A sentinel flush flips an AtomicBool; observing it set after the
+        // error surfaces proves the flush ran BEFORE the ConcurrencyError
+        // reached the caller (so a re-read sees coherent derived state).
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let flushed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flushed_clone = Arc::clone(&flushed);
+        let flush: CasCollisionFlush = Arc::new(move || {
+            let f = Arc::clone(&flushed_clone);
+            Box::pin(async move {
+                f.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        let sub = git_sub_with_flush(&tmp, flush);
+
+        sub.apply(&ChangePlan::new("seed").create("a.md", "v1"))
+            .await
+            .unwrap();
+        let stale = VaultRepo::blob_oid_of(b"WAS_NEVER_HERE").unwrap();
+        let err = sub
+            .apply(&ChangePlan::new("update").update("a.md", "v2", stale.to_string()))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "got: {err:?}"
+        );
+        assert!(
+            flushed.load(std::sync::atomic::Ordering::SeqCst),
+            "flush must fire before the ConcurrencyError surfaces to the caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_collision_flush_skipped_on_successful_write() {
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let flush_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let flush_calls_clone = Arc::clone(&flush_calls);
+        let flush: CasCollisionFlush = Arc::new(move || {
+            let c = Arc::clone(&flush_calls_clone);
+            Box::pin(async move {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        let sub = git_sub_with_flush(&tmp, flush);
+
+        sub.apply(&ChangePlan::new("a").create("a.md", "alpha"))
+            .await
+            .unwrap();
+        sub.apply(&ChangePlan::new("b").create("b.md", "beta"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            flush_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "flush only fires on ConcurrencyError, never on successful writes"
+        );
+    }
+
+    #[tokio::test]
+    async fn cas_collision_flush_error_does_not_mask_original_concurrency_error() {
+        // Even when the flush callback itself errors, the caller still sees the
+        // original ConcurrencyError — flush failures are warn-logged + dropped.
+        let tmp = TempDir::new().unwrap();
+        init_repo(tmp.path());
+        let flush: CasCollisionFlush =
+            Arc::new(|| Box::pin(async { Err(Error::config_error("simulated flush failure")) }));
+        let sub = git_sub_with_flush(&tmp, flush);
+
+        sub.apply(&ChangePlan::new("seed").create("a.md", "v1"))
+            .await
+            .unwrap();
+        let stale = VaultRepo::blob_oid_of(b"WAS_NEVER_HERE").unwrap();
+        let err = sub
+            .apply(&ChangePlan::new("update").update("a.md", "v2", stale.to_string()))
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::ConcurrencyError { .. }),
+            "caller must see the original ConcurrencyError, not the flush's error: {err:?}"
+        );
+    }
 }
