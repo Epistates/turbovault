@@ -247,7 +247,9 @@ async fn test_update_frontmatter_merge_into_existing() {
     new_fm.insert("category".to_string(), serde_json::json!("work"));
     new_fm.insert("priority".to_string(), serde_json::json!(10)); // override existing
 
-    let result = tools.update_frontmatter("note1.md", new_fm, true).await;
+    let result = tools
+        .update_frontmatter("note1.md", new_fm, true, "fm")
+        .await;
     assert!(result.is_ok(), "update_frontmatter failed: {:?}", result);
 
     // Verify merge: new key added, existing key updated, other keys preserved
@@ -273,7 +275,7 @@ async fn test_update_frontmatter_replace_wipes_existing() {
     new_fm.insert("only_key".to_string(), serde_json::json!("value"));
 
     let result = tools
-        .update_frontmatter("note1.md", new_fm, false) // merge=false → replace
+        .update_frontmatter("note1.md", new_fm, false, "fm") // merge=false → replace
         .await;
     assert!(result.is_ok());
 
@@ -295,7 +297,7 @@ async fn test_update_frontmatter_into_no_frontmatter_file() {
     new_fm.insert("title".to_string(), serde_json::json!("Added"));
 
     let result = tools
-        .update_frontmatter("no_metadata.md", new_fm, true)
+        .update_frontmatter("no_metadata.md", new_fm, true, "fm")
         .await;
     assert!(result.is_ok());
 
@@ -317,7 +319,9 @@ async fn test_update_frontmatter_deep_merge_nested() {
         serde_json::json!({"extra": "new", "count": 99}),
     );
 
-    let result = tools.update_frontmatter("note3.md", new_fm, true).await;
+    let result = tools
+        .update_frontmatter("note3.md", new_fm, true, "fm")
+        .await;
     assert!(result.is_ok());
 
     // Deep merge: "field" preserved, "count" updated, "extra" added
@@ -344,7 +348,7 @@ async fn test_update_frontmatter_preserves_body() {
     new_fm.insert("new_key".to_string(), serde_json::json!("new_value"));
 
     tools
-        .update_frontmatter("note1.md", new_fm, true)
+        .update_frontmatter("note1.md", new_fm, true, "fm")
         .await
         .unwrap();
 
@@ -368,7 +372,7 @@ async fn test_manage_tags_list_frontmatter_and_inline() {
     .await
     .unwrap();
 
-    let result = tools.manage_tags("tagged.md", "list", None).await;
+    let result = tools.manage_tags("tagged.md", "list", None, "tags").await;
     assert!(result.is_ok());
     let resp = result.unwrap();
 
@@ -400,7 +404,9 @@ async fn test_manage_tags_list_no_frontmatter() {
     .await
     .unwrap();
 
-    let result = tools.manage_tags("inline_only.md", "list", None).await;
+    let result = tools
+        .manage_tags("inline_only.md", "list", None, "tags")
+        .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
     let fm_tags = resp["frontmatter_tags"].as_array().unwrap();
@@ -416,7 +422,9 @@ async fn test_manage_tags_add_to_existing() {
 
     // note1.md has tags: ["project", "urgent"]
     let tags = vec!["newone".to_string()];
-    let result = tools.manage_tags("note1.md", "add", Some(&tags)).await;
+    let result = tools
+        .manage_tags("note1.md", "add", Some(&tags), "tags")
+        .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
     let tags_arr = resp["tags"].as_array().unwrap();
@@ -432,7 +440,9 @@ async fn test_manage_tags_add_deduplicates() {
 
     // note1.md has tags: ["project", "urgent"]
     let tags = vec!["project".to_string()]; // already exists
-    let result = tools.manage_tags("note1.md", "add", Some(&tags)).await;
+    let result = tools
+        .manage_tags("note1.md", "add", Some(&tags), "tags")
+        .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
     let tags_arr = resp["tags"].as_array().unwrap();
@@ -446,7 +456,9 @@ async fn test_manage_tags_add_strips_hash() {
     let tools = MetadataTools::new(manager.clone());
 
     let tags = vec!["#newtag".to_string()];
-    let result = tools.manage_tags("note1.md", "add", Some(&tags)).await;
+    let result = tools
+        .manage_tags("note1.md", "add", Some(&tags), "tags")
+        .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
     let tags_arr = resp["tags"].as_array().unwrap();
@@ -462,7 +474,9 @@ async fn test_manage_tags_add_creates_tags_key() {
 
     // note3.md has frontmatter but no tags key
     let tags = vec!["added".to_string()];
-    let result = tools.manage_tags("note3.md", "add", Some(&tags)).await;
+    let result = tools
+        .manage_tags("note3.md", "add", Some(&tags), "tags")
+        .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
     let tags_arr = resp["tags"].as_array().unwrap();
@@ -476,7 +490,9 @@ async fn test_manage_tags_remove_existing() {
 
     // note1.md has tags: ["project", "urgent"]
     let tags = vec!["urgent".to_string()];
-    let result = tools.manage_tags("note1.md", "remove", Some(&tags)).await;
+    let result = tools
+        .manage_tags("note1.md", "remove", Some(&tags), "tags")
+        .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
     let remaining = resp["tags"].as_array().unwrap();
@@ -490,7 +506,9 @@ async fn test_manage_tags_remove_strips_hash() {
     let tools = MetadataTools::new(manager.clone());
 
     let tags = vec!["#urgent".to_string()]; // with hash
-    let result = tools.manage_tags("note1.md", "remove", Some(&tags)).await;
+    let result = tools
+        .manage_tags("note1.md", "remove", Some(&tags), "tags")
+        .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
     let remaining = resp["tags"].as_array().unwrap();
@@ -503,7 +521,9 @@ async fn test_manage_tags_remove_nonexistent_tag() {
     let tools = MetadataTools::new(manager.clone());
 
     let tags = vec!["nonexistent".to_string()];
-    let result = tools.manage_tags("note1.md", "remove", Some(&tags)).await;
+    let result = tools
+        .manage_tags("note1.md", "remove", Some(&tags), "tags")
+        .await;
     assert!(result.is_ok());
     // All original tags should remain
     let resp = result.unwrap();
@@ -519,7 +539,7 @@ async fn test_manage_tags_remove_no_frontmatter() {
 
     let tags = vec!["anything".to_string()];
     let result = tools
-        .manage_tags("no_metadata.md", "remove", Some(&tags))
+        .manage_tags("no_metadata.md", "remove", Some(&tags), "tags")
         .await;
     assert!(result.is_ok());
     let resp = result.unwrap();
@@ -531,7 +551,7 @@ async fn test_manage_tags_invalid_operation() {
     let (_temp_dir, manager) = setup_test_vault_with_metadata().await;
     let tools = MetadataTools::new(manager.clone());
 
-    let result = tools.manage_tags("note1.md", "toggle", None).await;
+    let result = tools.manage_tags("note1.md", "toggle", None, "tags").await;
     assert!(result.is_err());
 }
 
@@ -540,7 +560,7 @@ async fn test_manage_tags_add_without_tags_arg() {
     let (_temp_dir, manager) = setup_test_vault_with_metadata().await;
     let tools = MetadataTools::new(manager.clone());
 
-    let result = tools.manage_tags("note1.md", "add", None).await;
+    let result = tools.manage_tags("note1.md", "add", None, "tags").await;
     assert!(result.is_err());
 }
 
@@ -549,7 +569,7 @@ async fn test_manage_tags_remove_without_tags_arg() {
     let (_temp_dir, manager) = setup_test_vault_with_metadata().await;
     let tools = MetadataTools::new(manager.clone());
 
-    let result = tools.manage_tags("note1.md", "remove", None).await;
+    let result = tools.manage_tags("note1.md", "remove", None, "tags").await;
     assert!(result.is_err());
 }
 

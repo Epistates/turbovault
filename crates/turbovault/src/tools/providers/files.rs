@@ -72,16 +72,19 @@ impl FileProvider {
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
+        let manager = self.get_active_vault_manager().await?;
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
-        let tools = self.get_active_write_tools().await?;
         let message = self
             .resolve_commit_message(commit_message, || format!("write_note {path}"))
             .await?;
         let force = force.unwrap_or(false);
+        let files = FileTools::new(manager.clone());
 
-        if tools.is_git() && !force && expected_hash.is_none() && write_mode == WriteMode::Overwrite
-        {
-            let manager = self.get_active_vault_manager().await?;
+        // Create-by-default (backend-agnostic since M4d): no force, no hash, and
+        // a full overwrite means "create a new note". The filesystem pre-check
+        // gives a friendly message; `create_file`'s ExpectAbsent precondition
+        // is the TOCTOU-safe backstop on BOTH substrates.
+        if !force && expected_hash.is_none() && write_mode == WriteMode::Overwrite {
             if tokio::fs::try_exists(manager.vault_path().join(&path))
                 .await
                 .unwrap_or(false)
@@ -90,13 +93,13 @@ impl FileProvider {
                     "write_note refused: '{path}' exists. Read it and pass expected_hash, or pass force=true to acknowledge a blind overwrite."
                 )));
             }
-            tools
-                .create_file_with_message(&path, &content, &message)
+            files
+                .create_file(&path, &content, &message)
                 .await
                 .map_err(to_mcp_error)?;
         } else {
-            tools
-                .write_file_with_mode_and_message(
+            files
+                .write_file_with_mode(
                     &path,
                     &content,
                     write_mode,
@@ -137,14 +140,13 @@ impl FileProvider {
         dry_run: Option<bool>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
-        let vault_name = self.get_active_vault_name().await?;
-        let tools = self.get_active_write_tools().await?;
+        let (vault_name, manager) = self.get_vault_pair().await?;
         let dry_run = dry_run.unwrap_or(false);
         let message = self
             .resolve_commit_message(commit_message, || format!("edit_note {path}"))
             .await?;
-        let result = tools
-            .edit_file_with_message(&path, &edits, expected_hash.as_deref(), dry_run, &message)
+        let result = FileTools::new(manager)
+            .edit_file(&path, &edits, expected_hash.as_deref(), dry_run, &message)
             .await
             .map_err(to_mcp_error)?;
 
@@ -187,32 +189,30 @@ impl FileProvider {
         }
 
         let vault_name = self.get_active_vault_name().await?;
-        let tools = self.get_active_write_tools().await?;
+        let manager = self.get_active_vault_manager().await?;
+        let is_git = self.active_vault_is_git().await?;
         let message = self
             .resolve_commit_message(commit_message, || format!("delete_note {path}"))
             .await?;
-        let force = force.unwrap_or(!tools.is_git());
+        let force = force.unwrap_or(!is_git);
+        let files = FileTools::new(manager.clone());
         let backlinks = if force {
             Vec::new()
         } else {
-            tools
-                .list_inbound_backlinks(&path)
-                .await
-                .map_err(to_mcp_error)?
+            inbound_backlinks(&manager, &path).await?
         };
 
         let updated_sources = if backlinks.is_empty() || force {
-            tools
-                .delete_file_with_hash_and_message(&path, expected_hash.as_deref(), &message)
+            files
+                .delete_file_with_hash(&path, expected_hash.as_deref(), &message)
                 .await
                 .map_err(to_mcp_error)?;
             Vec::new()
         } else if on_backlinks.as_deref() == Some("rewrite-stale-callout") {
-            tools
+            BatchTools::new(manager)
                 .delete_file_with_link_rewrite_to_stale(&path, expected_hash.as_deref(), &message)
                 .await
                 .map_err(to_mcp_error)?
-                .link_sources_updated
         } else {
             return Err(McpError::invalid_request(format!(
                 "delete_note refused: '{path}' has {} inbound backlink(s): {}. Pass on_backlinks='rewrite-stale-callout' or force=true.",
@@ -256,21 +256,22 @@ impl FileProvider {
         update_backlinks: Option<bool>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
-        let tools = self.get_active_write_tools().await?;
+        let manager = self.get_active_vault_manager().await?;
+        let is_git = self.active_vault_is_git().await?;
         let message = self
             .resolve_commit_message(commit_message, || format!("move_note {from} -> {to}"))
             .await?;
-        let update_backlinks = update_backlinks.unwrap_or_else(|| tools.is_git());
+        let update_backlinks = update_backlinks.unwrap_or(is_git);
         let updated_sources = if update_backlinks {
-            self.flush_reindex_for_active_vault().await?;
-            tools
+            // `move_file_with_link_updates` flushes the reindex queue itself so
+            // the backlink resolution reads a coherent link graph.
+            BatchTools::new(manager)
                 .move_file_with_link_updates(&from, &to, expected_hash.as_deref(), &message)
                 .await
                 .map_err(to_mcp_error)?
-                .link_sources_updated
         } else {
-            tools
-                .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &message)
+            FileTools::new(manager)
+                .move_file_with_hash(&from, &to, expected_hash.as_deref(), &message)
                 .await
                 .map_err(to_mcp_error)?;
             Vec::new()
@@ -294,4 +295,25 @@ impl FileProvider {
                 .to_json()
         }
     }
+}
+
+/// Vault-relative source paths whose wikilinks target `path` (inbound
+/// backlinks), resolved through the manager's self-flushing link graph
+/// (`get_backlinks`). Backs `delete_note`'s refuse-by-default listing — the
+/// M4d replacement for the old `WriteTools::list_inbound_backlinks`.
+async fn inbound_backlinks(manager: &VaultManager, path: &str) -> McpResult<Vec<String>> {
+    let full = manager
+        .get_backlinks(std::path::Path::new(path))
+        .await
+        .map_err(to_mcp_error)?;
+    let vault_root = manager.vault_path();
+    Ok(full
+        .into_iter()
+        .filter_map(|p| {
+            p.strip_prefix(vault_root)
+                .unwrap_or(&p)
+                .to_str()
+                .map(str::to_string)
+        })
+        .collect())
 }

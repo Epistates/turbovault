@@ -790,6 +790,10 @@ async fn batch_preconditions_abort_before_public_side_effects() {
     assert_eq!(updated["success"], true);
     assert_eq!(updated["data"]["executed"], 1);
 
+    // Since M4d the batch routes through `manager.apply_changes`, which aborts
+    // the whole plan atomically on a stale per-op precondition (nothing
+    // written) and reports it as a soft `success: false` BatchResult (R10 wire
+    // shape preserved).
     let stale = call(
         &server,
         "batch_execute",
@@ -816,7 +820,7 @@ async fn batch_preconditions_abort_before_public_side_effects() {
         stale["data"]["errors"][0]
             .as_str()
             .expect("precondition error")
-            .contains("Precondition failed")
+            .contains("modified since last read")
     );
     assert!(!temp.path().join("side-effect.md").exists());
     assert_eq!(
@@ -1651,7 +1655,14 @@ async fn audit_preview_diff_and_rollback_restore_the_previous_note() {
     let updated = "# Release plan\n\nVersion two removes the safe rollout.\n";
 
     write_note(&server, "release.md", original).await;
-    write_note(&server, "release.md", updated).await;
+    // Overwriting an existing note is a create-by-default refusal since M4d
+    // (strict-create on both backends); pass force to make it a blind UPDATE.
+    call(
+        &server,
+        "write_note",
+        json!({"path": "release.md", "content": updated, "force": true}),
+    )
+    .await;
 
     let log = call(
         &server,

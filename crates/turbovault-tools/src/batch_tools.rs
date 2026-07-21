@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use turbovault_batch::{BatchExecutor, BatchOperation, BatchResult};
+use std::time::Instant;
+use turbovault_batch::{BatchExecutor, BatchOperation, BatchResult, OperationRecord};
 use turbovault_core::ChangePlan;
 use turbovault_core::prelude::*;
 use turbovault_vault::{EditEngine, VaultManager};
@@ -32,6 +33,93 @@ impl BatchTools {
     pub async fn batch_execute(&self, operations: Vec<BatchOperation>) -> Result<BatchResult> {
         let executor = BatchExecutor::from_manager(self.manager.clone());
         executor.execute(operations).await
+    }
+
+    /// write-substrate-layering M4d (R3/R4): the manager-routed batch. Folds
+    /// every op into ONE [`ChangePlan`] via [`Self::plan`] (the same
+    /// `translate_op`/`fold_*` helpers, including the formerly git-only
+    /// `EditNote`/`UpdateFrontmatter`/`ManageTags`/`CreateFromTemplate` arms
+    /// and per-op CAS preconditions) and applies it through
+    /// [`VaultManager::apply_changes`] — so the SAME batch surface runs on
+    /// both substrates. `message` becomes the git commit subject (ignored on
+    /// direct). On a direct vault the plan gets today's `DirectSubstrate::apply`
+    /// semantics (precondition-gate → sequential → `atomic:true`); direct
+    /// best-effort `failed_at` reporting is M5.2.
+    ///
+    /// Reindex is flushed first so any link-aware op (`MoveNote`/`DeleteNote`)
+    /// resolves against a coherent graph. A batch failure (stale precondition,
+    /// intra-batch path collision, unreadable link source) is reported as a
+    /// soft `BatchResult { success: false, errors }` — NOT a hard `Err` — so the
+    /// pre-M4d batch wire shape (R10) holds. On git `apply_changes` aborts the
+    /// whole plan atomically (nothing written). On direct only the precondition
+    /// GATE is atomic — the apply loop is sequential with no rollback, so a
+    /// mid-loop failure can leave partial state while this still reports
+    /// `executed: 0`; true direct best-effort/`failed_at` reporting is M5.2.
+    pub async fn batch_apply(
+        &self,
+        operations: Vec<BatchOperation>,
+        message: &str,
+    ) -> Result<BatchResult> {
+        let started = Instant::now();
+        let transaction_id = uuid::Uuid::new_v4().to_string();
+        let total = operations.len();
+
+        if operations.is_empty() {
+            return Ok(BatchResult {
+                success: false,
+                executed: 0,
+                total: 0,
+                failed_at: None,
+                changes: vec![],
+                errors: vec!["Batch cannot be empty".to_string()],
+                records: vec![],
+                transaction_id,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+
+        self.manager.flush_reindex().await;
+        // A batch failure (intra-batch collision, a stale/absent precondition,
+        // an unreadable link source) is reported as `success: false` in the
+        // BatchResult envelope — NOT propagated as a hard error — preserving
+        // the pre-M4d wire shape (R10): the batch tool call itself succeeds and
+        // the caller inspects `success`/`errors`. On git `apply_changes` is
+        // whole-plan atomic (nothing written on failure); on direct only the
+        // precondition gate is atomic — a mid-apply failure may leave partial
+        // state (M5.2 adds `failed_at`).
+        let mut plan = match self.plan(&operations).await {
+            Ok(plan) => plan,
+            Err(e) => return Ok(failed_batch(total, e, transaction_id, started)),
+        };
+        plan.message = message.to_string();
+        if let Err(e) = self.manager.apply_changes(&plan).await {
+            return Ok(failed_batch(total, e, transaction_id, started));
+        }
+
+        let changes = operations.iter().map(describe_op).collect();
+        let records = operations
+            .iter()
+            .enumerate()
+            .map(|(idx, op)| OperationRecord {
+                operation_index: idx,
+                operation: format!("{:?}", op),
+                success: true,
+                error: None,
+                affected_files: op.affected_files(),
+            })
+            .collect();
+
+        Ok(BatchResult {
+            success: true,
+            executed: total,
+            total,
+            failed_at: None,
+            changes,
+            errors: vec![],
+            records,
+            transaction_id,
+            duration_ms: started.elapsed().as_millis() as u64,
+        })
     }
 
     // -------- write-substrate-layering M4a: the ChangePlan translation --------
@@ -107,6 +195,53 @@ impl BatchTools {
             .fold_delete_with_stale_links(plan, path, expected_hash)
             .await?;
         Ok(plan)
+    }
+
+    // -------- write-substrate-layering M4d: manager-routed link-aware writes --
+
+    /// Atomic move + inbound-wikilink rewrite through the manager (both
+    /// substrates). Flushes the reindex queue first so the backlink resolution
+    /// reads a coherent link graph (replaces the MCP layer's pre-move flush),
+    /// builds the one-plan rename+rewrite via [`Self::fold_move_with_links`],
+    /// and applies it via [`VaultManager::apply_changes`]. Returns the
+    /// vault-relative source paths whose wikilinks were rewritten. `message`
+    /// is the git commit subject (ignored on direct).
+    pub async fn move_file_with_link_updates(
+        &self,
+        from: &str,
+        to: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<Vec<String>> {
+        self.manager.flush_reindex().await;
+        let (plan, updated) = self
+            .fold_move_with_links(
+                ChangePlan::new(message.to_string()),
+                from,
+                to,
+                expected_hash,
+            )
+            .await?;
+        self.manager.apply_changes(&plan).await?;
+        Ok(updated)
+    }
+
+    /// Atomic delete + inbound-wikilink stale-wrap through the manager (both
+    /// substrates). Same flush-then-`apply_changes` shape as
+    /// [`Self::move_file_with_link_updates`]; returns the rewritten source
+    /// paths.
+    pub async fn delete_file_with_link_rewrite_to_stale(
+        &self,
+        path: &str,
+        expected_hash: Option<&str>,
+        message: &str,
+    ) -> Result<Vec<String>> {
+        self.manager.flush_reindex().await;
+        let (plan, updated) = self
+            .fold_delete_with_stale_links(ChangePlan::new(message.to_string()), path, expected_hash)
+            .await?;
+        self.manager.apply_changes(&plan).await?;
+        Ok(updated)
     }
 
     // -------- internals (ported from git_file_tools.rs) --------
@@ -575,6 +710,51 @@ fn remove_expecting(plan: ChangePlan, path: &str, expected_hash: Option<&str>) -
         p = p.expect_blob(path, token.to_string());
     }
     p
+}
+
+/// The soft `success: false` [`BatchResult`] a manager-routed batch returns
+/// when the plan cannot be built or applied — nothing was written (the plan
+/// aborts atomically). Mirrors the pre-M4d executor's failure envelope so the
+/// batch tool's wire shape is unchanged (R10).
+fn failed_batch(
+    total: usize,
+    error: Error,
+    transaction_id: String,
+    started: Instant,
+) -> BatchResult {
+    BatchResult {
+        success: false,
+        executed: 0,
+        total,
+        failed_at: None,
+        changes: vec![],
+        errors: vec![error.to_string()],
+        records: vec![],
+        transaction_id,
+        duration_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+/// Human-readable one-line summary of a batch op, for `BatchResult::changes`
+/// (mirrors the git-path `describe_op` so the wire shape is backend-uniform).
+fn describe_op(op: &BatchOperation) -> String {
+    match op {
+        BatchOperation::CreateNote { path, .. } => format!("created {}", path),
+        BatchOperation::WriteNote { path, .. } => format!("wrote {}", path),
+        BatchOperation::DeleteNote { path, .. } => format!("deleted {}", path),
+        BatchOperation::MoveNote { from, to, .. } => format!("moved {} -> {}", from, to),
+        BatchOperation::UpdateLinks { file, .. } => format!("updated links in {}", file),
+        BatchOperation::EditNote { path, .. } => format!("edited {}", path),
+        BatchOperation::UpdateFrontmatter { path, .. } => {
+            format!("updated frontmatter in {}", path)
+        }
+        BatchOperation::ManageTags {
+            path, operation, ..
+        } => format!("{} tags in {}", operation, path),
+        BatchOperation::CreateFromTemplate {
+            template_id, path, ..
+        } => format!("created {} from template {}", path, template_id),
+    }
 }
 
 #[cfg(test)]

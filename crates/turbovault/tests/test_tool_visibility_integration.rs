@@ -80,8 +80,13 @@ async fn batch_response_reports_partial_failure_contract() {
         .expect("batch response should expose structured content");
     assert_eq!(response["success"], false);
     assert_eq!(response["data"]["success"], false);
-    assert_eq!(response["data"]["executed"], 1);
-    assert_eq!(response["data"]["failed_at"], 1);
+    // M4d: the direct batch routes through `manager.apply_changes`. Per-op
+    // `executed`/`failed_at` reporting is NOT provided this bite — direct
+    // best-effort reporting (failed_at / partial-rollback) is M5.2 — so the
+    // batch reports a plain `success: false` with the aborting error and no
+    // per-op index.
+    assert_eq!(response["data"]["executed"], 0);
+    assert!(response["data"]["failed_at"].is_null());
     assert_eq!(response["meta"]["execution_mode"], "sequential_direct");
     assert!(
         response["warnings"][0]
@@ -89,6 +94,9 @@ async fn batch_response_reports_partial_failure_contract() {
             .unwrap_or_default()
             .contains("not rolled back")
     );
+    // The earlier CreateNote landed before the DeleteNote of a missing path
+    // aborted the sequential DirectSubstrate apply — direct is not yet atomic
+    // (the "not rolled back" warning is accurate; true atomicity is M5.2).
     assert!(temp.path().join("created.md").exists());
 }
 

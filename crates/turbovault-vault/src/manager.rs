@@ -587,7 +587,7 @@ impl VaultManager {
         dry_run: bool,
         message: &str,
     ) -> Result<crate::edit::EditResult> {
-        use crate::edit::{EditEngine, compute_hash};
+        use crate::edit::EditEngine;
 
         let vault_path = self.resolve_path(path)?;
 
@@ -601,7 +601,12 @@ impl VaultManager {
 
         // Preserve the exact pre-image that the edit was calculated from. The
         // write below revalidates this hash after releasing the cache lock.
-        let validated_hash = compute_hash(&current_content);
+        // Mint the token via the active SUBSTRATE's convention (git blob-oid on
+        // git, NFC-sha256 on direct) — the same token `edit`'s `expected`
+        // precondition carries and the token the substrate re-checks at apply
+        // time; using a hardcoded sha256 here would hand the git substrate an
+        // unparseable ExpectBlob (write-substrate-layering M4d).
+        let validated_hash = self.hash_bytes(current_content.as_bytes())?;
 
         if let Precondition::ExpectBlob(expected) = &precondition
             && &validated_hash != expected
@@ -618,7 +623,16 @@ impl VaultManager {
         let engine = EditEngine::new();
         let blocks = engine.parse_blocks(edits)?;
 
-        let (edit_result, new_content) = engine.apply_edits(&current_content, &blocks, dry_run)?;
+        let (mut edit_result, new_content) =
+            engine.apply_edits(&current_content, &blocks, dry_run)?;
+
+        // Report substrate-native version tokens (git blob-oid on git, NFC-
+        // sha256 on direct) so the caller can round-trip `new_hash` as a
+        // subsequent `expected_hash` on either backend — `apply_edits` computes
+        // sha256 unconditionally, which is wrong for git (matches the pre-M4d
+        // GitFileTools blob-oid contract).
+        edit_result.old_hash = validated_hash.clone();
+        edit_result.new_hash = self.hash_bytes(new_content.as_bytes())?;
 
         // If dry run, return preview without writing
         if dry_run {

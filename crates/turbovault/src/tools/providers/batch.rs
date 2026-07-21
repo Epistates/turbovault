@@ -45,6 +45,7 @@ impl BatchProvider {
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
+        let manager = self.get_active_vault_manager().await?;
 
         if operations.is_empty() {
             return Err(McpError::internal(
@@ -56,9 +57,8 @@ impl BatchProvider {
         let message = self
             .resolve_commit_message(commit_message, || derive_batch_message(&operations))
             .await?;
-        let tools = self.get_active_write_tools().await?;
-        let result = tools
-            .batch_execute_with_message(operations, &message)
+        let result = BatchTools::new(manager)
+            .batch_apply(operations, &message)
             .await
             .map_err(to_mcp_error)?;
 

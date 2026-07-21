@@ -164,6 +164,7 @@ impl MetadataTools {
         path: &str,
         frontmatter: serde_json::Map<String, Value>,
         merge: bool,
+        message: &str,
     ) -> Result<Value> {
         let (new_content, info) = self
             .compute_update_frontmatter(path, frontmatter, merge)
@@ -174,7 +175,7 @@ impl MetadataTools {
                 &file_path,
                 &new_content,
                 Precondition::for_in_place(None),
-                &format!("update_frontmatter {path}"),
+                message,
             )
             .await?;
         Ok(info)
@@ -238,6 +239,7 @@ impl MetadataTools {
         path: &str,
         operation: &str,
         tags: Option<&[String]>,
+        message: &str,
     ) -> Result<Value> {
         let (maybe_write, info) = self.compute_manage_tags(path, operation, tags).await?;
         if let Some(new_content) = maybe_write {
@@ -247,7 +249,7 @@ impl MetadataTools {
                     &file_path,
                     &new_content,
                     Precondition::for_in_place(None),
-                    &format!("manage_tags {path}"),
+                    message,
                 )
                 .await?;
         }

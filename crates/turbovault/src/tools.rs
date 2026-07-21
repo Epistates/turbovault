@@ -12,11 +12,12 @@ use turbovault_core::config::{GitMergeStrategy as ConfigMergeStrategy, VaultConf
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
-    AnalysisTools, AuditTools, BatchOperation, CachedRepo, CasCollisionFlush, CommitHook,
-    CommitLocks, DiffTools, DuplicateTools, ExportTools, FanoutInfo, FileTools, GitMergeStrategy,
-    GraphTools, GroundingTools, MetadataTools, OkfTools, QualityTools, ReindexQueue,
-    RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine, TemplateEngine,
-    VaultLifecycleTools, VaultRepo, ViewerTools, WriteMode, WriteTools, obsidian_uri,
+    AnalysisTools, AuditTools, BatchOperation, BatchTools, CachedRepo, CasCollisionFlush,
+    CommitHook, CommitLocks, DiffTools, DuplicateTools, ExportTools, FanoutInfo, FileTools,
+    GitMergeStrategy, GraphTools, GroundingTools, MetadataTools, OkfTools, QualityTools,
+    ReindexQueue, RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine,
+    TemplateEngine, VaultLifecycleTools, VaultRepo, ViewerTools, WriteMode, WriteTools,
+    obsidian_uri,
 };
 use turbovault_vault::{ChangeListener, VaultManager};
 
@@ -887,6 +888,20 @@ impl CoreToolHandler {
                         .unwrap_or(false)
             })
             .unwrap_or(false)
+    }
+
+    /// write-substrate-layering M4d: true when the active vault is on the git
+    /// backend. The manager already dispatches the substrate per write; this is
+    /// only for the handlers' backend-dependent DEFAULTS (delete_note's
+    /// force-by-default, move_note's update-backlinks-by-default) which differ
+    /// by backend and must be preserved (R10).
+    async fn active_vault_is_git(&self) -> McpResult<bool> {
+        Ok(self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map(|c| matches!(c.write_backend, WriteBackend::Git))
+            .unwrap_or(false))
     }
 
     /// turbovault-qae.5.2: check-only half of the commit-message gate —

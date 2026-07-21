@@ -99,18 +99,13 @@ impl TemplateProvider {
         let field_values: HashMap<String, String> = serde_json::from_str(&fields)
             .map_err(|e| McpError::invalid_request(format!("Invalid fields JSON: {}", e)))?;
 
-        let (content, result) = engine
-            .compute_from_template(&template_id, &file_path, field_values)
-            .await
-            .map_err(to_mcp_error)?;
         let message = self
             .resolve_commit_message(commit_message, || {
                 format!("create_from_template {template_id} -> {file_path}")
             })
             .await?;
-        self.get_active_write_tools()
-            .await?
-            .create_file_with_message(&file_path, &content, &message)
+        let result = engine
+            .create_from_template(&template_id, &file_path, field_values, &message)
             .await
             .map_err(to_mcp_error)?;
 

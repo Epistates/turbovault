@@ -145,7 +145,13 @@ impl WriteTools {
         match self {
             Self::Direct { files, .. } => {
                 files
-                    .write_file_with_mode(path, content, mode, expected_hash)
+                    .write_file_with_mode(
+                        path,
+                        content,
+                        mode,
+                        expected_hash,
+                        &format!("write_file {path}"),
+                    )
                     .await
             }
             Self::Git(g) => {
@@ -199,7 +205,7 @@ impl WriteTools {
         match self {
             Self::Direct { files, .. } => {
                 files
-                    .write_file_with_mode(path, content, mode, expected_hash)
+                    .write_file_with_mode(path, content, mode, expected_hash, message)
                     .await
             }
             Self::Git(g) => {
@@ -231,7 +237,9 @@ impl WriteTools {
     ) -> Result<EditResult> {
         match self {
             Self::Direct { files, .. } => {
-                files.edit_file(path, edits, expected_hash, dry_run).await
+                files
+                    .edit_file(path, edits, expected_hash, dry_run, message)
+                    .await
             }
             Self::Git(g) => {
                 g.edit_file_with_message(path, edits, expected_hash, dry_run, message)
@@ -247,7 +255,11 @@ impl WriteTools {
         message: &str,
     ) -> Result<()> {
         match self {
-            Self::Direct { files, .. } => files.delete_file_with_hash(path, expected_hash).await,
+            Self::Direct { files, .. } => {
+                files
+                    .delete_file_with_hash(path, expected_hash, message)
+                    .await
+            }
             Self::Git(g) => {
                 g.delete_file_with_hash_and_message(path, expected_hash, message)
                     .await
@@ -263,7 +275,11 @@ impl WriteTools {
         message: &str,
     ) -> Result<()> {
         match self {
-            Self::Direct { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
+            Self::Direct { files, .. } => {
+                files
+                    .move_file_with_hash(from, to, expected_hash, message)
+                    .await
+            }
             Self::Git(g) => {
                 g.move_file_with_hash_and_message(from, to, expected_hash, message)
                     .await
@@ -365,7 +381,15 @@ impl WriteTools {
     ) -> Result<EditResult> {
         match self {
             Self::Direct { files, .. } => {
-                files.edit_file(path, edits, expected_hash, dry_run).await
+                files
+                    .edit_file(
+                        path,
+                        edits,
+                        expected_hash,
+                        dry_run,
+                        &format!("edit_file {path}"),
+                    )
+                    .await
             }
             Self::Git(g) => g.edit_file(path, edits, expected_hash, dry_run).await,
         }
@@ -384,7 +408,11 @@ impl WriteTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         match self {
-            Self::Direct { files, .. } => files.delete_file_with_hash(path, expected_hash).await,
+            Self::Direct { files, .. } => {
+                files
+                    .delete_file_with_hash(path, expected_hash, &format!("delete_file {path}"))
+                    .await
+            }
             Self::Git(g) => g.delete_file_with_hash(path, expected_hash).await,
         }
     }
@@ -403,7 +431,16 @@ impl WriteTools {
         expected_hash: Option<&str>,
     ) -> Result<()> {
         match self {
-            Self::Direct { files, .. } => files.move_file_with_hash(from, to, expected_hash).await,
+            Self::Direct { files, .. } => {
+                files
+                    .move_file_with_hash(
+                        from,
+                        to,
+                        expected_hash,
+                        &format!("move_file {from} -> {to}"),
+                    )
+                    .await
+            }
             Self::Git(g) => g.move_file_with_hash(from, to, expected_hash).await,
         }
     }
