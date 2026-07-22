@@ -6,19 +6,17 @@ This section provides detailed documentation for each individual crate in the `T
 
 The `TurboVault` project is organized as a modular Rust workspace:
 
-| Crate | Purpose | Lines of Code | Key Features |
-|-------|---------|---------------|--------------|
-| **turbovault-core** | Core types, errors, config | ~2,000 LOC | Data models, error handling, configuration |
-| **turbovault-parser** | OFM parsing (wikilinks, frontmatter) | ~1,500 LOC | Markdown parsing, link extraction |
-| **turbovault-graph** | Link graph analysis | ~1,200 LOC | Graph algorithms, health analysis |
-| **turbovault-vault** | File I/O, caching, validation | ~1,800 LOC | Vault management, atomic operations |
-| **turbovault-batch** | Validated fail-fast operation batches | ~650 LOC | Conflict validation, sequencing, detailed results |
-| **turbovault-export** | JSON/CSV export formats | ~600 LOC | Data export, reporting |
-| **turbovault-tools** | Reusable MCP operations | ~2,500 LOC | Search, graph, metadata, and file operations |
-| **turbovault-plugin-api** | Stable plugin boundary | Small | Curated vault facade, provider contract, bounded hooks |
-| **turbovault-server** | CLI + MCP server | ~600 LOC | Main binary, server orchestration |
-
-**Total**: ~11,000 lines of production Rust code
+| Crate | Purpose | Key Features |
+|-------|---------|--------------|
+| **turbovault-core** | Core types, errors, config | Data models, error handling, configuration |
+| **turbovault-parser** | OFM parsing (wikilinks, frontmatter) | Markdown parsing, link extraction |
+| **turbovault-graph** | Link graph analysis | Graph algorithms, health analysis |
+| **turbovault-vault** | File I/O, caching, validation | Vault management, atomic operations |
+| **turbovault-batch** | Validated fail-fast operation batches | Conflict validation, sequencing, detailed results |
+| **turbovault-export** | JSON/CSV export formats | Data export, reporting |
+| **turbovault-tools** | Reusable MCP operations | Search, graph, metadata, and file operations |
+| **turbovault-plugin-api** | Stable plugin boundary | Curated vault facade, provider contract, bounded hooks |
+| **turbovault-server** | CLI + MCP server | Main binary, server orchestration |
 
 ## Individual Crate Documentation
 

@@ -109,26 +109,21 @@ impl VaultHost for PluginVaultHost {
     }
 
     async fn write_note(&self, request: WriteNoteRequest) -> PluginResult<WriteReceipt> {
-        let vault = self
+        let prepared = self
             .core
-            .get_active_vault_name()
+            .prepare_complete_note_write(
+                &request.path,
+                request.commit_message.clone(),
+                "plugin write",
+            )
             .await
             .map_err(map_host_error)?;
-        let manager = self
-            .core
-            .get_active_vault_manager()
-            .await
-            .map_err(map_host_error)?;
+        let vault = prepared.vault_name;
+        let manager = prepared.manager;
+        let message = prepared.message;
         let resolved_path = manager
             .resolve_path(Path::new(&request.path))
             .map_err(map_core_error)?;
-        let message = self
-            .core
-            .resolve_commit_message(request.commit_message.clone(), || {
-                format!("plugin write {}", request.path)
-            })
-            .await
-            .map_err(map_host_error)?;
         let files = FileTools::new(manager.clone());
 
         match &request.precondition {
@@ -167,8 +162,7 @@ impl VaultHost for PluginVaultHost {
             }
         }
 
-        self.core.invalidate_similarity_cache().await;
-        self.core.invalidate_search_cache().await;
+        self.core.finish_complete_note_write().await;
         let version = self
             .core
             .hash_for_active_backend(&request.content)

@@ -306,6 +306,16 @@ struct ActiveFanoutRecord {
     fanout_vault_name: String,
 }
 
+/// Shared setup for the `write_note` operation, which is implemented at two
+/// provider boundaries — the MCP handler and the plugin `VaultHost`. Bundling
+/// active-vault selection + commit-message resolution here keeps both from
+/// re-deriving it.
+pub(super) struct CompleteNoteWrite {
+    pub(super) vault_name: String,
+    pub(super) manager: Arc<VaultManager>,
+    pub(super) message: String,
+}
+
 impl CoreToolHandler {
     /// Create a new server instance (vault-agnostic - no vault required at startup)
     pub fn new() -> Result<Self> {
@@ -907,6 +917,32 @@ impl CoreToolHandler {
             .require_commit_message(commit_message)
             .await?
             .unwrap_or_else(fallback))
+    }
+
+    /// Resolve the shared state for a `write_note` (vault name, manager, commit
+    /// message). Paired with [`Self::finish_complete_note_write`].
+    async fn prepare_complete_note_write(
+        &self,
+        path: &str,
+        commit_message: Option<String>,
+        fallback_operation: &str,
+    ) -> McpResult<CompleteNoteWrite> {
+        let vault_name = self.get_active_vault_name().await?;
+        let manager = self.get_active_vault_manager().await?;
+        let message = self
+            .resolve_commit_message(commit_message, || format!("{fallback_operation} {path}"))
+            .await?;
+        Ok(CompleteNoteWrite {
+            vault_name,
+            manager,
+            message,
+        })
+    }
+
+    /// Invalidate derived caches after a `write_note`.
+    async fn finish_complete_note_write(&self) {
+        self.invalidate_similarity_cache().await;
+        self.invalidate_search_cache().await;
     }
 
     /// Helper to get both vault name and manager (eliminates 31 repeated preambles)

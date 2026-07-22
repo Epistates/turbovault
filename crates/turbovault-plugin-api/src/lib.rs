@@ -19,8 +19,8 @@ pub use hooks::{
     PublishError, VaultEventEnvelope, WriteProvenance,
 };
 pub use provider::{
-    Plugin, PluginContext, PluginDescriptor, PluginProvider, PluginRequestContext,
-    validate_plugin_id,
+    MCP_TOOL_NAME_MAX_LEN, Plugin, PluginContext, PluginDescriptor, PluginProvider,
+    PluginRequestContext, namespaced_tool_name, validate_mcp_tool_name, validate_plugin_id,
 };
 pub use turbomcp_types::{Tool, ToolResult};
 pub use vault::{
