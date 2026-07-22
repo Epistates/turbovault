@@ -95,7 +95,8 @@ impl PluginProviderAdapter {
 #[cfg(feature = "plugin-api")]
 fn plugin_error(error: PluginError) -> McpError {
     match error.code {
-        PluginErrorCode::InvalidInput | PluginErrorCode::NotFound | PluginErrorCode::Conflict => {
+        PluginErrorCode::NotFound => McpError::resource_not_found(error.message),
+        PluginErrorCode::InvalidInput | PluginErrorCode::Conflict => {
             McpError::invalid_request(error.message)
         }
         PluginErrorCode::Unavailable | PluginErrorCode::Internal => {

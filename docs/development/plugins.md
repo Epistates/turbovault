@@ -17,7 +17,7 @@ managers. A plugin factory receives:
 
 `VaultApi` requires every write to choose `CreateOnly` or `Match(version)`.
 There is intentionally no blind-overwrite escape hatch. Version tokens are
-opaque and backend-native: SHA-256 on the legacy backend and Git blob IDs on
+opaque and backend-native: SHA-256 on the direct backend and Git blob IDs on
 the Git backend.
 
 Plugins receive a curated request context containing request, user, session,

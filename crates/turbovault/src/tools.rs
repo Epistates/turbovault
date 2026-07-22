@@ -927,8 +927,11 @@ impl CoreToolHandler {
         commit_message: Option<String>,
         fallback_operation: &str,
     ) -> McpResult<CompleteNoteWrite> {
-        let vault_name = self.get_active_vault_name().await?;
+        // Resolve the manager first and take the vault name from it, so the
+        // whole write sees ONE active-vault snapshot even if `set_active_vault`
+        // races on another connection.
         let manager = self.get_active_vault_manager().await?;
+        let vault_name = manager.vault_name().to_string();
         let message = self
             .resolve_commit_message(commit_message, || format!("{fallback_operation} {path}"))
             .await?;

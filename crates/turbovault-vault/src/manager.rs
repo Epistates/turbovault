@@ -373,6 +373,16 @@ impl VaultManager {
         &self.vault_path
     }
 
+    /// The name of the (single) vault this manager was built for. Lets the tool
+    /// layer take one active-vault snapshot instead of re-resolving the active
+    /// vault separately for the name and the manager.
+    pub fn vault_name(&self) -> &str {
+        self.config
+            .default_vault()
+            .map(|v| v.name.as_str())
+            .unwrap_or_default()
+    }
+
     /// Convert a path to a `/`-separated vault-relative string.
     ///
     /// Strips the vault root prefix and normalizes separators to `/` (so paths

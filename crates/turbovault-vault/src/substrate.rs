@@ -193,10 +193,13 @@ impl DirectSubstrate {
         })
     }
 
-    /// Behavior-preserving translation of the pre-M3a per-mutator
-    /// `expected_hash` checks (write_file/delete_file/move_file, manager.rs
-    /// ~L184/L406/L472) onto the four [`Precondition`] variants. Real
-    /// working-tree CAS (vs. this advisory sha256 check) is M5 (R5).
+    /// Enforced working-tree CAS: `apply` reads the current on-disk bytes and
+    /// passes them as `before` (under the R6 write lock); a mismatch here aborts
+    /// the plan with `ConcurrencyError`. A behavior-preserving translation of
+    /// the pre-M3a per-mutator `expected_hash` checks
+    /// (write_file/delete_file/move_file, manager.rs ~L184/L406/L472) onto the
+    /// four [`Precondition`] variants. The guard is in-process only; cross-
+    /// process CAS is a git-backend capability (R6).
     fn check_precondition(
         path: &str,
         precondition: &Precondition,
