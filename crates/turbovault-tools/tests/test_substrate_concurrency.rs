@@ -117,12 +117,24 @@ async fn same_file_cas_one_wins_other_aborts() {
     let v1a = v1_blob.clone();
     let v1b = v1_blob.clone();
     let ja = tokio::spawn(async move {
-        a.write_file_with_mode("a.md", "WA", WriteMode::Overwrite, Some(&v1a), "writer A")
-            .await
+        a.write_file_with_mode(
+            "a.md",
+            "WA",
+            WriteMode::Overwrite,
+            turbovault_core::Precondition::for_replace(Some(&v1a), true),
+            "writer A",
+        )
+        .await
     });
     let jb = tokio::spawn(async move {
-        b.write_file_with_mode("a.md", "WB", WriteMode::Overwrite, Some(&v1b), "writer B")
-            .await
+        b.write_file_with_mode(
+            "a.md",
+            "WB",
+            WriteMode::Overwrite,
+            turbovault_core::Precondition::for_replace(Some(&v1b), true),
+            "writer B",
+        )
+        .await
     });
     let ra = ja.await.unwrap();
     let rb = jb.await.unwrap();
@@ -160,7 +172,7 @@ async fn reconsideration_domino_aborts_whole_batch_on_read_set_change() {
         "watched.md",
         "W2",
         WriteMode::Overwrite,
-        Some(&watched_v1_str),
+        turbovault_core::Precondition::for_replace(Some(&watched_v1_str), true),
         "writer B races",
     )
     .await

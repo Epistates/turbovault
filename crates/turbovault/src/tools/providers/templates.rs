@@ -105,7 +105,14 @@ impl TemplateProvider {
             })
             .await?;
         let result = engine
-            .create_from_template(&template_id, &file_path, field_values, &message)
+            .create_from_template(
+                &template_id,
+                &file_path,
+                field_values,
+                // Pre-cutover parity: create_from_template is a strict create.
+                turbovault_core::Precondition::ExpectAbsent,
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 

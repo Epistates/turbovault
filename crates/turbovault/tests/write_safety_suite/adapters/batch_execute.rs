@@ -34,7 +34,9 @@ pub fn trials(backend: Backend) -> Vec<Trial> {
                         .map(|_| ()),
                     None,
                 );
-                if obs.succeeded && w.vault().read("a.md").is_some() && w.vault().read("b.md").is_some()
+                if obs.succeeded
+                    && w.vault().read("a.md").is_some()
+                    && w.vault().read("b.md").is_some()
                 {
                     Ok(())
                 } else {

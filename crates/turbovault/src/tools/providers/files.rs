@@ -104,7 +104,11 @@ impl FileProvider {
                     &path,
                     &content,
                     write_mode,
-                    expected_hash.as_deref(),
+                    // Pre-cutover parity: the overwrite arm always mapped
+                    // `(expected_hash, force=true)` — a token wins, otherwise a
+                    // blind write (append/prepend never refused-on-exists). The
+                    // create-by-default `ExpectAbsent` path is the branch above.
+                    turbovault_core::Precondition::for_replace(expected_hash.as_deref(), true),
                     &message,
                 )
                 .await
@@ -146,7 +150,13 @@ impl FileProvider {
             .resolve_commit_message(commit_message, || format!("edit_note {path}"))
             .await?;
         let result = FileTools::new(manager)
-            .edit_file(&path, &edits, expected_hash.as_deref(), dry_run, &message)
+            .edit_file(
+                &path,
+                &edits,
+                turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
+                dry_run,
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 
@@ -204,7 +214,11 @@ impl FileProvider {
 
         let updated_sources = if backlinks.is_empty() || force {
             files
-                .delete_file_with_hash(&path, expected_hash.as_deref(), &message)
+                .delete_file(
+                    &path,
+                    turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
+                    &message,
+                )
                 .await
                 .map_err(to_mcp_error)?;
             Vec::new()
@@ -271,7 +285,13 @@ impl FileProvider {
                 .map_err(to_mcp_error)?
         } else {
             FileTools::new(manager)
-                .move_file_with_hash(&from, &to, expected_hash.as_deref(), &message)
+                .move_file(
+                    &from,
+                    &to,
+                    turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
+                    turbovault_core::Precondition::Blind,
+                    &message,
+                )
                 .await
                 .map_err(to_mcp_error)?;
             Vec::new()

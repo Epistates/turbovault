@@ -11,11 +11,11 @@
 use std::collections::HashMap;
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Layer, MSG, ToolsWorld, observe};
-use turbovault_tools::TemplateEngine;
+use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
+use turbovault_tools::TemplateEngine;
 
 /// Stable text the `research` template always renders — proves an OK created it.
 const RENDERED_MARKER: &str = "Key Findings";
@@ -62,43 +62,103 @@ impl SinglePathOp<ToolsWorld> for CreateFromTemplate {
 
 /// The **full** create_from_template matrix (Blind + Absent rows of the CSV).
 /// Blind (force) overwrites/creates unconditionally → Ok everywhere. Absent is a
-/// strict create → Ok on an absent target, else refuse. All `Case::new`: spec-
-/// first asserts the target contract.
+/// strict create → Ok on an absent target, else refuse. `pending` = a cell current
+/// code gets wrong (the nbl.8 burndown), with a trial-name-derived reason;
+/// `--include-ignored` is the source of truth. The `e---u`/Untracked cells split
+/// the git arm (burndown) from the direct arm (already correct → active).
 const CASES: &[Case] = &[
-    // ── Blind (force overwrite/create) → OK in every state ───────────────────
+    // ── Blind (force overwrite/create) → OK in every state (git dirty pending) ─
     Case::new(P::Blind, S::Absent, O::Ok),
     Case::new(P::Blind, S::CleanCommitted, O::Ok),
-    Case::new(P::Blind, S::CommittedStaged, O::Ok),
-    Case::new(P::Blind, S::CommittedUnstaged, O::Ok),
-    Case::new(P::Blind, S::CommittedStagedUnstaged, O::Ok),
-    Case::new(P::Blind, S::NewStaged, O::Ok),
-    Case::new(P::Blind, S::IntentToAdd, O::Ok),
-    Case::new(P::Blind, S::NewStagedUnstaged, O::Ok),
-    Case::new(P::Blind, S::Untracked, O::Ok),
+    Case::pending(
+        P::Blind,
+        S::CommittedStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Blind,
+        S::CommittedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Blind,
+        S::CommittedStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Blind,
+        S::NewStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Blind,
+        S::IntentToAdd,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Blind,
+        S::NewStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Blind,
+        S::Untracked,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    )
+    .on(Backend::Git),
+    Case::new(P::Blind, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectAbsent (strict create) → OK on absent, else refuse ─────────────
     Case::new(P::Absent, S::Absent, O::Ok),
     Case::new(P::Absent, S::CleanCommitted, O::ConcurrencyError),
-    Case::new(P::Absent, S::CommittedStaged, O::ConcurrencyError),
-    Case::new(P::Absent, S::CommittedUnstaged, O::ConcurrencyError),
-    Case::new(P::Absent, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    // Uncommitted-but-present: HEAD has no entry, so expect_absent (checked vs
-    // HEAD today) wrongly passes and the create clobbers rather than refuses.
-    Case::pending(P::Absent, S::NewStaged, O::ConcurrencyError, ABSENT_CLOBBER),
+    Case::pending(
+        P::Absent,
+        S::CommittedStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Absent,
+        S::CommittedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Absent,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Absent,
+        S::NewStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     Case::pending(
         P::Absent,
         S::IntentToAdd,
         O::ConcurrencyError,
-        ABSENT_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Case::pending(
         P::Absent,
         S::NewStagedUnstaged,
         O::ConcurrencyError,
-        ABSENT_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
-    Case::pending(P::Absent, S::Untracked, O::ConcurrencyError, ABSENT_CLOBBER),
+    Case::pending(
+        P::Absent,
+        S::Untracked,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    )
+    .on(Backend::Git),
+    Case::new(P::Absent, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
 ];
-
-// Burndown reason (nbl.8) — the aspirational behavior the cutover defers.
-const ABSENT_CLOBBER: &str =
-    "WSS: expect_absent checks HEAD, so an uncommitted-but-present file is clobbered, not refused";

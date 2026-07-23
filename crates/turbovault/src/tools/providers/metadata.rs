@@ -114,7 +114,15 @@ impl MetadataProvider {
             .resolve_commit_message(commit_message, || format!("update_frontmatter {path}"))
             .await?;
         let result = tools
-            .update_frontmatter(&path, fm_map, merge.unwrap_or(true), &message)
+            .update_frontmatter(
+                &path,
+                fm_map,
+                merge.unwrap_or(true),
+                // Pre-cutover parity: no wire `expected_hash` yet (that is
+                // M5.3), so the in-place default `ExpectExists` is preserved.
+                turbovault_core::Precondition::for_in_place(None),
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 
@@ -251,7 +259,13 @@ impl MetadataProvider {
             .resolve_commit_message(commit_message, || format!("move_file {from} -> {to}"))
             .await?;
         FileTools::new(manager)
-            .move_file_with_hash(&from, &to, expected_hash.as_deref(), &message)
+            .move_file(
+                &from,
+                &to,
+                turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
+                turbovault_core::Precondition::Blind,
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 

@@ -28,14 +28,26 @@ fn main() {
     // filtered out by the runner). Trial names are backend-prefixed.
     for backend in [Backend::Git, Backend::Direct] {
         // Single-path ops (the SinglePathOp mold generates their full grids).
-        tests.extend(single_path_trials::<ToolsWorld, _>(adapters::write_note::WriteNote, backend));
-        tests.extend(single_path_trials::<ToolsWorld, _>(adapters::edit_note::EditNote, backend));
-        tests.extend(single_path_trials::<ToolsWorld, _>(adapters::delete_note::DeleteNote, backend));
+        tests.extend(single_path_trials::<ToolsWorld, _>(
+            adapters::write_note::WriteNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<ToolsWorld, _>(
+            adapters::edit_note::EditNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<ToolsWorld, _>(
+            adapters::delete_note::DeleteNote,
+            backend,
+        ));
         tests.extend(single_path_trials::<ToolsWorld, _>(
             adapters::update_frontmatter::UpdateFrontmatter,
             backend,
         ));
-        tests.extend(single_path_trials::<ToolsWorld, _>(adapters::manage_tags::ManageTags, backend));
+        tests.extend(single_path_trials::<ToolsWorld, _>(
+            adapters::manage_tags::ManageTags,
+            backend,
+        ));
         tests.extend(single_path_trials::<ToolsWorld, _>(
             adapters::create_from_template::CreateFromTemplate,
             backend,

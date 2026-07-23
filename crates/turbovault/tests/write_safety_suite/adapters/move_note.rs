@@ -20,23 +20,26 @@ use libtest_mimic::Trial;
 
 use super::{cell_trial, present_state};
 use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
-use turbovault_tools::FileTools;
 use crate::harness::outcome::{ObservedError, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
+use turbovault_tools::FileTools;
 
 const SRC: &str = "from.md";
 const DEST: &str = "to.md";
 
 /// One cell of a single move sweep: the varied path's state × precondition →
 /// desired outcome. `pending` marks a cell whose desired behavior isn't wired
-/// yet (the burndown) — an `ignored` trial, exactly like [`super::Case`].
+/// yet (the burndown) — an `ignored` trial, exactly like [`super::Case`]. `only`
+/// scopes a cell to one backend (the git/direct split for the `e---u` state,
+/// where git is a burndown gap but direct already behaves correctly).
 #[derive(Clone, Copy)]
 struct Cell {
     precond: P,
     state: S,
     expected: O,
     pending: Option<&'static str>,
+    only: Option<Backend>,
 }
 
 impl Cell {
@@ -46,6 +49,7 @@ impl Cell {
             state,
             expected,
             pending: None,
+            only: None,
         }
     }
 
@@ -55,90 +59,200 @@ impl Cell {
             state,
             expected,
             pending: Some(reason),
+            only: None,
         }
+    }
+
+    const fn on(mut self, backend: Backend) -> Self {
+        self.only = Some(backend);
+        self
     }
 }
 
 // ── SOURCE sweep — destination held absent (`to = ExpectAbsent`) ─────────────
 // Same shape as delete/edit's in-place rows: the source must exist and match.
 const SRC_CASES: &[Cell] = &[
-    // ExpectExists (in-place default, dirty-gated) — same pending set as the
-    // other in-place ops (the source is the removed target).
-    Cell::new(P::Exists, S::Absent, O::NoFile),
+    // ExpectExists (in-place default, dirty-gated) — the source is the removed
+    // target; NoFile-on-absent must precede the precondition check.
+    Cell::pending(
+        P::Exists,
+        S::Absent,
+        O::NoFile,
+        "nbl.8: NoFile must precede the precondition check",
+    ),
     Cell::new(P::Exists, S::CleanCommitted, O::Ok),
     Cell::pending(
         P::Exists,
         S::CommittedStaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Cell::pending(
         P::Exists,
         S::CommittedUnstaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Cell::pending(
         P::Exists,
         S::CommittedStagedUnstaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
-    Cell::pending(P::Exists, S::NewStaged, O::ConcurrencyError, DIRTY_GATE),
-    Cell::pending(P::Exists, S::IntentToAdd, O::ConcurrencyError, DIRTY_GATE),
+    Cell::pending(
+        P::Exists,
+        S::NewStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Exists,
+        S::IntentToAdd,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     Cell::pending(
         P::Exists,
         S::NewStagedUnstaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
-    Cell::pending(P::Exists, S::Untracked, O::ConcurrencyError, DIRTY_GATE),
+    Cell::pending(
+        P::Exists,
+        S::Untracked,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     // ExpectBlob(HEAD) — defined iff committed
     Cell::new(P::Head, S::CleanCommitted, O::Ok),
     Cell::pending(
         P::Head,
         S::CommittedStaged,
         O::ConcurrencyError,
-        HEAD_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Cell::pending(
         P::Head,
         S::CommittedUnstaged,
         O::ConcurrencyError,
-        HEAD_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Cell::pending(
         P::Head,
         S::CommittedStagedUnstaged,
         O::ConcurrencyError,
-        HEAD_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     // ExpectBlob(INDEX) — defined iff staged
-    Cell::pending(P::Index, S::CommittedStaged, O::Ok, PRECOND_VS_HEAD),
-    Cell::pending(P::Index, S::NewStaged, O::Ok, PRECOND_VS_HEAD),
-    Cell::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Cell::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
+    Cell::pending(
+        P::Index,
+        S::CommittedStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Index,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Index,
+        S::NewStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Index,
+        S::NewStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     // ExpectBlob(WORKDIR) — SKIP where == HEAD/INDEX
-    Cell::pending(P::Workdir, S::CommittedUnstaged, O::Ok, PRECOND_VS_HEAD),
+    Cell::pending(
+        P::Workdir,
+        S::CommittedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
     Cell::pending(
         P::Workdir,
         S::CommittedStagedUnstaged,
         O::Ok,
-        PRECOND_VS_HEAD,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
     ),
-    Cell::pending(P::Workdir, S::IntentToAdd, O::Ok, PRECOND_VS_HEAD),
-    Cell::pending(P::Workdir, S::NewStagedUnstaged, O::Ok, PRECOND_VS_HEAD),
-    Cell::pending(P::Workdir, S::Untracked, O::Ok, PRECOND_VS_HEAD),
+    Cell::pending(
+        P::Workdir,
+        S::IntentToAdd,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Workdir,
+        S::NewStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Workdir,
+        S::Untracked,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    )
+    .on(Backend::Git),
+    Cell::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ExpectBlob(WRONG) → refuse everywhere; NoFile on absent
-    Cell::new(P::Wrong, S::Absent, O::NoFile),
+    Cell::pending(
+        P::Wrong,
+        S::Absent,
+        O::NoFile,
+        "nbl.8: NoFile must precede the precondition check",
+    ),
     Cell::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::NewStaged, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::IntentToAdd, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::NewStagedUnstaged, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::Untracked, O::ConcurrencyError),
+    Cell::pending(
+        P::Wrong,
+        S::CommittedStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::CommittedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::NewStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::IntentToAdd,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::NewStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::Untracked,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    )
+    .on(Backend::Git),
+    Cell::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
 ];
 
 // ── DEST sweep — source held clean committed (`from = ExpectExists`) ─────────
@@ -149,83 +263,231 @@ const SRC_CASES: &[Cell] = &[
 // burndown (turbovault-9n6). Cells that happen to coincide with `expect_absent`
 // stay active.
 const DEST_CASES: &[Cell] = &[
-    // Blind → overwrite the destination unconditionally. Coincides with
-    // expect_absent only where the dest is absent-in-HEAD (absent / uncommitted).
+    // Blind → overwrite the destination unconditionally.
     Cell::new(P::Blind, S::Absent, O::Ok),
-    Cell::pending(P::Blind, S::CleanCommitted, O::Ok, DEST_PRECOND),
-    Cell::pending(P::Blind, S::CommittedStaged, O::Ok, DEST_PRECOND),
-    Cell::pending(P::Blind, S::CommittedUnstaged, O::Ok, DEST_PRECOND),
-    Cell::pending(P::Blind, S::CommittedStagedUnstaged, O::Ok, DEST_PRECOND),
-    Cell::new(P::Blind, S::NewStaged, O::Ok),
-    Cell::new(P::Blind, S::IntentToAdd, O::Ok),
-    Cell::new(P::Blind, S::NewStagedUnstaged, O::Ok),
-    Cell::new(P::Blind, S::Untracked, O::Ok),
-    // ExpectAbsent (clobber protection) → OK on absent dest, else refuse. The
-    // uncommitted-but-present dest wrongly passes expect_absent-vs-HEAD today.
+    Cell::new(P::Blind, S::CleanCommitted, O::Ok),
+    Cell::pending(
+        P::Blind,
+        S::CommittedStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Blind,
+        S::CommittedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Blind,
+        S::CommittedStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Blind,
+        S::NewStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Blind,
+        S::IntentToAdd,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Blind,
+        S::NewStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Blind,
+        S::Untracked,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    )
+    .on(Backend::Git),
+    Cell::new(P::Blind, S::Untracked, O::Ok).on(Backend::Direct),
+    // ExpectAbsent (clobber protection) → OK on absent dest, else refuse.
     Cell::new(P::Absent, S::Absent, O::Ok),
     Cell::new(P::Absent, S::CleanCommitted, O::ConcurrencyError),
-    Cell::new(P::Absent, S::CommittedStaged, O::ConcurrencyError),
-    Cell::new(P::Absent, S::CommittedUnstaged, O::ConcurrencyError),
-    Cell::new(P::Absent, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Cell::pending(P::Absent, S::NewStaged, O::ConcurrencyError, DEST_PRECOND),
-    Cell::pending(P::Absent, S::IntentToAdd, O::ConcurrencyError, DEST_PRECOND),
+    Cell::pending(
+        P::Absent,
+        S::CommittedStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Absent,
+        S::CommittedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Absent,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Absent,
+        S::NewStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Absent,
+        S::IntentToAdd,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     Cell::pending(
         P::Absent,
         S::NewStagedUnstaged,
         O::ConcurrencyError,
-        DEST_PRECOND,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
-    Cell::pending(P::Absent, S::Untracked, O::ConcurrencyError, DEST_PRECOND),
+    Cell::pending(
+        P::Absent,
+        S::Untracked,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    )
+    .on(Backend::Git),
+    Cell::new(P::Absent, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
     // ExpectBlob(HEAD) on the dest — defined iff dest committed
-    Cell::pending(P::Head, S::CleanCommitted, O::Ok, DEST_PRECOND),
-    Cell::new(P::Head, S::CommittedStaged, O::ConcurrencyError),
-    Cell::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
-    Cell::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Cell::new(P::Head, S::CleanCommitted, O::Ok),
+    Cell::pending(
+        P::Head,
+        S::CommittedStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Head,
+        S::CommittedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Head,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     // ExpectBlob(INDEX) on the dest — defined iff dest staged
-    Cell::pending(P::Index, S::CommittedStaged, O::Ok, DEST_PRECOND),
-    Cell::new(P::Index, S::NewStaged, O::Ok),
-    Cell::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Cell::pending(
+        P::Index,
+        S::CommittedStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Index,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Index,
+        S::NewStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
     Cell::pending(
         P::Index,
         S::NewStagedUnstaged,
         O::ConcurrencyError,
-        DEST_PRECOND,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     // ExpectBlob(WORKDIR) on the dest — SKIP where == HEAD/INDEX
-    Cell::pending(P::Workdir, S::CommittedUnstaged, O::Ok, DEST_PRECOND),
-    Cell::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok, DEST_PRECOND),
-    Cell::new(P::Workdir, S::IntentToAdd, O::Ok),
-    Cell::new(P::Workdir, S::NewStagedUnstaged, O::Ok),
-    Cell::new(P::Workdir, S::Untracked, O::Ok),
-    // ExpectBlob(WRONG) on the dest → refuse everywhere (incl. absent). Where
-    // the dest is absent-in-HEAD, expect_absent passes today → wrongly Ok.
-    Cell::pending(P::Wrong, S::Absent, O::ConcurrencyError, DEST_PRECOND),
+    Cell::pending(
+        P::Workdir,
+        S::CommittedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Workdir,
+        S::CommittedStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Workdir,
+        S::IntentToAdd,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Workdir,
+        S::NewStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Cell::pending(
+        P::Workdir,
+        S::Untracked,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    )
+    .on(Backend::Git),
+    Cell::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
+    // ExpectBlob(WRONG) on the dest → refuse everywhere (incl. absent)
+    Cell::new(P::Wrong, S::Absent, O::ConcurrencyError),
     Cell::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
-    Cell::new(P::Wrong, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Cell::pending(P::Wrong, S::NewStaged, O::ConcurrencyError, DEST_PRECOND),
-    Cell::pending(P::Wrong, S::IntentToAdd, O::ConcurrencyError, DEST_PRECOND),
+    Cell::pending(
+        P::Wrong,
+        S::CommittedStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::CommittedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::NewStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Cell::pending(
+        P::Wrong,
+        S::IntentToAdd,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     Cell::pending(
         P::Wrong,
         S::NewStagedUnstaged,
         O::ConcurrencyError,
-        DEST_PRECOND,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
-    Cell::pending(P::Wrong, S::Untracked, O::ConcurrencyError, DEST_PRECOND),
+    Cell::pending(
+        P::Wrong,
+        S::Untracked,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    )
+    .on(Backend::Git),
+    Cell::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
 ];
-
-// Burndown reasons (nbl.8 / 9n6) — the aspirational behavior the cutover defers.
-const DIRTY_GATE: &str = "WSS: no dirty gate for move source (discards/uses uncommitted content)";
-const HEAD_CLOBBER: &str =
-    "WSS: dirty-tree clobber — HEAD token passes vs HEAD, move uses dirty source bytes";
-const PRECOND_VS_HEAD: &str = "WSS: precondition checked vs HEAD, not the working tree";
-const DEST_PRECOND: &str = "WSS: destination precondition checked vs HEAD, not the working tree (dual-path move burndown — 9n6/nbl.8)";
 
 pub fn trials(backend: Backend) -> Vec<Trial> {
     let mut out = Vec::new();
     for &c in SRC_CASES {
-        if !backend.supports_state(c.state) {
+        if !backend.supports_state(c.state) || c.only.is_some_and(|b| b != backend) {
             continue;
         }
         let name = format!(
@@ -239,7 +501,7 @@ pub fn trials(backend: Backend) -> Vec<Trial> {
         out.push(cell_trial(name, c.pending, move || run_src(c, backend)));
     }
     for &c in DEST_CASES {
-        if !backend.supports_state(c.state) {
+        if !backend.supports_state(c.state) || c.only.is_some_and(|b| b != backend) {
             continue;
         }
         let name = format!(
@@ -309,7 +571,9 @@ async fn run_move(
     let before_src = target.vault().read(SRC);
     let before_dest = target.vault().read(DEST);
     let obs = observe(
-        FileTools::new(target.vault().manager().clone()).move_file(SRC, DEST, from_pc, to_pc, MSG).await,
+        FileTools::new(target.vault().manager().clone())
+            .move_file(SRC, DEST, from_pc, to_pc, MSG)
+            .await,
         target.vault().read(SRC),
     );
     let after_src = target.vault().read(SRC);

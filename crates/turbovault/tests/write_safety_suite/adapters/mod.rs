@@ -43,12 +43,21 @@ pub fn present_state(backend: Backend) -> GitState {
 /// One single-path matrix cell: a precondition selector × a working-tree state →
 /// the desired outcome. `pending` marks a cell whose desired behavior isn't
 /// implemented yet.
+///
+/// `only` scopes a cell to a single backend. Most cells run on every backend that
+/// can build their state, but the `e---u`/Untracked state is the one place git
+/// and direct diverge: on git it's a dirty/untracked burndown state (a refusal
+/// isn't unified to `ConcurrencyError` / the dirty gate isn't wired), while on
+/// direct it *is* the ordinary "present" state and already behaves correctly. A
+/// single shared `pending` flag can't be right for both, so those cells are split
+/// into a git-scoped pending arm and a direct-scoped active arm via [`Case::on`].
 #[derive(Clone, Copy, Debug)]
 pub struct Case {
     pub precondition: PreconditionKind,
     pub state: GitState,
     pub expected: Outcome,
     pub pending: Option<&'static str>,
+    pub only: Option<Backend>,
 }
 
 impl Case {
@@ -59,6 +68,7 @@ impl Case {
             state,
             expected,
             pending: None,
+            only: None,
         }
     }
 
@@ -74,7 +84,14 @@ impl Case {
             state,
             expected,
             pending: Some(reason),
+            only: None,
         }
+    }
+
+    /// Scope this cell to a single backend (the git/direct split for `e---u`).
+    pub const fn on(mut self, backend: Backend) -> Self {
+        self.only = Some(backend);
+        self
     }
 }
 
@@ -130,6 +147,7 @@ where
     op.cases()
         .iter()
         .filter(|case| backend.supports_state(case.state))
+        .filter(|case| case.only.is_none_or(|b| b == backend))
         .map(|&case| {
             let name = format!(
                 "{}::{}::{}::{}::{}::{:?}",

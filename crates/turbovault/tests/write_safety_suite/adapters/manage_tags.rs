@@ -8,11 +8,11 @@
 //! (nbl.8 burndown).
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Layer, MSG, ToolsWorld, observe};
-use turbovault_tools::MetadataTools;
+use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
+use turbovault_tools::MetadataTools;
 
 const TAG: &str = "wss-tag";
 
@@ -54,10 +54,10 @@ impl SinglePathOp<ToolsWorld> for ManageTags {
 }
 
 /// The **full** manage_tags matrix — same in-place shape and desired outcomes as
-/// `edit_note` / `update_frontmatter`. `pending` = a cell whose aspirational
-/// behavior the nbl.6 signature cutover does NOT yet deliver (behavior
-/// unchanged); un-pending is the nbl.8 burndown. Pending set is exactly the
-/// other in-place ops' (same substrate primitives).
+/// `edit_note` / `update_frontmatter`. `pending` = a cell current code gets wrong
+/// (the nbl.8 burndown), with a trial-name-derived reason; `--include-ignored` is
+/// the source of truth. The `e---u`/Untracked cells split the git arm (burndown)
+/// from the direct arm (already correct → active).
 const CASES: &[Case] = &[
     // ── ExpectExists (in-place default, dirty-gated) ─────────────────────────
     Case::new(P::Exists, S::Absent, O::NoFile),
@@ -66,79 +66,167 @@ const CASES: &[Case] = &[
         P::Exists,
         S::CommittedStaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Case::pending(
         P::Exists,
         S::CommittedUnstaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Case::pending(
         P::Exists,
         S::CommittedStagedUnstaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
-    Case::pending(P::Exists, S::NewStaged, O::ConcurrencyError, DIRTY_GATE),
-    Case::pending(P::Exists, S::IntentToAdd, O::ConcurrencyError, DIRTY_GATE),
+    Case::pending(
+        P::Exists,
+        S::NewStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Exists,
+        S::IntentToAdd,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     Case::pending(
         P::Exists,
         S::NewStagedUnstaged,
         O::ConcurrencyError,
-        DIRTY_GATE,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
-    Case::pending(P::Exists, S::Untracked, O::ConcurrencyError, DIRTY_GATE),
+    Case::pending(
+        P::Exists,
+        S::Untracked,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     // ── ExpectBlob(HEAD) — defined iff committed ─────────────────────────────
     Case::new(P::Head, S::CleanCommitted, O::Ok),
     Case::pending(
         P::Head,
         S::CommittedStaged,
         O::ConcurrencyError,
-        HEAD_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Case::pending(
         P::Head,
         S::CommittedUnstaged,
         O::ConcurrencyError,
-        HEAD_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     Case::pending(
         P::Head,
         S::CommittedStagedUnstaged,
         O::ConcurrencyError,
-        HEAD_CLOBBER,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
     ),
     // ── ExpectBlob(INDEX) — defined iff staged ───────────────────────────────
-    Case::pending(P::Index, S::CommittedStaged, O::Ok, PRECOND_VS_HEAD),
-    Case::pending(P::Index, S::NewStaged, O::Ok, PRECOND_VS_HEAD),
-    Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::pending(
+        P::Index,
+        S::CommittedStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Index,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Index,
+        S::NewStaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Index,
+        S::NewStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
     // ── ExpectBlob(WORKDIR) — proving on-disk bytes; SKIP where == HEAD/INDEX ─
-    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok, PRECOND_VS_HEAD),
+    Case::pending(
+        P::Workdir,
+        S::CommittedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
     Case::pending(
         P::Workdir,
         S::CommittedStagedUnstaged,
         O::Ok,
-        PRECOND_VS_HEAD,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
     ),
-    Case::pending(P::Workdir, S::IntentToAdd, O::Ok, PRECOND_VS_HEAD),
-    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok, PRECOND_VS_HEAD),
-    Case::pending(P::Workdir, S::Untracked, O::Ok, PRECOND_VS_HEAD),
+    Case::pending(
+        P::Workdir,
+        S::IntentToAdd,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Workdir,
+        S::NewStagedUnstaged,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    ),
+    Case::pending(
+        P::Workdir,
+        S::Untracked,
+        O::Ok,
+        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
+    )
+    .on(Backend::Git),
+    Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectBlob(WRONG) → refuse everywhere; NoFile on absent ──────────────
     Case::new(P::Wrong, S::Absent, O::NoFile),
     Case::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
-    Case::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::NewStaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::IntentToAdd, O::ConcurrencyError),
-    Case::new(P::Wrong, S::NewStagedUnstaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError),
+    Case::pending(
+        P::Wrong,
+        S::CommittedStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Wrong,
+        S::CommittedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Wrong,
+        S::CommittedStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Wrong,
+        S::NewStaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Wrong,
+        S::IntentToAdd,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Wrong,
+        S::NewStagedUnstaged,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    ),
+    Case::pending(
+        P::Wrong,
+        S::Untracked,
+        O::ConcurrencyError,
+        "nbl.8: refusal not yet unified to ConcurrencyError",
+    )
+    .on(Backend::Git),
+    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
 ];
-
-// Burndown reasons (nbl.8) — the aspirational behavior the cutover defers.
-const DIRTY_GATE: &str = "WSS: no dirty gate for in-place tag edit (writes uncommitted bytes)";
-const HEAD_CLOBBER: &str =
-    "WSS: dirty-tree clobber — HEAD token passes vs HEAD, write applies to dirty bytes";
-const PRECOND_VS_HEAD: &str = "WSS: precondition checked vs HEAD, not the working tree";
