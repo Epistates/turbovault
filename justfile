@@ -65,6 +65,23 @@ coverage:
     cargo llvm-cov --workspace --all-features --locked --summary-only --fail-under-lines 75
 
 # =============================================================================
+# WRITE-SAFETY MATRIX (WSS)
+# =============================================================================
+
+# Write-safety burndown report: per-op precondition×state grid coloured by
+# pass/fail across both backends (terminal ANSI). Exits non-zero off-fixpoint.
+wss-report:
+    python3 scripts/wss-report.py
+
+# Same report as one self-contained HTML file (default: wss-report.html).
+wss-report-html OUT="wss-report.html":
+    python3 scripts/wss-report.py --html {{ OUT }}
+
+# Run only the write-safety matrix (active cells; pending are ignored).
+wss-test:
+    cargo test --test wss_matrix
+
+# =============================================================================
 # CODE QUALITY
 # =============================================================================
 
