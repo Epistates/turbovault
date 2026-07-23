@@ -40,7 +40,7 @@ impl VaultRepo {
             .iter()
             .any(|entry| entry.status().intersects(staged_mask))
         {
-            return Err(Error::other(
+            return Err(Error::concurrency(
                 "Git index contains staged changes; commit or unstage them before a TurboVault write",
             ));
         }
@@ -73,7 +73,7 @@ impl VaultRepo {
                 Err(error) => return Err(error.into()),
             };
             if actual != expected {
-                return Err(Error::other(format!(
+                return Err(Error::concurrency(format!(
                     "working-tree path '{rel}' differs from HEAD; commit, restore, or move the local change before retrying"
                 )));
             }
