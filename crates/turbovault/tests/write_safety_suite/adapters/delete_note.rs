@@ -7,7 +7,7 @@
 //! deferred one-off (noted below), tracked with the substrate move of oz6.
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{Backend, Layer, MSG, ManagerWorld, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
@@ -15,6 +15,19 @@ use turbovault_tools::FileTools;
 
 #[derive(Clone, Copy)]
 pub struct DeleteNote;
+
+/// Shared OK-effect check for every layer's invoker: a successful delete leaves
+/// the target **gone** (op-specific, layer-agnostic).
+fn ok_check(observed: &Observed) -> Result<(), String> {
+    if observed.after_content.is_none() {
+        Ok(())
+    } else {
+        Err(format!(
+            "OK effect: target still present after delete: {:?}",
+            observed.after_content
+        ))
+    }
+}
 
 impl SinglePathOp<ToolsWorld> for DeleteNote {
     fn name(&self) -> &'static str {
@@ -33,14 +46,34 @@ impl SinglePathOp<ToolsWorld> for DeleteNote {
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        if observed.after_content.is_none() {
-            Ok(())
-        } else {
-            Err(format!(
-                "OK effect: target still present after delete: {:?}",
-                observed.after_content
-            ))
-        }
+        ok_check(observed)
+    }
+}
+
+// Manager-layer invoker (qae.9.2): call `VaultManager::delete_file` directly.
+// The tool `delete_file` is a thin delegator to this method (its oz6 backlink
+// gate is a no-op here — `note.md` has no inbound links), so this arm shares
+// `CASES` + `ok_check`.
+impl SinglePathOp<ManagerWorld> for DeleteNote {
+    fn name(&self) -> &'static str {
+        "delete_note"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+
+    async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = w
+            .vault()
+            .manager()
+            .delete_file(std::path::Path::new(rel), pc, MSG)
+            .await;
+        observe(res, w.vault().read(rel))
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
     }
 }
 

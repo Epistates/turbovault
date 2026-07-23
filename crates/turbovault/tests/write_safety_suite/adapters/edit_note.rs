@@ -10,7 +10,7 @@
 use libtest_mimic::Trial;
 
 use super::{Case, REL, SinglePathOp, cell_trial, present_state};
-use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{Backend, Layer, MSG, ManagerWorld, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
@@ -26,6 +26,22 @@ pub struct EditNote;
 /// replace with [`NEW`]. Matches whatever generation the state left on disk.
 fn edits_replacing(current: &str) -> String {
     format!("<<<<<<< SEARCH\n{current}=======\n{NEW}\n>>>>>>> REPLACE\n")
+}
+
+/// Shared OK-effect check for every layer's invoker (op-specific, layer-agnostic).
+fn ok_check(observed: &Observed) -> Result<(), String> {
+    if observed
+        .after_content
+        .as_deref()
+        .is_some_and(|c| c.contains(NEW))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "OK effect: expected edited content containing {NEW:?}, got {:?}",
+            observed.after_content
+        ))
+    }
 }
 
 impl SinglePathOp<ToolsWorld> for EditNote {
@@ -48,18 +64,36 @@ impl SinglePathOp<ToolsWorld> for EditNote {
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        if observed
-            .after_content
-            .as_deref()
-            .is_some_and(|c| c.contains(NEW))
-        {
-            Ok(())
-        } else {
-            Err(format!(
-                "OK effect: expected edited content containing {NEW:?}, got {:?}",
-                observed.after_content
-            ))
-        }
+        ok_check(observed)
+    }
+}
+
+// Manager-layer invoker (qae.9.2): call `VaultManager::edit_file` directly — the
+// enforcement/SDK surface, one rung below the tools wrapper (which is a thin
+// delegator to this same method). Shares `CASES` + `ok_check`.
+impl SinglePathOp<ManagerWorld> for EditNote {
+    fn name(&self) -> &'static str {
+        "edit_note"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+
+    async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
+        let current = w.vault().read(rel).unwrap_or_default();
+        let edits = edits_replacing(&current);
+        let res = w
+            .vault()
+            .manager()
+            .edit_file(std::path::Path::new(rel), &edits, pc, false, MSG)
+            .await
+            .map(|_| ());
+        observe(res, w.vault().read(rel))
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
     }
 }
 

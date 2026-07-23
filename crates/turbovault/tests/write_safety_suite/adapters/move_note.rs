@@ -19,7 +19,7 @@
 use libtest_mimic::Trial;
 
 use super::{cell_trial, present_state};
-use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{Backend, Layer, MSG, ManagerWorld, ToolsWorld, observe};
 use crate::harness::outcome::{ObservedError, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
@@ -27,6 +27,15 @@ use turbovault_tools::FileTools;
 
 const SRC: &str = "from.md";
 const DEST: &str = "to.md";
+
+/// Which layer performs the dual-path move. Both drive the SAME
+/// `move_file(from, to, src_pc, dest_pc, msg)` signature: the tools arm through
+/// `FileTools` (a thin delegator), the manager arm on `VaultManager` directly.
+#[derive(Clone, Copy)]
+enum MoveVia {
+    Tools,
+    Manager,
+}
 
 /// One cell of a single move sweep: the varied path's state × precondition →
 /// desired outcome. `pending` marks a cell whose desired behavior isn't wired
@@ -174,7 +183,18 @@ const DEST_CASES: &[Cell] = &[
     Cell::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
 ];
 
+/// Tools-layer dual-path move trials (the exemplar arm).
 pub fn trials(backend: Backend) -> Vec<Trial> {
+    build_trials::<ToolsWorld>(backend, MoveVia::Tools)
+}
+
+/// Manager-layer dual-path move trials (qae.9.2): the SAME src/dest sweeps run
+/// against `VaultManager::move_file` directly. Reuses `SRC_CASES`/`DEST_CASES`.
+pub fn manager_trials(backend: Backend) -> Vec<Trial> {
+    build_trials::<ManagerWorld>(backend, MoveVia::Manager)
+}
+
+fn build_trials<W: Layer + 'static>(backend: Backend, via: MoveVia) -> Vec<Trial> {
     let mut out = Vec::new();
     for &c in SRC_CASES {
         if !backend.supports_state(c.state) || c.only.is_some_and(|b| b != backend) {
@@ -182,13 +202,15 @@ pub fn trials(backend: Backend) -> Vec<Trial> {
         }
         let name = format!(
             "{}::{}::move_note::src::{}::{}::{:?}",
-            ToolsWorld::LABEL,
+            W::LABEL,
             backend.code(),
             c.precond.code(),
             c.state.code(),
             c.expected
         );
-        out.push(cell_trial(name, c.pending, move || run_src(c, backend)));
+        out.push(cell_trial(name, c.pending, move || {
+            run_src::<W>(c, backend, via)
+        }));
     }
     for &c in DEST_CASES {
         if !backend.supports_state(c.state) || c.only.is_some_and(|b| b != backend) {
@@ -196,20 +218,22 @@ pub fn trials(backend: Backend) -> Vec<Trial> {
         }
         let name = format!(
             "{}::{}::move_note::dest::{}::{}::{:?}",
-            ToolsWorld::LABEL,
+            W::LABEL,
             backend.code(),
             c.precond.code(),
             c.state.code(),
             c.expected
         );
-        out.push(cell_trial(name, c.pending, move || run_dest(c, backend)));
+        out.push(cell_trial(name, c.pending, move || {
+            run_dest::<W>(c, backend, via)
+        }));
     }
     out
 }
 
 /// Source sweep: vary the source, hold the destination absent.
-async fn run_src(c: Cell, backend: Backend) -> Result<(), String> {
-    let target = ToolsWorld::new(backend);
+async fn run_src<W: Layer>(c: Cell, backend: Backend, via: MoveVia) -> Result<(), String> {
+    let target = W::new(backend);
     let Some(src_oids) = target.vault().build_state(SRC, c.state) else {
         return Err(format!(
             "source state {} unsupported on {}",
@@ -225,12 +249,19 @@ async fn run_src(c: Cell, backend: Backend) -> Result<(), String> {
             c.state.code()
         ));
     };
-    run_move(c.expected, &target, from_pc, Precondition::ExpectAbsent).await
+    run_move(
+        c.expected,
+        &target,
+        from_pc,
+        Precondition::ExpectAbsent,
+        via,
+    )
+    .await
 }
 
 /// Dest sweep: vary the destination, hold the source present.
-async fn run_dest(c: Cell, backend: Backend) -> Result<(), String> {
-    let target = ToolsWorld::new(backend);
+async fn run_dest<W: Layer>(c: Cell, backend: Backend, via: MoveVia) -> Result<(), String> {
+    let target = W::new(backend);
     let _ = target.vault().build_state(SRC, present_state(backend));
     let Some(dest_oids) = target.vault().build_state(DEST, c.state) else {
         return Err(format!(
@@ -246,26 +277,41 @@ async fn run_dest(c: Cell, backend: Backend) -> Result<(), String> {
             c.state.code()
         ));
     };
-    run_move(c.expected, &target, Precondition::ExpectExists, to_pc).await
+    run_move(c.expected, &target, Precondition::ExpectExists, to_pc, via).await
 }
 
-/// Invoke the aspirational dual-path move and assert its outcome: an OK leaves
-/// the source gone and the destination present; a refusal leaves BOTH paths
-/// byte-for-byte intact (no partial move, no dest clobber).
-async fn run_move(
+/// Invoke the dual-path move (tools wrapper or manager directly, per `via`) and
+/// assert its outcome: an OK leaves the source gone and the destination present;
+/// a refusal leaves BOTH paths byte-for-byte intact (no partial move, no dest
+/// clobber).
+async fn run_move<W: Layer>(
     expected: O,
-    target: &ToolsWorld,
+    target: &W,
     from_pc: Precondition,
     to_pc: Precondition,
+    via: MoveVia,
 ) -> Result<(), String> {
     let before_src = target.vault().read(SRC);
     let before_dest = target.vault().read(DEST);
-    let obs = observe(
-        FileTools::new(target.vault().manager().clone())
-            .move_file(SRC, DEST, from_pc, to_pc, MSG)
-            .await,
-        target.vault().read(SRC),
-    );
+    let mgr = target.vault().manager().clone();
+    let res = match via {
+        MoveVia::Tools => {
+            FileTools::new(mgr)
+                .move_file(SRC, DEST, from_pc, to_pc, MSG)
+                .await
+        }
+        MoveVia::Manager => {
+            mgr.move_file(
+                std::path::Path::new(SRC),
+                std::path::Path::new(DEST),
+                from_pc,
+                to_pc,
+                MSG,
+            )
+            .await
+        }
+    };
+    let obs = observe(res, target.vault().read(SRC));
     let after_src = target.vault().read(SRC);
     let after_dest = target.vault().read(DEST);
 

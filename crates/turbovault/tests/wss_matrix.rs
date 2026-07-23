@@ -17,7 +17,7 @@ mod harness;
 mod adapters;
 
 use adapters::single_path_trials;
-use harness::backend::{Backend, ToolsWorld};
+use harness::backend::{Backend, ManagerWorld, ToolsWorld};
 use libtest_mimic::{Arguments, Trial};
 
 fn main() {
@@ -56,6 +56,25 @@ fn main() {
         tests.extend(adapters::edit_note::extra_trials(backend));
         tests.extend(adapters::move_note::trials(backend));
         tests.extend(adapters::batch_execute::trials(backend));
+
+        // ── Manager layer (qae.9.2) ──────────────────────────────────────────
+        // The enforcement/SDK surface directly: the write/edit/delete/move ops
+        // with a native `VaultManager` mutator (uf/mt/template have none). Same
+        // `cases()` tables as the tools arm — tools are thin delegators to the
+        // manager, so per-cell results (and thus pending flags) coincide.
+        tests.extend(single_path_trials::<ManagerWorld, _>(
+            adapters::write_note::WriteNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<ManagerWorld, _>(
+            adapters::edit_note::EditNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<ManagerWorld, _>(
+            adapters::delete_note::DeleteNote,
+            backend,
+        ));
+        tests.extend(adapters::move_note::manager_trials(backend));
     }
 
     libtest_mimic::run(&args, tests).exit();
