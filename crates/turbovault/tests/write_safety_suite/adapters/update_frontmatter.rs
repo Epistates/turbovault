@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 
-use super::batch_execute::{blob_token, run_batch_of_one};
 use super::{Case, SinglePathOp};
 use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
@@ -80,9 +79,9 @@ impl SinglePathOp<BatchWorld> for UpdateFrontmatter {
             path: rel.to_string(),
             frontmatter: fm,
             merge: Some(true),
-            expected_hash: blob_token(&pc),
+            expected_hash: BatchWorld::blob_token(&pc),
         };
-        run_batch_of_one(w, op, rel).await
+        w.run_batch_of_one(op, rel).await
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {

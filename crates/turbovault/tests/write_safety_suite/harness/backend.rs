@@ -20,9 +20,11 @@ use std::sync::{Arc, Once};
 
 use tempfile::TempDir;
 use turbovault_core::config::{ServerConfig, VaultConfig, WriteBackend};
+use turbovault_tools::{BatchOperation, BatchTools};
 use turbovault_vault::VaultManager;
 
 use super::outcome::{Observed, ObservedError};
+use super::precondition::Precondition;
 use super::state::{GitState, Oids};
 
 /// Commit subject / message threaded to every op (the matrix never asserts it).
@@ -228,6 +230,11 @@ impl Layer for ManagerWorld {
 /// batch surface (`plan`/`apply_changes`/`batch_execute`). Structurally
 /// identical to [`ManagerWorld`] — the layer distinction lives entirely in the
 /// invokers. A batch-of-one proves per-op-in-batch behavior == the standalone op.
+///
+/// Multi-op transaction-integrity (whole-op-list atomicity/rollback/collision/
+/// empty-batch validation) is a DIFFERENT axis from WSS's per-write
+/// clobber-safety and was moved out of WSS scope — see `turbovault-nbl.17` /
+/// `docs/write-safety-suite/`.
 pub struct BatchWorld {
     vault: Vault,
 }
@@ -241,6 +248,39 @@ impl Layer for BatchWorld {
     }
     fn vault(&self) -> &Vault {
         &self.vault
+    }
+}
+
+impl BatchWorld {
+    /// Drive a SINGLE [`BatchOperation`] through the batch translation path — the
+    /// same `plan` fold + `apply_changes` that [`BatchTools::batch_execute`] runs
+    /// internally, minus the soft-envelope wrapping that would stringify (and so
+    /// erase) the structured error kind the matrix's `Outcome` assertions need.
+    /// Proves batch-of-one == standalone: the one-op plan carries exactly the op's
+    /// precondition, and the substrate's shared dirty gate + CAS decide the outcome
+    /// identically to the standalone mutator.
+    pub async fn run_batch_of_one(&self, op: BatchOperation, rel: &str) -> Observed {
+        let mgr = self.vault().manager().clone();
+        let res = match BatchTools::new(mgr.clone()).plan(&[op]).await {
+            Ok(mut plan) => {
+                plan.message = MSG.to_string();
+                mgr.apply_changes(&plan).await.map(|_| ())
+            }
+            Err(e) => Err(e),
+        };
+        observe(res, self.vault().read(rel))
+    }
+
+    /// The `expected_hash` an in-place batch op should carry for a resolved
+    /// precondition: the blob token for [`Precondition::ExpectBlob`], else `None` (a
+    /// bare op — the fold's read + the substrate dirty gate enforce existence,
+    /// matching the standalone `ExpectExists` default). Batch ops carry no
+    /// first-class `ExpectExists`, so `None` is the faithful mapping.
+    pub fn blob_token(pc: &Precondition) -> Option<String> {
+        match pc {
+            Precondition::ExpectBlob(oid) => Some(oid.clone()),
+            _ => None,
+        }
     }
 }
 

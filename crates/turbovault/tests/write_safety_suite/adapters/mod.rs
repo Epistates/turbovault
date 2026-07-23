@@ -7,12 +7,11 @@
 //! doesn't map to a layer simply has no invoker for that layer's World (e.g. the
 //! compute ops have no `SinglePathOp<ManagerWorld>` impl — qae.9.2).
 //!
-//! Dual-path (`move_note`) and multi-op (`batch_execute`) adapters build their
-//! own trials with [`cell_trial`]. Each matrix cell is a `libtest-mimic` trial →
+//! The dual-path (`move_note`) adapter builds its own trials with [`cell_trial`].
+//! Each matrix cell is a `libtest-mimic` trial →
 //! its own named `cargo test` entry, prefixed `<layer>::<backend>::…`. `pending`
 //! cells become **ignored** trials (the burndown).
 
-pub mod batch_execute;
 pub mod create_from_template;
 pub mod delete_note;
 pub mod edit_note;

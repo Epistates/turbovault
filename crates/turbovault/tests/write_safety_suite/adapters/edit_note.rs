@@ -9,7 +9,6 @@
 
 use libtest_mimic::Trial;
 
-use super::batch_execute::{blob_token, run_batch_of_one};
 use super::{Case, REL, SinglePathOp, cell_trial, present_state};
 use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
@@ -118,9 +117,9 @@ impl SinglePathOp<BatchWorld> for EditNote {
         let op = BatchOperation::EditNote {
             path: rel.to_string(),
             edits,
-            expected_hash: blob_token(&pc),
+            expected_hash: BatchWorld::blob_token(&pc),
         };
-        run_batch_of_one(w, op, rel).await
+        w.run_batch_of_one(op, rel).await
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
