@@ -10,15 +10,41 @@
 
 use std::collections::HashMap;
 
+use super::batch_execute::run_batch_of_one;
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
+use turbovault_tools::BatchOperation;
 use turbovault_tools::TemplateEngine;
 
 /// Stable text the `research` template always renders — proves an OK created it.
 const RENDERED_MARKER: &str = "Key Findings";
+
+/// The `research` template's fields (shared by every layer's invoker).
+fn fields() -> HashMap<String, String> {
+    HashMap::from([
+        ("topic".to_string(), "wss".to_string()),
+        ("date_researched".to_string(), "2026-01-01".to_string()),
+    ])
+}
+
+/// Shared OK-effect check for every layer's invoker (op-specific, layer-agnostic).
+fn ok_check(observed: &Observed) -> Result<(), String> {
+    if observed
+        .after_content
+        .as_deref()
+        .is_some_and(|c| c.contains(RENDERED_MARKER))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "OK effect: rendered template not present: {:?}",
+            observed.after_content
+        ))
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct CreateFromTemplate;
@@ -33,30 +59,47 @@ impl SinglePathOp<ToolsWorld> for CreateFromTemplate {
     }
 
     async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
-        let fields = HashMap::from([
-            ("topic".to_string(), "wss".to_string()),
-            ("date_researched".to_string(), "2026-01-01".to_string()),
-        ]);
         let res = TemplateEngine::new(w.vault().manager().clone())
-            .create_from_template("research", rel, fields, pc, MSG)
+            .create_from_template("research", rel, fields(), pc, MSG)
             .await
             .map(|_| ());
         observe(res, w.vault().read(rel))
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        if observed
-            .after_content
-            .as_deref()
-            .is_some_and(|c| c.contains(RENDERED_MARKER))
-        {
-            Ok(())
-        } else {
-            Err(format!(
-                "OK effect: rendered template not present: {:?}",
-                observed.after_content
-            ))
-        }
+        ok_check(observed)
+    }
+}
+
+// Batch-layer invoker (qae.9.3): render+create as a ONE-op `CreateFromTemplate`
+// batch. The precondition maps to `force`: `Blind` → force (upsert), `Absent` →
+// strict create. Shares `CASES` (only Blind/Absent rows exist for a create).
+impl SinglePathOp<BatchWorld> for CreateFromTemplate {
+    fn name(&self) -> &'static str {
+        "create_from_template"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+
+    async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
+        let force = match pc {
+            Precondition::Blind => Some(true),
+            // ExpectAbsent (and any other) → strict create (expect_absent).
+            _ => None,
+        };
+        let op = BatchOperation::CreateFromTemplate {
+            template_id: "research".to_string(),
+            path: rel.to_string(),
+            fields: fields(),
+            force,
+        };
+        run_batch_of_one(w, op, rel).await
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
     }
 }
 

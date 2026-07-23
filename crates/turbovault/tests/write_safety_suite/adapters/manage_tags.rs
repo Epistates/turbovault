@@ -7,17 +7,35 @@
 //! (cutover: qae.9.1). The dirty-gate / precond-vs-workdir cells are `pending`
 //! (nbl.8 burndown).
 
+use super::batch_execute::{blob_token, run_batch_of_one};
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
+use turbovault_tools::BatchOperation;
 use turbovault_tools::MetadataTools;
 
 const TAG: &str = "wss-tag";
 
 #[derive(Clone, Copy)]
 pub struct ManageTags;
+
+/// Shared OK-effect check for every layer's invoker (op-specific, layer-agnostic).
+fn ok_check(observed: &Observed) -> Result<(), String> {
+    if observed
+        .after_content
+        .as_deref()
+        .is_some_and(|c| c.contains(TAG))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "OK effect: tag {TAG:?} not present: {:?}",
+            observed.after_content
+        ))
+    }
+}
 
 impl SinglePathOp<ToolsWorld> for ManageTags {
     fn name(&self) -> &'static str {
@@ -38,18 +56,34 @@ impl SinglePathOp<ToolsWorld> for ManageTags {
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        if observed
-            .after_content
-            .as_deref()
-            .is_some_and(|c| c.contains(TAG))
-        {
-            Ok(())
-        } else {
-            Err(format!(
-                "OK effect: tag {TAG:?} not present: {:?}",
-                observed.after_content
-            ))
-        }
+        ok_check(observed)
+    }
+}
+
+// Batch-layer invoker (qae.9.3): the tag add as a ONE-op `ManageTags` batch
+// (`operation: "add"`, matching the standalone arm). `blob_token` carries
+// `ExpectBlob`, else a bare op. Shares `CASES`.
+impl SinglePathOp<BatchWorld> for ManageTags {
+    fn name(&self) -> &'static str {
+        "manage_tags"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+
+    async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
+        let op = BatchOperation::ManageTags {
+            path: rel.to_string(),
+            operation: "add".to_string(),
+            tags: vec![TAG.to_string()],
+            expected_hash: blob_token(&pc),
+        };
+        run_batch_of_one(w, op, rel).await
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
     }
 }
 

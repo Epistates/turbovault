@@ -9,11 +9,13 @@
 
 use libtest_mimic::Trial;
 
+use super::batch_execute::{blob_token, run_batch_of_one};
 use super::{Case, REL, SinglePathOp, cell_trial, present_state};
-use crate::harness::backend::{Backend, Layer, MSG, ManagerWorld, ToolsWorld, observe};
+use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
+use turbovault_tools::BatchOperation;
 use turbovault_tools::FileTools;
 
 /// The replacement text — `ok_effect` checks the edited file contains it.
@@ -90,6 +92,35 @@ impl SinglePathOp<ManagerWorld> for EditNote {
             .await
             .map(|_| ());
         observe(res, w.vault().read(rel))
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Batch-layer invoker (qae.9.3): the edit as a ONE-op `EditNote` batch. The
+// SEARCH block is computed from the on-disk bytes exactly as the standalone arm;
+// `blob_token` carries `ExpectBlob`, else a bare edit (the fold's read + the
+// substrate dirty gate enforce existence). Shares `CASES` + `ok_check`.
+impl SinglePathOp<BatchWorld> for EditNote {
+    fn name(&self) -> &'static str {
+        "edit_note"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+
+    async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
+        let current = w.vault().read(rel).unwrap_or_default();
+        let edits = edits_replacing(&current);
+        let op = BatchOperation::EditNote {
+            path: rel.to_string(),
+            edits,
+            expected_hash: blob_token(&pc),
+        };
+        run_batch_of_one(w, op, rel).await
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {

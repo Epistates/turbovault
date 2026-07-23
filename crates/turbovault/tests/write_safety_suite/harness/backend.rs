@@ -223,6 +223,27 @@ impl Layer for ManagerWorld {
     }
 }
 
+/// The Batch layer (qae.9.3): invokers stand up `BatchTools` from
+/// `vault().manager()` and drive each write as a `BatchOperation` through the
+/// batch surface (`plan`/`apply_changes`/`batch_execute`). Structurally
+/// identical to [`ManagerWorld`] — the layer distinction lives entirely in the
+/// invokers. A batch-of-one proves per-op-in-batch behavior == the standalone op.
+pub struct BatchWorld {
+    vault: Vault,
+}
+
+impl Layer for BatchWorld {
+    const LABEL: &'static str = "batch";
+    fn new(backend: Backend) -> Self {
+        BatchWorld {
+            vault: Vault::new(backend),
+        }
+    }
+    fn vault(&self) -> &Vault {
+        &self.vault
+    }
+}
+
 /// The Wire layer (nbl.12): a spawned MCP server + JSON-RPC client. **SKELETON** —
 /// invokers would `call_tool(name, params)` over stdio; the vault is still needed
 /// for state setup + reads. The server/client plumbing and the `Precondition`→wire

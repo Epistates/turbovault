@@ -17,7 +17,7 @@ mod harness;
 mod adapters;
 
 use adapters::single_path_trials;
-use harness::backend::{Backend, ManagerWorld, ToolsWorld};
+use harness::backend::{Backend, BatchWorld, ManagerWorld, ToolsWorld};
 use libtest_mimic::{Arguments, Trial};
 
 fn main() {
@@ -75,6 +75,37 @@ fn main() {
             backend,
         ));
         tests.extend(adapters::move_note::manager_trials(backend));
+
+        // ── Batch layer (qae.9.3) ────────────────────────────────────────────
+        // Per-op isolation: batch-of-one == standalone. Every single-path op
+        // expressible as a `BatchOperation` gets a `SinglePathOp<BatchWorld>`
+        // invoker reusing its `cases()` table (delete uses BATCH_CASES — batch
+        // delete-of-absent is an idempotent OK the standalone op still refuses).
+        // The multi-op atomicity scenarios ride `batch_execute::trials` above.
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::write_note::WriteNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::edit_note::EditNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::delete_note::DeleteNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::update_frontmatter::UpdateFrontmatter,
+            backend,
+        ));
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::manage_tags::ManageTags,
+            backend,
+        ));
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::create_from_template::CreateFromTemplate,
+            backend,
+        ));
     }
 
     libtest_mimic::run(&args, tests).exit();

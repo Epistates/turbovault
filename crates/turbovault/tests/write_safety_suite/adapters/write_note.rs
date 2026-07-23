@@ -5,11 +5,13 @@
 //! passing the [`Precondition`] directly. The tool layer does not take a
 //! precondition yet, so this does not compile until the cutover (qae.9.1).
 
+use super::batch_execute::run_batch_of_one;
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, Layer, MSG, ManagerWorld, ToolsWorld, observe};
+use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, observe};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P};
 use crate::harness::state::GitState as S;
+use turbovault_tools::BatchOperation;
 use turbovault_tools::FileTools;
 use turbovault_tools::WriteMode;
 
@@ -75,6 +77,46 @@ impl SinglePathOp<ManagerWorld> for WriteNote {
             .write_file(std::path::Path::new(rel), CONTENT, pc, MSG)
             .await;
         observe(res, w.vault().read(rel))
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Batch-layer invoker (qae.9.3): wrap the write in a ONE-op batch. The
+// precondition picks the batch op that carries it — a strict create
+// (`CreateNote`, expect_absent) for `ExpectAbsent`, an upsert (`WriteNote`) for
+// `Blind`/`ExpectBlob`. Shares `CASES` + `ok_check`; batch-of-one == standalone.
+impl SinglePathOp<BatchWorld> for WriteNote {
+    fn name(&self) -> &'static str {
+        "write_note"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+
+    async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
+        let op = match pc {
+            Precondition::ExpectAbsent => BatchOperation::CreateNote {
+                path: rel.to_string(),
+                content: CONTENT.to_string(),
+                force: None,
+            },
+            Precondition::ExpectBlob(oid) => BatchOperation::WriteNote {
+                path: rel.to_string(),
+                content: CONTENT.to_string(),
+                expected_hash: Some(oid),
+            },
+            // Blind (and the unreachable ExpectExists) → a no-precondition upsert.
+            _ => BatchOperation::WriteNote {
+                path: rel.to_string(),
+                content: CONTENT.to_string(),
+                expected_hash: None,
+            },
+        };
+        run_batch_of_one(w, op, rel).await
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
