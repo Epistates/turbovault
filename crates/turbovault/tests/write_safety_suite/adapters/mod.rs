@@ -56,7 +56,7 @@ pub struct Case {
     pub precondition: PreconditionKind,
     pub state: GitState,
     pub expected: Outcome,
-    pub pending: Option<&'static str>,
+    pub pending: bool,
     pub only: Option<Backend>,
 }
 
@@ -67,23 +67,25 @@ impl Case {
             precondition,
             state,
             expected,
-            pending: None,
+            pending: false,
             only: None,
         }
     }
 
-    /// A cell whose desired behavior is not yet implemented (burndown item).
+    /// A cell whose desired behavior is not yet implemented (burndown item). A
+    /// one-line mirror of [`Case::new`] — the cell's precondition/state/expected
+    /// identify it; the "why" is derived from the trial name by
+    /// `scripts/wss-report.py`, not stored per-cell.
     pub const fn pending(
         precondition: PreconditionKind,
         state: GitState,
         expected: Outcome,
-        reason: &'static str,
     ) -> Self {
         Self {
             precondition,
             state,
             expected,
-            pending: Some(reason),
+            pending: true,
             only: None,
         }
     }
@@ -117,8 +119,8 @@ pub trait SinglePathOp<W: Layer> {
 }
 
 /// Build a trial that runs one async cell on its own current-thread runtime.
-/// `pending.is_some()` → the trial is marked `ignored` (the burndown).
-pub fn cell_trial<F, Fut>(name: String, pending: Option<&'static str>, run: F) -> Trial
+/// `pending` → the trial is marked `ignored` (the burndown).
+pub fn cell_trial<F, Fut>(name: String, pending: bool, run: F) -> Trial
 where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<(), String>>,
@@ -130,7 +132,7 @@ where
             .expect("tokio runtime");
         rt.block_on(run()).map_err(Failed::from)
     });
-    if pending.is_some() {
+    if pending {
         trial = trial.with_ignored_flag(true);
     }
     trial

@@ -75,100 +75,29 @@ const CASES: &[Case] = &[
     // ── ExpectExists (in-place default, dirty-gated) ─────────────────────────
     Case::new(P::Exists, S::Absent, O::NoFile),
     Case::new(P::Exists, S::CleanCommitted, O::Ok),
-    Case::pending(
-        P::Exists,
-        S::CommittedStaged,
-        O::ConcurrencyError,
-        "nbl.8: refusal not yet unified to ConcurrencyError",
-    ),
-    Case::pending(
-        P::Exists,
-        S::CommittedUnstaged,
-        O::ConcurrencyError,
-        "nbl.8: refusal not yet unified to ConcurrencyError",
-    ),
-    Case::pending(
-        P::Exists,
-        S::CommittedStagedUnstaged,
-        O::ConcurrencyError,
-        "nbl.8: refusal not yet unified to ConcurrencyError",
-    ),
-    Case::pending(
-        P::Exists,
-        S::NewStaged,
-        O::ConcurrencyError,
-        "nbl.8: refusal not yet unified to ConcurrencyError",
-    ),
-    Case::pending(
-        P::Exists,
-        S::IntentToAdd,
-        O::ConcurrencyError,
-        "nbl.8: refusal not yet unified to ConcurrencyError",
-    ),
-    Case::pending(
-        P::Exists,
-        S::NewStagedUnstaged,
-        O::ConcurrencyError,
-        "nbl.8: refusal not yet unified to ConcurrencyError",
-    ),
-    Case::pending(
-        P::Exists,
-        S::Untracked,
-        O::ConcurrencyError,
-        "nbl.8: refusal not yet unified to ConcurrencyError",
-    ),
+    Case::pending(P::Exists, S::CommittedStaged, O::ConcurrencyError),
+    Case::pending(P::Exists, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::pending(P::Exists, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::pending(P::Exists, S::NewStaged, O::ConcurrencyError),
+    Case::pending(P::Exists, S::IntentToAdd, O::ConcurrencyError),
+    Case::pending(P::Exists, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::pending(P::Exists, S::Untracked, O::ConcurrencyError),
     // ── ExpectBlob(HEAD) — defined iff committed (HEAD-token refusal already unified) ─
     Case::new(P::Head, S::CleanCommitted, O::Ok),
     Case::new(P::Head, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
     Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(INDEX) — defined iff staged ───────────────────────────────
-    Case::pending(
-        P::Index,
-        S::CommittedStaged,
-        O::Ok,
-        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
-    ),
+    Case::pending(P::Index, S::CommittedStaged, O::Ok),
     Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::pending(
-        P::Index,
-        S::NewStaged,
-        O::Ok,
-        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
-    ),
+    Case::pending(P::Index, S::NewStaged, O::Ok),
     Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(WORKDIR) — proving on-disk bytes; SKIP where == HEAD/INDEX ─
-    Case::pending(
-        P::Workdir,
-        S::CommittedUnstaged,
-        O::Ok,
-        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
-    ),
-    Case::pending(
-        P::Workdir,
-        S::CommittedStagedUnstaged,
-        O::Ok,
-        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
-    ),
-    Case::pending(
-        P::Workdir,
-        S::IntentToAdd,
-        O::Ok,
-        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
-    ),
-    Case::pending(
-        P::Workdir,
-        S::NewStagedUnstaged,
-        O::Ok,
-        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
-    ),
-    Case::pending(
-        P::Workdir,
-        S::Untracked,
-        O::Ok,
-        "nbl.8: dirty gate must honor Blind/WORKDIR opt-out",
-    )
-    .on(Backend::Git),
+    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
+    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
     Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectBlob(WRONG) → refuse everywhere; NoFile on absent (in-place) ────
     Case::new(P::Wrong, S::Absent, O::NoFile),
@@ -191,7 +120,7 @@ pub fn extra_trials(backend: Backend) -> Vec<Trial> {
             ToolsWorld::LABEL,
             backend.code()
         ),
-        None,
+        false,
         move || async move {
             let w = ToolsWorld::new(backend);
             let _ = w.vault().build_state(REL, present_state(backend));

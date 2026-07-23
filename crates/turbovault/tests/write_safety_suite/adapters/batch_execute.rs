@@ -24,7 +24,7 @@ pub fn trials(backend: Backend) -> Vec<Trial> {
         // Atomic success: two creates on absent paths → both land.
         cell_trial(
             format!("{label}::{b}::batch_execute::two-creates::atomic-OK"),
-            None,
+            false,
             move || async move {
                 let w = ToolsWorld::new(backend);
                 let obs = observe(
@@ -55,7 +55,7 @@ pub fn trials(backend: Backend) -> Vec<Trial> {
         // atomicity delta (mark pending there, not here).
         cell_trial(
             format!("{label}::{b}::batch_execute::collision-aborts-atomically"),
-            None,
+            false,
             move || async move {
                 let w = ToolsWorld::new(backend);
                 let _ = w.vault().build_state("exists.md", present_state(backend));
