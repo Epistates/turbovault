@@ -52,10 +52,9 @@ fn main() {
             adapters::create_from_template::CreateFromTemplate,
             backend,
         ));
-        // Op-specific one-offs + the odd shapes (dual-path, multi-op).
+        // Op-specific one-offs + the odd shapes (dual-path move).
         tests.extend(adapters::edit_note::extra_trials(backend));
         tests.extend(adapters::move_note::trials(backend));
-        tests.extend(adapters::batch_execute::trials(backend));
 
         // ── Manager layer (qae.9.2) ──────────────────────────────────────────
         // The enforcement/SDK surface directly: the write/edit/delete/move ops
@@ -81,7 +80,9 @@ fn main() {
         // expressible as a `BatchOperation` gets a `SinglePathOp<BatchWorld>`
         // invoker reusing its `cases()` table (delete uses BATCH_CASES — batch
         // delete-of-absent is an idempotent OK the standalone op still refuses).
-        // The multi-op atomicity scenarios ride `batch_execute::trials` above.
+        // Multi-op transaction-integrity (atomicity/rollback/collision/empty) is
+        // a different axis from per-write clobber-safety — extracted out of WSS
+        // scope (turbovault-nbl.17); BatchWorld keeps only this isolation arm.
         tests.extend(single_path_trials::<BatchWorld, _>(
             adapters::write_note::WriteNote,
             backend,
