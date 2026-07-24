@@ -173,7 +173,12 @@ pub fn build_state(repo: &Path, rel: &str, state: GitState) -> Oids {
     let commit_v1 = |repo: &Path| {
         std::fs::write(&path, V1).unwrap();
         git_ok(repo, &["add", rel]);
-        git_ok(repo, &["commit", "-m", "add target"]);
+        // Path-scoped commit: commit ONLY `rel`, leaving any other path's staged
+        // content untouched. This makes building several independent paths
+        // order-independent — a dual-path op (move) can build its destination
+        // (staged) via the runner, then its source (committed) inside `invoke`,
+        // without the source's commit sweeping up the destination's staged state.
+        git_ok(repo, &["commit", "-m", "add target", "--", rel]);
     };
 
     match state {

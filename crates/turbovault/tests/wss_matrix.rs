@@ -52,9 +52,19 @@ fn main() {
             adapters::create_from_template::CreateFromTemplate,
             backend,
         ));
-        // Op-specific one-offs + the odd shapes (dual-path move).
+        // Op-specific one-offs.
         tests.extend(adapters::edit_note::extra_trials(backend));
-        tests.extend(adapters::move_note::trials(backend));
+        // Dual-path move as two ordinary SinglePathOp ops: a source sweep
+        // (vary the source, dest held absent) and a dest sweep (vary the dest,
+        // source held present). Same mold, same shared tables, every world.
+        tests.extend(single_path_trials::<ToolsWorld, _>(
+            adapters::move_note::MoveSrc,
+            backend,
+        ));
+        tests.extend(single_path_trials::<ToolsWorld, _>(
+            adapters::move_note::MoveDest,
+            backend,
+        ));
 
         // ── Manager layer (qae.9.2) ──────────────────────────────────────────
         // The enforcement/SDK surface directly: the write/edit/delete/move ops
@@ -73,13 +83,21 @@ fn main() {
             adapters::delete_note::DeleteNote,
             backend,
         ));
-        tests.extend(adapters::move_note::manager_trials(backend));
+        tests.extend(single_path_trials::<ManagerWorld, _>(
+            adapters::move_note::MoveSrc,
+            backend,
+        ));
+        tests.extend(single_path_trials::<ManagerWorld, _>(
+            adapters::move_note::MoveDest,
+            backend,
+        ));
 
         // ── Batch layer (qae.9.3) ────────────────────────────────────────────
-        // Per-op isolation: batch-of-one == standalone. Every single-path op
-        // expressible as a `BatchOperation` gets a `SinglePathOp<BatchWorld>`
-        // invoker reusing its `cases()` table (delete uses BATCH_CASES — batch
-        // delete-of-absent is an idempotent OK the standalone op still refuses).
+        // Per-op isolation: batch-of-one == standalone. Every op gets a
+        // `SinglePathOp<BatchWorld>` invoker reusing the op's SHARED `cases()`
+        // table — the same cells the Tools/Manager arms run. A batch that
+        // diverges from the standalone outcome FAILS that cell (the divergence
+        // is the finding); we never fork a per-world table.
         // Multi-op transaction-integrity (atomicity/rollback/collision/empty) is
         // a different axis from per-write clobber-safety — extracted out of WSS
         // scope (turbovault-nbl.17); BatchWorld keeps only this isolation arm.
@@ -105,6 +123,17 @@ fn main() {
         ));
         tests.extend(single_path_trials::<BatchWorld, _>(
             adapters::create_from_template::CreateFromTemplate,
+            backend,
+        ));
+        // Dual-path move through the batch surface. The batch invoker uses the
+        // API we NEED (a MoveNote carrying src+dest preconditions), so it does
+        // not compile until qae.6.4 builds it — the intentional WSS signal.
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::move_note::MoveSrc,
+            backend,
+        ));
+        tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::move_note::MoveDest,
             backend,
         ));
     }

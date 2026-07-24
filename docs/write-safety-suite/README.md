@@ -53,9 +53,11 @@ so flipping a cell from pending to active is a mechanical `pending → new`.
 - **`BatchWorld`** — invokers wrap each op in a **one-op batch** and drive it
   through the batch translation path (`BatchTools::plan` + `apply_changes`).
   Proves *batch-of-one == standalone*: routing an op through the batch layer must
-  not change its per-op clobber-safety. (It already caught one real divergence:
-  git batch delete-of-absent short-circuits to an idempotent `Ok` while the
-  standalone delete still refuses.)
+  not change its per-op clobber-safety. It runs the op's **same shared `Case`
+  table**; where batch genuinely diverges from standalone (e.g. git batch
+  delete-of-absent short-circuits to an idempotent `Ok` while the standalone
+  delete still refuses), the shared cell simply diverges — a failure or an
+  un-pend candidate — instead of being blessed in a per-world table.
 - **`WireWorld`** *(planned)* — a spawned MCP server + JSON-RPC client, to verify
   the agent-facing wire contract (precondition encoding, error mapping).
 
@@ -123,6 +125,44 @@ the `batch_execute` wire tool, on purpose. `batch_execute` returns
 **stringifies the typed error kind** the `Outcome` assertions need. That
 envelope (and its atomicity semantics) is the transaction suite's concern, not
 WSS's.
+
+## Authoring rules — how to change WSS
+
+WSS is **aspirational**: a cell states the behavior we *want*, so the suite is
+written against the **API we need, not the API we have**.
+
+1. **Every world runs the op's ONE shared `Case` table.** Tools, Manager, Batch,
+   Wire all bind the same cells for an op (per-role for dual-path ops: one src,
+   one dest table). There are **no per-world tables.**
+2. **A world diverging from the required outcome is a BUG — the test MUST fail
+   for that world.** That failure is the finding. Do **not** fork a per-world
+   table to record the divergent behavior; that enshrines the bug and defeats the
+   suite. (This is why `move`'s batch arm and `delete`'s batch arm share the
+   standalone tables even where batch behaves differently.)
+3. **Write against the API you need; let it not compile.** If the required
+   behavior needs a method/param/type that doesn't exist yet, use it anyway.
+   **Compilation failure is intentional** — it is the signal the API must be
+   built. (Example: batch `move_note` needs first-class src+dest preconditions on
+   `BatchOperation::MoveNote`; the test names them and won't compile until the
+   substrate gains them.)
+4. **`pending` = required-but-unimplemented AND out-of-scope-to-fix-now.** A
+   shared property of the *cell* — it keeps agents off out-of-scope work and
+   keeps the gate legible. Never a per-world lever to hide divergence.
+5. **`Case::on(Backend)` — same outcome, backend behavior lags.** Copy the cell,
+   `.on(Git)` / `.on(Direct)`, so one is `pending` (backend lags) and the other
+   `new` (backend works). The two MUST carry the **same `expected`**; differing
+   expected per backend is itself an enshrined divergence (a bug).
+
+### Commit & gate discipline
+
+- **WSS test changes go in their own commit, separate from the behavior/API fix**
+  that satisfies them. Combining the two is a bad smell: it obscures whether the
+  code was written to match the test or the test to match the code. The failing
+  test lands first (it may be red or non-compiling), the fix follows — and the
+  red commit proves the behavior-under-test is real signal.
+- **A green `just test` / `just wss-test` is NOT required for a WSS commit.** The
+  reviewer's sign-off is the gate. Fixpoint/green is not the success criterion
+  when *changing* the suite; it is the target the *fix* commit then drives toward.
 
 ## Source-of-truth matrices
 

@@ -81,19 +81,20 @@ impl SinglePathOp<ManagerWorld> for DeleteNote {
 // Batch-layer invoker (qae.9.3): the delete as a ONE-op `DeleteNote` batch
 // (`on_backlinks: None` = the "refuse-if-inbound-links" default — a no-op here,
 // `note.md` has no linkers). `blob_token` carries `ExpectBlob`, else a bare
-// remove. Uses `BATCH_CASES`, which diverges from the standalone table at ONE
-// cell: `Exists`/absent. A bare batch remove of an absent path folds to an
-// identity plan (nothing to remove) → the substrate's no-op-commit short-circuit
-// returns Ok — i.e. batch delete-of-absent is the idempotent OK the standalone
-// `delete_file(ExpectExists)` still refuses (its pending burndown cell). Batch
-// gets it right, so that cell is `new(Ok)` here.
+// remove. Shares the standalone `CASES` — the required behavior is
+// layer-invariant. Where batch genuinely diverges from standalone (git batch
+// delete-of-absent folds to an identity plan → idempotent Ok, while the
+// standalone op still refuses), the shared cell simply DIVERGES: it is `pending`
+// (the required idempotent-Ok isn't universally implemented), and the batch arm
+// passing it early shows up as an un-pend candidate, not a blessed separate
+// outcome. We never fork a per-world table to enshrine that divergence.
 impl SinglePathOp<BatchWorld> for DeleteNote {
     fn name(&self) -> &'static str {
         "delete_note"
     }
 
     fn cases(&self) -> &'static [Case] {
-        BATCH_CASES
+        CASES
     }
 
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
@@ -124,61 +125,6 @@ const CASES: &[Case] = &[
     // ── ExpectExists (in-place default, dirty-gated) ─────────────────────────
     // delete-of-absent should be an idempotent OK, but current code refuses it.
     Case::pending(P::Exists, S::Absent, O::Ok),
-    Case::new(P::Exists, S::CleanCommitted, O::Ok),
-    Case::new(P::Exists, S::CommittedStaged, O::ConcurrencyError),
-    Case::new(P::Exists, S::CommittedUnstaged, O::ConcurrencyError),
-    Case::new(P::Exists, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::new(P::Exists, S::NewStaged, O::ConcurrencyError),
-    Case::new(P::Exists, S::IntentToAdd, O::ConcurrencyError),
-    Case::new(P::Exists, S::NewStagedUnstaged, O::ConcurrencyError),
-    Case::new(P::Exists, S::Untracked, O::ConcurrencyError).on(Backend::Git),
-    Case::pending(P::Exists, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
-    // ── ExpectBlob(HEAD) — defined iff committed ─────────────────────────────
-    Case::new(P::Head, S::CleanCommitted, O::Ok),
-    Case::new(P::Head, S::CommittedStaged, O::ConcurrencyError),
-    Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
-    Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    // ── ExpectBlob(INDEX) — defined iff staged ───────────────────────────────
-    Case::pending(P::Index, S::CommittedStaged, O::Ok),
-    Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::pending(P::Index, S::NewStaged, O::Ok),
-    Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
-    // ── ExpectBlob(WORKDIR) — proving on-disk bytes; SKIP where == HEAD/INDEX ─
-    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
-    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
-    Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
-    // ── ExpectBlob(WRONG) → refuse everywhere, incl. absent ──────────────────
-    Case::new(P::Wrong, S::Absent, O::ConcurrencyError),
-    Case::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
-    Case::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::NewStaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::IntentToAdd, O::ConcurrencyError),
-    Case::new(P::Wrong, S::NewStagedUnstaged, O::ConcurrencyError),
-    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Git),
-    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
-];
-
-/// The batch-layer delete matrix. Identical to [`CASES`] except the one cell
-/// where a batch delete genuinely diverges from the standalone op: `Exists` on
-/// an **absent** target. A bare batch `DeleteNote` of an absent path folds to an
-/// identity plan (nothing to remove), which the git substrate's no-op-commit
-/// short-circuit reports as `Ok` — the idempotent delete-of-absent the standalone
-/// `delete_file(ExpectExists)` still refuses (its pending burndown cell). So the
-/// git arm is active-`Ok` here. Direct has no no-op short-circuit — a remove of
-/// an absent path still errors — so its arm stays `pending` (matching standalone).
-/// Every other cell coincides with the standalone table (the shared dirty gate +
-/// CAS equalize them), so this reuses those rows verbatim.
-const BATCH_CASES: &[Case] = &[
-    // ── ExpectExists (in-place default, dirty-gated) ─────────────────────────
-    // The divergent cell: batch delete-of-absent is idempotent OK on git, still
-    // refused on direct (see the doc comment above).
-    Case::new(P::Exists, S::Absent, O::Ok).on(Backend::Git),
-    Case::pending(P::Exists, S::Absent, O::Ok).on(Backend::Direct),
     Case::new(P::Exists, S::CleanCommitted, O::Ok),
     Case::new(P::Exists, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Exists, S::CommittedUnstaged, O::ConcurrencyError),
