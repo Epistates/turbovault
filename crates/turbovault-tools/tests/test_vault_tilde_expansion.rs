@@ -1,5 +1,6 @@
 //! Test tilde expansion in vault paths
 
+use turbovault_core::config::WriteBackend;
 use turbovault_core::prelude::*;
 use turbovault_tools::VaultLifecycleTools;
 
@@ -26,7 +27,7 @@ async fn test_add_vault_with_absolute_temp_path() {
 
     // Add existing vault
     let vault_info = lifecycle_tools
-        .add_vault_from_path("test_add", &test_dir)
+        .add_vault_from_path("test_add", &test_dir, WriteBackend::Direct)
         .await
         .unwrap();
 

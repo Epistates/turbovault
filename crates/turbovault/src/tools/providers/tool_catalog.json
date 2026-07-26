@@ -928,7 +928,7 @@
   },
   {
     "name": "add_vault",
-    "description": "Register an existing Obsidian vault with the MCP server and auto-initialize",
+    "description": "Register an existing Obsidian vault with the MCP server and auto-initialize. write_backend selects the mutation substrate: 'git' (every write is an atomic commit with CAS preconditions; requires the path to be a git repository) or 'direct' (writes straight to the working tree; default).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -941,6 +941,14 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "string",
           "type": "string"
+        },
+        "write_backend": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

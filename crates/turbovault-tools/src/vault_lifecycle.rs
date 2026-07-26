@@ -5,7 +5,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use turbovault_core::config::{VaultGitConfig, WriteBackend};
 use turbovault_core::prelude::*;
+use turbovault_git::VaultRepo;
 
 /// Vault lifecycle operations
 pub struct VaultLifecycleTools {
@@ -129,7 +131,12 @@ impl VaultLifecycleTools {
     ///
     /// # Returns
     /// VaultInfo with the registered vault details
-    pub async fn add_vault_from_path(&self, name: &str, path: &Path) -> Result<VaultInfo> {
+    pub async fn add_vault_from_path(
+        &self,
+        name: &str,
+        path: &Path,
+        write_backend: WriteBackend,
+    ) -> Result<VaultInfo> {
         // Validation: name format
         if name.is_empty() || name.contains(' ') {
             return Err(Error::config_error(
@@ -164,8 +171,25 @@ impl VaultLifecycleTools {
             )));
         }
 
+        // Fail fast: a git-backend vault whose path is not a usable repository
+        // registers fine and then fails on its FIRST write, long after the
+        // caller could connect the error to this call.
+        if write_backend == WriteBackend::Git
+            && let Err(error) = VaultRepo::open(&expanded_path)
+        {
+            return Err(Error::config_error(format!(
+                "write_backend=git requires a git repository at {}: {}. Run `git init` there, or register the vault with write_backend=direct.",
+                expanded_path.display(),
+                error
+            )));
+        }
+
         // Create vault config
-        let config = VaultConfig::builder(name, &expanded_path).build()?;
+        let mut builder = VaultConfig::builder(name, &expanded_path).write_backend(write_backend);
+        if write_backend == WriteBackend::Git {
+            builder = builder.git(VaultGitConfig::default());
+        }
+        let config = builder.build()?;
 
         // Register with multi-vault manager
         self.multi_manager.add_vault(config).await?;

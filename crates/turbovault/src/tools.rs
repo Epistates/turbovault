@@ -10,6 +10,7 @@ use turbovault_audit::{AuditFilter, AuditLog, OperationType, SnapshotStore};
 use turbovault_core::ServerConfig;
 use turbovault_core::config::{GitMergeStrategy as ConfigMergeStrategy, VaultConfig, WriteBackend};
 use turbovault_core::error::Error;
+use turbovault_core::events::{VaultChange, VaultEventSink, WriteAttribution};
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
     AnalysisTools, AuditTools, BatchOperation, BatchTools, CommitLocks, DiffTools, DuplicateTools,
@@ -18,13 +19,15 @@ use turbovault_tools::{
     SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo, ViewerTools,
     WriteMode, obsidian_uri,
 };
-use turbovault_vault::{ChangeListener, VaultManager};
+use turbovault_vault::{ChangeListener, CommitOrigin, VaultManager};
 
 mod providers;
 pub use providers::ObsidianMcpServer;
 
 #[cfg(feature = "plugin-api")]
 mod plugin_host;
+#[cfg(feature = "plugin-api")]
+mod plugin_storage;
 
 #[cfg(feature = "sql")]
 use turbovault_tools::FrontmatterSqlEngine;
@@ -148,6 +151,34 @@ fn derive_batch_message(operations: &[turbovault_tools::BatchOperation]) -> Stri
         "batch_execute (0 ops)".to_string()
     } else {
         format!("batch: {}", parts.join(", "))
+    }
+}
+
+/// Map one batch operation to the change it makes, for the vault event feed.
+///
+/// Derived from the typed operation rather than the result record because a
+/// record only reports an operation name and the paths it touched — enough to
+/// say "something happened here", not enough to distinguish a creation from a
+/// deletion.
+fn batch_operation_change(operation: &turbovault_tools::BatchOperation) -> VaultChange {
+    use turbovault_tools::BatchOperation;
+    match operation {
+        BatchOperation::CreateNote { path, .. }
+        | BatchOperation::CreateFromTemplate { path, .. } => {
+            VaultChange::Created { path: path.clone() }
+        }
+        BatchOperation::DeleteNote { path, .. } => VaultChange::Deleted { path: path.clone() },
+        BatchOperation::MoveNote { from, to, .. } => VaultChange::Renamed {
+            from: from.clone(),
+            to: to.clone(),
+        },
+        // An upsert whose prior state the batch does not report back; treat it
+        // as a modification, which tells a consumer to re-read either way.
+        BatchOperation::WriteNote { path, .. }
+        | BatchOperation::EditNote { path, .. }
+        | BatchOperation::UpdateFrontmatter { path, .. }
+        | BatchOperation::ManageTags { path, .. } => VaultChange::Modified { path: path.clone() },
+        BatchOperation::UpdateLinks { file, .. } => VaultChange::Modified { path: file.clone() },
     }
 }
 
@@ -294,6 +325,13 @@ pub(super) struct CoreToolHandler {
     /// one active fanout per base vault — `begin_fanout` errors loudly
     /// on a second concurrent attempt.
     active_fanouts: Arc<RwLock<HashMap<String, ActiveFanoutRecord>>>,
+    /// Where observed vault changes are reported.
+    ///
+    /// Installed once during server assembly (before any provider clones this
+    /// handler) and shared by every clone, so the write paths do not need to
+    /// know whether a consumer exists. `None` until installed, and no sink at
+    /// all when the server is built without the plugin boundary.
+    event_sink: Arc<std::sync::OnceLock<Arc<dyn VaultEventSink>>>,
 }
 
 /// One row of `ObsidianMcpServer.active_fanouts`.
@@ -334,7 +372,17 @@ impl CoreToolHandler {
             search_engines: Arc::new(RwLock::new(HashMap::new())),
             git_locks: Arc::new(RwLock::new(HashMap::new())),
             active_fanouts: Arc::new(RwLock::new(HashMap::new())),
+            event_sink: Arc::new(std::sync::OnceLock::new()),
         })
+    }
+
+    /// Install the sink that observed vault changes are reported to.
+    ///
+    /// Call before any provider clones this handler. Subsequent calls are
+    /// ignored — a server has one change feed for its whole lifetime.
+    #[cfg(feature = "plugin-api")]
+    pub(super) fn set_event_sink(&self, sink: Arc<dyn VaultEventSink>) {
+        let _ = self.event_sink.set(sink);
     }
 
     /// Initialize the persistent cache (should be called after server creation)
@@ -702,27 +750,59 @@ impl CoreToolHandler {
         // callback (R2 dependency inversion).
         let search_engines = Arc::clone(&self.search_engines);
         let similarity_engines = Arc::clone(&self.similarity_engines);
+        // The sink holds only the hook bus, never a manager, so capturing it
+        // does not reintroduce the reference cycle the maps above avoid.
+        #[cfg(feature = "plugin-api")]
+        let event_sink = Arc::clone(&self.event_sink);
         let name = vault_name.to_string();
-        let listener: ChangeListener = Arc::new(move |changed: Vec<(String, bool)>| {
-            let search_engines = Arc::clone(&search_engines);
-            let similarity_engines = Arc::clone(&similarity_engines);
-            let name = name.clone();
-            // The listener is a synchronous `Fn`; spawn the async index work.
-            tokio::spawn(async move {
-                if !changed.is_empty() {
-                    let cached = { search_engines.read().await.get(&name).cloned() };
-                    if let Some(engine) = cached
-                        && let Err(e) = engine.apply_changes(changed).await
-                    {
-                        log::warn!(
-                            "M4c change-listener: search apply failed for '{name}', evicting: {e}"
-                        );
-                        search_engines.write().await.remove(&name);
+        let listener: ChangeListener = Arc::new(
+            move |changed: Vec<(String, bool, CommitOrigin)>| {
+                // Announce the changes this process did not make. A local write was
+                // already reported at the write site, with the attribution only
+                // that site knows; reporting it again here would double-report
+                // every mutation TurboVault performs.
+                #[cfg(feature = "plugin-api")]
+                if let Some(sink) = event_sink.get() {
+                    for (path, present, origin) in &changed {
+                        if !matches!(origin, CommitOrigin::External) {
+                            continue;
+                        }
+                        // A commit diff says whether a path is present afterwards,
+                        // not whether it existed before, so an external creation
+                        // arrives as `Modified`. Consumers that maintain derived
+                        // state treat the two identically.
+                        let change = if *present {
+                            VaultChange::Modified { path: path.clone() }
+                        } else {
+                            VaultChange::Deleted { path: path.clone() }
+                        };
+                        sink.publish(&name, change, None, WriteAttribution::default());
                     }
                 }
-                similarity_engines.write().await.remove(&name);
-            });
-        });
+                let changed: Vec<(String, bool)> = changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present))
+                    .collect();
+                let search_engines = Arc::clone(&search_engines);
+                let similarity_engines = Arc::clone(&similarity_engines);
+                let name = name.clone();
+                // The listener is a synchronous `Fn`; spawn the async index work.
+                tokio::spawn(async move {
+                    if !changed.is_empty() {
+                        let cached = { search_engines.read().await.get(&name).cloned() };
+                        if let Some(engine) = cached
+                            && let Err(e) = engine.apply_changes(changed).await
+                        {
+                            log::warn!(
+                                "M4c change-listener: search apply failed for '{name}', evicting: {e}"
+                            );
+                            search_engines.write().await.remove(&name);
+                        }
+                    }
+                    similarity_engines.write().await.remove(&name);
+                });
+            },
+        );
         manager.set_change_listener(listener);
 
         // Start the background drainer + HEAD-ref listener only after the
@@ -750,30 +830,32 @@ impl CoreToolHandler {
         Ok(AuditTools::new(audit_log, snapshot_store))
     }
 
-    /// Invalidate cached similarity engine for the active vault (call after any write operation)
-    async fn invalidate_similarity_cache(&self) {
-        if let Ok(vault_name) = self.get_active_vault_name().await {
-            let mut cache = self.similarity_engines.write().await;
-            cache.remove(&vault_name);
-        }
-    }
-
-    /// Invalidate cached search engine for the active vault (call after any
+    /// Invalidate the cached similarity engine for `vault_name` (call after any
     /// write operation).
     ///
-    /// write-substrate-layering M4e: the GWS.14c git-backend skip is gone —
-    /// `VaultManager`'s own change-listener (`wire_manager_reindex`) now
-    /// feeds the cached search engine incrementally on every git-backend
-    /// apply/drain, so this hammer eviction is redundant-but-harmless there
-    /// (the next query rebuilds cold instead of reusing the listener's
-    /// incremental update). On the direct backend (no change-listener wired)
-    /// this remains the only path that keeps the cache coherent.
-    async fn invalidate_search_cache(&self) {
-        let Ok(vault_name) = self.get_active_vault_name().await else {
-            return;
-        };
+    /// Takes the written vault explicitly rather than re-resolving the active
+    /// vault: background callers such as the reindex drainer have no active
+    /// vault at all, and a concurrent `set_active_vault` would otherwise evict
+    /// the wrong vault and leave the written one stale.
+    async fn invalidate_similarity_cache(&self, vault_name: &str) {
+        let mut cache = self.similarity_engines.write().await;
+        cache.remove(vault_name);
+    }
+
+    /// Invalidate the cached search engine for `vault_name` (call after any
+    /// write operation).
+    ///
+    /// write-substrate-layering M4e: the GWS.14c git-backend skip is gone.
+    /// `VaultManager`'s own change-listener (`wire_manager_reindex`) now feeds
+    /// the cached search engine incrementally on every git-backend apply or
+    /// drain, so this hammer eviction is redundant but harmless there. On the
+    /// direct backend, where no change-listener is wired, it remains the only
+    /// path that keeps the cache coherent.
+    ///
+    /// See [`Self::invalidate_similarity_cache`] for why the vault is passed in.
+    async fn invalidate_search_cache(&self, vault_name: &str) {
         let mut cache = self.search_engines.write().await;
-        cache.remove(&vault_name);
+        cache.remove(vault_name);
     }
 
     /// Get or build search engine for a given vault (cached, lazy-initialized)
@@ -833,6 +915,18 @@ impl CoreToolHandler {
         }
 
         Ok(engine)
+    }
+
+    /// Look up a registered vault's configuration by name.
+    ///
+    /// Unlike the active-vault helpers, this answers for a vault the caller
+    /// names — which is what any operation scoped to a specific vault needs.
+    #[cfg(feature = "plugin-api")]
+    async fn vault_config_by_name(&self, vault_name: &str) -> McpResult<VaultConfig> {
+        self.multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .map_err(|e| McpError::invalid_request(format!("no vault named {vault_name:?}: {e}")))
     }
 
     /// Helper to get active vault name
@@ -942,10 +1036,56 @@ impl CoreToolHandler {
         })
     }
 
-    /// Invalidate derived caches after a `write_note`.
-    async fn finish_complete_note_write(&self) {
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+    /// Everything a completed mutation owes the rest of the server: evict the
+    /// derived caches of the vault that was written, then report the change.
+    ///
+    /// Every write tool ends here. That is deliberate — it is the one place a
+    /// mutation is known to have succeeded and to know what it changed, so it
+    /// is the one place that can keep derived state and the change feed honest
+    /// without each tool re-deriving the bookkeeping. `VaultManager` is now the
+    /// single mutation chokepoint, so a later change can move this reporting
+    /// down beside its change-listener once that listener carries attribution.
+    ///
+    /// `vault_name` is the vault that was WRITTEN, which is not necessarily the
+    /// active vault by the time this runs — `set_active_vault` may land between
+    /// the mutation and the invalidation.
+    async fn after_write(
+        &self,
+        vault_name: &str,
+        changes: impl IntoIterator<Item = VaultChange>,
+        attribution: WriteAttribution,
+    ) {
+        self.invalidate_similarity_cache(vault_name).await;
+        self.invalidate_search_cache(vault_name).await;
+        let Some(sink) = self.event_sink.get() else {
+            // No consumer configured; skip building envelopes nobody reads.
+            return;
+        };
+        for change in changes {
+            sink.publish(vault_name, change, None, attribution.clone());
+        }
+    }
+
+    /// [`Self::after_write`] for a mutation that touched exactly one path.
+    async fn after_write_one(
+        &self,
+        vault_name: &str,
+        change: VaultChange,
+        attribution: WriteAttribution,
+    ) {
+        self.after_write(vault_name, [change], attribution).await;
+    }
+
+    /// Whether `path` currently exists in `manager`'s vault.
+    ///
+    /// Used to report a write as a creation or a modification. A failed stat
+    /// is reported as "exists" so an unreadable path degrades to the more
+    /// conservative `Modified`.
+    async fn path_exists(manager: &Arc<VaultManager>, path: &str) -> bool {
+        match manager.resolve_path(Path::new(path)) {
+            Ok(resolved) => tokio::fs::try_exists(&resolved).await.unwrap_or(true),
+            Err(_) => true,
+        }
     }
 
     /// Helper to get both vault name and manager (eliminates 31 repeated preambles)
@@ -1107,12 +1247,25 @@ impl CoreToolHandler {
     /// SHA-256, so a round-trip on the git backend failed with
     /// `expected_hash must be a 40-char git blob oid hex`).
     async fn hash_for_active_backend(&self, content: &str) -> McpResult<String> {
-        let cfg = self
-            .multi_vault_mgr
+        Self::hash_for_backend(self.active_backend().await?, content)
+    }
+
+    /// The active vault's write backend.
+    ///
+    /// Split out from [`Self::hash_for_active_backend`] so a caller hashing
+    /// many notes resolves the backend once instead of re-reading the vault
+    /// config per note.
+    async fn active_backend(&self) -> McpResult<WriteBackend> {
+        self.multi_vault_mgr
             .get_active_vault_config()
             .await
-            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
-        match cfg.write_backend {
+            .map(|cfg| cfg.write_backend)
+            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))
+    }
+
+    /// Compute a content-version token in `backend`'s native format.
+    fn hash_for_backend(backend: WriteBackend, content: &str) -> McpResult<String> {
+        match backend {
             WriteBackend::Direct => Ok(turbovault_vault::compute_hash(content)),
             WriteBackend::Git => VaultRepo::blob_oid_of(content.as_bytes())
                 .map(|oid| oid.to_string())

@@ -6,7 +6,12 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 /// Provenance supplied by a writer for best-effort event correlation.
+///
+/// Every field is caller-supplied and therefore unverified. For trustworthy
+/// loop prevention use [`VaultEventEnvelope::plugin_id`], which the host
+/// stamps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WriteProvenance {
     /// Stable caller-selected source, such as `daily-review-agent`.
     pub source: String,
@@ -16,12 +21,36 @@ pub struct WriteProvenance {
     pub note: Option<String>,
 }
 
+impl WriteProvenance {
+    /// Construct provenance for `source`.
+    pub fn new(source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            correlation_id: None,
+            note: None,
+        }
+    }
+
+    /// Link this write to related operations.
+    pub fn with_correlation_id(mut self, correlation_id: impl Into<String>) -> Self {
+        self.correlation_id = Some(correlation_id.into());
+        self
+    }
+
+    /// Explain why the write happened.
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+}
+
 /// Best-effort event attribution.
 ///
 /// This is advisory loop-prevention metadata, never an authorization or
 /// security boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "provenance")]
+#[non_exhaustive]
 pub enum EventAttribution {
     /// The host correlated the observed content with a known write.
     Attributed(WriteProvenance),
@@ -32,6 +61,7 @@ pub enum EventAttribution {
 /// A vault mutation observed by a hook producer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[non_exhaustive]
 pub enum HookEvent {
     /// A note was created.
     FileCreated {
@@ -63,9 +93,20 @@ pub enum HookEvent {
 }
 
 /// Sequenced event delivered to hook subscribers.
+///
+/// Sequence numbers are assigned and the envelope is enqueued inside one
+/// critical section, so subscribers observe events in sequence order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct VaultEventEnvelope {
-    /// Process-local monotonic sequence number.
+    /// Identifier of the bus run that issued [`Self::sequence`].
+    ///
+    /// See [`HookBus::epoch`]. Persist it alongside the sequence — an
+    /// [`EventCursor`] does this — or the number means nothing after a restart.
+    pub epoch: String,
+    /// Sequence number, monotonic within [`Self::epoch`] and only there.
+    ///
+    /// It counts from zero each time the host starts.
     pub sequence: u64,
     /// Observation time as Unix epoch milliseconds.
     pub observed_at_ms: u64,
@@ -75,6 +116,14 @@ pub struct VaultEventEnvelope {
     pub event: HookEvent,
     /// Content identity when it was available at observation time.
     pub content_hash: Option<String>,
+    /// Mounted plugin namespace the host attributes this write to.
+    ///
+    /// Stamped by the host from the validated descriptor of the plugin whose
+    /// call produced the write, and not settable by the writer — unlike
+    /// [`WriteProvenance`], which is advisory caller data. `None` means the
+    /// change did not come through a plugin. This is the field to use for loop
+    /// prevention: a plugin skips events whose `plugin_id` is its own.
+    pub plugin_id: Option<String>,
     /// Best-effort writer attribution.
     pub attribution: EventAttribution,
 }
@@ -115,8 +164,57 @@ pub enum HookRecvError {
     Closed,
 }
 
+/// A consumer's durable position in the event feed.
+///
+/// [`VaultEventEnvelope::sequence`] restarts at zero every time the host
+/// starts, so a bare sequence number persisted across a restart is worse than
+/// keeping no record at all: it looks comparable to the new run's numbering and
+/// is not. Pairing the sequence with the epoch that issued it turns that silent
+/// mis-resume into a question a plugin can answer — [`Self::resumes_on`].
+///
+/// Serializable, so it stores directly through [`crate::PluginStorage`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventCursor {
+    epoch: String,
+    sequence: u64,
+}
+
+impl EventCursor {
+    /// The position immediately after `envelope` has been applied.
+    pub fn after(envelope: &VaultEventEnvelope) -> Self {
+        Self {
+            epoch: envelope.epoch.clone(),
+            sequence: envelope.sequence,
+        }
+    }
+
+    /// The bus run that issued [`Self::sequence`].
+    pub fn epoch(&self) -> &str {
+        &self.epoch
+    }
+
+    /// The last applied sequence within [`Self::epoch`].
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Whether this position still means something on `bus`.
+    ///
+    /// `false` after a host restart, which is the case worth handling: the
+    /// plugin cannot know what changed while it was down, so it must reconcile
+    /// from [`crate::VaultApi::list_notes_detailed`] before trusting the feed.
+    ///
+    /// `true` is not a promise that nothing was missed — a subscriber can still
+    /// fall behind within a run, which arrives separately as
+    /// [`HookRecvError::Lagged`].
+    pub fn resumes_on(&self, bus: &HookBus) -> bool {
+        self.epoch == bus.epoch()
+    }
+}
+
 struct HookBusInner {
     sender: Mutex<Option<broadcast::Sender<VaultEventEnvelope>>>,
+    epoch: String,
     sequence: AtomicU64,
     closed: AtomicBool,
     capacity: usize,
@@ -135,6 +233,7 @@ impl std::fmt::Debug for HookBus {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("HookBus")
+            .field("epoch", &self.epoch())
             .field("capacity", &self.capacity())
             .field("lifecycle", &self.lifecycle())
             .finish()
@@ -158,11 +257,24 @@ impl HookBus {
         Self {
             inner: Arc::new(HookBusInner {
                 sender: Mutex::new(Some(sender)),
+                epoch: uuid::Uuid::new_v4().to_string(),
                 sequence: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
                 capacity,
             }),
         }
+    }
+
+    /// Return this bus run's identifier.
+    ///
+    /// Freshly generated per bus, so it differs on every host start. The feed
+    /// is in-memory: it has no history from before this run and its sequence
+    /// numbering is meaningless outside it. The epoch is what makes that
+    /// detectable rather than silent — see [`EventCursor`].
+    ///
+    /// Opaque and unordered; compare for equality only.
+    pub fn epoch(&self) -> &str {
+        &self.inner.epoch
     }
 
     /// Return the fixed ring-buffer capacity.
@@ -190,17 +302,25 @@ impl HookBus {
 
     /// Sequence and publish an advisory event.
     ///
-    /// Success does not imply that a subscriber exists.
+    /// Success does not imply that a subscriber exists. `plugin_id` is the
+    /// host's own attribution of the writer and must never be taken from
+    /// caller-supplied data.
+    ///
+    /// The sender mutex is held across both the sequence increment and the
+    /// enqueue, so two concurrent publishes cannot be delivered out of
+    /// sequence order.
     pub fn publish(
         &self,
         vault: impl Into<String>,
         event: HookEvent,
         content_hash: Option<String>,
+        plugin_id: Option<String>,
         attribution: EventAttribution,
     ) -> Result<VaultEventEnvelope, PublishError> {
         let guard = self.sender();
         let sender = guard.as_ref().ok_or(PublishError::Closed)?;
         let envelope = VaultEventEnvelope {
+            epoch: self.inner.epoch.clone(),
             sequence: self.inner.sequence.fetch_add(1, Ordering::Relaxed) + 1,
             observed_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -211,6 +331,7 @@ impl HookBus {
             vault: vault.into(),
             event,
             content_hash,
+            plugin_id,
             attribution,
         };
         let _subscriber_count = sender.send(envelope.clone());
@@ -271,6 +392,7 @@ mod tests {
                 path: path.to_string(),
             },
             None,
+            None,
             EventAttribution::ExternalOrUnknown,
         )
         .expect("publish")
@@ -310,6 +432,30 @@ mod tests {
     }
 
     #[test]
+    fn cursors_do_not_resume_across_a_restart() {
+        // Two buses stand in for two runs of the host.
+        let first_run = HookBus::new(4);
+        let second_run = HookBus::new(4);
+        assert_ne!(first_run.epoch(), second_run.epoch());
+
+        let applied = EventCursor::after(&publish(&first_run, "a.md"));
+        assert_eq!(applied.sequence(), 1);
+        assert!(applied.resumes_on(&first_run));
+
+        // The sequence number alone would compare as "already seen" against the
+        // new run's first event. The epoch is what makes the mismatch visible.
+        let after_restart = publish(&second_run, "b.md");
+        assert_eq!(after_restart.sequence, applied.sequence());
+        assert!(!applied.resumes_on(&second_run));
+
+        // Round-trips through storage unchanged.
+        let encoded = serde_json::to_vec(&applied).expect("serialize cursor");
+        let decoded: EventCursor = serde_json::from_slice(&encoded).expect("deserialize cursor");
+        assert_eq!(decoded, applied);
+        assert!(decoded.resumes_on(&first_run));
+    }
+
+    #[test]
     fn rejects_new_work_after_close() {
         let bus = HookBus::new(0);
         assert_eq!(bus.capacity(), 1);
@@ -321,6 +467,7 @@ mod tests {
                 HookEvent::ResyncRequired {
                     reason: "closed".to_string()
                 },
+                None,
                 None,
                 EventAttribution::ExternalOrUnknown
             ),

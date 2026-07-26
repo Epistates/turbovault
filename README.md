@@ -521,7 +521,8 @@ TurboVault fully understands Obsidian's syntax:
 - **Type-safe deserialization** — Rust's type system prevents injection
 - **Atomic writes** — Temp file → atomic rename (never corrupts on failure)
 - **Hash-based conflict detection** — `edit_note` detects concurrent modifications
-- **File size limits** — Default 5MB per file (configurable)
+- **File size limits** — Default 10MB per file (configurable), enforced on reads and writes
+- **Protected directories** — `.obsidian/`, `.git/`, `node_modules/`, and TurboVault's own `.turbovault/` state are unreachable through the note APIs on both write backends
 - **No shell execution** — Zero command injection risk
 - **Security auditing** — Detailed logs in production mode
 

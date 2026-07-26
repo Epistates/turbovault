@@ -31,6 +31,23 @@ pub enum WriteBackend {
     Git,
 }
 
+impl WriteBackend {
+    /// Parse a caller-supplied backend name.
+    ///
+    /// `direct` is accepted as a synonym for `legacy` so callers can already
+    /// use the clearer name — "legacy" describes the implementation's history
+    /// rather than what it does, which is write straight to the working tree.
+    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "legacy" | "direct" => Ok(Self::Direct),
+            "git" => Ok(Self::Git),
+            other => Err(format!(
+                "unknown write_backend {other:?}; expected \"git\" or \"direct\" (alias \"legacy\")"
+            )),
+        }
+    }
+}
+
 /// How the git substrate merges a fan-out's wip branch back into main
 /// (mirrors `turbovault_git::MergeStrategy` as a serializable config type so
 /// `turbovault-core` doesn't pick up a git2/libgit2 dependency). The consumer

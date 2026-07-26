@@ -59,17 +59,29 @@ impl VaultProvider {
 
     /// Add an existing vault (automatically initializes it for better DX)
     #[tool(
-        description = "Register an existing Obsidian vault with the MCP server and auto-initialize",
-        usage = "Use as first step when working with existing vaults. Idempotent and safe to call multiple times",
+        description = "Register an existing Obsidian vault with the MCP server and auto-initialize. write_backend selects the mutation substrate: 'git' (every write is an atomic commit with CAS preconditions; requires the path to be a git repository) or 'direct' (writes straight to the working tree; default).",
+        usage = "Use as first step when working with existing vaults. Idempotent and safe to call multiple times. Pass write_backend='git' for atomic, revertible, concurrency-safe writes on a git-backed vault.",
         performance = "Depends on vault size: 100ms for small vaults, 1-5s for large (1000+ files) due to initialization",
         related = ["list_vaults", "set_active_vault", "get_vault_context"],
-        examples = ["Add personal vault", "Register work vault", "Connect to shared knowledge base"],
+        examples = ["Add personal vault", "Register work vault", "write_backend: git"],
         tags = ["write", "admin"],
     )]
-    async fn add_vault(&self, name: String, path: String) -> McpResult<serde_json::Value> {
+    async fn add_vault(
+        &self,
+        name: String,
+        path: String,
+        write_backend: Option<String>,
+    ) -> McpResult<serde_json::Value> {
+        // An unrecognized backend must not silently fall back to the default:
+        // the caller asked for a specific set of write guarantees and would
+        // otherwise get a success response for a vault that does not have them.
+        let write_backend = match write_backend.as_deref() {
+            Some(value) => WriteBackend::parse(value).map_err(McpError::invalid_request)?,
+            None => WriteBackend::default(),
+        };
         let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
         let vault_info = tools
-            .add_vault_from_path(&name, Path::new(&path))
+            .add_vault_from_path(&name, Path::new(&path), write_backend)
             .await
             .map_err(to_mcp_error)?;
 

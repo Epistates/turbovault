@@ -1882,3 +1882,93 @@ async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consist
     assert_eq!(stats["data"]["operations_by_type"]["MOVE"], 1);
     assert_eq!(stats["data"]["operations_by_type"]["ROLLBACK"], 2);
 }
+
+/// `add_vault` used to accept only a name and a path, so a vault registered at
+/// runtime could never use the git substrate — and an argument asking for it
+/// was dropped silently, returning success for a vault without those
+/// guarantees.
+#[tokio::test]
+async fn add_vault_selects_and_validates_the_write_backend() {
+    let temp = TempDir::new().expect("temporary vault");
+    let server = ObsidianMcpServer::new().expect("provider composition");
+
+    // A backend name the server does not understand must be refused rather
+    // than silently downgraded to the default.
+    let rejected = call_error(
+        &server,
+        "add_vault",
+        json!({
+            "name": "typo",
+            "path": temp.path().to_string_lossy(),
+            "write_backend": "gti",
+        }),
+    )
+    .await;
+    assert!(rejected.contains("unknown write_backend"), "{rejected}");
+
+    // git without a repository fails at registration, not at the first write.
+    let not_a_repo = call_error(
+        &server,
+        "add_vault",
+        json!({
+            "name": "bare",
+            "path": temp.path().to_string_lossy(),
+            "write_backend": "git",
+        }),
+    )
+    .await;
+    assert!(
+        not_a_repo.contains("requires a git repository"),
+        "{not_a_repo}"
+    );
+
+    let mut options = git2::RepositoryInitOptions::new();
+    options.initial_head("main");
+    git2::Repository::init_opts(temp.path(), &options).expect("git init");
+
+    call(
+        &server,
+        "add_vault",
+        json!({
+            "name": "gitvault",
+            "path": temp.path().to_string_lossy(),
+            "write_backend": "git",
+        }),
+    )
+    .await;
+    let config = server
+        .multi_vault()
+        .get_vault_config("gitvault")
+        .await
+        .expect("registered vault config");
+    assert_eq!(
+        config.write_backend,
+        turbovault_core::config::WriteBackend::Git
+    );
+    assert!(
+        config.git.is_some(),
+        "a git-backend vault needs its git section populated"
+    );
+
+    // `direct` is the forward-looking spelling of the default backend.
+    let plain = TempDir::new().expect("temporary vault");
+    call(
+        &server,
+        "add_vault",
+        json!({
+            "name": "directvault",
+            "path": plain.path().to_string_lossy(),
+            "write_backend": "direct",
+        }),
+    )
+    .await;
+    assert_eq!(
+        server
+            .multi_vault()
+            .get_vault_config("directvault")
+            .await
+            .expect("registered vault config")
+            .write_backend,
+        turbovault_core::config::WriteBackend::Direct
+    );
+}

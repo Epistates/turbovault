@@ -26,6 +26,13 @@ pub enum Error {
     #[error("Path traversal detected: {path}")]
     PathTraversalAttempt { path: PathBuf },
 
+    /// Path lies inside the vault but in a directory the note APIs may not
+    /// touch (TurboVault's own state, `.git`, `.obsidian`, ...).
+    #[error(
+        "Protected path: {path} lies under '{component}', which the note APIs may not read or write"
+    )]
+    ProtectedPath { path: PathBuf, component: String },
+
     /// File too large for processing
     #[error("File too large ({size} bytes, max {max} bytes): {path}")]
     FileTooLarge { path: PathBuf, size: u64, max: u64 },
@@ -83,6 +90,14 @@ impl Error {
     /// Create a path traversal error
     pub fn path_traversal(path: impl Into<PathBuf>) -> Self {
         Error::PathTraversalAttempt { path: path.into() }
+    }
+
+    /// Create a protected-path error
+    pub fn protected_path(path: impl Into<PathBuf>, component: impl Into<String>) -> Self {
+        Error::ProtectedPath {
+            path: path.into(),
+            component: component.into(),
+        }
     }
 
     /// Create a file too large error

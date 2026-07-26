@@ -1,5 +1,6 @@
 //! Vault manager implementation with file watching and caching
 
+use crate::reindex::CommitOrigin;
 use path_trav::PathTrav;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -19,13 +20,55 @@ use crate::substrate::{
     ApplyOutcome, CachedRepo, CasCollisionFlush, DirectSubstrate, GitSubstrate, WriteSubstrate,
 };
 
+/// One drained commit: its oid, how this process learned of it, and the
+/// `(path, present)` set its diff produced.
+type DrainedCommit = (Oid, CommitOrigin, Vec<(String, bool)>);
+
+/// Tag a substrate outcome's `(path, present)` set with how this process
+/// learned about it. Writes made here are `Local` by definition; only the
+/// reindex drain can see anything else.
+fn with_origin(
+    changed: Vec<(String, bool)>,
+    origin: CommitOrigin,
+) -> Vec<(String, bool, CommitOrigin)> {
+    changed
+        .into_iter()
+        .map(|(path, present)| (path, present, origin))
+        .collect()
+}
+
 /// R2 change-listener (design §6.3): a callback fired with the collapsed
-/// `(path, present)` set after every `sync_index` (both backends) and every
-/// reindex drain pass. The server registers one that feeds its full-text
+/// `(path, present, origin)` set after every `sync_index` (both backends) and
+/// every reindex drain pass.
+///
+/// `origin` says whether this process made the change or merely observed it on
+/// the ref afterwards. A consumer that also reports writes at the point of the
+/// write needs that distinction, or it announces its own mutations twice: once
+/// when it makes them and again when the drain pass sees the commit. The server registers one that feeds its full-text
 /// search + similarity indexes — those engines stay ABOVE the vault layer;
 /// `VaultManager` only invokes the callback (the R2 dependency inversion,
 /// design §6.6/§6.7).
-pub type ChangeListener = Arc<dyn Fn(Vec<(String, bool)>) + Send + Sync>;
+pub type ChangeListener = Arc<dyn Fn(Vec<(String, bool, CommitOrigin)>) + Send + Sync>;
+
+/// Path components that the note APIs may never traverse, whatever the vault
+/// configuration says.
+///
+/// `.turbovault/` holds the audit trail and snapshot store. A note write that
+/// could reach it would let a caller rewrite the record of its own operations,
+/// so unlike [`ServerConfig::excluded_paths`] this list is not configurable.
+pub const PROTECTED_COMPONENTS: [&str; 1] = [".turbovault"];
+
+/// One note found by a vault scan, with the metadata the scan already read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedNote {
+    /// Absolute path to the note.
+    pub path: PathBuf,
+    /// Size in bytes at scan time.
+    pub size_bytes: u64,
+    /// Last-modified time as Unix epoch milliseconds, when the platform
+    /// reports one.
+    pub modified_ms: Option<u64>,
+}
 
 /// File cache entry with timestamp
 /// Used during initialization to populate link graph; read path bypasses cache
@@ -287,7 +330,7 @@ impl VaultManager {
     /// Invoke the change-listener (if registered) with `changed`. Cheap no-op
     /// when nothing changed or none is set. The listener is a synchronous
     /// `Fn`; the server's registered listener spawns its own async work.
-    fn fire_change_listener(&self, changed: Vec<(String, bool)>) {
+    fn fire_change_listener(&self, changed: Vec<(String, bool, CommitOrigin)>) {
         if changed.is_empty() {
             return;
         }
@@ -322,12 +365,13 @@ impl VaultManager {
         // manager's own mutators use.
         let path = self.vault_path.clone();
         let drain_queue = Arc::clone(&queue);
-        let drained = tokio::task::spawn_blocking(move || -> Vec<(Oid, Vec<(String, bool)>)> {
+        let drained = tokio::task::spawn_blocking(move || -> Vec<DrainedCommit> {
             let Ok(repo) = VaultRepo::open(&path) else {
                 return Vec::new();
             };
             let mut batches = Vec::new();
-            while let Some(commit) = drain_queue.pop_front() {
+            while let Some(pending) = drain_queue.pop_front() {
+                let commit = pending.oid;
                 // A commit the ref-watcher enqueued may no longer be reachable
                 // (GC / non-ff move). A first-parent or diff failure SKIPS that
                 // commit — advance the cursor, keep draining — rather than
@@ -343,7 +387,7 @@ impl VaultManager {
                     }
                 };
                 match repo.diff_path_statuses(parent, commit) {
-                    Ok(changes) => batches.push((commit, changes)),
+                    Ok(changes) => batches.push((commit, pending.origin, changes)),
                     Err(e) => {
                         log::warn!("flush_reindex: skipping commit {commit} after diff error: {e}");
                         drain_queue.advance_cursor(commit);
@@ -359,10 +403,10 @@ impl VaultManager {
             return;
         }
 
-        let mut collapsed: Vec<(String, bool)> = Vec::new();
-        for (commit, changes) in drained {
+        let mut collapsed: Vec<(String, bool, CommitOrigin)> = Vec::new();
+        for (commit, origin, changes) in drained {
             self.sync_index(&changes).await;
-            collapsed.extend(changes);
+            collapsed.extend(with_origin(changes, origin));
             queue.advance_cursor(commit);
         }
         self.fire_change_listener(collapsed);
@@ -498,6 +542,7 @@ impl VaultManager {
     #[instrument(skip(self), fields(file = ?path), name = "vault_read_file")]
     pub async fn read_file(&self, path: &Path) -> Result<String> {
         let vault_path = self.resolve_path(path)?;
+        self.ensure_size_within_limit(&vault_path).await?;
 
         // Always read from disk to return raw content including frontmatter.
         // The VaultFile cache stores parsed content with frontmatter stripped,
@@ -520,6 +565,27 @@ impl VaultManager {
         self.substrate.hash_bytes(bytes)
     }
 
+    /// Refuse to read a file larger than `max_file_size`.
+    ///
+    /// The limit is a documented safety property, but it used to be applied
+    /// only while scanning directories — so a file the scan skipped could still
+    /// be pulled into memory in full by an explicit read. A missing file is not
+    /// this check's business; the read itself reports that.
+    async fn ensure_size_within_limit(&self, resolved: &Path) -> Result<()> {
+        let Ok(metadata) = tokio::fs::metadata(resolved).await else {
+            return Ok(());
+        };
+        let size = metadata.len();
+        if size > self.config.max_file_size {
+            return Err(Error::file_too_large(
+                resolved,
+                size,
+                self.config.max_file_size,
+            ));
+        }
+        Ok(())
+    }
+
     /// Write file to disk atomically, guarded by an explicit [`Precondition`].
     ///
     /// write-substrate-layering M3b: the old hash-option-plus-implicit-
@@ -540,6 +606,14 @@ impl VaultManager {
     ) -> Result<()> {
         let vault_path = self.resolve_path(path)?;
         let rel_path = self.relative_path(&vault_path);
+        let size = content.len() as u64;
+        if size > self.config.max_file_size {
+            return Err(Error::file_too_large(
+                &vault_path,
+                size,
+                self.config.max_file_size,
+            ));
+        }
 
         let plan = ChangePlan::new(message)
             .upsert(rel_path.clone(), content.as_bytes())
@@ -547,7 +621,7 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
+        self.fire_change_listener(with_origin(outcome.changed, CommitOrigin::Local));
         Ok(())
     }
 
@@ -567,7 +641,7 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(plan).await?;
         self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed.clone());
+        self.fire_change_listener(with_origin(outcome.changed.clone(), CommitOrigin::Local));
         Ok(outcome)
     }
 
@@ -691,7 +765,7 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
+        self.fire_change_listener(with_origin(outcome.changed, CommitOrigin::Local));
         Ok(())
     }
 
@@ -729,7 +803,7 @@ impl VaultManager {
 
         let outcome = self.substrate.apply(&plan).await?;
         self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
+        self.fire_change_listener(with_origin(outcome.changed, CommitOrigin::Local));
         Ok(())
     }
 
@@ -802,8 +876,26 @@ impl VaultManager {
     }
 
     /// Resolve a relative path to vault-root-relative path with path traversal protection
-    /// Uses the battle-tested path_trav crate for security, with fallback normalization
+    /// Uses the battle-tested path_trav crate for security, with fallback normalization.
+    ///
+    /// This is the note-API resolver: it enforces BOTH the vault boundary and
+    /// the in-vault protected-directory policy (see
+    /// [`Self::ensure_path_is_not_protected`]). Callers holding an explicit
+    /// capability grant for protected state use
+    /// [`Self::resolve_path_bypassing_policy`] instead.
     pub fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
+        let full_path = self.resolve_path_bypassing_policy(path)?;
+        self.ensure_path_is_not_protected(&full_path)?;
+        Ok(full_path)
+    }
+
+    /// Resolve a path with vault-boundary (traversal) protection ONLY.
+    ///
+    /// The in-vault protected-directory policy is not applied. Every caller
+    /// must have an explicit capability grant to reach protected state — today
+    /// that is the plugin host's config-read capability. Prefer
+    /// [`Self::resolve_path`] everywhere else.
+    pub fn resolve_path_bypassing_policy(&self, path: &Path) -> Result<PathBuf> {
         // Resolve relative paths to absolute
         let full_path = if path.is_absolute() {
             path.to_path_buf()
@@ -837,8 +929,66 @@ impl VaultManager {
         }
     }
 
+    /// Refuse a path that lies inside the vault but under a protected
+    /// directory.
+    ///
+    /// Staying inside the vault root is not sufficient authorization. A vault
+    /// also contains application and tool state whose contents are executed or
+    /// trusted by something: `.obsidian/plugins/*/main.js` is code Obsidian
+    /// runs, `.git/hooks/*` is code git runs, and `.turbovault/` holds the
+    /// audit trail that is supposed to be a record of what the note APIs did.
+    /// Exposing those through a note read/write turns "edit my notes" into code
+    /// execution and makes the audit log self-editable.
+    ///
+    /// The configurable part is [`VaultConfig::excluded_paths`], which already
+    /// defaults to `.obsidian`/`.git`/`node_modules`/`.DS_Store` — until now it
+    /// only filtered directory scans, so the policy existed without being
+    /// enforced at the point of access. [`PROTECTED_COMPONENTS`] is the part no
+    /// configuration can open up.
+    ///
+    /// Note that `allowed_extensions` is deliberately NOT enforced here: it
+    /// describes what counts as a note for discovery, and attachments beside
+    /// notes are a normal thing to read and write.
+    pub fn ensure_path_is_not_protected(&self, resolved: &Path) -> Result<()> {
+        // A path outside the vault is the traversal check's business, not ours.
+        let Ok(relative) = resolved.strip_prefix(&self.vault_path) else {
+            return Ok(());
+        };
+        for component in relative.components() {
+            let std::path::Component::Normal(raw) = component else {
+                continue;
+            };
+            let name = raw.to_string_lossy();
+            if PROTECTED_COMPONENTS.contains(&name.as_ref())
+                || self.config.excluded_paths.contains(name.as_ref())
+            {
+                return Err(Error::protected_path(resolved, name.into_owned()));
+            }
+        }
+        Ok(())
+    }
+
     /// Scan for markdown files in vault
     fn scan_files(&self) -> Result<Vec<PathBuf>> {
+        Ok(self
+            .scan_files_with_metadata()?
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect())
+    }
+
+    /// Scan for markdown files, keeping the metadata the scan already reads.
+    ///
+    /// The size filter stats every candidate anyway, so returning that stat
+    /// costs nothing. Consumers that maintain their own derived state — a
+    /// search or vector index — can diff `(size, modified_ms)` against what
+    /// they stored and re-read only what actually changed, instead of reading
+    /// every note to discover that most of them did not.
+    pub fn scan_vault_with_metadata(&self) -> Result<Vec<ScannedNote>> {
+        self.scan_files_with_metadata()
+    }
+
+    fn scan_files_with_metadata(&self) -> Result<Vec<ScannedNote>> {
         use std::fs;
 
         let mut files = Vec::new();
@@ -866,9 +1016,19 @@ impl VaultManager {
                         .config
                         .allowed_extensions
                         .contains(&format!(".{}", ext))
-                    && path.metadata().map(|m| m.len()).unwrap_or(0) <= self.config.max_file_size
+                    && let Ok(metadata) = path.metadata()
+                    && metadata.len() <= self.config.max_file_size
                 {
-                    files.push(path);
+                    let modified_ms = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                        .and_then(|since| u64::try_from(since.as_millis()).ok());
+                    files.push(ScannedNote {
+                        path,
+                        size_bytes: metadata.len(),
+                        modified_ms,
+                    });
                 }
             }
         }
@@ -2495,6 +2655,81 @@ mod tests {
         );
     }
 
+    /// Staying inside the vault root is not authorization to touch everything
+    /// in it: `.obsidian/plugins/*/main.js` and `.git/hooks/*` are code that
+    /// something else executes, and `.turbovault/` is the audit trail.
+    #[tokio::test]
+    async fn protected_directories_are_unreachable_through_the_note_api() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+        for path in [
+            ".obsidian/plugins/tasks/main.js",
+            ".git/hooks/post-commit",
+            ".turbovault/audit/operations.jsonl",
+            "node_modules/pkg/index.js",
+            "notes/.obsidian/nested.md",
+        ] {
+            let error = manager
+                .write_file(Path::new(path), "payload", Precondition::Blind, "test")
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::ProtectedPath { .. }),
+                "{path} should be refused, got {error:?}"
+            );
+            assert!(!temp_dir.path().join(path).exists(), "{path} was written");
+
+            let error = manager.read_file(Path::new(path)).await.unwrap_err();
+            assert!(
+                matches!(error, Error::ProtectedPath { .. }),
+                "reading {path} should be refused, got {error:?}"
+            );
+        }
+
+        // A capability-holding caller can still resolve protected state; the
+        // policy lives in `resolve_path`, not in the traversal check.
+        manager
+            .resolve_path_bypassing_policy(Path::new(".obsidian/app.json"))
+            .expect("capability-gated resolution stays available");
+        // ...but the vault boundary still holds for it.
+        assert!(matches!(
+            manager
+                .resolve_path_bypassing_policy(Path::new("../escape.md"))
+                .unwrap_err(),
+            Error::PathTraversalAttempt { .. }
+        ));
+    }
+
+    /// `max_file_size` used to be applied only while scanning directories, so
+    /// an explicit read pulled any size into memory.
+    #[tokio::test]
+    async fn max_file_size_is_enforced_on_reads_and_writes() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = create_test_config(temp_dir.path());
+        config.max_file_size = 32;
+        let manager = VaultManager::new(config).unwrap();
+
+        let oversized = "x".repeat(64);
+        let error = manager
+            .write_file(Path::new("big.md"), &oversized, Precondition::Blind, "test")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::FileTooLarge { .. }), "{error:?}");
+        assert!(!temp_dir.path().join("big.md").exists());
+
+        // Written out of band (an editor, a sync client) — the read must still
+        // refuse rather than buffer the whole file.
+        std::fs::write(temp_dir.path().join("big.md"), &oversized).unwrap();
+        let error = manager.read_file(Path::new("big.md")).await.unwrap_err();
+        assert!(matches!(error, Error::FileTooLarge { .. }), "{error:?}");
+
+        manager
+            .write_file(Path::new("small.md"), "fits", Precondition::Blind, "test")
+            .await
+            .expect("within the limit");
+    }
+
     #[tokio::test]
     async fn stale_delete_and_move_hashes_preserve_the_source() {
         let temp_dir = TempDir::new().unwrap();
@@ -2723,7 +2958,11 @@ mod tests {
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let cap = Arc::clone(&captured);
         manager.set_change_listener(Arc::new(move |changed| {
-            cap.lock().unwrap().extend(changed);
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
         }));
 
         manager
@@ -2760,7 +2999,11 @@ mod tests {
             Arc::new(std::sync::Mutex::new(Vec::new()));
         let cap = Arc::clone(&captured);
         manager.set_change_listener(Arc::new(move |changed| {
-            cap.lock().unwrap().extend(changed);
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
         }));
 
         // Fast ref poll so the test doesn't wait the production 5s.

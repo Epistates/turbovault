@@ -78,6 +78,7 @@ pub mod cache;
 pub mod change_plan;
 pub mod config;
 pub mod error;
+pub mod events;
 pub mod metrics;
 pub mod models;
 pub mod multi_vault;
@@ -92,6 +93,7 @@ pub mod validation;
 pub use change_plan::{Change, ChangePlan};
 pub use config::*;
 pub use error::{Error, Result};
+pub use events::{VaultChange, VaultEventSink, WriteAttribution};
 pub use metrics::{Counter, Histogram, HistogramStats, HistogramTimer, MetricsContext};
 pub use models::*;
 pub use multi_vault::{MultiVaultManager, VaultInfo};
@@ -110,6 +112,7 @@ pub use validation::{
 pub mod prelude {
     pub use crate::config::{ServerConfig, VaultConfig};
     pub use crate::error::{Error, Result};
+    pub use crate::events::{VaultChange, VaultEventSink, WriteAttribution};
     pub use crate::metrics::{Counter, Histogram, MetricsContext};
     pub use crate::models::{
         Block, Callout, CalloutType, ContentBlock, FileMetadata, Frontmatter, Heading,

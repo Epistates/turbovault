@@ -280,6 +280,18 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         server.initialize_registered_vaults().await?;
     }
     server.log_orphan_fanouts_warnings().await;
+    // After vault registration so a plugin's first reconciliation pass sees
+    // the vaults it is meant to index, and before serving so no tool call
+    // arrives at a plugin whose worker has not started.
+    server.start_plugins().await?;
+
+    // Cleanup must run on BOTH exit paths: a termination signal (the common
+    // case for network transports and for a client killing the process) and a
+    // normal `serve()` return (stdio, when the client closes stdin). The signal
+    // task owns its own clone because `server` is consumed by the visibility
+    // layer below.
+    spawn_shutdown_signal_handler(server.clone());
+    let shutdown_handle = server.clone();
 
     // Start server with multi-version protocol support.
     // Accepts both MCP 2025-06-18 and 2025-11-25 clients.
@@ -392,7 +404,46 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    shutdown_handle.shutdown().await;
     Ok(())
+}
+
+/// Run [`ObsidianMcpServer::shutdown`] when the process is asked to terminate,
+/// then exit. Without this, an interrupted session leaks every fanout worktree
+/// it registered (the startup scan reports them as orphans on the next run) and
+/// plugin hook subscribers never observe the bus closing.
+fn spawn_shutdown_signal_handler(server: ObsidianMcpServer) {
+    tokio::spawn(async move {
+        wait_for_termination_signal().await;
+        log::info!("Termination signal received; running graceful shutdown");
+        server.shutdown().await;
+        std::process::exit(0);
+    });
+}
+
+#[cfg(unix)]
+async fn wait_for_termination_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    // A failure to install a handler must not take the server down; fall back
+    // to interrupt-only so the process still cleans up on Ctrl-C.
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(stream) => stream,
+        Err(error) => {
+            log::warn!("Could not install SIGTERM handler: {error}");
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = terminate.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_termination_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 async fn load_tool_visibility(

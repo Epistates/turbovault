@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use tempfile::TempDir;
+use turbovault_core::config::WriteBackend;
 use turbovault_core::{MultiVaultManager, ServerConfig};
 use turbovault_tools::VaultLifecycleTools;
 
@@ -92,7 +93,7 @@ async fn default_creation_and_registered_directory_validation_report_real_state(
         .await
         .expect("plain directory");
     tools
-        .add_vault_from_path("plain", &plain_path)
+        .add_vault_from_path("plain", &plain_path, WriteBackend::Direct)
         .await
         .expect("register plain directory");
 
@@ -149,7 +150,7 @@ async fn lifecycle_rejects_invalid_names_templates_paths_and_duplicates() {
 
     let missing_path = root.path().join("missing");
     let missing = tools
-        .add_vault_from_path("missing", &missing_path)
+        .add_vault_from_path("missing", &missing_path, WriteBackend::Direct)
         .await
         .expect_err("registration must not create a missing path");
     assert!(missing.to_string().contains("Use create_vault"));
@@ -162,7 +163,7 @@ async fn lifecycle_rejects_invalid_names_templates_paths_and_duplicates() {
     assert!(tools.create_vault("file", &file_path, None).await.is_err());
     assert!(
         tools
-            .add_vault_from_path("other-file", &file_path)
+            .add_vault_from_path("other-file", &file_path, WriteBackend::Direct)
             .await
             .is_err()
     );
@@ -172,12 +173,12 @@ async fn lifecycle_rejects_invalid_names_templates_paths_and_duplicates() {
         .await
         .expect("registered directory");
     tools
-        .add_vault_from_path("registered", &registered_path)
+        .add_vault_from_path("registered", &registered_path, WriteBackend::Direct)
         .await
         .expect("first registration");
     assert!(
         tools
-            .add_vault_from_path("registered", &registered_path)
+            .add_vault_from_path("registered", &registered_path, WriteBackend::Direct)
             .await
             .is_err()
     );

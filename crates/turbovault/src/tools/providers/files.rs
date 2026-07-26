@@ -80,6 +80,9 @@ impl FileProvider {
         let message = prepared.message;
         let force = force.unwrap_or(false);
         let files = FileTools::new(manager.clone());
+        // Captured before the write so the change feed can report a creation
+        // versus a modification. `prepared.manager` has already moved.
+        let existed = CoreToolHandler::path_exists(&manager, &path).await;
 
         // Create-by-default (backend-agnostic since M4d): no force, no hash, and
         // a full overwrite means "create a new note". The filesystem pre-check
@@ -111,7 +114,12 @@ impl FileProvider {
                 .map_err(to_mcp_error)?;
         }
 
-        self.finish_complete_note_write().await;
+        self.after_write_one(
+            &vault_name,
+            VaultChange::written(&path, existed),
+            WriteAttribution::host("write_note"),
+        )
+        .await;
         let mode_str = mode.as_deref().unwrap_or("overwrite");
         StandardResponse::new(
             vault_name,
@@ -150,8 +158,12 @@ impl FileProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        self.after_write_one(
+            &vault_name,
+            VaultChange::Modified { path: path.clone() },
+            WriteAttribution::host("edit_note"),
+        )
+        .await;
         StandardResponse::new(
             vault_name,
             "edit_note",
@@ -226,8 +238,15 @@ impl FileProvider {
             )));
         };
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        // The deletion itself plus every note whose links were rewritten to a
+        // stale-link callout in the same operation.
+        let changes = std::iter::once(VaultChange::Deleted { path: path.clone() }).chain(
+            updated_sources.iter().map(|source| VaultChange::Modified {
+                path: source.clone(),
+            }),
+        );
+        self.after_write(&vault_name, changes, WriteAttribution::host("delete_note"))
+            .await;
         StandardResponse::new(
             vault_name,
             "delete_note",
@@ -277,8 +296,15 @@ impl FileProvider {
             Vec::new()
         };
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        let changes = std::iter::once(VaultChange::Renamed {
+            from: from.clone(),
+            to: to.clone(),
+        })
+        .chain(updated_sources.iter().map(|source| VaultChange::Modified {
+            path: source.clone(),
+        }));
+        self.after_write(&vault_name, changes, WriteAttribution::host("move_note"))
+            .await;
         let response = StandardResponse::new(
             vault_name,
             "move_note",

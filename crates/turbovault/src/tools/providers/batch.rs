@@ -57,13 +57,30 @@ impl BatchProvider {
         let message = self
             .resolve_commit_message(commit_message, || derive_batch_message(&operations))
             .await?;
+        // Derive the per-operation change BEFORE the batch consumes the typed
+        // operations. The result's records only carry an operation name and
+        // affected paths, which is not enough to tell a creation from a
+        // deletion.
+        let planned: Vec<VaultChange> = operations.iter().map(batch_operation_change).collect();
         let result = BatchTools::new(manager)
             .batch_execute(operations, &message)
             .await
             .map_err(to_mcp_error)?;
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        // Report only what landed. A git batch is all-or-nothing so every
+        // record succeeds, but a legacy batch stops at the first failure with
+        // earlier operations already applied.
+        let applied = result
+            .records
+            .iter()
+            .filter(|record| record.success)
+            .filter_map(|record| planned.get(record.operation_index).cloned());
+        self.after_write(
+            &vault_name,
+            applied,
+            WriteAttribution::host("batch_execute"),
+        )
+        .await;
         let execution_mode = if self
             .multi_vault_mgr
             .get_active_vault_config()

@@ -32,16 +32,41 @@ use turbovault_git::{Oid, VaultRepo};
 
 use crate::VaultManager;
 
-/// Per-vault queue of commit oids awaiting graph/search reindex.
+/// Where a queued commit came from.
+///
+/// The distinction matters to the change feed, not to reindexing: a commit
+/// this process made was already reported at the write site with full
+/// provenance, so re-reporting it from the drain path would double-publish it.
+/// A commit the ref listener noticed has no such report and is the only kind
+/// the drain path should announce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommitOrigin {
+    /// Committed by this process through the write substrate.
+    Local,
+    /// Observed on the ref after the fact — another process, a `git pull`, a
+    /// manual commit.
+    External,
+}
+
+/// One queued commit awaiting reindex.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingCommit {
+    /// The commit to apply.
+    pub oid: Oid,
+    /// How this process learned about it.
+    pub origin: CommitOrigin,
+}
+
+/// Per-vault queue of commits awaiting graph/search reindex.
 ///
 /// Thread-safety: std `Mutex` (not tokio) — the critical sections are
 /// pure data manipulation, microseconds long; no `await` inside.
 ///
-/// `notify` is woken on every `push` so a background drainer (GWS.14a)
+/// `notify` is woken on every push so a background drainer (GWS.14a)
 /// can react immediately instead of polling. Idle pollers can ignore it.
 #[derive(Debug, Default)]
 pub struct ReindexQueue {
-    pending: Mutex<VecDeque<Oid>>,
+    pending: Mutex<VecDeque<PendingCommit>>,
     /// Most recent commit fully applied to the derived indexes.
     /// `None` = nothing reindexed yet.
     cursor: Mutex<Option<Oid>>,
@@ -68,7 +93,21 @@ impl ReindexQueue {
     /// Enqueue a commit. Called from the substrate's [`turbovault_git::CommitHook`].
     /// Wakes any background drainer (GWS.14a) currently parked on `notify`.
     pub fn push(&self, commit: Oid) {
-        self.pending.lock().unwrap().push_back(commit);
+        self.push_with_origin(commit, CommitOrigin::Local);
+    }
+
+    /// Enqueue a commit this process did not make, seen by the HEAD-ref
+    /// listener. Distinguished from [`Self::push`] so the change feed can
+    /// announce it without double-reporting our own writes.
+    pub fn push_external(&self, commit: Oid) {
+        self.push_with_origin(commit, CommitOrigin::External);
+    }
+
+    fn push_with_origin(&self, oid: Oid, origin: CommitOrigin) {
+        self.pending
+            .lock()
+            .unwrap()
+            .push_back(PendingCommit { oid, origin });
         self.notify.notify_one();
     }
 
@@ -99,8 +138,8 @@ impl ReindexQueue {
         *self.cursor.lock().unwrap()
     }
 
-    /// Pop the next pending oid. Returns `None` when the queue is empty.
-    pub fn pop_front(&self) -> Option<Oid> {
+    /// Pop the next pending commit. Returns `None` when the queue is empty.
+    pub fn pop_front(&self) -> Option<PendingCommit> {
         self.pending.lock().unwrap().pop_front()
     }
 
@@ -122,13 +161,14 @@ impl ReindexQueue {
         &self,
         repo: &VaultRepo,
         manager: &Arc<VaultManager>,
-    ) -> Result<Vec<(String, bool)>> {
+    ) -> Result<Vec<(String, bool, CommitOrigin)>> {
         // turbovault-9zr: hold the flush lock for the whole pass so this drain
         // can't interleave with a concurrent read-path flush (which also pops
         // before applying).
         let _flush_guard = self.lock_flush().await;
-        let mut changed: Vec<(String, bool)> = Vec::new();
-        while let Some(commit) = self.pop_front() {
+        let mut changed: Vec<(String, bool, CommitOrigin)> = Vec::new();
+        while let Some(pending) = self.pop_front() {
+            let commit = pending.oid;
             let parent = match repo.git_commit_first_parent(commit) {
                 Ok(parent) => parent,
                 Err(e) => {
@@ -149,7 +189,11 @@ impl ReindexQueue {
                 }
             };
             match apply_commit_diff(repo, parent, commit, manager).await {
-                Ok(mut applied) => changed.append(&mut applied),
+                Ok(applied) => changed.extend(
+                    applied
+                        .into_iter()
+                        .map(|(path, present)| (path, present, pending.origin)),
+                ),
                 Err(e) => log::warn!("reindex: skipping commit {} after error: {}", commit, e),
             }
             self.advance_cursor(commit);
@@ -205,7 +249,7 @@ pub async fn watch_ref_changes(
                 // range — fall back to the tip alone (best-effort; the §8.4
                 // limitation, full coherence needs a restart).
                 for oid in first_parent_range_or_tip(&vault_path, last_oid, new).await {
-                    queue.push(oid);
+                    queue.push_external(oid);
                 }
             }
             last_oid = current;
@@ -340,7 +384,7 @@ mod tests {
         let q = ReindexQueue::new();
         assert_eq!(q.pending_count(), 0);
         assert_eq!(q.cursor(), None);
-        assert_eq!(q.pop_front(), None);
+        assert_eq!(q.pop_front().map(|c| c.oid), None);
     }
 
     #[test]
@@ -351,9 +395,9 @@ mod tests {
         q.push(a);
         q.push(b);
         assert_eq!(q.pending_count(), 2);
-        assert_eq!(q.pop_front(), Some(a));
-        assert_eq!(q.pop_front(), Some(b));
-        assert_eq!(q.pop_front(), None);
+        assert_eq!(q.pop_front().map(|c| c.oid), Some(a));
+        assert_eq!(q.pop_front().map(|c| c.oid), Some(b));
+        assert_eq!(q.pop_front().map(|c| c.oid), None);
     }
 
     #[test]
@@ -747,7 +791,7 @@ mod tests {
         let new_oid = make_external_commit(tmp.path(), "ext.md", "ext-content");
         let detected = wait_for_pending(&queue, 1, std::time::Duration::from_millis(500)).await;
         assert!(detected, "listener should detect external commit");
-        assert_eq!(queue.pop_front(), Some(new_oid));
+        assert_eq!(queue.pop_front().map(|c| c.oid), Some(new_oid));
 
         listener.abort();
     }
@@ -803,7 +847,7 @@ mod tests {
 
         let detected = wait_for_pending(&queue, 1, std::time::Duration::from_millis(500)).await;
         assert!(detected, "listener should detect the first commit");
-        assert_eq!(queue.pop_front(), Some(first_oid));
+        assert_eq!(queue.pop_front().map(|c| c.oid), Some(first_oid));
 
         listener.abort();
     }
