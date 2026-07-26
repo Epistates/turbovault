@@ -1117,7 +1117,7 @@
                   ]
                 },
                 {
-                  "description": "Write/overwrite a note. `expected_hash` (git blob OID hex on git\nbackend, SHA-256 on legacy) carries an `expect_blob` precondition;\nthe whole batch aborts if the target file no longer matches the\nexpected pre-image (turbovault-c0e).",
+                  "description": "Write/overwrite a note. `expected_hash` (git blob OID hex on git\nbackend, SHA-256 on direct) carries an `expect_blob` precondition;\nthe whole batch aborts if the target file no longer matches the\nexpected pre-image (turbovault-c0e).",
                   "type": "object",
                   "properties": {
                     "path": {
@@ -1145,7 +1145,7 @@
                   ]
                 },
                 {
-                  "description": "Delete a note. `expected_hash` guards the delete against a\nconcurrent modification of the target.\n\nturbovault-0g4.7: on the **git backend**, `on_backlinks` controls inbound\nwikilinks (parity with the standalone `delete_note`):\n- `\"refuse\"` (default) — abort the batch if the note has inbound\n  backlinks (prevents silently shipping broken links);\n- `\"rewrite-stale-callout\"` — atomically `~~[[strikethrough]]~~` every\n  linker in the same commit;\n- `\"force\"` — delete and leave inbound links dangling (the pre-0g4.7\n  behavior).\n\nThe legacy backend ignores this field and always does a bare delete (no\natomic multi-file primitive).",
+                  "description": "Delete a note. `expected_hash` guards the delete against a\nconcurrent modification of the target.\n\nturbovault-0g4.7: on the **git backend**, `on_backlinks` controls inbound\nwikilinks (parity with the standalone `delete_note`):\n- `\"refuse\"` (default) — abort the batch if the note has inbound\n  backlinks (prevents silently shipping broken links);\n- `\"rewrite-stale-callout\"` — atomically `~~[[strikethrough]]~~` every\n  linker in the same commit;\n- `\"force\"` — delete and leave inbound links dangling (the pre-0g4.7\n  behavior).\n\nThe direct backend ignores this field and always does a bare delete (no\natomic multi-file primitive).",
                   "type": "object",
                   "properties": {
                     "path": {
@@ -1175,7 +1175,7 @@
                   ]
                 },
                 {
-                  "description": "Move/rename a note. `expected_hash` guards the SOURCE against\nconcurrent modification (the destination always carries\n`expect_absent`, refusing to clobber).\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The legacy backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
+                  "description": "Move/rename a note. `expected_hash` guards the SOURCE against\nconcurrent modification (the destination always carries\n`expect_absent`, refusing to clobber).\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The direct backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
                   "type": "object",
                   "properties": {
                     "from": {
@@ -1240,7 +1240,7 @@
                   ]
                 },
                 {
-                  "description": "turbovault-0g4.1: apply SEARCH/REPLACE blocks to an existing note as\npart of the atomic batch commit (the batch equivalent of `edit_note`).\n`edits` uses the same block grammar as the tool; multiple blocks edit\nmultiple locations in the one file. `expected_hash` (git blob OID hex)\ncarries an `expect_blob` precondition — a stale pre-image aborts the\nwhole batch. **Git backend only**; the legacy executor refuses it.",
+                  "description": "turbovault-0g4.1: apply SEARCH/REPLACE blocks to an existing note as\npart of the atomic batch commit (the batch equivalent of `edit_note`).\n`edits` uses the same block grammar as the tool; multiple blocks edit\nmultiple locations in the one file. `expected_hash` (git blob OID hex)\ncarries an `expect_blob` precondition — a stale pre-image aborts the\nwhole batch. **Git backend only**; the direct executor refuses it.",
                   "type": "object",
                   "properties": {
                     "path": {
@@ -2259,6 +2259,14 @@
             "boolean",
             "null"
           ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false,
@@ -2305,6 +2313,14 @@
             "string",
             "null"
           ]
+        },
+        "commit_message": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -2335,6 +2351,14 @@
           ]
         },
         "name": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit_message": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_string",
           "type": [

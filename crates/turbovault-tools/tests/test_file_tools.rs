@@ -215,7 +215,7 @@ Updated content
 >>>>>>> REPLACE
 "#;
 
-    let result = tools.edit_file("edit.md", edits, None, false).await;
+    let result = tools.edit_file("edit.md", edits, None, false, "edit").await;
     assert!(result.is_ok());
 
     // Verify the edit was applied
@@ -243,7 +243,9 @@ Changed content
 >>>>>>> REPLACE
 "#;
 
-    let result = tools.edit_file("dryrun.md", edits, None, true).await;
+    let result = tools
+        .edit_file("dryrun.md", edits, None, true, "edit")
+        .await;
     assert!(result.is_ok());
 
     // Verify file was NOT changed (dry run)
@@ -275,7 +277,7 @@ New Content
 
     // Should succeed with correct hash
     let result = tools
-        .edit_file("hash.md", edits, Some(&expected_hash), false)
+        .edit_file("hash.md", edits, Some(&expected_hash), false, "edit")
         .await;
     assert!(result.is_ok());
 }
@@ -301,7 +303,7 @@ New Content
     // Should fail with wrong hash
     let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
     let result = tools
-        .edit_file("wronghash.md", edits, Some(wrong_hash), false)
+        .edit_file("wronghash.md", edits, Some(wrong_hash), false, "edit")
         .await;
     assert!(result.is_err());
 }
@@ -505,6 +507,7 @@ async fn test_write_mode_append_empty_file() {
             "appended content",
             turbovault_tools::WriteMode::Append,
             None,
+            "write",
         )
         .await
         .unwrap();
@@ -525,6 +528,7 @@ async fn test_write_mode_append_nonempty_file() {
             "line2",
             turbovault_tools::WriteMode::Append,
             None,
+            "write",
         )
         .await
         .unwrap();
@@ -548,6 +552,7 @@ async fn test_write_mode_prepend_with_frontmatter() {
             "INSERTED",
             turbovault_tools::WriteMode::Prepend,
             None,
+            "write",
         )
         .await
         .unwrap();
@@ -577,6 +582,7 @@ async fn test_write_mode_prepend_without_frontmatter() {
             "INSERTED",
             turbovault_tools::WriteMode::Prepend,
             None,
+            "write",
         )
         .await
         .unwrap();
@@ -598,6 +604,7 @@ async fn test_write_mode_prepend_empty_file() {
             "new content",
             turbovault_tools::WriteMode::Prepend,
             None,
+            "write",
         )
         .await
         .unwrap();
@@ -622,6 +629,7 @@ async fn test_write_mode_prepend_malformed_frontmatter() {
             "INSERTED",
             turbovault_tools::WriteMode::Prepend,
             None,
+            "write",
         )
         .await
         .unwrap();

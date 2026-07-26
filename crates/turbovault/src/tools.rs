@@ -12,13 +12,13 @@ use turbovault_core::config::{GitMergeStrategy as ConfigMergeStrategy, VaultConf
 use turbovault_core::error::Error;
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
-    AnalysisTools, AuditTools, BatchOperation, CachedRepo, CasCollisionFlush, CommitHook,
-    CommitLocks, DiffTools, DuplicateTools, ExportTools, FanoutInfo, FileTools, GitMergeStrategy,
-    GraphTools, GroundingTools, MetadataTools, OkfTools, QualityTools, ReindexQueue,
-    RelationshipTools, SearchEngine, SearchQuery, SearchTools, SimilarityEngine, TemplateEngine,
-    VaultLifecycleTools, VaultRepo, ViewerTools, WriteMode, WriteTools, obsidian_uri,
+    AnalysisTools, AuditTools, BatchOperation, BatchTools, CommitLocks, DiffTools, DuplicateTools,
+    ExportTools, FanoutInfo, FileTools, GitMergeStrategy, GraphTools, GroundingTools,
+    MetadataTools, OkfTools, QualityTools, RelationshipTools, SearchEngine, SearchQuery,
+    SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo, ViewerTools,
+    WriteMode, obsidian_uri,
 };
-use turbovault_vault::VaultManager;
+use turbovault_vault::{ChangeListener, VaultManager};
 
 mod providers;
 pub use providers::ObsidianMcpServer;
@@ -289,33 +289,6 @@ pub(super) struct CoreToolHandler {
     /// `open_with_locks(...)`. That keeps all in-process callers serialized
     /// on one commit-section mutex per worktree at trivial open cost.
     git_locks: Arc<RwLock<HashMap<String, Arc<CommitLocks>>>>,
-    /// turbovault-a0l (PERF-1): per-vault cached `VaultRepo` handle, opened once
-    /// (with the shared `CommitLocks` + reindex `CommitHook`) and reused for
-    /// every write — eliding the ~140µs `Repository::open` that dominated the
-    /// substrate op latency when done per call. Lazy-initialized in
-    /// `get_or_init_git_repo`, which also serves as the write-backend
-    /// validation. Cross-process CAS stays safe (libgit2 re-reads refs under
-    /// `lock_ref`); torn down on `remove_vault`.
-    git_repos: Arc<RwLock<HashMap<String, CachedRepo>>>,
-    /// Per-vault GWS.14 reindex queues (keyed by vault name,
-    /// lazy-initialized). Each git-backend `VaultRepo` open registers a
-    /// `CommitHook` that pushes onto this queue; read tools that depend on
-    /// derived state call `flush_reindex_for_active_vault` to drain through
-    /// HEAD before answering.
-    git_reindex_queues: Arc<RwLock<HashMap<String, Arc<ReindexQueue>>>>,
-    /// Per-vault GWS.14a background drainer task handles (keyed by vault
-    /// name). Spawned lazily on the first git-backend `get_active_write_tools`
-    /// call; drains the reindex queue in the background so steady-state
-    /// reads never pay catch-up. Idempotent: re-spawning is guarded by the
-    /// HashMap occupancy check.
-    git_drainers: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
-    /// turbovault-bou: per-vault HEAD-ref polling listener. Detects
-    /// out-of-band ref advances (manual git pull/checkout, sibling
-    /// turbovault instance committing) and pushes the new oid onto the
-    /// reindex queue. Lazy-spawned at first git-backend write (alongside
-    /// the drainer). One task per vault; the value is the JoinHandle so
-    /// vault removal can abort it.
-    git_ref_listeners: Arc<RwLock<HashMap<String, tokio::task::JoinHandle<()>>>>,
     /// GWS.13 active fanouts, keyed by **base vault name**
     /// (the original vault, NOT the auto-registered fanout vault). At most
     /// one active fanout per base vault — `begin_fanout` errors loudly
@@ -333,14 +306,13 @@ struct ActiveFanoutRecord {
     fanout_vault_name: String,
 }
 
-/// Shared preparation for complete-note writes from core and plugin providers.
-///
-/// Keeping active-vault selection, backend dispatch, and commit-message policy
-/// here prevents each provider boundary from reimplementing that orchestration.
+/// Shared setup for the `write_note` operation, which is implemented at two
+/// provider boundaries — the MCP handler and the plugin `VaultHost`. Bundling
+/// active-vault selection + commit-message resolution here keeps both from
+/// re-deriving it.
 pub(super) struct CompleteNoteWrite {
     pub(super) vault_name: String,
     pub(super) manager: Arc<VaultManager>,
-    pub(super) tools: WriteTools,
     pub(super) message: String,
 }
 
@@ -361,10 +333,6 @@ impl CoreToolHandler {
             similarity_engines: Arc::new(RwLock::new(HashMap::new())),
             search_engines: Arc::new(RwLock::new(HashMap::new())),
             git_locks: Arc::new(RwLock::new(HashMap::new())),
-            git_repos: Arc::new(RwLock::new(HashMap::new())),
-            git_reindex_queues: Arc::new(RwLock::new(HashMap::new())),
-            git_drainers: Arc::new(RwLock::new(HashMap::new())),
-            git_ref_listeners: Arc::new(RwLock::new(HashMap::new())),
             active_fanouts: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -418,6 +386,9 @@ impl CoreToolHandler {
                 .await
                 .map_err(|e| Error::config_error(format!("initialize({name}): {e}")))?;
             let manager = Arc::new(manager);
+            // M4c (bite 3a): wire before publishing (git vaults; no-op on
+            // Direct), same as the lazy `get_active_vault_manager` path.
+            self.wire_manager_reindex(&name, &manager).await;
             self.vault_managers
                 .write()
                 .await
@@ -680,6 +651,14 @@ impl CoreToolHandler {
 
         let manager = Arc::new(manager);
 
+        // M4c (bite 3a, turbovault-qae.5.3): wire the manager-owned reindex
+        // tasks + change-listener (git vaults; no-op on Direct) BEFORE
+        // publishing to the cache, so no concurrent first-access caller can
+        // cache-hit and observe an unwired manager. If we lose the
+        // double-check race below, our wired manager is dropped and its `Drop`
+        // aborts the tasks it started.
+        self.wire_manager_reindex(&vault_name, &manager).await;
+
         // Cache it — double-check to handle concurrent initialization races
         {
             let mut cache = self.vault_managers.write().await;
@@ -687,10 +666,68 @@ impl CoreToolHandler {
             if let Some(existing) = cache.get(&vault_name) {
                 return Ok(existing.clone());
             }
-            cache.insert(vault_name, manager.clone());
+            cache.insert(vault_name.clone(), manager.clone());
         }
 
         Ok(manager)
+    }
+
+    /// M4c (bite 3a, turbovault-qae.5.3): wiring for a freshly-built
+    /// git-backend manager — start its OWN reindex tasks (drainer +
+    /// HEAD-ref listener, manager-owned) and register the R7 change-listener
+    /// that feeds THIS server's tantivy + similarity engines. write-substrate-
+    /// layering M4e deleted the server's own duplicate reindex machinery
+    /// (the old `GitFileTools` path), so this is now the ONLY reindex wiring
+    /// for a git-backend vault. No-op on a Direct vault.
+    async fn wire_manager_reindex(&self, vault_name: &str, manager: &Arc<VaultManager>) {
+        let is_git = self
+            .multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .map(|c| matches!(c.write_backend, WriteBackend::Git))
+            .unwrap_or(false);
+        if !is_git {
+            return;
+        }
+
+        // Register the R7 change-listener BEFORE starting the drainer, so a
+        // drain pass can't fire into an unset listener. The listener captures
+        // ONLY the search + similarity engine maps — NOT a whole `self` clone,
+        // which would hold `vault_managers` → the `Arc<VaultManager>` → this
+        // listener: a reference cycle that defeats the manager's `Drop`-based
+        // task teardown (the manager would never drop absent an explicit
+        // `remove_vault`, undoing the `Weak<Self>` care the tasks take). Those
+        // two maps never hold the manager, so there is no cycle; search /
+        // similarity stay ABOVE the vault layer — the manager only invokes this
+        // callback (R2 dependency inversion).
+        let search_engines = Arc::clone(&self.search_engines);
+        let similarity_engines = Arc::clone(&self.similarity_engines);
+        let name = vault_name.to_string();
+        let listener: ChangeListener = Arc::new(move |changed: Vec<(String, bool)>| {
+            let search_engines = Arc::clone(&search_engines);
+            let similarity_engines = Arc::clone(&similarity_engines);
+            let name = name.clone();
+            // The listener is a synchronous `Fn`; spawn the async index work.
+            tokio::spawn(async move {
+                if !changed.is_empty() {
+                    let cached = { search_engines.read().await.get(&name).cloned() };
+                    if let Some(engine) = cached
+                        && let Err(e) = engine.apply_changes(changed).await
+                    {
+                        log::warn!(
+                            "M4c change-listener: search apply failed for '{name}', evicting: {e}"
+                        );
+                        search_engines.write().await.remove(&name);
+                    }
+                }
+                similarity_engines.write().await.remove(&name);
+            });
+        });
+        manager.set_change_listener(listener);
+
+        // Start the background drainer + HEAD-ref listener only after the
+        // change-listener is registered.
+        manager.ensure_reindex_started();
     }
 
     /// Get audit tools for the active vault
@@ -724,20 +761,17 @@ impl CoreToolHandler {
     /// Invalidate cached search engine for the active vault (call after any
     /// write operation).
     ///
-    /// **GWS.14c skip:** if the active vault is on the git backend, the
-    /// reindex drainer will incrementally `apply_changes` to the cached
-    /// engine on the next flush — evicting here would force a full
-    /// cold-rebuild on the next query and defeat the optimization. Legacy
-    /// backend still gets the hammer.
+    /// write-substrate-layering M4e: the GWS.14c git-backend skip is gone —
+    /// `VaultManager`'s own change-listener (`wire_manager_reindex`) now
+    /// feeds the cached search engine incrementally on every git-backend
+    /// apply/drain, so this hammer eviction is redundant-but-harmless there
+    /// (the next query rebuilds cold instead of reusing the listener's
+    /// incremental update). On the direct backend (no change-listener wired)
+    /// this remains the only path that keeps the cache coherent.
     async fn invalidate_search_cache(&self) {
         let Ok(vault_name) = self.get_active_vault_name().await else {
             return;
         };
-        if let Ok(cfg) = self.multi_vault_mgr.get_active_vault_config().await
-            && cfg.write_backend == WriteBackend::Git
-        {
-            return;
-        }
         let mut cache = self.search_engines.write().await;
         cache.remove(&vault_name);
     }
@@ -813,7 +847,7 @@ impl CoreToolHandler {
     }
 
     /// turbovault-5nn: true when the active vault is on the git backend AND has
-    /// `git.require_commit_message = true`. Only meaningful on git (the legacy
+    /// `git.require_commit_message = true`. Only meaningful on git (the direct
     /// backend produces no commits).
     async fn active_vault_requires_commit_message(&self) -> bool {
         self.multi_vault_mgr
@@ -829,6 +863,46 @@ impl CoreToolHandler {
             .unwrap_or(false)
     }
 
+    /// write-substrate-layering M4d: true when the active vault is on the git
+    /// backend. The manager already dispatches the substrate per write; this is
+    /// only for the handlers' backend-dependent DEFAULTS (delete_note's
+    /// force-by-default, move_note's update-backlinks-by-default) which differ
+    /// by backend and must be preserved (R10).
+    async fn active_vault_is_git(&self) -> McpResult<bool> {
+        Ok(self
+            .multi_vault_mgr
+            .get_active_vault_config()
+            .await
+            .map(|c| matches!(c.write_backend, WriteBackend::Git))
+            .unwrap_or(false))
+    }
+
+    /// turbovault-qae.5.2: check-only half of the commit-message gate —
+    /// trims/filters the caller-supplied message (whitespace-only counts as
+    /// missing) and, when none remains, refuses if the active vault requires
+    /// one. Returns `Ok(None)` when no message was given and none is
+    /// required, leaving the fallback to the caller. Single-write tools go
+    /// through `resolve_commit_message` below; multi-write tools (e.g.
+    /// `generate_index`, which can't collapse several auto-derived subjects
+    /// into one fallback) call this directly.
+    async fn require_commit_message(
+        &self,
+        commit_message: Option<String>,
+    ) -> McpResult<Option<String>> {
+        let provided = commit_message
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty());
+        match provided {
+            Some(m) => Ok(Some(m)),
+            None if self.active_vault_requires_commit_message().await => {
+                Err(McpError::invalid_request(
+                    "this vault requires an explicit commit message (git.require_commit_message = true); pass a non-empty `commit_message` for this operation".to_string(),
+                ))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// turbovault-5nn: resolve a mutation's commit subject. A caller-supplied
     /// message (trimmed; whitespace-only counts as missing) always wins. When
     /// none is given, the active vault's `git.require_commit_message` decides:
@@ -839,42 +913,36 @@ impl CoreToolHandler {
         commit_message: Option<String>,
         fallback: impl FnOnce() -> String,
     ) -> McpResult<String> {
-        let provided = commit_message
-            .map(|m| m.trim().to_string())
-            .filter(|m| !m.is_empty());
-        match provided {
-            Some(m) => Ok(m),
-            None if self.active_vault_requires_commit_message().await => {
-                Err(McpError::invalid_request(
-                    "this vault requires an explicit commit message (git.require_commit_message = true); pass a non-empty `commit_message` for this operation".to_string(),
-                ))
-            }
-            None => Ok(fallback()),
-        }
+        Ok(self
+            .require_commit_message(commit_message)
+            .await?
+            .unwrap_or_else(fallback))
     }
 
-    /// Resolve the shared state required for a complete-note mutation.
+    /// Resolve the shared state for a `write_note` (vault name, manager, commit
+    /// message). Paired with [`Self::finish_complete_note_write`].
     async fn prepare_complete_note_write(
         &self,
         path: &str,
         commit_message: Option<String>,
         fallback_operation: &str,
     ) -> McpResult<CompleteNoteWrite> {
-        let vault_name = self.get_active_vault_name().await?;
+        // Resolve the manager first and take the vault name from it, so the
+        // whole write sees ONE active-vault snapshot even if `set_active_vault`
+        // races on another connection.
         let manager = self.get_active_vault_manager().await?;
-        let tools = self.get_active_write_tools().await?;
+        let vault_name = manager.vault_name().to_string();
         let message = self
             .resolve_commit_message(commit_message, || format!("{fallback_operation} {path}"))
             .await?;
         Ok(CompleteNoteWrite {
             vault_name,
             manager,
-            tools,
             message,
         })
     }
 
-    /// Invalidate derived state after a complete-note mutation.
+    /// Invalidate derived caches after a `write_note`.
     async fn finish_complete_note_write(&self) {
         self.invalidate_similarity_cache().await;
         self.invalidate_search_cache().await;
@@ -887,160 +955,16 @@ impl CoreToolHandler {
         let manager = self.get_active_vault_manager().await?;
         Ok((vault_name, manager))
     }
-    /// Same as `get_vault_pair` but FIRST flushes the GWS.14 reindex queue
-    /// for the active vault (no-op on the Legacy backend or when the queue
-    /// is empty). Called by every read tool that touches derived state
-    /// (link graph, search/tantivy, similarity, quality reports). Read
-    /// tools that consume only working-tree bytes (`read_note`,
-    /// `get_notes_info`, `inspect_frontmatter`, ...) stay on
-    /// `get_vault_pair` since flushing would be wasted work.
-    async fn get_vault_pair_with_reindex(&self) -> McpResult<(String, Arc<VaultManager>)> {
-        self.flush_reindex_for_active_vault().await?;
-        self.get_vault_pair().await
-    }
-
-    /// Build the backend-dispatching write surface for the active vault.
-    /// `Legacy` → wraps the cached `VaultManager`-backed tools. `Git` →
-    /// wraps a cached `VaultRepo` (so all in-process callers share one
-    /// commit-section mutex per vault). The MCP tool methods call this and
-    /// never branch on the backend themselves; cutover (GWS.15) deletes the
-    /// `Legacy` arm here.
-    async fn get_active_write_tools(&self) -> McpResult<WriteTools> {
-        let vault_name = self.get_active_vault_name().await?;
-        let manager = self.get_active_vault_manager().await?;
-        let vault_config = self
-            .multi_vault_mgr
-            .get_active_vault_config()
-            .await
-            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
-
-        match vault_config.write_backend {
-            WriteBackend::Legacy => Ok(WriteTools::legacy(manager)),
-            WriteBackend::Git => {
-                let locks = self.get_or_init_git_locks(&vault_name).await;
-                let queue = self.get_or_init_reindex_queue(&vault_name).await;
-                let queue_for_hook = Arc::clone(&queue);
-                let hook: CommitHook = Arc::new(move |_parent, commit| queue_for_hook.push(commit));
-
-                // turbovault-a0l (PERF-1): open the per-vault `VaultRepo` ONCE
-                // and cache it (shared `CommitLocks` + reindex hook bound in),
-                // so writes reuse it instead of paying ~140µs `Repository::open`
-                // each call. This is ALSO the write-backend validation — a
-                // non-git path fails here, surfaced from `get_active_write_tools`
-                // exactly as the prior throwaway open did, but without re-opening
-                // on every write (it used to open twice per write: validate +
-                // apply).
-                let cached_repo = self
-                    .get_or_init_git_repo(
-                        &vault_name,
-                        vault_config.path.as_path(),
-                        Arc::clone(&locks),
-                        Arc::clone(&hook),
-                    )
-                    .await?;
-
-                // GWS.14a: spawn the background drainer the first time this
-                // vault sees a git-backend write. Idempotent.
-                self.spawn_drainer_if_needed(
-                    &vault_name,
-                    vault_config.path.clone(),
-                    Arc::clone(&manager),
-                    Arc::clone(&queue),
-                )
-                .await;
-
-                // turbovault-bou: HEAD-ref polling listener. Detects
-                // out-of-band ref advances (cross-instance commits, manual
-                // git pull, etc.) and pushes the new oid onto the same
-                // reindex queue the drainer drains.
-                self.spawn_ref_listener_if_needed(
-                    &vault_name,
-                    vault_config.path.clone(),
-                    Arc::clone(&queue),
-                )
-                .await;
-
-                // GWS.14b: build a flush callback fired BEFORE the substrate
-                // returns a ConcurrencyError. Captures the vault_name + path
-                // + manager bound at WriteTools construction so the flush
-                // targets the correct vault even if `set_active_vault` shifts
-                // between changeset start and the conflict surfacing.
-                let server = self.clone();
-                let flush_vault_name = vault_name.clone();
-                let flush_vault_path = vault_config.path.clone();
-                let flush_manager = Arc::clone(&manager);
-                let flush_on_collision: CasCollisionFlush = Arc::new(move || {
-                    let server = server.clone();
-                    let vault_name = flush_vault_name.clone();
-                    let path = flush_vault_path.clone();
-                    let manager = Arc::clone(&flush_manager);
-                    Box::pin(async move {
-                        server
-                            .flush_reindex_for_vault(&vault_name, &path, manager)
-                            .await
-                            .map_err(|e| {
-                                Error::config_error(format!("GWS.14b CAS-collision flush: {}", e))
-                            })
-                    })
-                });
-
-                // turbovault-lri: thread the per-vault `include_ignored`
-                // policy through. Default `true` preserves pre-lri
-                // "always-write" behavior; vault configs that set
-                // `include_ignored: false` get the gitignore-refusal
-                // pass in `apply_txn`. `vault_config.git` is optional;
-                // a missing section is treated as defaults
-                // (`include_ignored == true`).
-                let include_ignored = vault_config
-                    .git
-                    .as_ref()
-                    .map(|g| g.include_ignored)
-                    .unwrap_or(true);
-                Ok(WriteTools::git_with_hook_and_flush(
-                    manager,
-                    vault_config.path,
-                    locks,
-                    hook,
-                    flush_on_collision,
-                )
-                .with_include_ignored(include_ignored)
-                .with_cached_repo(cached_repo))
-            }
-        }
-    }
-
     // ==================== Test support (turbovault-6fo.18) ====================
     //
     // Public wrappers that expose internals the e2e tests need to drive
     // the substrate as a real MCP handler would. These mirror the
     // private helpers; suffixed `_test` to discourage production use.
 
-    /// Test-only: expose `get_active_write_tools` so e2e tests can drive
-    /// the same dispatcher the `#[tool]` handlers use.
-    pub async fn get_active_write_tools_test(&self) -> McpResult<turbovault_tools::WriteTools> {
-        self.get_active_write_tools().await
-    }
-
     /// Test-only: expose the active vault's `VaultManager` so e2e tests
     /// can read the link graph after a substrate write.
     pub async fn get_active_vault_manager_test(&self) -> McpResult<Arc<VaultManager>> {
         self.get_active_vault_manager().await
-    }
-
-    /// Test-only: borrow the per-vault `ReindexQueue` for assertions
-    /// about external-commit observation (turbovault-bou).
-    pub async fn get_reindex_queue_test(&self, vault_name: &str) -> Option<Arc<ReindexQueue>> {
-        self.git_reindex_queues
-            .read()
-            .await
-            .get(vault_name)
-            .cloned()
-    }
-
-    /// Test-only: drain pending reindex work via the same flush helper
-    /// every derived-state read uses.
-    pub async fn flush_reindex_for_active_vault_test(&self) -> McpResult<()> {
-        self.flush_reindex_for_active_vault().await
     }
 
     /// turbovault-5nn test-only: resolve a commit subject through the same
@@ -1052,45 +976,6 @@ impl CoreToolHandler {
     ) -> McpResult<String> {
         self.resolve_commit_message(commit_message, || fallback)
             .await
-    }
-
-    /// Test-only: spawn a HEAD-ref listener with a CUSTOM polling
-    /// interval, bypassing the lazy-spawn-with-5s-default path. e2e
-    /// tests use this to keep wall-clock test time short.
-    pub async fn spawn_ref_listener_with_interval_test(
-        &self,
-        vault_name: &str,
-        interval: std::time::Duration,
-    ) {
-        let cfg = self
-            .multi_vault_mgr
-            .get_vault_config(vault_name)
-            .await
-            .expect("vault config");
-        let queue = self.get_or_init_reindex_queue(vault_name).await;
-        let mut listeners = self.git_ref_listeners.write().await;
-        // Abort any existing listener (the test wants ITS interval).
-        if let Some(handle) = listeners.remove(vault_name) {
-            handle.abort();
-        }
-        let queue_for_task = Arc::clone(&queue);
-        let path_for_task = cfg.path.clone();
-        let handle = tokio::spawn(async move {
-            turbovault_tools::watch_ref_changes(path_for_task, queue_for_task, interval).await;
-        });
-        listeners.insert(vault_name.to_string(), handle);
-    }
-
-    /// Test-only: check whether a background drainer task is registered
-    /// for `vault_name`. Used by turbovault-1ne cleanup tests.
-    pub async fn has_git_drainer_test(&self, vault_name: &str) -> bool {
-        self.git_drainers.read().await.contains_key(vault_name)
-    }
-
-    /// Test-only: check whether a HEAD-ref listener task is registered
-    /// for `vault_name`. Used by turbovault-1ne cleanup tests.
-    pub async fn has_git_ref_listener_test(&self, vault_name: &str) -> bool {
-        self.git_ref_listeners.read().await.contains_key(vault_name)
     }
 
     /// Test-only: check whether a `CommitLocks` registry is cached for
@@ -1132,15 +1017,7 @@ impl CoreToolHandler {
         self.search_engines.write().await.remove(name);
         self.similarity_engines.write().await.remove(name);
         self.vault_managers.write().await.remove(name);
-        if let Some(handle) = self.git_drainers.write().await.remove(name) {
-            handle.abort();
-        }
-        if let Some(handle) = self.git_ref_listeners.write().await.remove(name) {
-            handle.abort();
-        }
-        self.git_reindex_queues.write().await.remove(name);
         self.git_locks.write().await.remove(name);
-        self.git_repos.write().await.remove(name);
 
         if let Err(error) = self.persist_vault_state().await {
             log::warn!("Failed to persist vault state after removal: {error}");
@@ -1221,7 +1098,7 @@ impl CoreToolHandler {
     /// param. The token a read RETURNS must be the token CAS ACCEPTS — that
     /// is the contract this helper closes for the git backend.
     ///
-    /// - **Legacy backend:** 64-char SHA-256 of the working-tree bytes (the
+    /// - **Direct backend:** 64-char SHA-256 of the working-tree bytes (the
     ///   token `turbovault_vault::compute_hash` has always produced).
     /// - **Git backend:** 40-char hex git blob OID, matching `expect_blob`'s
     ///   tree-side precondition exactly.
@@ -1236,7 +1113,7 @@ impl CoreToolHandler {
             .await
             .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
         match cfg.write_backend {
-            WriteBackend::Legacy => Ok(turbovault_vault::compute_hash(content)),
+            WriteBackend::Direct => Ok(turbovault_vault::compute_hash(content)),
             WriteBackend::Git => VaultRepo::blob_oid_of(content.as_bytes())
                 .map(|oid| oid.to_string())
                 .map_err(|e| McpError::internal(format!("blob_oid_of failed: {}", e))),
@@ -1253,354 +1130,5 @@ impl CoreToolHandler {
             .await
             .insert(vault_name.to_string(), Arc::clone(&fresh));
         fresh
-    }
-
-    async fn get_or_init_reindex_queue(&self, vault_name: &str) -> Arc<ReindexQueue> {
-        if let Some(q) = self.git_reindex_queues.read().await.get(vault_name) {
-            return Arc::clone(q);
-        }
-        let fresh = Arc::new(ReindexQueue::new());
-        self.git_reindex_queues
-            .write()
-            .await
-            .insert(vault_name.to_string(), Arc::clone(&fresh));
-        fresh
-    }
-
-    /// turbovault-a0l (PERF-1): get (or lazily open) the cached `VaultRepo` for
-    /// `vault_name`, opened once with the shared `CommitLocks` + reindex
-    /// `CommitHook` and reused for every write — eliding the per-op
-    /// `Repository::open`. Opening also validates the path IS a usable git repo,
-    /// so this replaces the throwaway validation-open that used to fire on every
-    /// `get_active_write_tools` call. `locks`/`hook` are consumed only on the
-    /// first (opening) call; later calls return the cached handle and ignore
-    /// them (the handle already carries the first-bound pair — stable, since the
-    /// hook just pushes onto the per-vault reindex queue).
-    async fn get_or_init_git_repo(
-        &self,
-        vault_name: &str,
-        path: &std::path::Path,
-        locks: Arc<CommitLocks>,
-        hook: CommitHook,
-    ) -> McpResult<CachedRepo> {
-        if let Some(repo) = self.git_repos.read().await.get(vault_name) {
-            return Ok(Arc::clone(repo));
-        }
-        // Open once (outside the lock so a slow open doesn't block readers).
-        let repo = VaultRepo::open_with_locks_and_hook(path, locks, hook).map_err(|e| {
-            McpError::internal(format!(
-                "vault {} has write_backend=git but {:?} is not a usable git repo: {}",
-                vault_name, path, e
-            ))
-        })?;
-        let handle: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
-        // Double-checked insert: another task may have opened concurrently while
-        // we held no lock — keep whichever landed first, drop our spare.
-        let mut map = self.git_repos.write().await;
-        let entry = map
-            .entry(vault_name.to_string())
-            .or_insert_with(|| Arc::clone(&handle));
-        Ok(Arc::clone(entry))
-    }
-
-    /// Spawn a per-vault background drainer (GWS.14a) the first time a
-    /// git-backend write surface is constructed for `vault_name`. Idempotent
-    /// — subsequent calls early-out if a drainer is already running.
-    ///
-    /// The drainer:
-    /// - Awaits the queue's `Notify` (poked on every `push`).
-    /// - Falls through to a 100ms safety-net poll so a missed/lost wake
-    ///   still eventually drains.
-    /// - Calls `flush_reindex_for_vault` (the same drain path read tools
-    ///   use), which spawn_blocks the libgit2 work and applies graph deltas
-    ///   in the async task.
-    /// - Logs and continues on per-iteration errors.
-    ///
-    /// The task is never explicitly aborted; it lives for the server's
-    /// lifetime. Vault-removal cleanup is a follow-up if the leak becomes
-    /// a problem in practice.
-    async fn spawn_drainer_if_needed(
-        &self,
-        vault_name: &str,
-        vault_path: PathBuf,
-        manager: Arc<VaultManager>,
-        queue: Arc<ReindexQueue>,
-    ) {
-        {
-            let drainers = self.git_drainers.read().await;
-            if drainers.contains_key(vault_name) {
-                return;
-            }
-        }
-        let mut drainers = self.git_drainers.write().await;
-        // Double-check after re-acquiring the write lock (race window).
-        if drainers.contains_key(vault_name) {
-            return;
-        }
-        let server = self.clone();
-        let name = vault_name.to_string();
-        let queue_for_task = Arc::clone(&queue);
-        let manager_for_task = Arc::clone(&manager);
-        let path_for_task = vault_path.clone();
-        let handle = tokio::spawn(async move {
-            loop {
-                // Re-arm Notify each iteration. Tokio's notify_one() stores a
-                // single permit when no waiter is parked, so a push() that
-                // races between drain-completion and the next .notified() is
-                // captured by the next await.
-                let notified = queue_for_task.notify().notified();
-                tokio::pin!(notified);
-                tokio::select! {
-                    _ = &mut notified => {}
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
-                }
-                if queue_for_task.pending_count() == 0 {
-                    continue;
-                }
-                if let Err(e) = server
-                    .flush_reindex_for_vault(&name, &path_for_task, Arc::clone(&manager_for_task))
-                    .await
-                {
-                    log::warn!("GWS.14a background drainer for vault {}: {}", name, e);
-                }
-            }
-        });
-        drainers.insert(vault_name.to_string(), handle);
-    }
-
-    /// turbovault-bou: lazy-spawn the HEAD-ref polling listener for a
-    /// git-backend vault. Idempotent (skips if already running). Default
-    /// poll interval: 5s — fast enough for cross-instance dogfooding to
-    /// notice within a few seconds, slow enough that the listener's
-    /// `VaultRepo::open` overhead is negligible.
-    async fn spawn_ref_listener_if_needed(
-        &self,
-        vault_name: &str,
-        vault_path: PathBuf,
-        queue: Arc<ReindexQueue>,
-    ) {
-        {
-            let listeners = self.git_ref_listeners.read().await;
-            if listeners.contains_key(vault_name) {
-                return;
-            }
-        }
-        let mut listeners = self.git_ref_listeners.write().await;
-        // Double-check after re-acquiring the write lock (race window).
-        if listeners.contains_key(vault_name) {
-            return;
-        }
-        let queue_for_task = Arc::clone(&queue);
-        let path_for_task = vault_path.clone();
-        let handle = tokio::spawn(async move {
-            turbovault_tools::watch_ref_changes(
-                path_for_task,
-                queue_for_task,
-                std::time::Duration::from_secs(5),
-            )
-            .await;
-        });
-        listeners.insert(vault_name.to_string(), handle);
-    }
-
-    /// Drain the active vault's reindex queue through HEAD before a
-    /// derived-state query (graph/search/analysis) reads. No-op for
-    /// vaults on the legacy backend (no queue) or when the queue is
-    /// empty.
-    ///
-    /// **Send/!Sync note:** `VaultRepo` is opened + dropped inside a
-    /// single `spawn_blocking` task so its libgit2 handle never crosses
-    /// an `await`. The drainer's graph work is async (tokio RwLock) and
-    /// runs after the blocking phase produces the path-set.
-    ///
-    /// Called by `get_vault_pair_with_reindex` (which derived-state read
-    /// tools use); legacy/eviction-only tools keep `get_vault_pair`.
-    async fn flush_reindex_for_active_vault(&self) -> McpResult<()> {
-        let vault_name = self.get_active_vault_name().await?;
-        let vault_config = self
-            .multi_vault_mgr
-            .get_active_vault_config()
-            .await
-            .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
-        if vault_config.write_backend != WriteBackend::Git {
-            return Ok(());
-        }
-        let manager = self.get_active_vault_manager().await?;
-        self.flush_reindex_for_vault(&vault_name, &vault_config.path, manager)
-            .await
-    }
-
-    /// Flush by vault name + path + manager (no "active vault" resolution).
-    /// The GWS.14b CAS-collision callback uses this so the closure can
-    /// flush the vault it was constructed for even if the active vault
-    /// has shifted by the time `apply_txn` returns the conflict error.
-    async fn flush_reindex_for_vault(
-        &self,
-        vault_name: &str,
-        vault_path: &Path,
-        manager: Arc<VaultManager>,
-    ) -> McpResult<()> {
-        let queue = match self.git_reindex_queues.read().await.get(vault_name) {
-            Some(q) => Arc::clone(q),
-            None => return Ok(()), // never opened a git-backed write -> nothing pending
-        };
-        // turbovault-9zr: serialize the whole flush pass. The drain below pops
-        // commits (in spawn_blocking) BEFORE applying them, so two concurrent
-        // flushers (the background drainer + this read-path flush) must not
-        // interleave — otherwise one sees pending==0 while the other has popped
-        // but not yet applied, and a read observes a stale graph. Acquire the
-        // lock BEFORE the pending check so an empty queue here means a peer
-        // flush already fully applied (not just popped).
-        let _flush_guard = queue.lock_flush().await;
-        if queue.pending_count() == 0 {
-            return Ok(());
-        }
-        let locks = self.get_or_init_git_locks(vault_name).await;
-        let path = vault_path.to_path_buf();
-
-        // The drainer's full body is async (graph + search invalidation are
-        // tokio-locked), but it opens + consumes a !Sync VaultRepo. Run
-        // open inside spawn_blocking, hand back the resolved diff per
-        // commit, apply graph deltas in the async task.
-        loop {
-            // Quick exit when drained.
-            if queue.pending_count() == 0 {
-                break;
-            }
-            // Per-iteration clones are MOVED into spawn_blocking; the
-            // outer `queue`/`locks`/`path` bindings stay valid for
-            // subsequent iterations and for the post-blocking work.
-            let drained =
-                Self::drain_pending_diffs(path.clone(), Arc::clone(&locks), Arc::clone(&queue))
-                    .await?;
-            if drained.is_empty() {
-                break;
-            }
-            // Collapse all pending changes into a path→latest-presence map
-            // so the search engine writer (GWS.14c) commits ONCE per drain
-            // pass instead of once per pending commit (writer create is
-            // ~10ms; amortizes nicely).
-            let mut collapsed_for_search: HashMap<String, bool> = HashMap::new();
-
-            for (commit, changes) in drained {
-                for (rel_path, present) in changes {
-                    collapsed_for_search.insert(rel_path.clone(), present);
-                    Self::apply_one_path(&manager, &rel_path, present).await;
-                }
-                queue.advance_cursor(commit);
-            }
-
-            // GWS.14c: incrementally update the cached SearchEngine, then evict
-            // the similarity cache (incremental TF-IDF is a follow-up — the
-            // corpus-wide IDF table drifts under per-doc add/remove).
-            self.apply_collapsed_to_search(vault_name, collapsed_for_search)
-                .await;
-            self.invalidate_similarity_cache().await;
-        }
-        Ok(())
-    }
-
-    /// v3b.2: drain the pending reindex queue into per-commit diffs inside
-    /// `spawn_blocking` — the `VaultRepo` handle is `!Sync`, so it must never
-    /// cross an await. Returns one `(commit, [(path, present)])` entry per
-    /// drained commit. Extracted from `flush_reindex_for_vault`.
-    async fn drain_pending_diffs(
-        path: PathBuf,
-        locks: Arc<CommitLocks>,
-        queue: Arc<ReindexQueue>,
-    ) -> McpResult<Vec<(turbovault_tools::Oid, Vec<(String, bool)>)>> {
-        tokio::task::spawn_blocking(move || {
-            // Open the repo locally so its !Sync handle never escapes this
-            // thread. Drain the diff bookkeeping (sync); the graph apply runs
-            // back in the async caller.
-            let repo = VaultRepo::open_with_locks(&path, locks)
-                .map_err(|e| McpError::internal(format!("flush_reindex open repo: {}", e)))?;
-            let mut batches = Vec::new();
-            while let Some(commit) = queue.pop_front() {
-                // hq8: unify with ReindexQueue::drain_through (tlx.1) — a commit
-                // the ref-watcher enqueued may no longer be reachable. A
-                // first-parent (or diff) failure must SKIP that commit, not
-                // propagate and brick the whole read-path flush.
-                let parent = match repo.git_commit_first_parent(commit) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        log::warn!(
-                            "flush_reindex: skipping commit {} after first-parent error: {}",
-                            commit,
-                            e
-                        );
-                        continue;
-                    }
-                };
-                match repo.diff_path_statuses(parent, commit) {
-                    Ok(changes) => batches.push((commit, changes)),
-                    Err(e) => {
-                        log::warn!(
-                            "flush_reindex: skipping commit {} after diff error: {}",
-                            commit,
-                            e
-                        );
-                    }
-                }
-            }
-            drop(repo);
-            Ok::<_, McpError>(batches)
-        })
-        .await
-        .map_err(|e| McpError::internal(format!("flush_reindex task: {}", e)))?
-    }
-
-    /// v3b.2: apply one `(path, present)` change to the link graph — extracted
-    /// from `flush_reindex_for_vault`'s inner loop to flatten its nesting. A
-    /// present path is re-parsed and its node/links rebuilt; an absent path is
-    /// removed. Parse failures are logged and skipped (a later commit may have
-    /// deleted the file).
-    async fn apply_one_path(manager: &Arc<VaultManager>, rel_path: &str, present: bool) {
-        let full_path = manager.vault_path().join(rel_path);
-        let graph_handle = manager.link_graph();
-        if present {
-            match manager.parse_file(std::path::Path::new(rel_path)).await {
-                Ok(vf) => {
-                    let mut graph = graph_handle.write().await;
-                    let _ = graph.remove_file(&full_path);
-                    if let Err(e) = graph.add_file(&vf) {
-                        log::warn!("flush_reindex add_file({}): {}", rel_path, e);
-                    }
-                    if let Err(e) = graph.update_links(&vf) {
-                        log::warn!("flush_reindex update_links({}): {}", rel_path, e);
-                    }
-                }
-                Err(e) => {
-                    log::debug!("flush_reindex parse_file({}) skip: {}", rel_path, e);
-                }
-            }
-        } else {
-            let mut graph = graph_handle.write().await;
-            let _ = graph.remove_file(&full_path);
-        }
-    }
-
-    /// v3b.2: GWS.14c incremental search update for one drain pass. Skips when
-    /// no `SearchEngine` is cached (next query builds fresh); on apply error
-    /// falls back to a full cache evict. Extracted from
-    /// `flush_reindex_for_vault`.
-    async fn apply_collapsed_to_search(&self, vault_name: &str, collapsed: HashMap<String, bool>) {
-        if collapsed.is_empty() {
-            return;
-        }
-        let cached = {
-            let engines = self.search_engines.read().await;
-            engines.get(vault_name).cloned()
-        };
-        if let Some(engine) = cached {
-            let change_vec: Vec<(String, bool)> = collapsed.into_iter().collect();
-            if let Err(e) = engine.apply_changes(change_vec).await {
-                log::warn!(
-                    "GWS.14c search incremental apply failed; falling back to evict: {}",
-                    e
-                );
-                self.invalidate_search_cache().await;
-            }
-        }
     }
 }

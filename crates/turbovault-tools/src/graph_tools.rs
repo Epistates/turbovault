@@ -41,7 +41,7 @@ impl GraphTools {
 
     /// Get detailed broken links information
     pub async fn get_broken_links(&self) -> Result<Vec<BrokenLinkInfo>> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let unresolved = graph.all_unresolved_links();
         let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
@@ -62,7 +62,7 @@ impl GraphTools {
 
     /// Run quick health check
     pub async fn quick_health_check(&self) -> Result<HealthInfo> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let unresolved = graph.all_unresolved_links();
         let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
@@ -83,7 +83,7 @@ impl GraphTools {
 
     /// Run comprehensive health analysis
     pub async fn full_health_analysis(&self) -> Result<HealthInfo> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let unresolved = graph.all_unresolved_links();
         let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
@@ -104,7 +104,7 @@ impl GraphTools {
 
     /// Get hub notes (highly connected nodes)
     pub async fn get_hub_notes(&self, limit: usize) -> Result<Vec<(String, usize)>> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let config = AnalysisConfig {
             hub_notes_limit: limit,
@@ -124,7 +124,7 @@ impl GraphTools {
 
     /// Get dead-end notes (no outgoing links but have incoming)
     pub async fn get_dead_end_notes(&self) -> Result<Vec<String>> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let analyzer = HealthAnalyzer::new(&graph);
 
@@ -139,7 +139,7 @@ impl GraphTools {
 
     /// Detect cycles in the graph
     pub async fn detect_cycles(&self) -> Result<Vec<Vec<String>>> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let cycles = graph.cycles();
 
@@ -156,7 +156,7 @@ impl GraphTools {
 
     /// Get connected components
     pub async fn get_connected_components(&self) -> Result<Vec<Vec<String>>> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let components = graph.connected_components()?;
 
@@ -173,7 +173,7 @@ impl GraphTools {
 
     /// Get isolated clusters (small disconnected groups)
     pub async fn get_isolated_clusters(&self) -> Result<Vec<Vec<String>>> {
-        let graph_lock = self.manager.link_graph();
+        let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
         let analyzer = HealthAnalyzer::new(&graph);
 

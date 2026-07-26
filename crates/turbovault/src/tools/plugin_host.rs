@@ -63,7 +63,7 @@ impl VaultHost for PluginVaultHost {
             .await
             .map_err(map_core_error)?;
         let write_backend = match config.write_backend {
-            WriteBackend::Legacy => "legacy",
+            WriteBackend::Direct => "direct",
             WriteBackend::Git => "git",
         };
         Ok(VaultDescriptor {
@@ -118,36 +118,44 @@ impl VaultHost for PluginVaultHost {
             )
             .await
             .map_err(map_host_error)?;
-        let resolved_path = prepared
-            .manager
+        let vault = prepared.vault_name;
+        let manager = prepared.manager;
+        let message = prepared.message;
+        let resolved_path = manager
             .resolve_path(Path::new(&request.path))
             .map_err(map_core_error)?;
+        let files = FileTools::new(manager.clone());
 
         match &request.precondition {
+            // CreateOnly → ExpectAbsent (create_file). The filesystem pre-check
+            // keeps the friendly conflict message on the direct path; ExpectAbsent
+            // is the TOCTOU-safe backstop on both substrates.
             WritePrecondition::CreateOnly => {
-                if !prepared.tools.is_git()
-                    && tokio::fs::try_exists(&resolved_path).await.unwrap_or(false)
-                {
+                let is_git = self
+                    .core
+                    .active_vault_is_git()
+                    .await
+                    .map_err(map_host_error)?;
+                if !is_git && tokio::fs::try_exists(&resolved_path).await.unwrap_or(false) {
                     return Err(PluginError::conflict(format!(
                         "create refused: {:?} already exists",
                         request.path
                     )));
                 }
-                prepared
-                    .tools
-                    .create_file_with_message(&request.path, &request.content, &prepared.message)
+                files
+                    .create_file(&request.path, &request.content, &message)
                     .await
                     .map_err(map_core_error)?;
             }
+            // Match(version) → ExpectBlob (write_file_with_mode carries the token).
             WritePrecondition::Match(version) => {
-                prepared
-                    .tools
-                    .write_file_with_mode_and_message(
+                files
+                    .write_file_with_mode(
                         &request.path,
                         &request.content,
                         WriteMode::Overwrite,
                         Some(version),
-                        &prepared.message,
+                        &message,
                     )
                     .await
                     .map_err(map_core_error)?;
@@ -172,15 +180,12 @@ impl VaultHost for PluginVaultHost {
             .provenance
             .map(EventAttribution::Attributed)
             .unwrap_or(EventAttribution::ExternalOrUnknown);
-        let _ = self.hooks.publish(
-            &prepared.vault_name,
-            event,
-            Some(version.clone()),
-            attribution,
-        );
+        let _ = self
+            .hooks
+            .publish(&vault, event, Some(version.clone()), attribution);
 
         Ok(WriteReceipt {
-            vault: prepared.vault_name,
+            vault,
             path: request.path,
             version,
             bytes: request.content.len(),

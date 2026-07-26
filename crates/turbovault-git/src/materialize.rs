@@ -40,14 +40,13 @@ impl VaultRepo {
             .iter()
             .any(|entry| entry.status().intersects(staged_mask))
         {
-            return Err(Error::Other(
-                "Git index contains staged changes; commit or unstage them before a TurboVault write"
-                    .to_string(),
+            return Err(Error::other(
+                "Git index contains staged changes; commit or unstage them before a TurboVault write",
             ));
         }
         let workdir = repo
             .workdir()
-            .ok_or_else(|| Error::Other("bare repository has no working tree".to_string()))?;
+            .ok_or_else(|| Error::other("bare repository has no working tree"))?;
         let tree = match base {
             Some(oid) => Some(repo.find_commit(oid)?.tree()?),
             None => None,
@@ -66,15 +65,15 @@ impl VaultRepo {
             let actual = match std::fs::symlink_metadata(&target) {
                 Ok(metadata) if metadata.file_type().is_file() => Some(std::fs::read(&target)?),
                 Ok(_) => {
-                    return Err(Error::Other(format!(
+                    return Err(Error::other(format!(
                         "working-tree path '{rel}' is not a regular file; refusing to overwrite it"
                     )));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(Error::Io(error)),
+                Err(error) => return Err(error.into()),
             };
             if actual != expected {
-                return Err(Error::Other(format!(
+                return Err(Error::other(format!(
                     "working-tree path '{rel}' differs from HEAD; commit, restore, or move the local change before retrying"
                 )));
             }
@@ -95,7 +94,7 @@ impl VaultRepo {
         let repo = self.git();
         let workdir = repo
             .workdir()
-            .ok_or_else(|| Error::Other("bare repository has no working tree".to_string()))?
+            .ok_or_else(|| Error::other("bare repository has no working tree"))?
             .to_path_buf();
         let tree = repo.find_commit(commit)?.tree()?;
 
@@ -111,11 +110,11 @@ impl VaultRepo {
                     let tmp = target.with_extension(format!("tmp.{}", Uuid::new_v4()));
                     if let Err(e) = std::fs::write(&tmp, blob.content()) {
                         let _ = std::fs::remove_file(&tmp);
-                        return Err(Error::Io(e));
+                        return Err(e.into());
                     }
                     if let Err(e) = std::fs::rename(&tmp, &target) {
                         let _ = std::fs::remove_file(&tmp);
-                        return Err(Error::Io(e));
+                        return Err(e.into());
                     }
                 }
                 Err(e) if e.code() == git2::ErrorCode::NotFound => {

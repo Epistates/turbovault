@@ -22,7 +22,7 @@ impl ExportTools {
 
     /// Export health report
     pub async fn export_health_report(&self, format: &str) -> Result<String> {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let graph_read = graph.read().await;
 
         let stats = graph_read.stats();
@@ -76,7 +76,7 @@ impl ExportTools {
 
     /// Export vault statistics
     pub async fn export_vault_stats(&self, format: &str) -> Result<String> {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let graph_read = graph.read().await;
         let stats = graph_read.stats();
 
@@ -127,7 +127,7 @@ impl ExportTools {
 
     /// Export full analysis report
     pub async fn export_analysis_report(&self, format: &str) -> Result<String> {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let graph_read = graph.read().await;
         let stats = graph_read.stats();
 

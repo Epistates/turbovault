@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 use tokio::io::AsyncReadExt;
+use turbovault_core::Precondition;
 use turbovault_core::prelude::*;
 use turbovault_vault::VaultManager;
 
@@ -67,18 +68,26 @@ impl FileTools {
     }
 
     /// Write a file to the vault with mode support (creates directories as needed)
+    ///
+    /// `message` is the commit subject the underlying `VaultManager` write
+    /// carries: on a git-backed vault it becomes the commit subject; direct
+    /// vaults ignore it. Threaded from the MCP layer's `resolve_commit_message`
+    /// so a caller-supplied `commit_message` reaches the commit (write-
+    /// substrate-layering M4d / R9) instead of a hardcoded auto-subject.
     pub async fn write_file_with_mode(
         &self,
         path: &str,
         content: &str,
         mode: WriteMode,
         expected_hash: Option<&str>,
+        message: &str,
     ) -> Result<()> {
+        let precondition = Precondition::for_replace(expected_hash, true);
         match mode {
             WriteMode::Overwrite => {
                 let file_path = PathBuf::from(path);
                 self.manager
-                    .write_file(&file_path, content, expected_hash)
+                    .write_file(&file_path, content, precondition, message)
                     .await
             }
             WriteMode::Append => {
@@ -90,7 +99,7 @@ impl FileTools {
                 };
                 let file_path = PathBuf::from(path);
                 self.manager
-                    .write_file(&file_path, &combined, expected_hash)
+                    .write_file(&file_path, &combined, precondition, message)
                     .await
             }
             WriteMode::Prepend => {
@@ -99,7 +108,7 @@ impl FileTools {
                     let file_path = PathBuf::from(path);
                     return self
                         .manager
-                        .write_file(&file_path, content, expected_hash)
+                        .write_file(&file_path, content, precondition, message)
                         .await;
                 }
 
@@ -123,7 +132,7 @@ impl FileTools {
                 };
                 let file_path = PathBuf::from(path);
                 self.manager
-                    .write_file(&file_path, &combined, expected_hash)
+                    .write_file(&file_path, &combined, precondition, message)
                     .await
             }
         }
@@ -131,7 +140,30 @@ impl FileTools {
 
     /// Write a file to the vault (creates directories as needed) - backward compatible
     pub async fn write_file(&self, path: &str, content: &str) -> Result<()> {
-        self.write_file_with_mode(path, content, WriteMode::Overwrite, None)
+        self.write_file_with_mode(
+            path,
+            content,
+            WriteMode::Overwrite,
+            None,
+            &format!("write_file {path}"),
+        )
+        .await
+    }
+
+    /// Strict create: write `content` at `path` only when it is currently
+    /// absent ([`Precondition::ExpectAbsent`]). Both substrates refuse to
+    /// clobber an existing path with a `ConcurrencyError` — the TOCTOU-safe
+    /// create the MCP `write_note` create-by-default and `create_from_template`
+    /// route through (write-substrate-layering M4d). `message` is the git
+    /// commit subject (ignored on direct).
+    pub async fn create_file(&self, path: &str, content: &str, message: &str) -> Result<()> {
+        self.manager
+            .write_file(
+                &PathBuf::from(path),
+                content,
+                Precondition::ExpectAbsent,
+                message,
+            )
             .await
     }
 
@@ -145,16 +177,29 @@ impl FileTools {
         edits: &str,
         expected_hash: Option<&str>,
         dry_run: bool,
+        message: &str,
     ) -> Result<turbovault_vault::EditResult> {
         let file_path = PathBuf::from(path);
         self.manager
-            .edit_file(&file_path, edits, expected_hash, dry_run)
+            .edit_file(
+                &file_path,
+                edits,
+                Precondition::for_in_place(expected_hash),
+                dry_run,
+                message,
+            )
             .await
     }
 
     /// Delete a file from the vault (with audit trail and graph cleanup)
     pub async fn delete_file(&self, path: &str) -> Result<()> {
-        self.manager.delete_file(&PathBuf::from(path), None).await
+        self.manager
+            .delete_file(
+                &PathBuf::from(path),
+                Precondition::for_in_place(None),
+                &format!("delete_file {path}"),
+            )
+            .await
     }
 
     /// Delete a file with optional optimistic concurrency hash check
@@ -162,16 +207,27 @@ impl FileTools {
         &self,
         path: &str,
         expected_hash: Option<&str>,
+        message: &str,
     ) -> Result<()> {
         self.manager
-            .delete_file(&PathBuf::from(path), expected_hash)
+            .delete_file(
+                &PathBuf::from(path),
+                Precondition::for_in_place(expected_hash),
+                message,
+            )
             .await
     }
 
     /// Move a file within the vault (with audit trail and graph update)
     pub async fn move_file(&self, from: &str, to: &str) -> Result<()> {
         self.manager
-            .move_file(&PathBuf::from(from), &PathBuf::from(to), None)
+            .move_file(
+                &PathBuf::from(from),
+                &PathBuf::from(to),
+                Precondition::for_in_place(None),
+                Precondition::Blind,
+                &format!("move_file {from} -> {to}"),
+            )
             .await
     }
 
@@ -181,9 +237,16 @@ impl FileTools {
         from: &str,
         to: &str,
         expected_hash: Option<&str>,
+        message: &str,
     ) -> Result<()> {
         self.manager
-            .move_file(&PathBuf::from(from), &PathBuf::from(to), expected_hash)
+            .move_file(
+                &PathBuf::from(from),
+                &PathBuf::from(to),
+                Precondition::for_in_place(expected_hash),
+                Precondition::Blind,
+                message,
+            )
             .await
     }
 

@@ -385,7 +385,7 @@ let operations = vec![
 ];
 
 // Execute atomically: all succeed or all fail
-let result = tools.batch_execute(operations).await?;
+let result = tools.batch_execute(operations, "batch update").await?;
 // Returns: BatchResult {
 //   success: true,
 //   executed: 3,
@@ -696,7 +696,7 @@ for file in completed {
 }
 
 // Step 3: Execute atomically
-let result = batch_tools.batch_execute(operations).await?;
+let result = batch_tools.batch_execute(operations, "archive completed projects").await?;
 
 if result.success {
     // Agent reports: "Archived 12 completed projects and updated 45 references"

@@ -15,6 +15,10 @@ turbovault-core = { workspace = true }
 turbovault-parser = { workspace = true }
 turbovault-graph = { workspace = true }
 turbovault-audit = { workspace = true }
+# write-substrate-layering M3a: the git write substrate is now an
+# implementation detail behind VaultManager's WriteSubstrate (design §5.1's
+# `vault -> git` embedding), not a parallel tool-layer stack beside it.
+turbovault-git = { workspace = true }
 
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -28,6 +32,7 @@ log = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 uuid = { workspace = true }
+futures = { workspace = true }
 
 # File editing & diff
 similar = { workspace = true }
@@ -40,6 +45,9 @@ path_trav = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+# GitSubstrate unit tests init a throwaway repo directly (mirrors
+# turbovault-git's own test helpers).
+git2 = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

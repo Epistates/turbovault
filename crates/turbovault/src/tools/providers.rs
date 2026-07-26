@@ -95,7 +95,8 @@ impl PluginProviderAdapter {
 #[cfg(feature = "plugin-api")]
 fn plugin_error(error: PluginError) -> McpError {
     match error.code {
-        PluginErrorCode::InvalidInput | PluginErrorCode::NotFound | PluginErrorCode::Conflict => {
+        PluginErrorCode::NotFound => McpError::resource_not_found(error.message),
+        PluginErrorCode::InvalidInput | PluginErrorCode::Conflict => {
             McpError::invalid_request(error.message)
         }
         PluginErrorCode::Unavailable | PluginErrorCode::Internal => {
@@ -390,28 +391,10 @@ impl ObsidianMcpServer {
     }
 
     #[doc(hidden)]
-    pub async fn get_active_write_tools_test(&self) -> McpResult<turbovault_tools::WriteTools> {
-        self.core.get_active_write_tools_test().await
-    }
-
-    #[doc(hidden)]
     pub async fn get_active_vault_manager_test(
         &self,
     ) -> McpResult<Arc<turbovault_vault::VaultManager>> {
         self.core.get_active_vault_manager_test().await
-    }
-
-    #[doc(hidden)]
-    pub async fn get_reindex_queue_test(
-        &self,
-        vault_name: &str,
-    ) -> Option<Arc<turbovault_tools::ReindexQueue>> {
-        self.core.get_reindex_queue_test(vault_name).await
-    }
-
-    #[doc(hidden)]
-    pub async fn flush_reindex_for_active_vault_test(&self) -> McpResult<()> {
-        self.core.flush_reindex_for_active_vault_test().await
     }
 
     #[doc(hidden)]
@@ -423,27 +406,6 @@ impl ObsidianMcpServer {
         self.core
             .resolve_commit_message_test(message, fallback)
             .await
-    }
-
-    #[doc(hidden)]
-    pub async fn spawn_ref_listener_with_interval_test(
-        &self,
-        vault_name: &str,
-        interval: std::time::Duration,
-    ) {
-        self.core
-            .spawn_ref_listener_with_interval_test(vault_name, interval)
-            .await;
-    }
-
-    #[doc(hidden)]
-    pub async fn has_git_drainer_test(&self, vault_name: &str) -> bool {
-        self.core.has_git_drainer_test(vault_name).await
-    }
-
-    #[doc(hidden)]
-    pub async fn has_git_ref_listener_test(&self, vault_name: &str) -> bool {
-        self.core.has_git_ref_listener_test(vault_name).await
     }
 
     #[doc(hidden)]

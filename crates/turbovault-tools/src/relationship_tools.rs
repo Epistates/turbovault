@@ -50,7 +50,7 @@ impl RelationshipTools {
 
     /// Calculate link strength between two files (0.0-1.0)
     pub async fn get_link_strength(&self, source: &str, target: &str) -> Result<Value> {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let read = graph.read().await;
 
         // Count direct links from source to target
@@ -117,7 +117,7 @@ impl RelationshipTools {
 
     /// Suggest files to link from a given file
     pub async fn suggest_links(&self, file: &str, limit: usize) -> Result<Value> {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let read = graph.read().await;
 
         let file_path = self.manager.resolve_path(std::path::Path::new(file))?;
@@ -207,7 +207,7 @@ impl RelationshipTools {
 
     /// Get centrality ranking for all files
     pub async fn get_centrality_ranking(&self) -> Result<Value> {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let read = graph.read().await;
 
         let all_files = read.all_files();

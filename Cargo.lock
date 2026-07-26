@@ -5286,6 +5286,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
+ "turbovault-core",
  "uuid",
 ]
 
@@ -5350,7 +5351,6 @@ version = "1.6.0"
 dependencies = [
  "anyhow",
  "chrono",
- "criterion",
  "futures",
  "git2",
  "log",
@@ -5385,6 +5385,8 @@ version = "1.6.0"
 dependencies = [
  "anyhow",
  "dashmap",
+ "futures",
+ "git2",
  "log",
  "notify",
  "path_trav",
@@ -5399,6 +5401,7 @@ dependencies = [
  "tracing",
  "turbovault-audit",
  "turbovault-core",
+ "turbovault-git",
  "turbovault-graph",
  "turbovault-parser",
  "unicode-normalization",

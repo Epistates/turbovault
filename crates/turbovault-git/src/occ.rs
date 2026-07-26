@@ -1,48 +1,31 @@
 //! Per-file optimistic-concurrency precondition (GWS.4) — the multi-file CAS /
 //! "reconsideration domino".
 //!
-//! A changeset reads each target path and remembers the **blob oid** it saw
-//! (the version token: `blob_oid_of(bytes)` for working-tree bytes the agent
-//! read). Before committing, [`VaultRepo::check_preconditions`] re-resolves each
-//! path against the base tree it is building on and confirms the blob oid still
-//! matches. If **any** path changed underneath the changeset, the whole batch
-//! aborts with [`Error::PreconditionFailed`] and nothing is applied — so the
-//! agent re-reads the affected paths and re-decides rather than silently
-//! overwriting a concurrent change.
+//! `commit_changeset` reads each target path and remembers the **blob oid** it
+//! saw (the version token: `blob_oid_of(bytes)` for working-tree bytes the
+//! agent read). Before committing, [`VaultRepo::check_preconditions`]
+//! re-resolves each path against the base tree it is building on and confirms
+//! the precondition still holds. If **any** path fails, the whole plan aborts
+//! with a `ConcurrencyError` (via [`Error::concurrency`]) and nothing is
+//! applied — so the agent re-reads the affected paths and re-decides rather
+//! than silently overwriting a concurrent change.
 //!
 //! This is the WS-B.2 OCC validate phase re-expressed against git blob oids:
 //! content-addressing makes the comparison exact and cheap.
+//!
+//! write-substrate-layering M2 / design §6.2: `Precondition` is
+//! `turbovault_core::Precondition` — the git-owned type (which could only
+//! express `Option<Oid>`, i.e. `ExpectBlob`/`ExpectAbsent`) is deleted;
+//! `check_preconditions` now handles all four variants and owns the hex→`Oid`
+//! parse. A malformed `ExpectBlob` token surfaces as a loud
+//! `ConcurrencyError`, matching the abort-nothing-applied behavior of a
+//! genuinely stale token — never a raw [`git2::Error`].
 
 use crate::error::{Error, Result};
 use crate::repo::VaultRepo;
 use git2::{ObjectType, Oid};
 use tracing::instrument;
-
-/// A precondition on one path: the blob oid the caller expects to find in the
-/// base tree. `expected == None` asserts the path is **absent** (a create).
-#[derive(Debug, Clone)]
-pub struct Precondition {
-    pub path: String,
-    pub expected: Option<Oid>,
-}
-
-impl Precondition {
-    /// The path must currently hold exactly this blob (an update of known content).
-    pub fn expect_blob(path: impl Into<String>, blob: Oid) -> Self {
-        Self {
-            path: path.into(),
-            expected: Some(blob),
-        }
-    }
-
-    /// The path must currently be absent (a create).
-    pub fn expect_absent(path: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            expected: None,
-        }
-    }
-}
+use turbovault_core::Precondition;
 
 impl VaultRepo {
     /// The blob oid of `content` **without writing it** to the object DB — the
@@ -54,11 +37,11 @@ impl VaultRepo {
         Ok(Oid::hash_object(ObjectType::Blob, content)?)
     }
 
-    /// Validate every precondition against `base_tree` (the tree the changeset
-    /// is building on; `None` = an empty/unborn base where nothing exists).
-    /// Returns `Ok(())` only if **all** match; the first mismatch aborts with
-    /// [`Error::PreconditionFailed`] (the whole changeset fails, nothing
-    /// applied).
+    /// Validate every `(path, Precondition)` against `base_tree` (the tree the
+    /// changeset is building on; `None` = an empty/unborn base where nothing
+    /// exists). Returns `Ok(())` only if **all** match; the first mismatch
+    /// aborts with a `ConcurrencyError` (via [`Error::concurrency`]; the whole
+    /// changeset fails, nothing applied).
     #[instrument(
         skip(self, preconditions),
         fields(base = ?base_tree, n = preconditions.len()),
@@ -67,19 +50,41 @@ impl VaultRepo {
     pub fn check_preconditions(
         &self,
         base_tree: Option<Oid>,
-        preconditions: &[Precondition],
+        preconditions: &[(String, Precondition)],
     ) -> Result<()> {
-        for pc in preconditions {
+        for (path, pc) in preconditions {
             let found = match base_tree {
-                Some(tree) => self.blob_oid_at(tree, &pc.path)?,
+                Some(tree) => self.blob_oid_at(tree, path)?,
                 None => None, // empty base: every path is absent
             };
-            if found != pc.expected {
-                return Err(Error::PreconditionFailed {
-                    path: pc.path.clone(),
-                    expected: pc.expected,
-                    found,
-                });
+            match pc {
+                Precondition::ExpectBlob(hex) => {
+                    let expected = Oid::from_str(hex).map_err(|_| {
+                        Error::concurrency(format!(
+                            "precondition failed for {path}: malformed expected blob token {hex:?}"
+                        ))
+                    })?;
+                    if found != Some(expected) {
+                        return Err(Error::concurrency(format!(
+                            "precondition failed for {path}: expected {expected}, found {found:?}"
+                        )));
+                    }
+                }
+                Precondition::ExpectAbsent => {
+                    if found.is_some() {
+                        return Err(Error::concurrency(format!(
+                            "precondition failed for {path}: expected absent, found {found:?}"
+                        )));
+                    }
+                }
+                Precondition::ExpectExists => {
+                    if found.is_none() {
+                        return Err(Error::concurrency(format!(
+                            "precondition failed for {path}: expected present, found absent"
+                        )));
+                    }
+                }
+                Precondition::Blind => {}
             }
         }
         Ok(())
@@ -134,9 +139,9 @@ mod tests {
         vr.check_preconditions(
             Some(t),
             &[
-                Precondition::expect_blob("a.md", a),
-                Precondition::expect_blob("b.md", b),
-                Precondition::expect_absent("c.md"),
+                ("a.md".to_string(), Precondition::ExpectBlob(a.to_string())),
+                ("b.md".to_string(), Precondition::ExpectBlob(b.to_string())),
+                ("c.md".to_string(), Precondition::ExpectAbsent),
             ],
         )
         .expect("all preconditions match");
@@ -148,9 +153,17 @@ mod tests {
         let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
         // Caller thinks a.md holds "stale" but it actually holds "alpha".
         let stale = VaultRepo::blob_oid_of(b"stale").unwrap();
-        match vr.check_preconditions(Some(t), &[Precondition::expect_blob("a.md", stale)]) {
-            Err(Error::PreconditionFailed { path, .. }) => assert_eq!(path, "a.md"),
-            other => panic!("expected PreconditionFailed, got {other:?}"),
+        match vr.check_preconditions(
+            Some(t),
+            &[(
+                "a.md".to_string(),
+                Precondition::ExpectBlob(stale.to_string()),
+            )],
+        ) {
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) => {
+                assert!(reason.contains("a.md"), "reason: {reason}")
+            }
+            other => panic!("expected ConcurrencyError, got {other:?}"),
         }
     }
 
@@ -159,8 +172,8 @@ mod tests {
         let (_tmp, vr) = open_unborn();
         let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
         assert!(matches!(
-            vr.check_preconditions(Some(t), &[Precondition::expect_absent("a.md")]),
-            Err(Error::PreconditionFailed { .. })
+            vr.check_preconditions(Some(t), &[("a.md".to_string(), Precondition::ExpectAbsent)]),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
     }
 
@@ -170,8 +183,14 @@ mod tests {
         let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
         let phantom = VaultRepo::blob_oid_of(b"x").unwrap();
         assert!(matches!(
-            vr.check_preconditions(Some(t), &[Precondition::expect_blob("missing.md", phantom)]),
-            Err(Error::PreconditionFailed { .. })
+            vr.check_preconditions(
+                Some(t),
+                &[(
+                    "missing.md".to_string(),
+                    Precondition::ExpectBlob(phantom.to_string())
+                )]
+            ),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
     }
 
@@ -187,12 +206,17 @@ mod tests {
         match vr.check_preconditions(
             Some(t),
             &[
-                Precondition::expect_blob("a.md", a),
-                Precondition::expect_blob("b.md", b_stale),
+                ("a.md".to_string(), Precondition::ExpectBlob(a.to_string())),
+                (
+                    "b.md".to_string(),
+                    Precondition::ExpectBlob(b_stale.to_string()),
+                ),
             ],
         ) {
-            Err(Error::PreconditionFailed { path, .. }) => assert_eq!(path, "b.md"),
-            other => panic!("expected PreconditionFailed on b.md, got {other:?}"),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) => {
+                assert!(reason.contains("b.md"), "reason: {reason}")
+            }
+            other => panic!("expected ConcurrencyError on b.md, got {other:?}"),
         }
     }
 
@@ -200,12 +224,69 @@ mod tests {
     fn empty_base_treats_all_as_absent() {
         let (_tmp, vr) = open_unborn();
         // Against an unborn/empty base, expect_absent passes and expect_blob fails.
-        vr.check_preconditions(None, &[Precondition::expect_absent("a.md")])
+        vr.check_preconditions(None, &[("a.md".to_string(), Precondition::ExpectAbsent)])
             .expect("absent on empty base");
         let phantom = VaultRepo::blob_oid_of(b"x").unwrap();
         assert!(matches!(
-            vr.check_preconditions(None, &[Precondition::expect_blob("a.md", phantom)]),
-            Err(Error::PreconditionFailed { .. })
+            vr.check_preconditions(
+                None,
+                &[(
+                    "a.md".to_string(),
+                    Precondition::ExpectBlob(phantom.to_string())
+                )]
+            ),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
+    }
+
+    // -------- write-substrate-layering M2: ExpectExists / Blind / malformed hex --------
+
+    #[test]
+    fn expect_exists_passes_when_present_fails_when_absent() {
+        let (_tmp, vr) = open_unborn();
+        let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
+        vr.check_preconditions(Some(t), &[("a.md".to_string(), Precondition::ExpectExists)])
+            .expect("present path satisfies ExpectExists");
+        assert!(matches!(
+            vr.check_preconditions(
+                Some(t),
+                &[("missing.md".to_string(), Precondition::ExpectExists)]
+            ),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
+        ));
+    }
+
+    #[test]
+    fn blind_skips_the_check_regardless_of_state() {
+        let (_tmp, vr) = open_unborn();
+        let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
+        // a.md exists but Blind never looks.
+        vr.check_preconditions(Some(t), &[("a.md".to_string(), Precondition::Blind)])
+            .expect("Blind never checks");
+        // missing.md is absent — still fine under Blind.
+        vr.check_preconditions(Some(t), &[("missing.md".to_string(), Precondition::Blind)])
+            .expect("Blind never checks even when absent");
+    }
+
+    #[test]
+    fn malformed_expect_blob_token_is_loud_concurrency_error_not_git2() {
+        let (_tmp, vr) = open_unborn();
+        let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
+        let err = vr
+            .check_preconditions(
+                Some(t),
+                &[(
+                    "a.md".to_string(),
+                    Precondition::ExpectBlob("not-a-hex-oid".to_string()),
+                )],
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::Core(turbovault_core::Error::ConcurrencyError { .. })
+            ),
+            "malformed token must surface as ConcurrencyError, not a raw git2 error: {err:?}"
+        );
     }
 }

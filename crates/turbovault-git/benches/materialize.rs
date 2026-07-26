@@ -6,7 +6,8 @@
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use tempfile::TempDir;
-use turbovault_git::{Changeset, VaultRepo};
+use turbovault_core::ChangePlan;
+use turbovault_git::VaultRepo;
 
 fn setup_repo_with_n_files(n: usize) -> (TempDir, VaultRepo, git2::Oid, Vec<String>) {
     let tmp = TempDir::new().unwrap();
@@ -14,7 +15,7 @@ fn setup_repo_with_n_files(n: usize) -> (TempDir, VaultRepo, git2::Oid, Vec<Stri
     opts.initial_head("main");
     git2::Repository::init_opts(tmp.path(), &opts).unwrap();
     let vr = VaultRepo::open(tmp.path()).unwrap();
-    let mut txn = Changeset::new("seed");
+    let mut txn = ChangePlan::new("seed");
     let mut paths = Vec::with_capacity(n);
     for i in 0..n {
         let p = format!("file_{i}.md");

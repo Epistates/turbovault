@@ -1,12 +1,17 @@
 //! turbovault-lri — `.gitignore` policy enforcement when
-//! `VaultGitConfig::include_ignored = false`. Drives the same
-//! `GitFileTools::write_file` chokepoint the MCP layer hits.
+//! `VaultGitConfig::include_ignored = false`.
+//!
+//! write-substrate-layering M4e: the policy now lives on
+//! `turbovault_vault::GitSubstrate` (`run_plan`'s gitignore gate,
+//! substrate.rs) rather than the deleted tool-layer `GitFileTools`. Drives
+//! it the same way production code does: `FileTools::create_file` over a
+//! `VaultManager` configured with `write_backend: git`.
 
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
-use turbovault_core::config::{ServerConfig, VaultConfig};
-use turbovault_tools::{CommitLocks, GitFileTools};
+use turbovault_core::config::{ServerConfig, VaultConfig, VaultGitConfig, WriteBackend};
+use turbovault_tools::FileTools;
 use turbovault_vault::VaultManager;
 
 fn init_repo_with_gitignore(dir: &Path, ignore_lines: &str) -> git2::Oid {
@@ -38,24 +43,32 @@ fn init_repo_with_gitignore(dir: &Path, ignore_lines: &str) -> git2::Oid {
     commit
 }
 
-fn make_tools(tmp: &TempDir) -> (Arc<VaultManager>, Arc<CommitLocks>) {
+fn make_manager(tmp: &TempDir, include_ignored: bool) -> Arc<VaultManager> {
     let mut cfg = ServerConfig::new();
-    cfg.vaults
-        .push(VaultConfig::builder("lri", tmp.path()).build().unwrap());
-    let manager = Arc::new(VaultManager::new(cfg).unwrap());
-    let locks = Arc::new(CommitLocks::new());
-    (manager, locks)
+    cfg.vaults.push(
+        VaultConfig::builder("lri", tmp.path())
+            .write_backend(WriteBackend::Git)
+            .git(VaultGitConfig {
+                include_ignored,
+                ..Default::default()
+            })
+            .build()
+            .unwrap(),
+    );
+    Arc::new(VaultManager::new(cfg).unwrap())
 }
 
 #[tokio::test]
 async fn include_ignored_true_writes_gitignored_path() {
     let tmp = TempDir::new().unwrap();
     init_repo_with_gitignore(tmp.path(), "secrets/\n");
-    let (manager, locks) = make_tools(&tmp);
+    let manager = make_manager(&tmp, true);
 
     // Default include_ignored=true: ignored paths commit normally.
-    let tools = GitFileTools::new(manager, tmp.path().to_path_buf(), locks);
-    let result = tools.create_file("secrets/api.md", "TOKEN=xxx\n").await;
+    let tools = FileTools::new(manager);
+    let result = tools
+        .create_file("secrets/api.md", "TOKEN=xxx\n", "create ignored path")
+        .await;
     assert!(
         result.is_ok(),
         "include_ignored=true should write gitignored path, got: {:?}",
@@ -71,12 +84,11 @@ async fn include_ignored_true_writes_gitignored_path() {
 async fn include_ignored_false_refuses_gitignored_path() {
     let tmp = TempDir::new().unwrap();
     init_repo_with_gitignore(tmp.path(), "secrets/\n");
-    let (manager, locks) = make_tools(&tmp);
+    let manager = make_manager(&tmp, false);
 
-    let tools =
-        GitFileTools::new(manager, tmp.path().to_path_buf(), locks).with_include_ignored(false);
+    let tools = FileTools::new(manager);
     let err = tools
-        .create_file("secrets/api.md", "TOKEN=xxx\n")
+        .create_file("secrets/api.md", "TOKEN=xxx\n", "create ignored path")
         .await
         .unwrap_err();
     let msg = format!("{}", err);
@@ -96,11 +108,12 @@ async fn include_ignored_false_refuses_gitignored_path() {
 async fn include_ignored_false_allows_non_ignored_path() {
     let tmp = TempDir::new().unwrap();
     init_repo_with_gitignore(tmp.path(), "secrets/\n");
-    let (manager, locks) = make_tools(&tmp);
+    let manager = make_manager(&tmp, false);
 
-    let tools =
-        GitFileTools::new(manager, tmp.path().to_path_buf(), locks).with_include_ignored(false);
-    let result = tools.create_file("notes/foo.md", "# Foo\n").await;
+    let tools = FileTools::new(manager);
+    let result = tools
+        .create_file("notes/foo.md", "# Foo\n", "create non-ignored path")
+        .await;
     assert!(
         result.is_ok(),
         "include_ignored=false should still allow non-ignored paths, got: {:?}",

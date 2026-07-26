@@ -131,7 +131,7 @@ impl ViewerTools {
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
 
         // Resolved edges from the link graph (covers OKF + wikilinks).
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let graph = graph.read().await;
         let mut edges = Vec::new();
         for vf in &files {

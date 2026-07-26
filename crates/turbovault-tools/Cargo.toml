@@ -60,11 +60,6 @@ tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
 # Tests only — production code uses `turbovault_git::Oid`, never git2 directly.
 git2 = { workspace = true }
-criterion = { workspace = true }
-
-[[bench]]
-name = "write_tools"
-harness = false
 
 [package.metadata.docs.rs]
 all-features = true

@@ -110,22 +110,11 @@ impl MetadataProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager);
         let fm_map: serde_json::Map<String, serde_json::Value> = frontmatter.into_iter().collect();
-        let (new_content, result) = tools
-            .compute_update_frontmatter(&path, fm_map, merge.unwrap_or(true))
-            .await
-            .map_err(to_mcp_error)?;
         let message = self
             .resolve_commit_message(commit_message, || format!("update_frontmatter {path}"))
             .await?;
-        self.get_active_write_tools()
-            .await?
-            .write_file_with_mode_and_message(
-                &path,
-                &new_content,
-                WriteMode::Overwrite,
-                None,
-                &message,
-            )
+        let result = tools
+            .update_frontmatter(&path, fm_map, merge.unwrap_or(true), &message)
             .await
             .map_err(to_mcp_error)?;
 
@@ -158,8 +147,12 @@ impl MetadataProvider {
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = MetadataTools::new(manager);
+        let tools = MetadataTools::new(manager.clone());
 
+        // Compute first so the commit-message gate (and its fallback) is only
+        // applied when the operation actually writes — `list` and a no-op
+        // `remove` on a note without frontmatter are read-only (None), and a
+        // read must never demand a commit_message on a require-message vault.
         let (maybe_content, result) = tools
             .compute_manage_tags(&path, &operation, tags.as_deref())
             .await
@@ -171,13 +164,11 @@ impl MetadataProvider {
                     format!("manage_tags {operation} {path}")
                 })
                 .await?;
-            self.get_active_write_tools()
-                .await?
-                .write_file_with_mode_and_message(
-                    &path,
+            manager
+                .write_file(
+                    std::path::Path::new(&path),
                     &content,
-                    WriteMode::Overwrite,
-                    None,
+                    turbovault_core::Precondition::for_in_place(None),
                     &message,
                 )
                 .await
@@ -255,12 +246,12 @@ impl MetadataProvider {
         }
 
         let vault_name = self.get_active_vault_name().await?;
-        let tools = self.get_active_write_tools().await?;
+        let manager = self.get_active_vault_manager().await?;
         let message = self
             .resolve_commit_message(commit_message, || format!("move_file {from} -> {to}"))
             .await?;
-        tools
-            .move_file_with_hash_and_message(&from, &to, expected_hash.as_deref(), &message)
+        FileTools::new(manager)
+            .move_file_with_hash(&from, &to, expected_hash.as_deref(), &message)
             .await
             .map_err(to_mcp_error)?;
 

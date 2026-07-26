@@ -151,7 +151,7 @@ impl VaultRepo {
         head.symbolic_target()
             .map_err(Error::Git)?
             .map(str::to_string)
-            .ok_or_else(|| Error::Other("HEAD is detached; no branch ref".to_string()))
+            .ok_or_else(|| Error::other("HEAD is detached; no branch ref"))
     }
 
     /// The HEAD commit oid, or `None` when the branch is **unborn** (no commits).

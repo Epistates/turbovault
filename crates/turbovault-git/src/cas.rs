@@ -25,8 +25,8 @@ impl VaultRepo {
     /// ref lock (mirrors `update-ref <new> <old>`).
     ///
     /// `expected_old == None` means the ref must **not** yet exist (the
-    /// initial-commit case). On any mismatch returns [`Error::CasConflict`] with
-    /// **nothing applied** — the ref is untouched.
+    /// initial-commit case). On any mismatch returns a `ConcurrencyError` (via
+    /// [`Error::concurrency`]) with **nothing applied** — the ref is untouched.
     #[instrument(
         skip(self),
         fields(refname = %refname, expected = ?expected_old, new = %new),
@@ -54,11 +54,9 @@ impl VaultRepo {
         };
         if current != expected_old {
             // Dropping `tx` here releases the lock without committing.
-            return Err(Error::CasConflict {
-                refname: refname.to_string(),
-                expected: expected_old,
-                found: current,
-            });
+            return Err(Error::concurrency(format!(
+                "ref CAS conflict on {refname}: expected {expected_old:?}, found {current:?}"
+            )));
         }
         tx.set_target(refname, new, None, "turbovault-git: cas advance")?;
         tx.commit()?;
@@ -119,11 +117,11 @@ impl VaultRepo {
                 Ok(()) => return Ok(Some(new)),
                 // Lost the race: the ref moved between our read and the lock.
                 // Re-read the tip and rebuild on it.
-                Err(Error::CasConflict { .. }) => continue,
+                Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. })) => continue,
                 Err(e) => return Err(e),
             }
         }
-        Err(Error::Other(format!(
+        Err(Error::other(format!(
             "ref CAS exhausted {max_retries} retries on {refname} (excessive contention)"
         )))
     }
@@ -226,8 +224,13 @@ mod tests {
         let bogus = Oid::from_str("0000000000000000000000000000000000000001").unwrap();
         let c1 = build_on(&vr, Some(c0), "b.md", "b");
         match vr.cas_ref(MAIN, Some(bogus), c1) {
-            Err(Error::CasConflict { found, .. }) => assert_eq!(found, Some(c0)),
-            other => panic!("expected CasConflict, got {other:?}"),
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) => {
+                assert!(
+                    reason.contains(&c0.to_string()),
+                    "reason must name the found oid: {reason}"
+                );
+            }
+            other => panic!("expected ConcurrencyError, got {other:?}"),
         }
         assert_eq!(vr.head_oid(), Some(c0), "ref unchanged on reject");
     }
@@ -241,7 +244,7 @@ mod tests {
         let c1 = build_on(&vr, Some(c0), "b.md", "b");
         assert!(matches!(
             vr.cas_ref(MAIN, None, c1),
-            Err(Error::CasConflict { .. })
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
     }
 
@@ -372,7 +375,7 @@ mod tests {
     #[test]
     fn parallel_commit_changeset_lands_every_commit() {
         let (tmp, vr0) = open_unborn();
-        vr0.commit_changeset(&crate::Changeset::new("seed").create("seed.md", "0"))
+        vr0.commit_changeset(&turbovault_core::ChangePlan::new("seed").create("seed.md", "0"))
             .unwrap();
         let path = tmp.path().to_path_buf();
         let locks = vr0.commit_locks();
@@ -386,7 +389,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let vr = crate::VaultRepo::open_with_locks(&p, l).unwrap();
                     vr.commit_changeset(
-                        &crate::Changeset::new("c").create(format!("f{i}.md"), "x"),
+                        &turbovault_core::ChangePlan::new("c").create(format!("f{i}.md"), "x"),
                     )
                     .unwrap();
                 })

@@ -227,7 +227,7 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `move_note` — Rename/relocate a note; Git-backed vaults atomically rewrite incoming wikilinks
 - `move_file` — Move/rename non-note files (e.g. attachments, images)
 - `get_notes_info` — Metadata for multiple notes in a single call
-- `batch_execute` — One all-or-nothing commit with `write_backend: git`; legacy stays sequential
+- `batch_execute` — One all-or-nothing commit with `write_backend: git`; direct stays sequential
 
 ### Git Fanout (4)
 - `begin_fanout` — Open an isolated worktree for parallel agent writes

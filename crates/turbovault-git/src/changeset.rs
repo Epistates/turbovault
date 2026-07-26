@@ -1,177 +1,40 @@
-//! Changeset = one commit (GWS.7).
+//! One commit per applied plan (GWS.7).
 //!
-//! A [`Changeset`] is a set of tree changes plus per-file preconditions and a
-//! commit message. [`VaultRepo::commit_changeset`] runs the full pipeline as
-//! **one commit**, under the worktree commit lock:
+//! [`VaultRepo::commit_changeset`] runs a [`turbovault_core::ChangePlan`] — an
+//! ordered set of changes plus per-path preconditions plus a commit message —
+//! as **one commit**, under the worktree commit lock:
 //!
 //! 1. acquire the per-worktree commit lock (GWS.6);
 //! 2. `commit_with_retry` on the current branch ref (GWS.3): each attempt
 //!    resolves the tip to its base tree, **checks preconditions** against that
-//!    base (GWS.4) — a mismatch aborts the whole changeset (the
-//!    reconsideration domino), no retry — then builds the new tree in an
-//!    isolated index (GWS.2) and `commit-tree`s on the tip. On a ref CAS loss
-//!    the tip is re-read and the attempt retried, which re-checks preconditions
-//!    on the new base, so a concurrent change to one of the changeset's own
-//!    paths surfaces as an abort, not a silent overwrite;
+//!    base (GWS.4) — a mismatch aborts the whole plan (the reconsideration
+//!    domino), no retry — folds any `Rename` changes by reading `from`'s
+//!    bytes off the base tree (write-substrate-layering M2, design §6.2),
+//!    then builds the new tree in an isolated index (GWS.2) and
+//!    `commit-tree`s on the tip. On a ref CAS loss the tip is re-read and the
+//!    attempt retried, which re-checks preconditions on the new base, so a
+//!    concurrent change to one of the plan's own paths surfaces as an abort,
+//!    not a silent overwrite;
 //! 3. **materialize** the committed paths into the working tree (GWS.5);
 //! 4. release the lock.
 //!
-//! Single-file writes are a degenerate one-change changeset; batches and
-//! move+link-updates are multi-change changesets — all atomic, one commit.
+//! Single-file writes are a degenerate one-change plan; batches and
+//! move+link-updates are multi-change plans — all atomic, one commit.
+//!
+//! write-substrate-layering M2 / design §6.1/§6.2/§11.9: `ChangePlan` (from
+//! `turbovault-core`) is the SOLE public mutation-plan type — the git-owned
+//! `Changeset` builder is deleted; `commit_changeset` consumes
+//! `&turbovault_core::ChangePlan` directly. This crate owns hex→`Oid`
+//! parsing (at the precondition check, [`crate::occ`]) and the `Rename` fold
+//! — `ChangePlan` itself stays git2-free.
 
 use crate::error::{Error, Result};
-use crate::occ::Precondition;
 use crate::plumbing::TreeChange;
 use crate::repo::VaultRepo;
 use git2::Oid;
 use std::collections::BTreeSet;
 use tracing::instrument;
-
-/// A unit of change applied as a single commit.
-#[derive(Debug, Clone, Default)]
-pub struct Changeset {
-    message: String,
-    changes: Vec<TreeChange>,
-    preconditions: Vec<Precondition>,
-}
-
-impl Changeset {
-    /// Start a changeset with a commit message.
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            ..Default::default()
-        }
-    }
-
-    /// Add or overwrite a file.
-    pub fn upsert(mut self, path: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
-        self.changes.push(TreeChange::Upsert {
-            path: path.into(),
-            content: content.into(),
-        });
-        self
-    }
-
-    /// Remove a file.
-    pub fn remove(mut self, path: impl Into<String>) -> Self {
-        self.changes.push(TreeChange::Remove { path: path.into() });
-        self
-    }
-
-    /// Add an arbitrary [`TreeChange`].
-    pub fn with_change(mut self, change: TreeChange) -> Self {
-        self.changes.push(change);
-        self
-    }
-
-    /// Require `path` to currently hold `blob` (an update of known content).
-    pub fn expect_blob(mut self, path: impl Into<String>, blob: Oid) -> Self {
-        self.preconditions
-            .push(Precondition::expect_blob(path, blob));
-        self
-    }
-
-    /// Require `path` to currently be absent (a create).
-    pub fn expect_absent(mut self, path: impl Into<String>) -> Self {
-        self.preconditions.push(Precondition::expect_absent(path));
-        self
-    }
-
-    /// Add an arbitrary [`Precondition`] (e.g. over a page read but not written,
-    /// extending the multi-file CAS to the changeset's read set).
-    pub fn with_precondition(mut self, precondition: Precondition) -> Self {
-        self.preconditions.push(precondition);
-        self
-    }
-
-    // -------- Semantic ops --------
-    // These compose the raw primitives (`upsert`/`remove`/preconditions) with the
-    // safe-by-default precondition policy. Use them for the standard ops; reach
-    // for the raw builders only when you explicitly want a blind write.
-
-    /// Create a new file. Precondition: `path` must currently be absent.
-    /// Aborts the changeset if the path exists.
-    pub fn create(mut self, path: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
-        let path = path.into();
-        self.changes.push(TreeChange::Upsert {
-            path: path.clone(),
-            content: content.into(),
-        });
-        self.preconditions.push(Precondition::expect_absent(path));
-        self
-    }
-
-    /// Update an existing file. Precondition: `path` must currently hold
-    /// `expected` (the version token the caller read). Protects against lost
-    /// updates — a concurrent change to `path` aborts the changeset.
-    pub fn update(
-        mut self,
-        path: impl Into<String>,
-        content: impl Into<Vec<u8>>,
-        expected: Oid,
-    ) -> Self {
-        let path = path.into();
-        self.changes.push(TreeChange::Upsert {
-            path: path.clone(),
-            content: content.into(),
-        });
-        self.preconditions
-            .push(Precondition::expect_blob(path, expected));
-        self
-    }
-
-    /// Delete an existing file. Precondition: it must currently hold `expected`.
-    /// Aborts if the file changed or is absent since the caller read it.
-    pub fn delete(mut self, path: impl Into<String>, expected: Oid) -> Self {
-        let path = path.into();
-        self.changes.push(TreeChange::Remove { path: path.clone() });
-        self.preconditions
-            .push(Precondition::expect_blob(path, expected));
-        self
-    }
-
-    /// Atomic rename: move `from` (which must currently hold `expected_from`)
-    /// to `to` (which must currently be absent), as **one commit**. Both
-    /// endpoints get preconditions. `content` is the bytes to write at `to` —
-    /// usually the caller passes the source's bytes unchanged for a pure
-    /// rename; passing different bytes is a rename-and-modify. Chain
-    /// `.update()`/`.upsert()` after this for link-target updates in the same
-    /// commit (move + link-updates is atomic).
-    pub fn rename(
-        mut self,
-        from: impl Into<String>,
-        to: impl Into<String>,
-        content: impl Into<Vec<u8>>,
-        expected_from: Oid,
-    ) -> Self {
-        let from = from.into();
-        let to = to.into();
-        self.changes.push(TreeChange::Remove { path: from.clone() });
-        self.changes.push(TreeChange::Upsert {
-            path: to.clone(),
-            content: content.into(),
-        });
-        self.preconditions
-            .push(Precondition::expect_blob(from, expected_from));
-        self.preconditions.push(Precondition::expect_absent(to));
-        self
-    }
-
-    /// The distinct paths this changeset mutates (the materialization set).
-    fn changed_paths(&self) -> Vec<String> {
-        self.changes.iter().map(|c| c.path().to_string()).collect()
-    }
-
-    /// turbovault-lri: enumerate the paths this changeset mutates so
-    /// higher layers can apply policies like the `include_ignored`
-    /// gitignore-refusal check before submission. Same content as the
-    /// private `changed_paths` helper; exposed for consumers in
-    /// `turbovault-tools`.
-    pub fn touched_paths(&self) -> Vec<String> {
-        self.changed_paths()
-    }
-}
+use turbovault_core::{Change, ChangePlan};
 
 /// Outcome of a committed changeset.
 #[derive(Debug, Clone)]
@@ -190,37 +53,78 @@ pub struct ChangesetResult {
 }
 
 impl VaultRepo {
-    /// Apply `txn` as a single commit (see the module docs for the pipeline).
+    /// Fold a plan's [`Change`]s into [`TreeChange`]s the object-DB plumbing
+    /// understands: `Upsert`/`Remove` map straight through; `Rename` reads
+    /// `from`'s bytes off `base_tree` (the CAS-resolved base, under the
+    /// commit lock) and folds to `Remove { from }` + `Upsert { to, <from's
+    /// bytes> }` — the git substrate is the only side that builds an
+    /// in-memory tree, so it is the only side that can perform this fold
+    /// (design §6.2; `core::Change::Rename` deliberately carries no content).
+    fn resolve_tree_changes(
+        &self,
+        base_tree: Option<Oid>,
+        changes: &[Change],
+    ) -> Result<Vec<TreeChange>> {
+        let mut out = Vec::with_capacity(changes.len());
+        for c in changes {
+            match c {
+                Change::Upsert { path, content } => out.push(TreeChange::Upsert {
+                    path: path.clone(),
+                    content: content.clone(),
+                }),
+                Change::Remove { path } => out.push(TreeChange::Remove { path: path.clone() }),
+                Change::Rename { from, to } => {
+                    let found = match base_tree {
+                        Some(tree) => self.blob_oid_at(tree, from)?,
+                        None => None,
+                    };
+                    let oid = found.ok_or_else(|| {
+                        Error::other(format!("rename source {from} not found in base tree"))
+                    })?;
+                    let content = self.read_blob(oid)?;
+                    out.push(TreeChange::Remove { path: from.clone() });
+                    out.push(TreeChange::Upsert {
+                        path: to.clone(),
+                        content,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Apply `plan` as a single commit (see the module docs for the pipeline).
     ///
-    /// Aborts with [`Error::PreconditionFailed`] if any precondition is stale
-    /// (nothing committed, working tree untouched) and with [`Error::Other`] for
-    /// an empty changeset or duplicate change paths.
+    /// Aborts with a `ConcurrencyError` (via [`Error::concurrency`]) if any
+    /// precondition is stale (nothing committed, working tree untouched) and
+    /// with [`Error::other`] for an empty plan or duplicate change paths.
     #[instrument(
-        skip(self, txn),
+        skip(self, plan),
         fields(
-            message = %txn.message,
-            n_changes = txn.changes.len(),
-            n_preconditions = txn.preconditions.len(),
+            message = %plan.message,
+            n_changes = plan.changes.len(),
+            n_preconditions = plan.preconditions.len(),
         ),
         name = "git_commit_changeset"
     )]
-    pub fn commit_changeset(&self, txn: &Changeset) -> Result<ChangesetResult> {
-        if txn.changes.is_empty() {
-            return Err(Error::Other("empty changeset (no changes)".to_string()));
+    pub fn commit_changeset(&self, plan: &ChangePlan) -> Result<ChangesetResult> {
+        if plan.changes.is_empty() {
+            return Err(Error::other("empty plan (no changes)"));
         }
-        // A path mutated twice in one changeset is ambiguous — reject it.
+        // A path mutated twice in one plan is ambiguous — reject it. Covers
+        // both endpoints of a Rename, so a Rename landing on a path another
+        // change also targets is caught too.
         let mut seen = BTreeSet::new();
-        for c in &txn.changes {
-            if !seen.insert(c.path()) {
-                return Err(Error::Other(format!(
-                    "duplicate change for path {} in one changeset",
-                    c.path()
+        for path in plan.touched_paths() {
+            if !seen.insert(path.clone()) {
+                return Err(Error::other(format!(
+                    "duplicate change for path {path} in one plan"
                 )));
             }
         }
 
         let refname = self.head_ref()?; // errors if HEAD is detached
-        let changed = txn.changed_paths();
+        let changed = plan.touched_paths();
 
         self.with_commit_lock(|| {
             // `parent_at_apply` is captured INSIDE `commit_with_retry`'s
@@ -236,13 +140,14 @@ impl VaultRepo {
                     Some(c) => Some(self.git().find_commit(c)?.tree_id()),
                     None => None,
                 };
-                // Abort the whole changeset if any precondition is stale.
-                // This MUST run before the identity-tree short-circuit below: a
+                // Abort the whole plan if any precondition is stale. This
+                // MUST run before the identity-tree short-circuit below: a
                 // stale read aborts loudly (the reconsideration domino) even
-                // when the resulting tree would be identical, because the read
-                // was against a now-changed base.
-                self.check_preconditions(base_tree, &txn.preconditions)?;
-                let tree = self.build_tree(base_tree, &txn.changes)?;
+                // when the resulting tree would be identical, because the
+                // read was against a now-changed base.
+                self.check_preconditions(base_tree, &plan.preconditions)?;
+                let tree_changes = self.resolve_tree_changes(base_tree, &plan.changes)?;
+                let tree = self.build_tree(base_tree, &tree_changes)?;
                 // turbovault-4nc: identity-tree short-circuit. If the changes
                 // produce a tree byte-identical to the base (an idempotent
                 // rewrite, a remove of an already-absent path, ...), there is
@@ -253,7 +158,7 @@ impl VaultRepo {
                     return Ok(None);
                 }
                 let parents: Vec<Oid> = tip.into_iter().collect();
-                Ok(Some(self.commit_tree(tree, &parents, &txn.message)?))
+                Ok(Some(self.commit_tree(tree, &parents, &plan.message)?))
             })?;
 
             match committed {
@@ -280,9 +185,7 @@ impl VaultRepo {
                     // preconditions passed); an identity tree implies a
                     // non-unborn base, so it is always `Some` here.
                     let commit = parent_at_apply.ok_or_else(|| {
-                        Error::Other(
-                            "identity-tree no-op on an unborn branch is impossible".to_string(),
-                        )
+                        Error::other("identity-tree no-op on an unborn branch is impossible")
                     })?;
                     Ok(ChangesetResult {
                         commit,
@@ -321,7 +224,7 @@ mod tests {
     #[test]
     fn create_on_unborn_makes_initial_commit() {
         let (_tmp, vr) = open_unborn();
-        let txn = Changeset::new("create a")
+        let txn = ChangePlan::new("create a")
             .upsert("a.md", "alpha")
             .expect_absent("a.md");
         let res = vr.commit_changeset(&txn).unwrap();
@@ -344,12 +247,13 @@ mod tests {
         std::fs::write(workfile(&vr, "draft.md"), "local draft").unwrap();
 
         let result = vr.commit_changeset(
-            &Changeset::new("create draft").create("draft.md", "generated content"),
+            &ChangePlan::new("create draft").create("draft.md", "generated content"),
         );
 
-        assert!(
-            matches!(result, Err(Error::Other(message)) if message.contains("differs from HEAD"))
-        );
+        assert!(matches!(
+            result,
+            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("differs from HEAD")
+        ));
         assert_eq!(vr.head_oid(), None, "ref did not advance");
         assert_eq!(read_wt(&vr, "draft.md"), "local draft");
     }
@@ -357,17 +261,19 @@ mod tests {
     #[test]
     fn update_refuses_to_clobber_dirty_worktree_file() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("note.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("note.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
         std::fs::write(workfile(&vr, "note.md"), "manual edit").unwrap();
 
-        let result = vr.commit_changeset(&Changeset::new("update").update("note.md", "v2", v1));
+        let result =
+            vr.commit_changeset(&ChangePlan::new("update").update("note.md", "v2", v1.to_string()));
 
-        assert!(
-            matches!(result, Err(Error::Other(message)) if message.contains("differs from HEAD"))
-        );
+        assert!(matches!(
+            result,
+            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("differs from HEAD")
+        ));
         assert_eq!(vr.head_oid(), head_before, "ref did not advance");
         assert_eq!(read_wt(&vr, "note.md"), "manual edit");
     }
@@ -376,7 +282,7 @@ mod tests {
     fn write_refuses_to_discard_unrelated_staged_change() {
         let (_tmp, vr) = open_unborn();
         vr.commit_changeset(
-            &Changeset::new("seed")
+            &ChangePlan::new("seed")
                 .create("a.md", "a")
                 .create("b.md", "b"),
         )
@@ -387,9 +293,12 @@ mod tests {
         index.add_path(std::path::Path::new("b.md")).unwrap();
         index.write().unwrap();
 
-        let result = vr.commit_changeset(&Changeset::new("update a").upsert("a.md", "a2"));
+        let result = vr.commit_changeset(&ChangePlan::new("update a").upsert("a.md", "a2"));
 
-        assert!(matches!(result, Err(Error::Other(message)) if message.contains("staged changes")));
+        assert!(matches!(
+            result,
+            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("staged changes")
+        ));
         assert_eq!(vr.head_oid(), head_before);
         assert!(
             vr.git()
@@ -403,13 +312,13 @@ mod tests {
     #[test]
     fn update_with_correct_precondition_succeeds() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("c").upsert("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("c").upsert("a.md", "v1"))
             .unwrap();
 
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        let txn = Changeset::new("update a")
+        let txn = ChangePlan::new("update a")
             .upsert("a.md", "v2")
-            .expect_blob("a.md", v1);
+            .expect_blob("a.md", v1.to_string());
         vr.commit_changeset(&txn).unwrap();
         assert_eq!(read_wt(&vr, "a.md"), "v2");
     }
@@ -417,18 +326,18 @@ mod tests {
     #[test]
     fn stale_precondition_aborts_nothing_applied() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("c").upsert("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("c").upsert("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
         // Caller thinks a.md still holds "stale" content.
         let stale = VaultRepo::blob_oid_of(b"stale").unwrap();
-        let txn = Changeset::new("bad update")
+        let txn = ChangePlan::new("bad update")
             .upsert("a.md", "v2")
-            .expect_blob("a.md", stale);
+            .expect_blob("a.md", stale.to_string());
         assert!(matches!(
             vr.commit_changeset(&txn),
-            Err(Error::PreconditionFailed { .. })
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
 
         assert_eq!(vr.head_oid(), head_before, "no commit on abort");
@@ -442,7 +351,7 @@ mod tests {
     #[test]
     fn multi_file_batch_is_one_atomic_commit() {
         let (_tmp, vr) = open_unborn();
-        let txn = Changeset::new("batch")
+        let txn = ChangePlan::new("batch")
             .upsert("a.md", "A")
             .upsert("dir/b.md", "B")
             .remove("ghost.md"); // remove of absent path is a no-op in the tree
@@ -465,17 +374,17 @@ mod tests {
         // b.md is unchanged. If b.md moved, the whole batch aborts even though we
         // never write b.md.
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").upsert("b.md", "B1"))
+        vr.commit_changeset(&ChangePlan::new("seed").upsert("b.md", "B1"))
             .unwrap();
         let head_before = vr.head_oid();
 
         let stale_b = VaultRepo::blob_oid_of(b"B-OLD").unwrap();
-        let txn = Changeset::new("write a, guard b")
+        let txn = ChangePlan::new("write a, guard b")
             .upsert("a.md", "A")
-            .expect_blob("b.md", stale_b);
+            .expect_blob("b.md", stale_b.to_string());
         assert!(matches!(
             vr.commit_changeset(&txn),
-            Err(Error::PreconditionFailed { path, .. }) if path == "b.md"
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { ref reason })) if reason.contains("b.md")
         ));
         assert_eq!(vr.head_oid(), head_before, "nothing committed");
         assert!(!workfile(&vr, "a.md").exists(), "a.md never materialized");
@@ -485,18 +394,21 @@ mod tests {
     fn empty_changeset_rejected() {
         let (_tmp, vr) = open_unborn();
         assert!(matches!(
-            vr.commit_changeset(&Changeset::new("empty")),
-            Err(Error::Other(_))
+            vr.commit_changeset(&ChangePlan::new("empty")),
+            Err(Error::Core(turbovault_core::Error::Other(_)))
         ));
     }
 
     #[test]
     fn duplicate_change_path_rejected() {
         let (_tmp, vr) = open_unborn();
-        let txn = Changeset::new("dup")
+        let txn = ChangePlan::new("dup")
             .upsert("a.md", "x")
             .upsert("a.md", "y");
-        assert!(matches!(vr.commit_changeset(&txn), Err(Error::Other(_))));
+        assert!(matches!(
+            vr.commit_changeset(&txn),
+            Err(Error::Core(turbovault_core::Error::Other(_)))
+        ));
     }
 
     #[test]
@@ -504,10 +416,10 @@ mod tests {
         // The move+links shape (GWS.8 will build these): remove old + add new in
         // one atomic commit.
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").upsert("old.md", "body"))
+        vr.commit_changeset(&ChangePlan::new("seed").upsert("old.md", "body"))
             .unwrap();
 
-        let txn = Changeset::new("move old->new")
+        let txn = ChangePlan::new("move old->new")
             .remove("old.md")
             .upsert("new.md", "body");
         let res = vr.commit_changeset(&txn).unwrap();
@@ -526,13 +438,15 @@ mod tests {
     fn create_on_absent_succeeds_create_on_existing_fails() {
         let (_tmp, vr) = open_unborn();
         // create succeeds when path is absent.
-        vr.commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+        vr.commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
         assert_eq!(read_wt(&vr, "a.md"), "alpha");
 
         // create on an existing path fails (expect_absent precondition).
-        let res = vr.commit_changeset(&Changeset::new("c2").create("a.md", "again"));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        let res = vr.commit_changeset(&ChangePlan::new("c2").create("a.md", "again"));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("a.md"))
+        );
         assert_eq!(
             read_wt(&vr, "a.md"),
             "alpha",
@@ -543,48 +457,65 @@ mod tests {
     #[test]
     fn update_requires_correct_expected_blob() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("a.md", "v1"))
             .unwrap();
 
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        vr.commit_changeset(&Changeset::new("u").update("a.md", "v2", v1))
+        vr.commit_changeset(&ChangePlan::new("u").update("a.md", "v2", v1.to_string()))
             .unwrap();
         assert_eq!(read_wt(&vr, "a.md"), "v2");
 
         // Update with stale expected (still v1, but file is now v2) aborts.
-        let res = vr.commit_changeset(&Changeset::new("u-stale").update("a.md", "v3", v1));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        let res =
+            vr.commit_changeset(&ChangePlan::new("u-stale").update("a.md", "v3", v1.to_string()));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("a.md"))
+        );
         assert_eq!(read_wt(&vr, "a.md"), "v2", "stale update did not apply");
     }
 
     #[test]
     fn delete_requires_correct_expected_blob() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("a.md", "v1"))
             .unwrap();
 
         // Stale expected -> abort, file still there.
         let stale = VaultRepo::blob_oid_of(b"OLD").unwrap();
-        let res = vr.commit_changeset(&Changeset::new("d-stale").delete("a.md", stale));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "a.md"));
+        let res =
+            vr.commit_changeset(&ChangePlan::new("d-stale").delete("a.md", stale.to_string()));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("a.md"))
+        );
         assert!(workfile(&vr, "a.md").exists(), "stale delete did not apply");
 
         // Correct expected -> file gone.
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
-        vr.commit_changeset(&Changeset::new("d").delete("a.md", v1))
+        vr.commit_changeset(&ChangePlan::new("d").delete("a.md", v1.to_string()))
             .unwrap();
         assert!(!workfile(&vr, "a.md").exists());
     }
 
+    // -------- Rename (design §6.2 fold; deliverable D / 9n6 primitive) --------
+
     #[test]
-    fn rename_atomically_with_endpoint_preconditions() {
+    fn rename_atomically_moves_content_in_one_commit() {
+        // The valid-rename half of the 9n6 primitive: to's ExpectAbsent
+        // precondition passes, so commit_changeset folds Rename into
+        // remove(from)+upsert(to) and lands both in one commit — the fold
+        // reads from's bytes off the base tree itself (no caller-supplied
+        // content).
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("old.md", "body"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("old.md", "body"))
             .unwrap();
 
         let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
         let res = vr
-            .commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", from_blob))
+            .commit_changeset(&ChangePlan::new("rn").rename(
+                "old.md",
+                "new.md",
+                from_blob.to_string(),
+            ))
             .unwrap();
 
         assert!(!workfile(&vr, "old.md").exists(), "source removed");
@@ -597,13 +528,18 @@ mod tests {
     #[test]
     fn rename_aborts_on_stale_source() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("old.md", "body"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("old.md", "body"))
             .unwrap();
 
         let stale = VaultRepo::blob_oid_of(b"different").unwrap();
-        let res =
-            vr.commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", stale));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "old.md"));
+        let res = vr.commit_changeset(&ChangePlan::new("rn").rename(
+            "old.md",
+            "new.md",
+            stale.to_string(),
+        ));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("old.md"))
+        );
         assert!(workfile(&vr, "old.md").exists(), "source kept on abort");
         assert!(
             !workfile(&vr, "new.md").exists(),
@@ -612,19 +548,28 @@ mod tests {
     }
 
     #[test]
-    fn rename_aborts_when_destination_exists() {
+    fn rename_aborts_when_destination_clobber_guard_trips() {
+        // The 9n6 primitive: ChangePlan::rename already emits (to,
+        // ExpectAbsent) at the builder level (M1) — this proves
+        // commit_changeset ENFORCES it. from is kept, to is untouched,
+        // nothing applied.
         let (_tmp, vr) = open_unborn();
         vr.commit_changeset(
-            &Changeset::new("seed")
+            &ChangePlan::new("seed")
                 .create("old.md", "body")
                 .create("new.md", "occupied"),
         )
         .unwrap();
 
         let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
-        let res = vr
-            .commit_changeset(&Changeset::new("rn").rename("old.md", "new.md", "body", from_blob));
-        assert!(matches!(res, Err(Error::PreconditionFailed { path, .. }) if path == "new.md"));
+        let res = vr.commit_changeset(&ChangePlan::new("rn").rename(
+            "old.md",
+            "new.md",
+            from_blob.to_string(),
+        ));
+        assert!(
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { reason })) if reason.contains("new.md"))
+        );
         assert!(workfile(&vr, "old.md").exists());
         assert_eq!(read_wt(&vr, "new.md"), "occupied", "destination untouched");
     }
@@ -632,10 +577,10 @@ mod tests {
     #[test]
     fn rename_chained_with_link_updates_is_one_commit() {
         // Move + update-links: rename old->new AND fix link targets in two other
-        // files, all in one atomic commit (the case the legacy batch couldn't).
+        // files, all in one atomic commit (the case the direct batch couldn't).
         let (_tmp, vr) = open_unborn();
         vr.commit_changeset(
-            &Changeset::new("seed")
+            &ChangePlan::new("seed")
                 .create("old.md", "body")
                 .create("link1.md", "see [[old]]")
                 .create("link2.md", "ref [[old]] here"),
@@ -647,10 +592,10 @@ mod tests {
         let l2_blob = VaultRepo::blob_oid_of(b"ref [[old]] here").unwrap();
         let res = vr
             .commit_changeset(
-                &Changeset::new("mv+links")
-                    .rename("old.md", "new.md", "body", body_blob)
-                    .update("link1.md", "see [[new]]", l1_blob)
-                    .update("link2.md", "ref [[new]] here", l2_blob),
+                &ChangePlan::new("mv+links")
+                    .rename("old.md", "new.md", body_blob.to_string())
+                    .update("link1.md", "see [[new]]", l1_blob.to_string())
+                    .update("link2.md", "ref [[new]] here", l2_blob.to_string()),
             )
             .unwrap();
 
@@ -691,7 +636,7 @@ mod tests {
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
         let res = vr
-            .commit_changeset(&Changeset::new("c").create("a.md", "alpha"))
+            .commit_changeset(&ChangePlan::new("c").create("a.md", "alpha"))
             .unwrap();
 
         let calls = calls.lock().unwrap();
@@ -710,11 +655,11 @@ mod tests {
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
         let r1 = vr
-            .commit_changeset(&Changeset::new("c1").create("a.md", "v1"))
+            .commit_changeset(&ChangePlan::new("c1").create("a.md", "v1"))
             .unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
         let r2 = vr
-            .commit_changeset(&Changeset::new("c2").update("a.md", "v2", v1))
+            .commit_changeset(&ChangePlan::new("c2").update("a.md", "v2", v1.to_string()))
             .unwrap();
 
         let calls = calls.lock().unwrap();
@@ -736,13 +681,13 @@ mod tests {
         });
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
-        vr.commit_changeset(&Changeset::new("c").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("c").create("a.md", "v1"))
             .unwrap();
 
         // Stale precondition -> reconsideration domino -> no commit.
         let stale = crate::VaultRepo::blob_oid_of(b"OLD").unwrap();
         assert!(
-            vr.commit_changeset(&Changeset::new("u").update("a.md", "v2", stale))
+            vr.commit_changeset(&ChangePlan::new("u").update("a.md", "v2", stale.to_string()))
                 .is_err()
         );
 
@@ -754,28 +699,30 @@ mod tests {
     fn vault_repo_without_hook_is_silent() {
         // Sanity: open_with_locks (no hook) still applies cleanly.
         let (_tmp, vr) = open_unborn();
-        let r = vr.commit_changeset(&Changeset::new("c").create("a.md", "x"));
+        let r = vr.commit_changeset(&ChangePlan::new("c").create("a.md", "x"));
         assert!(r.is_ok());
     }
 
     // -------- turbovault-uag: mutation-testing survivors (cargo-mutants) --------
 
-    /// `touched_paths` must list EVERY changed path (a surviving mutant replaced
-    /// it with `vec![]` / `vec![""]` — the gitignore-gate + reindex layers rely
-    /// on this).
+    /// `commit_changeset`'s materialize call must cover BOTH endpoints of a
+    /// `Rename`, not just `from` (write-substrate-layering M2, design §6.2) —
+    /// a mutant that dropped `ChangePlan::touched_paths`' Rename arm (tested
+    /// directly in `turbovault-core`) would leave `to` un-materialized here.
     #[test]
-    fn changeset_touched_paths_lists_every_changed_path() {
-        let v = crate::VaultRepo::blob_oid_of(b"old").unwrap();
-        let txn = Changeset::new("c")
-            .create("a.md", "a")
-            .update("b.md", "b", v)
-            .remove("c.md");
-        let mut p = txn.touched_paths();
-        p.sort();
-        assert_eq!(
-            p,
-            vec!["a.md".to_string(), "b.md".to_string(), "c.md".to_string()]
-        );
+    fn rename_materializes_both_endpoints() {
+        let (_tmp, vr) = open_unborn();
+        vr.commit_changeset(&ChangePlan::new("seed").create("old.md", "body"))
+            .unwrap();
+        let from_blob = VaultRepo::blob_oid_of(b"body").unwrap();
+        let res = vr
+            .commit_changeset(&ChangePlan::new("rn").rename(
+                "old.md",
+                "new.md",
+                from_blob.to_string(),
+            ))
+            .unwrap();
+        assert_eq!(res.paths, vec!["old.md".to_string(), "new.md".to_string()]);
     }
 
     /// The raw escape hatches `with_change` / `with_precondition` must actually
@@ -784,23 +731,24 @@ mod tests {
     fn raw_with_change_and_with_precondition_take_effect() {
         let (_tmp, vr) = open_unborn();
         // with_change(Upsert) lands the file.
-        let txn = Changeset::new("raw").with_change(TreeChange::Upsert {
+        let txn = ChangePlan::new("raw").with_change(Change::Upsert {
             path: "x.md".into(),
             content: b"hi".to_vec(),
         });
-        assert_eq!(txn.touched_paths(), vec!["x.md".to_string()]);
+        assert_eq!(txn.changes.len(), 1, "with_change must register the change");
         vr.commit_changeset(&txn).unwrap();
         assert_eq!(read_wt(&vr, "x.md"), "hi");
-        // with_precondition(expect_absent) on an EXISTING path must abort — and
-        // specifically on the PRECONDITION, not because a dropped builder left an
-        // empty txn (the txn carries a real upsert, so an empty-txn error would
-        // mean with_precondition discarded the chain).
-        let blocked = Changeset::new("b")
-            .upsert("y.md", b"y")
-            .with_precondition(Precondition::expect_absent("x.md"));
+        // with_precondition(x.md, expect_absent) on an EXISTING path must
+        // abort — and specifically on the PRECONDITION, not because a
+        // dropped builder left an empty plan (the plan carries a real
+        // upsert, so an empty-plan error would mean with_precondition
+        // discarded the chain).
+        let blocked = ChangePlan::new("b")
+            .upsert("y.md", b"y".to_vec())
+            .with_precondition("x.md", turbovault_core::Precondition::ExpectAbsent);
         assert_eq!(
-            blocked.touched_paths(),
-            vec!["y.md".to_string()],
+            blocked.changes.len(),
+            1,
             "with_precondition must preserve the builder chain"
         );
         let err = vr.commit_changeset(&blocked).unwrap_err().to_string();
@@ -816,11 +764,11 @@ mod tests {
     fn git_commit_first_parent_resolves_chain() {
         let (_tmp, vr) = open_unborn();
         let r1 = vr
-            .commit_changeset(&Changeset::new("c1").create("a.md", "1"))
+            .commit_changeset(&ChangePlan::new("c1").create("a.md", "1"))
             .unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"1").unwrap();
         let r2 = vr
-            .commit_changeset(&Changeset::new("c2").update("a.md", "2", v1))
+            .commit_changeset(&ChangePlan::new("c2").update("a.md", "2", v1.to_string()))
             .unwrap();
         assert_eq!(
             vr.git_commit_first_parent(r2.commit).unwrap(),
@@ -841,17 +789,17 @@ mod tests {
     fn first_parent_range_walks_the_chain() {
         let (_tmp, vr) = open_unborn();
         let c1 = vr
-            .commit_changeset(&Changeset::new("c1").create("a.md", "1"))
+            .commit_changeset(&ChangePlan::new("c1").create("a.md", "1"))
             .unwrap()
             .commit;
         let v1 = crate::VaultRepo::blob_oid_of(b"1").unwrap();
         let c2 = vr
-            .commit_changeset(&Changeset::new("c2").update("a.md", "2", v1))
+            .commit_changeset(&ChangePlan::new("c2").update("a.md", "2", v1.to_string()))
             .unwrap()
             .commit;
         let v2 = crate::VaultRepo::blob_oid_of(b"2").unwrap();
         let c3 = vr
-            .commit_changeset(&Changeset::new("c3").update("a.md", "3", v2))
+            .commit_changeset(&ChangePlan::new("c3").update("a.md", "3", v2.to_string()))
             .unwrap()
             .commit;
 
@@ -880,12 +828,12 @@ mod tests {
     fn first_parent_range_falls_back_on_merge_second_parent() {
         let (_tmp, vr) = open_unborn();
         let c1 = vr
-            .commit_changeset(&Changeset::new("c1").create("a.md", "1"))
+            .commit_changeset(&ChangePlan::new("c1").create("a.md", "1"))
             .unwrap()
             .commit;
         let v1 = crate::VaultRepo::blob_oid_of(b"1").unwrap();
         let c2 = vr
-            .commit_changeset(&Changeset::new("c2").update("a.md", "2", v1))
+            .commit_changeset(&ChangePlan::new("c2").update("a.md", "2", v1.to_string()))
             .unwrap()
             .commit;
         // f1: a side-branch commit off c1 (same tree, distinct commit).
@@ -929,7 +877,7 @@ mod tests {
     fn multi_file_move_aborts_atomically_when_a_linker_is_stale() {
         let (tmp, vr) = open_unborn();
         vr.commit_changeset(
-            &Changeset::new("seed")
+            &ChangePlan::new("seed")
                 .create("old.md", "# Old")
                 .create("linker.md", "[[old]]"),
         )
@@ -938,12 +886,12 @@ mod tests {
         let stale = crate::VaultRepo::blob_oid_of(b"DIFFERENT").unwrap();
         let head_before = vr.head_oid().unwrap();
 
-        let txn = Changeset::new("move")
+        let txn = ChangePlan::new("move")
             .remove("old.md")
             .upsert("new.md", b"# Old".to_vec())
-            .expect_blob("old.md", old_blob)
+            .expect_blob("old.md", old_blob.to_string())
             .upsert("linker.md", b"[[new]]".to_vec())
-            .expect_blob("linker.md", stale); // stale linker precondition
+            .expect_blob("linker.md", stale.to_string()); // stale linker precondition
         assert!(
             vr.commit_changeset(&txn).is_err(),
             "a stale linker must abort the whole move"
@@ -963,15 +911,15 @@ mod tests {
     #[test]
     fn batch_commits_real_change_despite_an_identity_subchange() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid().unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
 
         let res = vr
             .commit_changeset(
-                &Changeset::new("mixed")
-                    .update("a.md", "v1", v1) // identity for a.md
+                &ChangePlan::new("mixed")
+                    .update("a.md", "v1", v1.to_string()) // identity for a.md
                     .create("b.md", "B"), // real change
             )
             .unwrap();
@@ -986,7 +934,7 @@ mod tests {
     #[test]
     fn identity_tree_write_is_noop() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
@@ -994,7 +942,7 @@ mod tests {
         // resulting tree is identical to the base -> no-op.
         let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
         let res = vr
-            .commit_changeset(&Changeset::new("idempotent").update("a.md", "v1", v1))
+            .commit_changeset(&ChangePlan::new("idempotent").update("a.md", "v1", v1.to_string()))
             .unwrap();
 
         assert!(res.no_op, "identity rewrite is a no-op");
@@ -1017,11 +965,11 @@ mod tests {
         });
         let (_tmp, vr) = open_unborn_with_hook(hook);
 
-        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("a.md", "v1"))
             .unwrap();
         let v1 = crate::VaultRepo::blob_oid_of(b"v1").unwrap();
         let res = vr
-            .commit_changeset(&Changeset::new("idempotent").update("a.md", "v1", v1))
+            .commit_changeset(&ChangePlan::new("idempotent").update("a.md", "v1", v1.to_string()))
             .unwrap();
 
         assert!(res.no_op);
@@ -1036,7 +984,7 @@ mod tests {
     #[test]
     fn stale_precondition_aborts_before_identity_shortcircuit() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
@@ -1044,10 +992,13 @@ mod tests {
         // the abort must win — preconditions are checked before the identity
         // short-circuit, so a stale read never silently passes as a no-op.
         let stale = VaultRepo::blob_oid_of(b"WRONG").unwrap();
-        let res = vr
-            .commit_changeset(&Changeset::new("idempotent-but-stale").update("a.md", "v1", stale));
+        let res = vr.commit_changeset(&ChangePlan::new("idempotent-but-stale").update(
+            "a.md",
+            "v1",
+            stale.to_string(),
+        ));
         assert!(
-            matches!(res, Err(Error::PreconditionFailed { ref path, .. }) if path == "a.md"),
+            matches!(res, Err(Error::Core(turbovault_core::Error::ConcurrencyError { ref reason })) if reason.contains("a.md")),
             "stale precondition aborts even when the tree would be identical: {res:?}"
         );
         assert_eq!(vr.head_oid(), head_before, "nothing committed on abort");
@@ -1056,13 +1007,13 @@ mod tests {
     #[test]
     fn remove_absent_path_alone_is_noop() {
         let (_tmp, vr) = open_unborn();
-        vr.commit_changeset(&Changeset::new("seed").create("a.md", "v1"))
+        vr.commit_changeset(&ChangePlan::new("seed").create("a.md", "v1"))
             .unwrap();
         let head_before = vr.head_oid();
 
         // Removing a path that isn't in the tree leaves the tree unchanged.
         let res = vr
-            .commit_changeset(&Changeset::new("rm ghost").remove("ghost.md"))
+            .commit_changeset(&ChangePlan::new("rm ghost").remove("ghost.md"))
             .unwrap();
         assert!(res.no_op, "removing an absent path is a no-op");
         assert!(res.paths.is_empty());

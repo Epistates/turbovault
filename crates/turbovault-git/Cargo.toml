@@ -11,8 +11,10 @@ description = "Git-native write substrate for TurboVault: every mutation is a co
 documentation = "https://docs.rs/turbovault-git"
 
 [dependencies]
-# Intentionally NO workspace-internal deps: turbovault-git is the substrate's
-# write core and stays self-contained for easy extraction to a separate repo.
+# turbovault-core: reuse core primitives (Error bridge; commit_changeset
+# accepts core's ChangePlan/Precondition at the boundary, M2). The
+# "self-contained for extraction" framing was never real (design §11.5).
+turbovault-core = { workspace = true }
 git2 = { workspace = true }
 fs4 = { workspace = true }
 thiserror = { workspace = true }

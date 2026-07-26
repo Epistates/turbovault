@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use turbovault_core::Precondition;
 use turbovault_vault::VaultManager;
 
 /// Field types for template parameters
@@ -351,17 +352,28 @@ impl TemplateEngine {
     }
 
     /// Create note from template (LLM fills in fields)
+    ///
+    /// Strict create ([`Precondition::ExpectAbsent`]): both substrates refuse
+    /// to clobber an existing path (write-substrate-layering M4d — the direct
+    /// backend now matches git's create-by-default, not a blind overwrite).
+    /// `message` is the git commit subject (ignored on direct).
     pub async fn create_from_template(
         &self,
         template_id: &str,
         file_path: &str,
         field_values: HashMap<String, String>,
+        message: &str,
     ) -> crate::Result<CreatedNoteInfo> {
         let (full_content, info) = self
             .compute_from_template(template_id, file_path, field_values)
             .await?;
         self.manager
-            .write_file(Path::new(file_path), &full_content, None)
+            .write_file(
+                Path::new(file_path),
+                &full_content,
+                Precondition::ExpectAbsent,
+                message,
+            )
             .await?;
         Ok(info)
     }
