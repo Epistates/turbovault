@@ -177,11 +177,14 @@ impl DirectSubstrate {
             Self::check_precondition(path, precondition, before.as_deref())?;
         }
 
+        // The plan's metadata rides down to every audit entry it produces: one
+        // plan is one logical mutation, so its entries share one origin.
+        let metadata = plan.metadata.as_ref();
         for change in &plan.changes {
             match change {
-                Change::Upsert { path, content } => self.upsert(path, content).await?,
-                Change::Remove { path } => self.remove(path).await?,
-                Change::Rename { from, to } => self.rename(from, to).await?,
+                Change::Upsert { path, content } => self.upsert(path, content, metadata).await?,
+                Change::Remove { path } => self.remove(path, metadata).await?,
+                Change::Rename { from, to } => self.rename(from, to, metadata).await?,
             }
         }
 
@@ -239,7 +242,12 @@ impl DirectSubstrate {
 
     /// Write `content` to `path` via temp+rename — the pre-M3a
     /// `VaultManager::write_file` body.
-    async fn upsert(&self, path: &str, content: &[u8]) -> Result<()> {
+    async fn upsert(
+        &self,
+        path: &str,
+        content: &[u8],
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<()> {
         let full = self.full_path(path);
         let before = tokio::fs::read(&full).await.ok();
 
@@ -258,24 +266,43 @@ impl DirectSubstrate {
         } else {
             OperationType::Create
         };
-        self.record_audit(path, operation, before.as_deref(), Some(content), None)
-            .await;
+        self.record_audit(
+            path,
+            operation,
+            before.as_deref(),
+            Some(content),
+            None,
+            metadata,
+        )
+        .await;
         Ok(())
     }
 
     /// The pre-M3a `VaultManager::delete_file` body.
-    async fn remove(&self, path: &str) -> Result<()> {
+    async fn remove(&self, path: &str, metadata: Option<&serde_json::Value>) -> Result<()> {
         let full = self.full_path(path);
         let before = tokio::fs::read(&full).await.ok();
         tokio::fs::remove_file(&full).await.map_err(Error::io)?;
-        self.record_audit(path, OperationType::Delete, before.as_deref(), None, None)
-            .await;
+        self.record_audit(
+            path,
+            OperationType::Delete,
+            before.as_deref(),
+            None,
+            None,
+            metadata,
+        )
+        .await;
         Ok(())
     }
 
     /// The pre-M3a `VaultManager::move_file` body (rename with cross-device
     /// fallback; raw bytes preserved for non-UTF-8 attachments).
-    async fn rename(&self, from: &str, to: &str) -> Result<()> {
+    async fn rename(
+        &self,
+        from: &str,
+        to: &str,
+        metadata: Option<&serde_json::Value>,
+    ) -> Result<()> {
         let from_full = self.full_path(from);
         let to_full = self.full_path(to);
         let bytes = tokio::fs::read(&from_full).await.map_err(Error::io)?;
@@ -304,6 +331,7 @@ impl DirectSubstrate {
             Some(&bytes),
             Some(&bytes),
             Some(to),
+            metadata,
         )
         .await;
         Ok(())
@@ -321,6 +349,7 @@ impl DirectSubstrate {
         before: Option<&[u8]>,
         after: Option<&[u8]>,
         new_path: Option<&str>,
+        metadata: Option<&serde_json::Value>,
     ) {
         let (Some(audit_log), Some(snapshot_store)) = (&self.audit_log, &self.snapshot_store)
         else {
@@ -330,6 +359,10 @@ impl DirectSubstrate {
         let mut entry = AuditEntry::new(operation, rel_path);
         if let Some(new_path) = new_path {
             entry = entry.with_new_path(new_path);
+        }
+        // Verbatim: the caller's metadata is not interpreted here, only carried.
+        if let Some(metadata) = metadata {
+            entry = entry.with_metadata(metadata.clone());
         }
 
         if let Some(before) = before.and_then(|b| std::str::from_utf8(b).ok()) {
@@ -597,6 +630,134 @@ mod tests {
                 .unwrap(),
             "body"
         );
+    }
+
+    // -------- ChangePlan::metadata -> AuditEntry::metadata --------
+
+    /// A substrate with audit + snapshot recording wired, as `VaultManager::set_audit_log`
+    /// does. The plain `direct()` helper above leaves both `None`, which makes `record_audit`
+    /// a no-op — so these tests need their own.
+    async fn direct_with_audit(tmp: &TempDir) -> (DirectSubstrate, Arc<AuditLog>) {
+        let audit = Arc::new(AuditLog::new(tmp.path()).await.unwrap());
+        let snapshots = Arc::new(SnapshotStore::new(audit.snapshot_dir().to_path_buf()));
+        let mut sub = DirectSubstrate::new(tmp.path().to_path_buf());
+        sub.set_audit_log(Arc::clone(&audit), snapshots);
+        (sub, audit)
+    }
+
+    async fn entries(audit: &AuditLog) -> Vec<turbovault_audit::AuditEntry> {
+        audit
+            .query(&turbovault_audit::AuditFilter::new().with_limit(32))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn plan_metadata_lands_on_the_audit_entry() {
+        let tmp = TempDir::new().unwrap();
+        let (sub, audit) = direct_with_audit(&tmp).await;
+        let meta = serde_json::json!({ "source": "daily-review-agent", "correlation_id": "r-1" });
+
+        sub.apply(
+            &ChangePlan::new("write")
+                .create("notes/n.md", "body")
+                .with_metadata(meta.clone()),
+        )
+        .await
+        .unwrap();
+
+        let recorded = entries(&audit).await;
+        let entry = recorded
+            .iter()
+            .find(|e| e.path == "notes/n.md")
+            .expect("an audit entry for the written path");
+        assert_eq!(entry.metadata, meta);
+        // The rest of the entry is unchanged — metadata rides alongside, it does not replace.
+        assert_eq!(entry.operation, OperationType::Create);
+        assert_eq!(
+            entry.after_hash.as_deref(),
+            Some(compute_hash("body").as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_without_metadata_records_none() {
+        let tmp = TempDir::new().unwrap();
+        let (sub, audit) = direct_with_audit(&tmp).await;
+
+        sub.apply(&ChangePlan::new("write").create("notes/n.md", "body"))
+            .await
+            .unwrap();
+
+        let recorded = entries(&audit).await;
+        let entry = recorded.iter().find(|e| e.path == "notes/n.md").unwrap();
+        assert_eq!(
+            entry.metadata,
+            serde_json::json!({}),
+            "absent plan metadata must leave the entry's default untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_metadata_reaches_remove_and_rename_entries_too() {
+        let tmp = TempDir::new().unwrap();
+        let (sub, audit) = direct_with_audit(&tmp).await;
+        let meta = serde_json::json!({ "source": "organizer" });
+
+        sub.apply(&ChangePlan::new("seed").create("a.md", "body"))
+            .await
+            .unwrap();
+        let hash = compute_hash("body");
+
+        sub.apply(
+            &ChangePlan::new("move")
+                .rename("a.md", "b.md", hash.clone())
+                .with_metadata(meta.clone()),
+        )
+        .await
+        .unwrap();
+        sub.apply(
+            &ChangePlan::new("delete")
+                .delete("b.md", hash)
+                .with_metadata(meta.clone()),
+        )
+        .await
+        .unwrap();
+
+        let recorded = entries(&audit).await;
+        for op in [OperationType::Move, OperationType::Delete] {
+            let entry = recorded
+                .iter()
+                .find(|e| e.operation == op)
+                .unwrap_or_else(|| panic!("an audit entry for {op:?}"));
+            assert_eq!(
+                entry.metadata, meta,
+                "{op:?} entry lost the plan's metadata"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_entry_of_a_multi_change_plan_carries_the_metadata() {
+        // One plan is one logical mutation: all of its entries share the origin.
+        let tmp = TempDir::new().unwrap();
+        let (sub, audit) = direct_with_audit(&tmp).await;
+        let meta = serde_json::json!({ "source": "batch-importer" });
+
+        sub.apply(
+            &ChangePlan::new("import")
+                .create("x.md", "one")
+                .create("y.md", "two")
+                .with_metadata(meta.clone()),
+        )
+        .await
+        .unwrap();
+
+        let recorded = entries(&audit).await;
+        for path in ["x.md", "y.md"] {
+            let entry = recorded.iter().find(|e| e.path == path).unwrap();
+            assert_eq!(entry.metadata, meta);
+        }
     }
 
     // -------- DirectSubstrate::apply — every Precondition variant --------

@@ -50,6 +50,25 @@ pub struct ChangePlan {
     pub message: String,
     pub changes: Vec<Change>,
     pub preconditions: Vec<(String, Precondition)>,
+    /// Opaque, caller-defined metadata recorded on the audit entries this plan
+    /// produces. **Turbovault does not interpret it.**
+    ///
+    /// It exists because a filesystem change event is provenance-blind: a
+    /// `FileModified` is identical whether Turbovault, Obsidian, or git wrote
+    /// the file. Only the *writer* knows who it was, and before this there was
+    /// nowhere for a writer to say so, so a reactive consumer could not tell
+    /// its own writes apart from a human's — and reacted to notes it had just
+    /// produced itself. Recording the caller's own metadata on the audit entry
+    /// lets a consumer join a change back to the write that caused it and
+    /// break that loop.
+    ///
+    /// Deliberately `serde_json::Value` rather than a typed provenance struct:
+    /// it lands verbatim in [`turbovault_audit::AuditEntry::metadata`], which
+    /// is already this type, so nothing here needs to know or agree on a
+    /// schema. Callers put whatever they read back — provenance, correlation
+    /// ids, trace context. A typed accessor can layer on top later without
+    /// changing this plumbing.
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl ChangePlan {
@@ -84,6 +103,14 @@ impl ChangePlan {
     /// Add an arbitrary [`Change`].
     pub fn with_change(mut self, change: Change) -> Self {
         self.changes.push(change);
+        self
+    }
+
+    /// Attach opaque metadata to be recorded on this plan's audit entries.
+    /// See [`ChangePlan::metadata`]. Applies to every change in the plan: one
+    /// plan is one logical mutation, so its entries share one origin.
+    pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
+        self.metadata = Some(metadata);
         self
     }
 
