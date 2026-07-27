@@ -123,9 +123,12 @@ pub enum BatchOperation {
         on_backlinks: Option<String>,
     },
 
-    /// Move/rename a note. `expected_hash` guards the SOURCE against
-    /// concurrent modification (the destination always carries
-    /// `expect_absent`, refusing to clobber).
+    /// Move/rename a note. `expected_hash` guards the SOURCE against concurrent
+    /// modification; `dest_expected_hash` guards the DESTINATION. Both are
+    /// sentinel-or-oid strings (`<oid> | "absent" | "exists" | "blind"`), the
+    /// same shape every other batch op's `expected_hash` uses. `dest_expected_hash`
+    /// omitted = `"absent"` (the default clobber guard — refuse if the dest
+    /// exists), preserving the pre-qae.6.4 behavior. (turbovault-qae.6.4)
     ///
     /// turbovault-0g4.6: on the **git backend**, `update_backlinks` (default
     /// true) atomically rewrites every inbound wikilink — `[[from]]`,
@@ -138,9 +141,14 @@ pub enum BatchOperation {
     MoveNote {
         from: String,
         to: String,
-        /// Optional optimistic-concurrency precondition on the source file.
+        /// Optional optimistic-concurrency precondition on the source file
+        /// (sentinel-or-oid string).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
+        /// Optional optimistic-concurrency precondition on the destination
+        /// (sentinel-or-oid string). Omitted = `"absent"` (clobber guard).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dest_expected_hash: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         update_backlinks: Option<bool>,
     },
@@ -331,6 +339,7 @@ mod tests {
             from: "a.md".to_string(),
             to: "b.md".to_string(),
             expected_hash: None,
+            dest_expected_hash: None,
             update_backlinks: None,
         };
         let affected = op.affected_files();

@@ -1175,7 +1175,7 @@
                   ]
                 },
                 {
-                  "description": "Move/rename a note. `expected_hash` guards the SOURCE against\nconcurrent modification (the destination always carries\n`expect_absent`, refusing to clobber).\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The direct backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
+                  "description": "Move/rename a note. `expected_hash` guards the SOURCE against concurrent\nmodification; `dest_expected_hash` guards the DESTINATION. Both are\nsentinel-or-oid strings (`<oid> | \"absent\" | \"exists\" | \"blind\"`), the\nsame shape every other batch op's `expected_hash` uses. `dest_expected_hash`\nomitted = `\"absent\"` (the default clobber guard — refuse if the dest\nexists), preserving the pre-qae.6.4 behavior. (turbovault-qae.6.4)\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The direct backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
                   "type": "object",
                   "properties": {
                     "from": {
@@ -1185,7 +1185,14 @@
                       "type": "string"
                     },
                     "expected_hash": {
-                      "description": "Optional optimistic-concurrency precondition on the source file.",
+                      "description": "Optional optimistic-concurrency precondition on the source file\n(sentinel-or-oid string).",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "dest_expected_hash": {
+                      "description": "Optional optimistic-concurrency precondition on the destination\n(sentinel-or-oid string). Omitted = `\"absent\"` (clobber guard).",
                       "type": [
                         "string",
                         "null"

@@ -135,6 +135,7 @@ async fn test_batch_execute_move() {
         from: "existing.md".to_string(),
         to: "moved.md".to_string(),
         expected_hash: None,
+        dest_expected_hash: None,
         update_backlinks: None,
     }];
 
@@ -169,6 +170,7 @@ async fn test_batch_execute_mixed_operations() {
             from: "existing.md".to_string(),
             to: "renamed.md".to_string(),
             expected_hash: None,
+            dest_expected_hash: None,
             update_backlinks: None,
         },
     ];

@@ -164,8 +164,10 @@ impl BatchTools {
         message: &str,
     ) -> Result<ChangePlan> {
         let plan = ChangePlan::new(message.to_string());
+        // `None` dest precondition = expect_absent (this builder's existing
+        // clobber-guard behavior; qae.6.4 adds the dest axis at the batch op only).
         let (plan, _link_sources_updated) = self
-            .fold_move_with_links(plan, from, to, expected_hash)
+            .fold_move_with_links(plan, from, to, expected_hash, None)
             .await?;
         Ok(plan)
     }
@@ -210,6 +212,7 @@ impl BatchTools {
                 from,
                 to,
                 expected_hash,
+                None, // dest precondition = expect_absent (existing behavior)
             )
             .await?;
         self.manager.apply_changes(&plan).await?;
@@ -276,10 +279,18 @@ impl BatchTools {
                 from,
                 to,
                 expected_hash,
+                dest_expected_hash,
                 update_backlinks,
             } => {
-                self.fold_move_note(plan, from, to, expected_hash.as_deref(), *update_backlinks)
-                    .await?
+                self.fold_move_note(
+                    plan,
+                    from,
+                    to,
+                    expected_hash.as_deref(),
+                    dest_expected_hash.as_deref(),
+                    *update_backlinks,
+                )
+                .await?
             }
             BatchOperation::UpdateLinks {
                 file,
@@ -387,22 +398,24 @@ impl BatchTools {
         from: &str,
         to: &str,
         expected_hash: Option<&str>,
+        dest_expected_hash: Option<&str>,
         update_backlinks: Option<bool>,
     ) -> Result<ChangePlan> {
         if update_backlinks.unwrap_or(true) {
             Ok(self
-                .fold_move_with_links(plan, from, to, expected_hash)
+                .fold_move_with_links(plan, from, to, expected_hash, dest_expected_hash)
                 .await?
                 .0)
         } else {
             // Rename-only: no backlink rewrite, inbound links dangle. The
-            // destination always carries expect_absent (refuses to clobber).
+            // destination precondition decodes from `dest_expected_hash`
+            // (omitted → expect_absent, the clobber guard).
             let content = self.read_file(from).await?;
             let mut p = plan.remove(from).upsert(to, content.into_bytes());
             if let Some(token) = expected_hash {
                 p = p.expect_blob(from, token.to_string());
             }
-            Ok(p.expect_absent(to))
+            Ok(apply_dest_precondition(p, to, dest_expected_hash))
         }
     }
 
@@ -524,6 +537,7 @@ impl BatchTools {
         from: &str,
         to: &str,
         expected_from: Option<&str>,
+        dest_expected_hash: Option<&str>,
     ) -> Result<(ChangePlan, Vec<String>)> {
         use crate::wikilink_rewriter::rewrite_wikilinks;
 
@@ -568,7 +582,7 @@ impl BatchTools {
         if let Some(token) = expected_from {
             plan = plan.expect_blob(from, token.to_string());
         }
-        plan = plan.expect_absent(to);
+        plan = apply_dest_precondition(plan, to, dest_expected_hash);
         for (rel_path, rewritten, hash) in &link_updates {
             plan = plan
                 .upsert(rel_path.clone(), rewritten.clone().into_bytes())
@@ -700,6 +714,24 @@ fn remove_expecting(plan: ChangePlan, path: &str, expected_hash: Option<&str>) -
         p = p.expect_blob(path, token.to_string());
     }
     p
+}
+
+/// Decode a batch move's `dest_expected_hash` sentinel-or-oid string
+/// (`<oid> | "absent" | "exists" | "blind"`, turbovault-qae.6.4) into the
+/// destination precondition on `to`. Omitted (`None`) defaults to `expect_absent`
+/// — the clobber guard, preserving the pre-qae.6.4 behavior. A bare oid is
+/// carried verbatim (the substrate that applies the plan parses it, §6.2).
+fn apply_dest_precondition(
+    plan: ChangePlan,
+    to: &str,
+    dest_expected_hash: Option<&str>,
+) -> ChangePlan {
+    match dest_expected_hash {
+        None | Some("absent") => plan.expect_absent(to),
+        Some("blind") => plan,
+        Some("exists") => plan.with_precondition(to, turbovault_core::Precondition::ExpectExists),
+        Some(oid) => plan.expect_blob(to, oid.to_string()),
+    }
 }
 
 /// The soft `success: false` [`BatchResult`] a manager-routed batch returns

@@ -299,6 +299,7 @@ async fn batch_failure_leaves_zero_partial_state() {
             from: "does_not_exist.md".into(),
             to: "anywhere.md".into(),
             expected_hash: None,
+            dest_expected_hash: None,
             update_backlinks: None,
         },
         BatchOperation::WriteNote {
