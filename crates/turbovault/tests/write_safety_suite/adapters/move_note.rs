@@ -71,6 +71,19 @@ async fn move_manager(
     .await
 }
 
+/// A precondition as the sentinel-or-oid string the batch ops carry:
+/// `<oid> | "absent" | "exists" | "blind"` (the ratified wire encoding). Used
+/// for the destination, whose axis is richer than a bare hash. The source keeps
+/// the plain `blob_token` idiom every other batch op already uses.
+fn sentinel(pc: &Precondition) -> Option<String> {
+    Some(match pc {
+        Precondition::ExpectBlob(oid) => return Some(oid.clone()),
+        Precondition::ExpectAbsent => "absent".to_string(),
+        Precondition::ExpectExists => "exists".to_string(),
+        Precondition::Blind => "blind".to_string(),
+    })
+}
+
 async fn move_batch(
     mgr: Arc<VaultManager>,
     from: &str,
@@ -78,16 +91,18 @@ async fn move_batch(
     from_pc: Precondition,
     to_pc: Precondition,
 ) -> Result<(), turbovault_core::Error> {
-    // NEEDED API (turbovault-qae.6.4): a batch `MoveNote` must carry first-class
-    // source AND destination `Precondition`s — replacing the lossy source-only
-    // `expected_hash` and the hardcoded `expect_absent(to)`. This does NOT
-    // compile until that surface exists; the failure is the intentional WSS
-    // signal that batch move needs dual preconditions to be clobber-safe.
+    // NEEDED API (turbovault-qae.6.4): batch `MoveNote` gains a `dest_expected_hash`
+    // parallel to the source `expected_hash`, both `Option<String>` (sentinel|oid),
+    // matching every other batch op's shape. The source keeps the existing
+    // `blob_token` idiom; the destination is sentinel-encoded so it can express
+    // the full dest axis (absent/exists/blind/oid), replacing the hardcoded
+    // `expect_absent(to)`. `dest_expected_hash` does NOT exist until qae.6.4 adds
+    // it, so this won't compile — the intentional WSS signal.
     let op = BatchOperation::MoveNote {
         from: from.to_string(),
         to: to.to_string(),
-        src_precondition: from_pc,
-        dest_precondition: to_pc,
+        expected_hash: BatchWorld::blob_token(&from_pc),
+        dest_expected_hash: sentinel(&to_pc),
         update_backlinks: None,
     };
     let mut plan = BatchTools::new(mgr.clone()).plan(&[op]).await?;
