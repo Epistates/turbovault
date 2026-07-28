@@ -10,9 +10,11 @@
 use libtest_mimic::Trial;
 
 use super::{Case, REL, SinglePathOp, cell_trial, present_state};
-use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, observe};
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
+};
 use crate::harness::outcome::{Observed, Outcome as O};
-use crate::harness::precondition::{Precondition, PreconditionKind as P};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
 use turbovault_tools::BatchOperation;
 use turbovault_tools::FileTools;
@@ -122,6 +124,31 @@ impl SinglePathOp<BatchWorld> for EditNote {
         w.run_batch_of_one(op, rel).await
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Wire-layer invoker (nbl.12): the real `edit_note` MCP handler in-process; the
+// SEARCH block is computed from the on-disk bytes as elsewhere, the precondition
+// encoded as the sentinel `expected_hash`. Shares `CASES` + `ok_check`.
+impl SinglePathOp<WireWorld> for EditNote {
+    fn name(&self) -> &'static str {
+        "edit_note"
+    }
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let current = w.vault().read(rel).unwrap_or_default();
+        let edits = edits_replacing(&current);
+        let params = serde_json::json!({
+            "path": rel,
+            "edits": edits,
+            "expected_hash": sentinel(&pc),
+        });
+        observe_outcome(w.call_tool("edit_note", params).await, w.vault().read(rel))
+    }
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         ok_check(observed)
     }

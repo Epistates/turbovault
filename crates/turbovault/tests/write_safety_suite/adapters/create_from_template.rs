@@ -11,9 +11,11 @@
 use std::collections::HashMap;
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
+};
 use crate::harness::outcome::{Observed, Outcome as O};
-use crate::harness::precondition::{Precondition, PreconditionKind as P};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
 use turbovault_tools::BatchOperation;
 use turbovault_tools::TemplateEngine;
@@ -97,6 +99,34 @@ impl SinglePathOp<BatchWorld> for CreateFromTemplate {
         w.run_batch_of_one(op, rel).await
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Wire-layer invoker (nbl.12): the real `create_from_template` MCP handler
+// in-process. NOTE the wire shape: `file_path` (not `path`) + `fields` as a JSON
+// STRING. No `expected_hash` wire param yet (hardcoded ExpectAbsent), so the
+// sentinel is aspirational. Shares `CASES` + `ok_check`.
+impl SinglePathOp<WireWorld> for CreateFromTemplate {
+    fn name(&self) -> &'static str {
+        "create_from_template"
+    }
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let params = serde_json::json!({
+            "template_id": "research",
+            "file_path": rel,
+            "fields": serde_json::to_string(&fields()).unwrap(),
+            "expected_hash": sentinel(&pc),
+        });
+        observe_outcome(
+            w.call_tool("create_from_template", params).await,
+            w.vault().read(rel),
+        )
+    }
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         ok_check(observed)
     }

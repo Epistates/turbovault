@@ -6,9 +6,11 @@
 //! precondition yet, so this does not compile until the cutover (qae.9.1).
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, observe};
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
+};
 use crate::harness::outcome::{Observed, Outcome as O};
-use crate::harness::precondition::{Precondition, PreconditionKind as P};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
 use turbovault_tools::BatchOperation;
 use turbovault_tools::FileTools;
@@ -116,6 +118,35 @@ impl SinglePathOp<BatchWorld> for WriteNote {
             },
         };
         w.run_batch_of_one(op, rel).await
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Wire-layer invoker (nbl.12): drive the real `write_note` MCP handler in-process
+// via `w.call_tool`, encoding the precondition as the ratified sentinel
+// `expected_hash` string. Shares `CASES` + `ok_check`. ASPIRATIONAL: the handler
+// does not decode sentinels yet (qae.6.4 wire-decode commit), so the sentinel
+// cells fail until it does — the wire arm drives that requirement.
+impl SinglePathOp<WireWorld> for WriteNote {
+    fn name(&self) -> &'static str {
+        "write_note"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let params = serde_json::json!({
+            "path": rel,
+            "content": CONTENT,
+            "expected_hash": sentinel(&pc),
+        });
+        let outcome = w.call_tool("write_note", params).await;
+        observe_outcome(outcome, w.vault().read(rel))
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {

@@ -21,6 +21,19 @@ pub use turbovault_core::Precondition;
 /// `WRONG_OID`. Parses as a valid `git2::Oid` but never equals a stored blob.
 pub const WRONG_OID: &str = "0000000000000000000000000000000000000001";
 
+/// Encode a [`Precondition`] as the sentinel-or-oid string the wire + batch ops
+/// carry: `<oid> | "absent" | "exists" | "blind"` (the ratified `expected_hash`
+/// overloading). Every variant maps to `Some(_)`; the op's default precondition
+/// applies only when the caller OMITS the param — which the WSS invokers never do.
+pub fn sentinel(pc: &Precondition) -> Option<String> {
+    Some(match pc {
+        Precondition::ExpectBlob(oid) => return Some(oid.clone()),
+        Precondition::ExpectAbsent => "absent".to_string(),
+        Precondition::ExpectExists => "exists".to_string(),
+        Precondition::Blind => "blind".to_string(),
+    })
+}
+
 /// The precondition-axis selector a matrix cell carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreconditionKind {

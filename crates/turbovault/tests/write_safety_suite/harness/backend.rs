@@ -19,7 +19,9 @@
 use std::sync::{Arc, Once};
 
 use tempfile::TempDir;
-use turbovault_core::config::{ServerConfig, VaultConfig, WriteBackend};
+use turbomcp::{McpHandler, RequestContext};
+use turbovault::ObsidianMcpServer;
+use turbovault_core::config::{ServerConfig, VaultConfig, VaultGitConfig, WriteBackend};
 use turbovault_tools::{BatchOperation, BatchTools};
 use turbovault_vault::VaultManager;
 
@@ -284,22 +286,47 @@ impl BatchWorld {
     }
 }
 
-/// The Wire layer (nbl.12): a spawned MCP server + JSON-RPC client. **SKELETON** —
-/// invokers would `call_tool(name, params)` over stdio; the vault is still needed
-/// for state setup + reads. The server/client plumbing and the `Precondition`→wire
-/// encoding (blocked on the M5.3 wire-param decision) are nbl.12; until then this
-/// is a compiling placeholder so the shape is visible.
+/// The Wire layer (nbl.12): an **in-process** `ObsidianMcpServer` driven through
+/// its real `call_tool` dispatch — the SAME path the JSON-RPC/stdio transport
+/// routes to, minus the framing (the `test_mcp_e2e_git_substrate.rs` shape). It
+/// exercises the load-bearing wire concerns — the `#[tool]` handler, JSON param
+/// (de)serialization, and the `ConcurrencyError → McpError` mapping — git-capable
+/// and cheap (no child process). This cell's vault is registered directly via a
+/// `VaultConfig` (bypassing the `add_vault` tool, which is Direct-only —
+/// turbovault-kdq).
+///
+/// The typed error kind is ERASED at the wire (every domain error flattens to an
+/// `McpError` carrying only a Display string), so [`WireWorld::call_tool`]
+/// classifies the outcome by MESSAGE SUBSTRING — which is precisely the wire
+/// contract this arm exists to pin: that the kind survives as a legible string.
 pub struct WireWorld {
     vault: Vault,
-    // nbl.12: spawned `turbovault` server process + an MCP client over stdio.
+    server: ObsidianMcpServer,
+    config: VaultConfig,
+    /// Registration is async (`add_vault`/`set_active_vault`) so it can't happen
+    /// in the sync `Layer::new`; do it once, lazily, on the first call.
+    active: tokio::sync::OnceCell<()>,
 }
 
 impl Layer for WireWorld {
     const LABEL: &'static str = "wire";
     fn new(backend: Backend) -> Self {
-        // nbl.12: also spawn the server + connect a client over this vault's dir.
+        let vault = Vault::new(backend);
+        let write_backend = match backend {
+            Backend::Git => WriteBackend::Git,
+            Backend::Direct => WriteBackend::Direct,
+        };
+        let mut builder =
+            VaultConfig::builder("wss", vault.dir.path()).write_backend(write_backend);
+        if backend == Backend::Git {
+            builder = builder.git(VaultGitConfig::default());
+        }
+        let config = builder.build().expect("wire vault config");
         WireWorld {
-            vault: Vault::new(backend),
+            vault,
+            server: ObsidianMcpServer::new().expect("wire server"),
+            config,
+            active: tokio::sync::OnceCell::new(),
         }
     }
     fn vault(&self) -> &Vault {
@@ -308,9 +335,66 @@ impl Layer for WireWorld {
 }
 
 impl WireWorld {
-    /// Invoke a tool over the wire and normalize the reply into an [`Observed`].
-    pub async fn call_tool(&self, _tool: &str, _params: serde_json::Value) -> Observed {
-        todo!("nbl.12: JSON-RPC call_tool + Precondition wire encoding (M5.3)")
+    /// Register + activate this cell's vault on the server exactly once.
+    async fn ensure_active(&self) {
+        self.active
+            .get_or_init(|| async {
+                self.server
+                    .multi_vault()
+                    .add_vault(self.config.clone())
+                    .await
+                    .expect("wire add_vault");
+                self.server
+                    .multi_vault()
+                    .set_active_vault("wss")
+                    .await
+                    .expect("wire set_active_vault");
+            })
+            .await;
+    }
+
+    /// Invoke a tool through the in-process server dispatch and classify the
+    /// outcome. `Ok(())` == the tool succeeded; `Err(kind)` == a failure,
+    /// classified from the wire message string. The op's invoker combines this
+    /// with the post-op working-tree read via [`observe_outcome`].
+    pub async fn call_tool(
+        &self,
+        tool: &str,
+        params: serde_json::Value,
+    ) -> Result<(), ObservedError> {
+        self.ensure_active().await;
+        match self
+            .server
+            .call_tool(tool, params, &RequestContext::new())
+            .await
+        {
+            Ok(result) if !result.is_error() => Ok(()),
+            Ok(result) => Err(classify_wire(result.first_text())),
+            Err(e) => Err(classify_wire(Some(&e.to_string()))),
+        }
+    }
+}
+
+/// Classify a wire error message into an [`ObservedError`]. The typed kind is
+/// erased at the wire boundary, so match the domain errors' `#[error(...)]`
+/// text: `"Concurrent access conflict: …"` / `"File not found: …"`.
+fn classify_wire(text: Option<&str>) -> ObservedError {
+    let t = text.unwrap_or_default();
+    if t.contains("Concurrent access conflict") {
+        ObservedError::Concurrency
+    } else if t.contains("File not found") {
+        ObservedError::NotFound
+    } else {
+        ObservedError::Other
+    }
+}
+
+/// The Wire analogue of [`observe`]: build an [`Observed`] from an already-
+/// classified wire outcome + the post-op working-tree content.
+pub fn observe_outcome(outcome: Result<(), ObservedError>, after: Option<String>) -> Observed {
+    match outcome {
+        Ok(()) => Observed::ok(after),
+        Err(kind) => Observed::failed(kind, after),
     }
 }
 

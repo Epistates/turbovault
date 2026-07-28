@@ -9,9 +9,11 @@
 use std::collections::HashMap;
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
+};
 use crate::harness::outcome::{Observed, Outcome as O};
-use crate::harness::precondition::{Precondition, PreconditionKind as P};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
 use turbovault_tools::BatchOperation;
 use turbovault_tools::MetadataTools;
@@ -84,6 +86,37 @@ impl SinglePathOp<BatchWorld> for UpdateFrontmatter {
         w.run_batch_of_one(op, rel).await
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Wire-layer invoker (nbl.12): the real `update_frontmatter` MCP handler
+// in-process. The handler has NO `expected_hash` wire param yet (it hardcodes
+// ExpectExists — "pre-cutover parity, M5.3"), so the sentinel is passed against
+// the NEEDED wire API and is currently ignored → cells fail until the wire-decode
+// commit adds the param + decodes it. Shares `CASES` + `ok_check`.
+impl SinglePathOp<WireWorld> for UpdateFrontmatter {
+    fn name(&self) -> &'static str {
+        "update_frontmatter"
+    }
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let mut fm = serde_json::Map::new();
+        fm.insert(KEY.to_string(), serde_json::json!(true));
+        let params = serde_json::json!({
+            "path": rel,
+            "frontmatter": fm,
+            "merge": true,
+            "expected_hash": sentinel(&pc),
+        });
+        observe_outcome(
+            w.call_tool("update_frontmatter", params).await,
+            w.vault().read(rel),
+        )
+    }
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         ok_check(observed)
     }

@@ -7,9 +7,11 @@
 //! deferred one-off (noted below), tracked with the substrate move of oz6.
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, observe};
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
+};
 use crate::harness::outcome::{Observed, Outcome as O};
-use crate::harness::precondition::{Precondition, PreconditionKind as P};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
 use turbovault_tools::BatchOperation;
 use turbovault_tools::FileTools;
@@ -106,6 +108,33 @@ impl SinglePathOp<BatchWorld> for DeleteNote {
         w.run_batch_of_one(op, rel).await
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Wire-layer invoker (nbl.12): the real `delete_note` MCP handler in-process.
+// `confirm_path` MUST equal `path` (the tool's delete-safety guard) or it refuses
+// before the precondition; the precondition rides the sentinel `expected_hash`.
+// Shares `CASES` + `ok_check`.
+impl SinglePathOp<WireWorld> for DeleteNote {
+    fn name(&self) -> &'static str {
+        "delete_note"
+    }
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let params = serde_json::json!({
+            "path": rel,
+            "confirm_path": rel,
+            "expected_hash": sentinel(&pc),
+        });
+        observe_outcome(
+            w.call_tool("delete_note", params).await,
+            w.vault().read(rel),
+        )
+    }
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         ok_check(observed)
     }

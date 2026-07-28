@@ -8,9 +8,11 @@
 //! (nbl.8 burndown).
 
 use super::{Case, SinglePathOp};
-use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ToolsWorld, observe};
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
+};
 use crate::harness::outcome::{Observed, Outcome as O};
-use crate::harness::precondition::{Precondition, PreconditionKind as P};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
 use turbovault_tools::BatchOperation;
 use turbovault_tools::MetadataTools;
@@ -81,6 +83,34 @@ impl SinglePathOp<BatchWorld> for ManageTags {
         w.run_batch_of_one(op, rel).await
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+// Wire-layer invoker (nbl.12): the real `manage_tags` MCP handler in-process
+// (`operation: "add"`). Like update_frontmatter, the handler has NO `expected_hash`
+// wire param yet, so the sentinel is aspirational (ignored until the wire-decode
+// commit). Shares `CASES` + `ok_check`.
+impl SinglePathOp<WireWorld> for ManageTags {
+    fn name(&self) -> &'static str {
+        "manage_tags"
+    }
+    fn cases(&self) -> &'static [Case] {
+        CASES
+    }
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let params = serde_json::json!({
+            "path": rel,
+            "operation": "add",
+            "tags": [TAG],
+            "expected_hash": sentinel(&pc),
+        });
+        observe_outcome(
+            w.call_tool("manage_tags", params).await,
+            w.vault().read(rel),
+        )
+    }
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         ok_check(observed)
     }

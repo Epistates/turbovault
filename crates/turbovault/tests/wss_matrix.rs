@@ -17,7 +17,7 @@ mod harness;
 mod adapters;
 
 use adapters::single_path_trials;
-use harness::backend::{Backend, BatchWorld, ManagerWorld, ToolsWorld};
+use harness::backend::{Backend, BatchWorld, ManagerWorld, ToolsWorld, WireWorld};
 use libtest_mimic::{Arguments, Trial};
 
 fn main() {
@@ -133,6 +133,46 @@ fn main() {
             backend,
         ));
         tests.extend(single_path_trials::<BatchWorld, _>(
+            adapters::move_note::MoveDest,
+            backend,
+        ));
+
+        // ── Wire layer (nbl.12) ──────────────────────────────────────────────
+        // In-process `ObsidianMcpServer` via `call_tool` — the real #[tool]
+        // handler + JSON serde + the ConcurrencyError→McpError mapping, no child
+        // process. Same shared tables as every other world. ASPIRATIONAL: the
+        // handlers don't decode the sentinel `expected_hash` yet, so sentinel
+        // cells fail until the wire-decode commit (qae.6.4) — the wire arm drives
+        // that requirement.
+        tests.extend(single_path_trials::<WireWorld, _>(
+            adapters::write_note::WriteNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<WireWorld, _>(
+            adapters::edit_note::EditNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<WireWorld, _>(
+            adapters::delete_note::DeleteNote,
+            backend,
+        ));
+        tests.extend(single_path_trials::<WireWorld, _>(
+            adapters::update_frontmatter::UpdateFrontmatter,
+            backend,
+        ));
+        tests.extend(single_path_trials::<WireWorld, _>(
+            adapters::manage_tags::ManageTags,
+            backend,
+        ));
+        tests.extend(single_path_trials::<WireWorld, _>(
+            adapters::create_from_template::CreateFromTemplate,
+            backend,
+        ));
+        tests.extend(single_path_trials::<WireWorld, _>(
+            adapters::move_note::MoveSrc,
+            backend,
+        ));
+        tests.extend(single_path_trials::<WireWorld, _>(
             adapters::move_note::MoveDest,
             backend,
         ));

@@ -25,9 +25,11 @@
 use std::sync::Arc;
 
 use super::{Case, SinglePathOp, present_state};
-use crate::harness::backend::{Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, observe};
-use crate::harness::outcome::{Observed, Outcome as O};
-use crate::harness::precondition::{Precondition, PreconditionKind as P};
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
+};
+use crate::harness::outcome::{Observed, ObservedError, Outcome as O};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
 use turbovault_tools::{BatchOperation, BatchTools, FileTools};
 use turbovault_vault::VaultManager;
@@ -71,19 +73,6 @@ async fn move_manager(
     .await
 }
 
-/// A precondition as the sentinel-or-oid string the batch ops carry:
-/// `<oid> | "absent" | "exists" | "blind"` (the ratified wire encoding). Used
-/// for the destination, whose axis is richer than a bare hash. The source keeps
-/// the plain `blob_token` idiom every other batch op already uses.
-fn sentinel(pc: &Precondition) -> Option<String> {
-    Some(match pc {
-        Precondition::ExpectBlob(oid) => return Some(oid.clone()),
-        Precondition::ExpectAbsent => "absent".to_string(),
-        Precondition::ExpectExists => "exists".to_string(),
-        Precondition::Blind => "blind".to_string(),
-    })
-}
-
 async fn move_batch(
     mgr: Arc<VaultManager>,
     from: &str,
@@ -108,6 +97,28 @@ async fn move_batch(
     let mut plan = BatchTools::new(mgr.clone()).plan(&[op]).await?;
     plan.message = MSG.to_string();
     mgr.apply_changes(&plan).await.map(|_| ())
+}
+
+/// The wire move: drive the real `move_note` MCP handler in-process, encoding
+/// BOTH preconditions as sentinel strings. `dest_expected_hash` is the NEEDED
+/// wire param (the handler has only a source `expected_hash` today), so the dest
+/// sweep is aspirational until the wire-decode commit adds it. `update_backlinks:
+/// false` uses the plain move path (note.md has no linkers either way).
+async fn move_wire(
+    w: &WireWorld,
+    from: &str,
+    to: &str,
+    from_pc: Precondition,
+    to_pc: Precondition,
+) -> Result<(), ObservedError> {
+    let params = serde_json::json!({
+        "from": from,
+        "to": to,
+        "expected_hash": sentinel(&from_pc),
+        "dest_expected_hash": sentinel(&to_pc),
+        "update_backlinks": false,
+    });
+    w.call_tool("move_note", params).await
 }
 
 // ── MoveSrc: vary the source (REL), destination held absent ──────────────────
@@ -190,6 +201,22 @@ impl SinglePathOp<BatchWorld> for MoveSrc {
         )
         .await;
         observe(res, w.vault().read(rel))
+    }
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        src_ok(observed)
+    }
+}
+
+impl SinglePathOp<WireWorld> for MoveSrc {
+    fn name(&self) -> &'static str {
+        "move_note::src"
+    }
+    fn cases(&self) -> &'static [Case] {
+        SRC_CASES
+    }
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = move_wire(w, rel, OTHER, pc, Precondition::ExpectAbsent).await;
+        observe_outcome(res, w.vault().read(rel))
     }
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         src_ok(observed)
@@ -280,6 +307,24 @@ impl SinglePathOp<BatchWorld> for MoveDest {
         )
         .await;
         observe(res, w.vault().read(rel))
+    }
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        dest_ok(observed)
+    }
+}
+
+impl SinglePathOp<WireWorld> for MoveDest {
+    fn name(&self) -> &'static str {
+        "move_note::dest"
+    }
+    fn cases(&self) -> &'static [Case] {
+        DEST_CASES
+    }
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        w.vault()
+            .build_state(OTHER, present_state(w.vault().backend()));
+        let res = move_wire(w, OTHER, rel, Precondition::ExpectExists, pc).await;
+        observe_outcome(res, w.vault().read(rel))
     }
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         dest_ok(observed)
