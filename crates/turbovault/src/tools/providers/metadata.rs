@@ -105,6 +105,7 @@ impl MetadataProvider {
         path: String,
         frontmatter: HashMap<String, serde_json::Value>,
         merge: Option<bool>,
+        expected_hash: Option<String>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -118,9 +119,9 @@ impl MetadataProvider {
                 &path,
                 fm_map,
                 merge.unwrap_or(true),
-                // Pre-cutover parity: no wire `expected_hash` yet (that is
-                // M5.3), so the in-place default `ExpectExists` is preserved.
-                turbovault_core::Precondition::for_in_place(None),
+                // Sentinel-or-oid `expected_hash` (qae.6.4); omitted → the
+                // in-place default `ExpectExists`.
+                turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
                 &message,
             )
             .await
@@ -152,6 +153,7 @@ impl MetadataProvider {
         path: String,
         operation: String,
         tags: Option<Vec<String>>,
+        expected_hash: Option<String>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -176,7 +178,9 @@ impl MetadataProvider {
                 .write_file(
                     std::path::Path::new(&path),
                     &content,
-                    turbovault_core::Precondition::for_in_place(None),
+                    // Sentinel-or-oid `expected_hash` (qae.6.4); omitted →
+                    // in-place default `ExpectExists`.
+                    turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
                     &message,
                 )
                 .await

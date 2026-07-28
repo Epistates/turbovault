@@ -380,9 +380,12 @@ impl WireWorld {
 /// text: `"Concurrent access conflict: …"` / `"File not found: …"`.
 fn classify_wire(text: Option<&str>) -> ObservedError {
     let t = text.unwrap_or_default();
+    // Mirror the typed `classify`: a not-found reaches the wire either as the
+    // domain `FileNotFound` ("File not found: …") OR as a raw `Io(NotFound)`
+    // ("… No such file or directory …") — both are the same NotFound outcome.
     if t.contains("Concurrent access conflict") {
         ObservedError::Concurrency
-    } else if t.contains("File not found") {
+    } else if t.contains("File not found") || t.contains("No such file or directory") {
         ObservedError::NotFound
     } else {
         ObservedError::Other

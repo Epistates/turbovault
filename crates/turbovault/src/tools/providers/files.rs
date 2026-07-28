@@ -54,8 +54,8 @@ impl FileProvider {
 
     /// Write or update a note with optional mode (overwrite, append, prepend)
     #[tool(
-        description = "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash unless force=true. Git-backed vaults commit the mutation atomically.",
-        usage = "Read existing notes first and pass the returned expected_hash. Use force=true only for an intentional blind overwrite. commit_message controls the Git commit subject when using write_backend=git.",
+        description = "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash (or expected_hash=\"blind\" for an intentional blind overwrite). Git-backed vaults commit the mutation atomically.",
+        usage = "Read existing notes first and pass the returned expected_hash. expected_hash accepts a hash or a sentinel (\"blind\"|\"absent\"|\"exists\"); use \"blind\" only for an intentional blind overwrite. commit_message controls the Git commit subject when using write_backend=git.",
         performance = "Moderate (<50ms typical). Includes filesystem write and link graph update",
         related = ["read_note", "edit_note", "create_from_template"],
         examples = ["mode: overwrite (default)", "mode: append (add to end)", "mode: prepend (add after frontmatter)", "expected_hash: <hash from read_note>"],
@@ -68,7 +68,6 @@ impl FileProvider {
         content: String,
         mode: Option<String>,
         expected_hash: Option<String>,
-        force: Option<bool>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
@@ -78,42 +77,40 @@ impl FileProvider {
         let vault_name = prepared.vault_name;
         let manager = prepared.manager;
         let message = prepared.message;
-        let force = force.unwrap_or(false);
         let files = FileTools::new(manager.clone());
 
-        // Create-by-default (backend-agnostic since M4d): no force, no hash, and
-        // a full overwrite means "create a new note". The filesystem pre-check
-        // gives a friendly message; `create_file`'s ExpectAbsent precondition
-        // is the TOCTOU-safe backstop on BOTH substrates.
-        if !force && expected_hash.is_none() && write_mode == WriteMode::Overwrite {
-            if tokio::fs::try_exists(manager.vault_path().join(&path))
+        // Sentinel-or-oid `expected_hash` (qae.6.4), replacing the retired
+        // `force`. The default when the param is omitted is mode-dependent: a full
+        // Overwrite creates-by-default (`ExpectAbsent`, the turbovault-947
+        // no-clobber backstop on both substrates); append/prepend are in-place
+        // (`ExpectExists`). `expected_hash="blind"` is the explicit blind overwrite.
+        let default = match write_mode {
+            WriteMode::Overwrite => turbovault_core::Precondition::ExpectAbsent,
+            _ => turbovault_core::Precondition::ExpectExists,
+        };
+        let precondition =
+            turbovault_core::Precondition::from_wire(expected_hash.as_deref(), default);
+
+        // Friendly pre-check for the create-by-default no-clobber case. A
+        // create-on-present is the unified "changed underneath us" refusal
+        // (`ConcurrencyError`), same kind as the substrate's `ExpectAbsent`
+        // backstop — surfaced here with an actionable message.
+        if precondition == turbovault_core::Precondition::ExpectAbsent
+            && write_mode == WriteMode::Overwrite
+            && tokio::fs::try_exists(manager.vault_path().join(&path))
                 .await
                 .unwrap_or(false)
-            {
-                return Err(McpError::invalid_request(format!(
-                    "write_note refused: '{path}' exists. Read it and pass expected_hash, or pass force=true to acknowledge a blind overwrite."
-                )));
-            }
-            files
-                .create_file(&path, &content, &message)
-                .await
-                .map_err(to_mcp_error)?;
-        } else {
-            files
-                .write_file_with_mode(
-                    &path,
-                    &content,
-                    write_mode,
-                    // Pre-cutover parity: the overwrite arm always mapped
-                    // `(expected_hash, force=true)` — a token wins, otherwise a
-                    // blind write (append/prepend never refused-on-exists). The
-                    // create-by-default `ExpectAbsent` path is the branch above.
-                    turbovault_core::Precondition::for_replace(expected_hash.as_deref(), true),
-                    &message,
-                )
-                .await
-                .map_err(to_mcp_error)?;
+        {
+            return Err(to_mcp_error(turbovault_core::Error::concurrency_error(
+                format!(
+                    "'{path}' exists — pass expected_hash to overwrite, or expected_hash=\"blind\" for a blind overwrite."
+                ),
+            )));
         }
+        files
+            .write_file_with_mode(&path, &content, write_mode, precondition, &message)
+            .await
+            .map_err(to_mcp_error)?;
 
         self.finish_complete_note_write().await;
         let mode_str = mode.as_deref().unwrap_or("overwrite");
@@ -253,8 +250,8 @@ impl FileProvider {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note. Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
-        usage = "Pass expected_hash from read_note. With update_backlinks=true, a concurrent change to the source or any linker aborts the entire move with nothing committed.",
+        description = "Move or rename a note. `expected_hash` guards the SOURCE, `dest_expected_hash` the DESTINATION (both accept a hash or a sentinel: \"absent\"|\"exists\"|\"blind\"; dest omitted = \"absent\", the no-clobber guard). Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
+        usage = "Pass expected_hash from read_note. dest_expected_hash defaults to \"absent\" (refuse if the destination exists); pass \"blind\" to overwrite. With update_backlinks=true, a concurrent change to the source or any linker aborts the entire move with nothing committed.",
         performance = "Fast (<20ms typical). Filesystem rename, falls back to copy+delete for cross-filesystem moves",
         related = ["get_backlinks", "get_forward_links", "search"],
         examples = [],
@@ -266,6 +263,7 @@ impl FileProvider {
         from: String,
         to: String,
         expected_hash: Option<String>,
+        dest_expected_hash: Option<String>,
         commit_message: Option<String>,
         update_backlinks: Option<bool>,
     ) -> McpResult<serde_json::Value> {
@@ -280,7 +278,13 @@ impl FileProvider {
             // `move_file_with_link_updates` flushes the reindex queue itself so
             // the backlink resolution reads a coherent link graph.
             BatchTools::new(manager)
-                .move_file_with_link_updates(&from, &to, expected_hash.as_deref(), &message)
+                .move_file_with_link_updates(
+                    &from,
+                    &to,
+                    expected_hash.as_deref(),
+                    dest_expected_hash.as_deref(),
+                    &message,
+                )
                 .await
                 .map_err(to_mcp_error)?
         } else {
@@ -289,7 +293,12 @@ impl FileProvider {
                     &from,
                     &to,
                     turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
-                    turbovault_core::Precondition::Blind,
+                    // Sentinel-or-oid dest precondition (qae.6.4); omitted →
+                    // `ExpectAbsent`, the clobber guard.
+                    turbovault_core::Precondition::from_wire(
+                        dest_expected_hash.as_deref(),
+                        turbovault_core::Precondition::ExpectAbsent,
+                    ),
                     &message,
                 )
                 .await

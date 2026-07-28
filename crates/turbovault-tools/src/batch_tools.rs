@@ -203,6 +203,7 @@ impl BatchTools {
         from: &str,
         to: &str,
         expected_hash: Option<&str>,
+        dest_expected_hash: Option<&str>,
         message: &str,
     ) -> Result<Vec<String>> {
         self.manager.flush_reindex().await;
@@ -212,7 +213,7 @@ impl BatchTools {
                 from,
                 to,
                 expected_hash,
-                None, // dest precondition = expect_absent (existing behavior)
+                dest_expected_hash,
             )
             .await?;
         self.manager.apply_changes(&plan).await?;
