@@ -35,7 +35,12 @@ pub enum ObservedError {
 }
 
 /// A backend-normalized observation of what an operation did.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq` so the harness's own plumbing probe can assert that every World
+/// produced the IDENTICAL observation for a cell (`probe.rs`) — a divergence the
+/// per-world matrix assertions cannot see, since each only checks its own world
+/// against the coarse expected [`Outcome`].
+#[derive(Clone, Debug, PartialEq)]
 pub struct Observed {
     /// The op reported success.
     pub succeeded: bool,

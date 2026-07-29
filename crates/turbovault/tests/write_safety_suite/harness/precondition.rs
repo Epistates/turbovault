@@ -54,6 +54,18 @@ pub enum PreconditionKind {
 }
 
 impl PreconditionKind {
+    /// Every kind, in matrix row order — lets the harness's own setup probe sweep
+    /// the FULL precondition axis (`probe.rs`) rather than a hand-kept subset.
+    pub const ALL: [PreconditionKind; 7] = [
+        Self::Blind,
+        Self::Absent,
+        Self::Exists,
+        Self::Head,
+        Self::Index,
+        Self::Workdir,
+        Self::Wrong,
+    ];
+
     /// Resolve against a state's tokens. `None` == the matrix's N/A (the token
     /// this kind names is undefined for the state, so no test is constructible).
     pub fn resolve(self, oids: &Oids) -> Option<Precondition> {

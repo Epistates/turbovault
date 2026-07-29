@@ -14,4 +14,5 @@ pub mod backend;
 pub mod op;
 pub mod outcome;
 pub mod precondition;
+pub mod probe;
 pub mod state;

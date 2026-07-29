@@ -94,6 +94,19 @@ impl GitState {
     pub fn unstaged(self) -> bool {
         self.flag(4)
     }
+
+    /// The `(e,t,c,s,u)` flags as data, for comparing a state against a working
+    /// tree measured out of git ([`observe_git_state`]). All nine codes are
+    /// distinct, so this tuple identifies a state uniquely.
+    pub fn flags(self) -> (bool, bool, bool, bool, bool) {
+        (
+            self.exists(),
+            self.tracked(),
+            self.committed(),
+            self.staged(),
+            self.unstaged(),
+        )
+    }
 }
 
 /// Per-path version tokens resolved after building a state. A field is `Some`
@@ -235,37 +248,50 @@ pub fn build_state(repo: &Path, rel: &str, state: GitState) -> Oids {
     }
 }
 
+/// The state `rel` is ACTUALLY in, re-derived from git — the inverse of
+/// [`build_state`], and the harness's own guard that a cell's setup is the setup it
+/// claims. `None` == the measured flags match no canonical state (itself a finding).
+///
+/// This deliberately re-measures from git rather than recalling what `build_state`
+/// was *asked* to build: if construction silently reached the wrong state (an
+/// `etcsu` cell that is really `etc-u`), every cell in that column would be testing
+/// the wrong scenario and still "pass". Used by `probe::ProbeWorld` (nbl.19) and by
+/// this module's own construction test.
+pub fn observe_git_state(repo: &Path, rel: &str) -> Option<GitState> {
+    let measured = measured_flags(repo, rel);
+    GitState::ALL.into_iter().find(|s| s.flags() == measured)
+}
+
+/// Measure the actual `(e,t,c,s,u)` flags from git *independently* of how
+/// [`build_state`] gated them, so a caller validates that construction reached the
+/// intended state rather than just re-reading its own inputs.
+fn measured_flags(repo: &Path, rel: &str) -> (bool, bool, bool, bool, bool) {
+    let e = repo.join(rel).exists();
+    let t = git_capture(repo, &["ls-files", "--", rel]).is_some_and(|s| !s.is_empty());
+    let c = git(
+        repo,
+        &["rev-parse", "--verify", "--quiet", &format!("HEAD:{rel}")],
+    )
+    .status
+    .success();
+    // `--quiet` implies `--exit-code`: non-zero == a diff exists.
+    let s = !git(repo, &["diff", "--cached", "--quiet", "--", rel])
+        .status
+        .success();
+    // Untracked files are invisible to `git diff`; detect their `u` via the
+    // porcelain `??` marker instead.
+    let porcelain = git_capture(repo, &["status", "--porcelain", "--", rel]).unwrap_or_default();
+    let u = if porcelain.starts_with("??") {
+        true
+    } else {
+        !git(repo, &["diff", "--quiet", "--", rel]).status.success()
+    };
+    (e, t, c, s, u)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Measure the actual `(e,t,c,s,u)` flags from git *independently* of how
-    /// `build_state` gated them, so the assertion validates that construction
-    /// reached the intended state rather than just re-reading its own inputs.
-    fn measured_flags(repo: &Path, rel: &str) -> (bool, bool, bool, bool, bool) {
-        let e = repo.join(rel).exists();
-        let t = git_capture(repo, &["ls-files", "--", rel]).is_some_and(|s| !s.is_empty());
-        let c = git(
-            repo,
-            &["rev-parse", "--verify", "--quiet", &format!("HEAD:{rel}")],
-        )
-        .status
-        .success();
-        // `--quiet` implies `--exit-code`: non-zero == a diff exists.
-        let s = !git(repo, &["diff", "--cached", "--quiet", "--", rel])
-            .status
-            .success();
-        // Untracked files are invisible to `git diff`; detect their `u` via the
-        // porcelain `??` marker instead.
-        let porcelain =
-            git_capture(repo, &["status", "--porcelain", "--", rel]).unwrap_or_default();
-        let u = if porcelain.starts_with("??") {
-            true
-        } else {
-            !git(repo, &["diff", "--quiet", "--", rel]).status.success()
-        };
-        (e, t, c, s, u)
-    }
 
     #[test]
     fn builds_all_nine_states_correctly() {
@@ -273,20 +299,21 @@ mod tests {
             let repo = new_seeded_repo();
             let oids = build_state(repo.path(), "note.md", state);
 
-            let expected = (
-                state.exists(),
-                state.tracked(),
-                state.committed(),
-                state.staged(),
-                state.unstaged(),
-            );
             let actual = measured_flags(repo.path(), "note.md");
             assert_eq!(
                 actual,
-                expected,
+                state.flags(),
                 "state {} ({}): measured (e,t,c,s,u) mismatch",
                 state.code(),
                 format_args!("{state:?}")
+            );
+            // The same measurement, resolved back to a state — the form the
+            // harness's setup probe asserts on (`probe::ProbeWorld`).
+            assert_eq!(
+                observe_git_state(repo.path(), "note.md"),
+                Some(state),
+                "state {} must re-derive to itself",
+                state.code()
             );
 
             // Token defined-ness must match the flags (the matrix's N/A rule).
