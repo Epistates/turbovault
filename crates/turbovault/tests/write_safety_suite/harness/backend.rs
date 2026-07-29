@@ -16,12 +16,13 @@
 //! tool layer does not yet accept), so the suite does not compile until the
 //! tool-signature cutover (qae.9.1).
 
+use std::path::Path;
 use std::sync::{Arc, Once};
 
 use tempfile::TempDir;
 use turbomcp::{McpHandler, RequestContext};
 use turbovault::ObsidianMcpServer;
-use turbovault_core::config::{ServerConfig, VaultConfig, VaultGitConfig, WriteBackend};
+use turbovault_core::config::{ServerConfig, VaultConfig, WriteBackend};
 use turbovault_tools::{BatchOperation, BatchTools};
 use turbovault_vault::VaultManager;
 
@@ -62,6 +63,35 @@ impl Backend {
             Backend::Git => true,
             Backend::Direct => matches!(state, GitState::Absent | GitState::Untracked),
         }
+    }
+
+    /// The production write-substrate enum this test axis names.
+    pub fn write_backend(self) -> WriteBackend {
+        match self {
+            Backend::Git => WriteBackend::Git,
+            Backend::Direct => WriteBackend::Direct,
+        }
+    }
+
+    /// The **single** place a test vault's config is built, so the harness cannot
+    /// end up driving a substrate other than the one the cell names. That mapping
+    /// used to be written twice — here and again in `WireWorld::new` for the
+    /// server's own registration — and nothing checked the two agreed; a drift
+    /// would have silently reproduced turbovault-74p (a git repo driven as Direct:
+    /// writes land in the working tree but never commit) *inside the suite*, which
+    /// every `Ok` cell would still have passed. `probe.rs`'s backend-identity probe
+    /// now measures the real thing; this constructor removes the drift at source.
+    ///
+    /// `git` is left `None` on both arms: the manager reads `include_ignored` from
+    /// it and falls back to `VaultGitConfig::default()` when absent (manager.rs),
+    /// and that is the only field it consumes — so `None` and
+    /// `Some(VaultGitConfig::default())` are equivalent, and the wire arm's former
+    /// explicit default was redundant rather than different.
+    pub fn vault_config(self, name: &str, path: &Path) -> VaultConfig {
+        VaultConfig::builder(name, path)
+            .write_backend(self.write_backend())
+            .build()
+            .expect("test vault config")
     }
 }
 
@@ -110,17 +140,8 @@ impl Vault {
             Backend::Direct => TempDir::new().expect("tempdir"),
         };
         let path = dir.path().to_path_buf();
-        let write_backend = match backend {
-            Backend::Git => WriteBackend::Git,
-            Backend::Direct => WriteBackend::Direct,
-        };
         let mut cfg = ServerConfig::new();
-        cfg.vaults.push(
-            VaultConfig::builder("t", &path)
-                .write_backend(write_backend)
-                .build()
-                .unwrap(),
-        );
+        cfg.vaults.push(backend.vault_config("t", &path));
         let manager = Arc::new(VaultManager::new(cfg).unwrap());
         Vault {
             dir,
@@ -314,16 +335,8 @@ impl Layer for WireWorld {
     const LABEL: &'static str = "wire";
     fn new(backend: Backend) -> Self {
         let vault = Vault::new(backend);
-        let write_backend = match backend {
-            Backend::Git => WriteBackend::Git,
-            Backend::Direct => WriteBackend::Direct,
-        };
-        let mut builder =
-            VaultConfig::builder("wss", vault.dir.path()).write_backend(write_backend);
-        if backend == Backend::Git {
-            builder = builder.git(VaultGitConfig::default());
-        }
-        let config = builder.build().expect("wire vault config");
+        // Same constructor the vault itself used — one mapping, no drift.
+        let config = backend.vault_config("wss", vault.dir.path());
         WireWorld {
             vault,
             server: ObsidianMcpServer::new().expect("wire server"),
@@ -359,11 +372,56 @@ impl WireWorld {
     /// outcome. `Ok(())` == the tool succeeded; `Err(kind)` == a failure,
     /// classified from the wire message string. The op's invoker combines this
     /// with the post-op working-tree read via [`observe_outcome`].
+    /// The parameter names `tool` DECLARES, read from the server's own catalog —
+    /// the same `list_tools()` output the golden `providers/tool_catalog.json`
+    /// pins. `None` == the server declares no such tool.
+    pub fn declared_params(&self, tool: &str) -> Option<std::collections::BTreeSet<String>> {
+        let listed = self.server.list_tools();
+        let found = listed.iter().find(|t| t.name == tool)?;
+        let schema = serde_json::to_value(found).ok()?;
+        Some(
+            schema
+                .get("inputSchema")?
+                .get("properties")?
+                .as_object()?
+                .keys()
+                .cloned()
+                .collect(),
+        )
+    }
+
+    /// Panic unless every key in `params` is declared by `tool`.
+    ///
+    /// The wire is the ONLY world whose command shape isn't compiler-checked: the
+    /// other worlds call Rust methods or build a typed `BatchOperation`, so a
+    /// renamed field breaks the build, while here tool and param names are just
+    /// strings in a JSON blob. An undeclared param is (at best) silently IGNORED,
+    /// which makes the call behave as if no precondition were passed — so `Ok`
+    /// cells still pass and only some refusal cells fail, with a thoroughly
+    /// misleading message. Checking here covers every wire cell in the suite at
+    /// once, with no list of params to keep in step (nbl.21).
+    fn assert_declared(&self, tool: &str, params: &serde_json::Value) {
+        let declared = self
+            .declared_params(tool)
+            .unwrap_or_else(|| panic!("wire: the server declares no tool named `{tool}`"));
+        let sent = params
+            .as_object()
+            .unwrap_or_else(|| panic!("wire: params for `{tool}` must be a JSON object"));
+        for key in sent.keys() {
+            assert!(
+                declared.contains(key),
+                "wire: param `{key}` is not declared by tool `{tool}` \
+                 (declared: {declared:?}) — a typo/rename would be silently ignored"
+            );
+        }
+    }
+
     pub async fn call_tool(
         &self,
         tool: &str,
         params: serde_json::Value,
     ) -> Result<(), ObservedError> {
+        self.assert_declared(tool, &params);
         self.ensure_active().await;
         match self
             .server

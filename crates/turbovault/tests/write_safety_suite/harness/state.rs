@@ -248,6 +248,14 @@ pub fn build_state(repo: &Path, rel: &str, state: GitState) -> Oids {
     }
 }
 
+/// The current HEAD commit oid, or `None` when `repo` is not a git repository at
+/// all — which is the normal state of a Direct vault's directory. Lets the harness
+/// measure whether a world's write actually produced a COMMIT, independently of the
+/// config that world was built with (`probe.rs`, nbl.21).
+pub fn head_commit(repo: &Path) -> Option<String> {
+    git_capture(repo, &["rev-parse", "HEAD"])
+}
+
 /// The state `rel` is ACTUALLY in, re-derived from git — the inverse of
 /// [`build_state`], and the harness's own guard that a cell's setup is the setup it
 /// claims. `None` == the measured flags match no canonical state (itself a finding).
