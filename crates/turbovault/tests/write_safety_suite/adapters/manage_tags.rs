@@ -1,5 +1,5 @@
 //! `manage_tags` adapter — an in-place op (design doc §4 default: `ExpectExists`,
-//! dirty-gated). Single-path → [`SinglePathOp`] mold; a sibling of `edit_note` /
+//! dirty-gated). Single-path → [`Op`] mold; a sibling of `edit_note` /
 //! `update_frontmatter`.
 //!
 //! `invoke` drives the aspirational `manage_tags` op on the tools-layer surface,
@@ -7,10 +7,10 @@
 //! (cutover: qae.9.1). The dirty-gate / precond-vs-workdir cells are `pending`
 //! (nbl.8 burndown).
 
-use super::{Case, SinglePathOp};
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
 };
+use crate::harness::op::{Case, Op, OpAdapterMeta};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -38,7 +38,7 @@ fn ok_check(observed: &Observed) -> Result<(), String> {
     }
 }
 
-impl SinglePathOp<ToolsWorld> for ManageTags {
+impl OpAdapterMeta for ManageTags {
     fn name(&self) -> &'static str {
         "manage_tags"
     }
@@ -47,6 +47,12 @@ impl SinglePathOp<ToolsWorld> for ManageTags {
         CASES
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+impl Op<ToolsWorld> for ManageTags {
     async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
         let tags = [TAG.to_string()];
         let res = MetadataTools::new(w.vault().manager().clone())
@@ -55,24 +61,12 @@ impl SinglePathOp<ToolsWorld> for ManageTags {
             .map(|_| ());
         observe(res, w.vault().read(rel))
     }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
-    }
 }
 
 // Batch-layer invoker (qae.9.3): the tag add as a ONE-op `ManageTags` batch
 // (`operation: "add"`, matching the standalone arm). `blob_token` carries
 // `ExpectBlob`, else a bare op. Shares `CASES`.
-impl SinglePathOp<BatchWorld> for ManageTags {
-    fn name(&self) -> &'static str {
-        "manage_tags"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+impl Op<BatchWorld> for ManageTags {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let op = BatchOperation::ManageTags {
             path: rel.to_string(),
@@ -80,11 +74,7 @@ impl SinglePathOp<BatchWorld> for ManageTags {
             tags: vec![TAG.to_string()],
             expected_hash: BatchWorld::blob_token(&pc),
         };
-        w.run_batch_of_one(op, rel).await
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        observe(w.apply_op(op).await, w.vault().read(rel))
     }
 }
 
@@ -92,13 +82,7 @@ impl SinglePathOp<BatchWorld> for ManageTags {
 // (`operation: "add"`). Like update_frontmatter, the handler has NO `expected_hash`
 // wire param yet, so the sentinel is aspirational (ignored until the wire-decode
 // commit). Shares `CASES` + `ok_check`.
-impl SinglePathOp<WireWorld> for ManageTags {
-    fn name(&self) -> &'static str {
-        "manage_tags"
-    }
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
+impl Op<WireWorld> for ManageTags {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         let params = serde_json::json!({
             "path": rel,
@@ -110,9 +94,6 @@ impl SinglePathOp<WireWorld> for ManageTags {
             w.call_tool("manage_tags", params).await,
             w.vault().read(rel),
         )
-    }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
     }
 }
 

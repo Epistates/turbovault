@@ -1,6 +1,6 @@
 //! `move_note` adapter — **dual-path** (design doc §4: source `ExpectExists`,
 //! destination `ExpectAbsent` = the clobber protection), expressed as **two
-//! ordinary [`SinglePathOp`] ops** so it rides the same mold as every other op:
+//! ordinary [`Op`] ops** so it rides the same mold as every other op:
 //!
 //! - [`MoveSrc`] — the varied path (`REL`) is the **source**; the destination is
 //!   held absent (`to = ExpectAbsent`). Same shape as delete/edit's in-place rows.
@@ -8,11 +8,11 @@
 //!   held present (`from = ExpectExists`). `ExpectAbsent` on the dest is the
 //!   clobber guard.
 //!
-//! Each op implements `SinglePathOp<W>` for **every** world (Tools, Manager,
-//! Batch) over ONE shared `Case` table per op — the required behavior is
-//! layer-invariant, so all worlds run the exact same cells. A world that can't
-//! meet a cell FAILS it (that divergence is the finding); we never fork a
-//! per-world table.
+//! Each op implements `Op<W>` for **every** world (Tools, Manager, Batch, Wire)
+//! over ONE shared `Case` table per op (its identity/`ok_effect` stated once in
+//! [`OpAdapterMeta`]) — the required behavior is layer-invariant, so all worlds run
+//! the exact same cells. A world that can't meet a cell FAILS it (that divergence
+//! is the finding); we never fork a per-world table.
 //!
 //! **The batch arm is written against the API we NEED, not the API we HAVE**
 //! (WSS is aspirational): a one-op `MoveNote` batch that carries first-class
@@ -24,10 +24,10 @@
 
 use std::sync::Arc;
 
-use super::{Case, SinglePathOp, present_state};
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
 };
+use crate::harness::op::{Case, Op, OpAdapterMeta, present_state};
 use crate::harness::outcome::{Observed, ObservedError, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -138,13 +138,19 @@ fn src_ok(observed: &Observed) -> Result<(), String> {
     }
 }
 
-impl SinglePathOp<ToolsWorld> for MoveSrc {
+impl OpAdapterMeta for MoveSrc {
     fn name(&self) -> &'static str {
         "move_note::src"
     }
     fn cases(&self) -> &'static [Case] {
         SRC_CASES
     }
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        src_ok(observed)
+    }
+}
+
+impl Op<ToolsWorld> for MoveSrc {
     async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
         let res = move_tools(
             w.vault().manager().clone(),
@@ -156,18 +162,9 @@ impl SinglePathOp<ToolsWorld> for MoveSrc {
         .await;
         observe(res, w.vault().read(rel))
     }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        src_ok(observed)
-    }
 }
 
-impl SinglePathOp<ManagerWorld> for MoveSrc {
-    fn name(&self) -> &'static str {
-        "move_note::src"
-    }
-    fn cases(&self) -> &'static [Case] {
-        SRC_CASES
-    }
+impl Op<ManagerWorld> for MoveSrc {
     async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
         let res = move_manager(
             w.vault().manager().clone(),
@@ -179,18 +176,9 @@ impl SinglePathOp<ManagerWorld> for MoveSrc {
         .await;
         observe(res, w.vault().read(rel))
     }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        src_ok(observed)
-    }
 }
 
-impl SinglePathOp<BatchWorld> for MoveSrc {
-    fn name(&self) -> &'static str {
-        "move_note::src"
-    }
-    fn cases(&self) -> &'static [Case] {
-        SRC_CASES
-    }
+impl Op<BatchWorld> for MoveSrc {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let res = move_batch(
             w.vault().manager().clone(),
@@ -202,24 +190,12 @@ impl SinglePathOp<BatchWorld> for MoveSrc {
         .await;
         observe(res, w.vault().read(rel))
     }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        src_ok(observed)
-    }
 }
 
-impl SinglePathOp<WireWorld> for MoveSrc {
-    fn name(&self) -> &'static str {
-        "move_note::src"
-    }
-    fn cases(&self) -> &'static [Case] {
-        SRC_CASES
-    }
+impl Op<WireWorld> for MoveSrc {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         let res = move_wire(w, rel, OTHER, pc, Precondition::ExpectAbsent).await;
         observe_outcome(res, w.vault().read(rel))
-    }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        src_ok(observed)
     }
 }
 
@@ -238,13 +214,19 @@ fn dest_ok(observed: &Observed) -> Result<(), String> {
     }
 }
 
-impl SinglePathOp<ToolsWorld> for MoveDest {
+impl OpAdapterMeta for MoveDest {
     fn name(&self) -> &'static str {
         "move_note::dest"
     }
     fn cases(&self) -> &'static [Case] {
         DEST_CASES
     }
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        dest_ok(observed)
+    }
+}
+
+impl Op<ToolsWorld> for MoveDest {
     async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
         w.vault()
             .build_state(OTHER, present_state(w.vault().backend()));
@@ -258,18 +240,9 @@ impl SinglePathOp<ToolsWorld> for MoveDest {
         .await;
         observe(res, w.vault().read(rel))
     }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        dest_ok(observed)
-    }
 }
 
-impl SinglePathOp<ManagerWorld> for MoveDest {
-    fn name(&self) -> &'static str {
-        "move_note::dest"
-    }
-    fn cases(&self) -> &'static [Case] {
-        DEST_CASES
-    }
+impl Op<ManagerWorld> for MoveDest {
     async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
         w.vault()
             .build_state(OTHER, present_state(w.vault().backend()));
@@ -283,18 +256,9 @@ impl SinglePathOp<ManagerWorld> for MoveDest {
         .await;
         observe(res, w.vault().read(rel))
     }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        dest_ok(observed)
-    }
 }
 
-impl SinglePathOp<BatchWorld> for MoveDest {
-    fn name(&self) -> &'static str {
-        "move_note::dest"
-    }
-    fn cases(&self) -> &'static [Case] {
-        DEST_CASES
-    }
+impl Op<BatchWorld> for MoveDest {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         w.vault()
             .build_state(OTHER, present_state(w.vault().backend()));
@@ -308,26 +272,14 @@ impl SinglePathOp<BatchWorld> for MoveDest {
         .await;
         observe(res, w.vault().read(rel))
     }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        dest_ok(observed)
-    }
 }
 
-impl SinglePathOp<WireWorld> for MoveDest {
-    fn name(&self) -> &'static str {
-        "move_note::dest"
-    }
-    fn cases(&self) -> &'static [Case] {
-        DEST_CASES
-    }
+impl Op<WireWorld> for MoveDest {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         w.vault()
             .build_state(OTHER, present_state(w.vault().backend()));
         let res = move_wire(w, OTHER, rel, Precondition::ExpectExists, pc).await;
         observe_outcome(res, w.vault().read(rel))
-    }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        dest_ok(observed)
     }
 }
 

@@ -1,15 +1,15 @@
 //! `delete_note` adapter — an in-place op whose OK *effect* is that the target
-//! is **gone** (not that content changed). Single-path → [`SinglePathOp`] mold,
-//! overriding `ok_effect`.
+//! is **gone** (not that content changed). Single-path → [`Op`] mold, overriding
+//! `ok_effect` at the op level.
 //!
 //! The oz6 backlink axis (refuse to delete a note with inbound links) is a
 //! tool-layer behavior today, not substrate-layer, so at this layer it's a
 //! deferred one-off (noted below), tracked with the substrate move of oz6.
 
-use super::{Case, SinglePathOp};
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
 };
+use crate::harness::op::{Case, Op, OpAdapterMeta};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -32,20 +32,13 @@ fn ok_check(observed: &Observed) -> Result<(), String> {
     }
 }
 
-impl SinglePathOp<ToolsWorld> for DeleteNote {
+impl OpAdapterMeta for DeleteNote {
     fn name(&self) -> &'static str {
         "delete_note"
     }
 
     fn cases(&self) -> &'static [Case] {
         CASES
-    }
-
-    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
-        let res = FileTools::new(w.vault().manager().clone())
-            .delete_file(rel, pc, MSG)
-            .await;
-        observe(res, w.vault().read(rel))
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
@@ -53,19 +46,20 @@ impl SinglePathOp<ToolsWorld> for DeleteNote {
     }
 }
 
+impl Op<ToolsWorld> for DeleteNote {
+    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = FileTools::new(w.vault().manager().clone())
+            .delete_file(rel, pc, MSG)
+            .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
 // Manager-layer invoker (qae.9.2): call `VaultManager::delete_file` directly.
 // The tool `delete_file` is a thin delegator to this method (its oz6 backlink
 // gate is a no-op here — `note.md` has no inbound links), so this arm shares
 // `CASES` + `ok_check`.
-impl SinglePathOp<ManagerWorld> for DeleteNote {
-    fn name(&self) -> &'static str {
-        "delete_note"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+impl Op<ManagerWorld> for DeleteNote {
     async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
         let res = w
             .vault()
@@ -73,10 +67,6 @@ impl SinglePathOp<ManagerWorld> for DeleteNote {
             .delete_file(std::path::Path::new(rel), pc, MSG)
             .await;
         observe(res, w.vault().read(rel))
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
     }
 }
 
@@ -90,26 +80,14 @@ impl SinglePathOp<ManagerWorld> for DeleteNote {
 // (the required idempotent-Ok isn't universally implemented), and the batch arm
 // passing it early shows up as an un-pend candidate, not a blessed separate
 // outcome. We never fork a per-world table to enshrine that divergence.
-impl SinglePathOp<BatchWorld> for DeleteNote {
-    fn name(&self) -> &'static str {
-        "delete_note"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+impl Op<BatchWorld> for DeleteNote {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let op = BatchOperation::DeleteNote {
             path: rel.to_string(),
             expected_hash: BatchWorld::blob_token(&pc),
             on_backlinks: None,
         };
-        w.run_batch_of_one(op, rel).await
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        observe(w.apply_op(op).await, w.vault().read(rel))
     }
 }
 
@@ -117,13 +95,7 @@ impl SinglePathOp<BatchWorld> for DeleteNote {
 // `confirm_path` MUST equal `path` (the tool's delete-safety guard) or it refuses
 // before the precondition; the precondition rides the sentinel `expected_hash`.
 // Shares `CASES` + `ok_check`.
-impl SinglePathOp<WireWorld> for DeleteNote {
-    fn name(&self) -> &'static str {
-        "delete_note"
-    }
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
+impl Op<WireWorld> for DeleteNote {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         let params = serde_json::json!({
             "path": rel,
@@ -134,9 +106,6 @@ impl SinglePathOp<WireWorld> for DeleteNote {
             w.call_tool("delete_note", params).await,
             w.vault().read(rel),
         )
-    }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
     }
 }
 

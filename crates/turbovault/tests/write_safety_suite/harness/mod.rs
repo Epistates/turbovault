@@ -11,6 +11,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod backend;
+pub mod op;
 pub mod outcome;
 pub mod precondition;
 pub mod state;

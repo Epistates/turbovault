@@ -8,7 +8,7 @@
 //!   Only [`ToolsWorld`] exists in this bite; Manager (qae.9.2) and Wire (nbl.12)
 //!   drop in as further `Layer` impls.
 //! - **Op** → a shared `Case` table + a per-`(op, layer)` invoker
-//!   (`impl SinglePathOp<W>`). An op that doesn't map to a layer simply has no
+//!   (`impl Op<W>`). An op that doesn't map to a layer simply has no
 //!   invoker for that layer's World.
 //!
 //! The op invocation is NOT here — it lives in each op's invoker (`adapters/*`).
@@ -210,7 +210,7 @@ impl Layer for ToolsWorld {
 /// The Manager/ChangePlan layer (qae.9.2): invokers call `VaultManager` directly
 /// via `vault().manager()`. Structurally identical to [`ToolsWorld`] — the layer
 /// distinction lives entirely in the invokers, and only the 5 ops with a native
-/// manager operation get a `SinglePathOp<ManagerWorld>` impl.
+/// manager operation get an `Op<ManagerWorld>` impl.
 pub struct ManagerWorld {
     vault: Vault,
 }
@@ -254,23 +254,25 @@ impl Layer for BatchWorld {
 }
 
 impl BatchWorld {
-    /// Drive a SINGLE [`BatchOperation`] through the batch translation path — the
+    /// Apply a SINGLE [`BatchOperation`] through the batch translation path — the
     /// same `plan` fold + `apply_changes` that [`BatchTools::batch_execute`] runs
     /// internally, minus the soft-envelope wrapping that would stringify (and so
     /// erase) the structured error kind the matrix's `Outcome` assertions need.
-    /// Proves batch-of-one == standalone: the one-op plan carries exactly the op's
-    /// precondition, and the substrate's shared dirty gate + CAS decide the outcome
-    /// identically to the standalone mutator.
-    pub async fn run_batch_of_one(&self, op: BatchOperation, rel: &str) -> Observed {
+    /// Returns the RAW substrate result so the adapter `observe()`s it exactly like
+    /// every other world — the batch invoke reads
+    /// `observe(w.apply_op(op).await, w.vault().read(rel))`, symmetric with the
+    /// Tools/Manager arms. Proves batch-of-one == standalone: the one-op plan carries
+    /// exactly the op's precondition, and the substrate's shared dirty gate + CAS
+    /// decide the outcome identically to the standalone mutator.
+    pub async fn apply_op(&self, op: BatchOperation) -> Result<(), turbovault_core::Error> {
         let mgr = self.vault().manager().clone();
-        let res = match BatchTools::new(mgr.clone()).plan(&[op]).await {
+        match BatchTools::new(mgr.clone()).plan(&[op]).await {
             Ok(mut plan) => {
                 plan.message = MSG.to_string();
                 mgr.apply_changes(&plan).await.map(|_| ())
             }
             Err(e) => Err(e),
-        };
-        observe(res, self.vault().read(rel))
+        }
     }
 
     /// The `expected_hash` an in-place batch op should carry for a resolved

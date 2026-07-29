@@ -1,5 +1,5 @@
 //! `update_frontmatter` adapter — an in-place op (design doc §4 default:
-//! `ExpectExists`, dirty-gated). Single-path → [`SinglePathOp`] mold.
+//! `ExpectExists`, dirty-gated). Single-path → [`Op`] mold.
 //!
 //! `invoke` drives the aspirational `update_frontmatter` op on the
 //! tools-layer surface, passing the [`Precondition`] directly; the tool layer
@@ -8,10 +8,10 @@
 
 use std::collections::HashMap;
 
-use super::{Case, SinglePathOp};
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
 };
+use crate::harness::op::{Case, Op, OpAdapterMeta};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -39,7 +39,7 @@ fn ok_check(observed: &Observed) -> Result<(), String> {
     }
 }
 
-impl SinglePathOp<ToolsWorld> for UpdateFrontmatter {
+impl OpAdapterMeta for UpdateFrontmatter {
     fn name(&self) -> &'static str {
         "update_frontmatter"
     }
@@ -48,6 +48,12 @@ impl SinglePathOp<ToolsWorld> for UpdateFrontmatter {
         CASES
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+impl Op<ToolsWorld> for UpdateFrontmatter {
     async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
         let mut fm = serde_json::Map::new();
         fm.insert(KEY.to_string(), serde_json::json!(true));
@@ -57,24 +63,12 @@ impl SinglePathOp<ToolsWorld> for UpdateFrontmatter {
             .map(|_| ());
         observe(res, w.vault().read(rel))
     }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
-    }
 }
 
 // Batch-layer invoker (qae.9.3): the frontmatter update as a ONE-op
 // `UpdateFrontmatter` batch (`merge: true`, matching the standalone arm).
 // `blob_token` carries `ExpectBlob`, else a bare update. Shares `CASES`.
-impl SinglePathOp<BatchWorld> for UpdateFrontmatter {
-    fn name(&self) -> &'static str {
-        "update_frontmatter"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+impl Op<BatchWorld> for UpdateFrontmatter {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let fm = HashMap::from([(KEY.to_string(), serde_json::json!(true))]);
         let op = BatchOperation::UpdateFrontmatter {
@@ -83,11 +77,7 @@ impl SinglePathOp<BatchWorld> for UpdateFrontmatter {
             merge: Some(true),
             expected_hash: BatchWorld::blob_token(&pc),
         };
-        w.run_batch_of_one(op, rel).await
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        observe(w.apply_op(op).await, w.vault().read(rel))
     }
 }
 
@@ -96,13 +86,7 @@ impl SinglePathOp<BatchWorld> for UpdateFrontmatter {
 // ExpectExists — "pre-cutover parity, M5.3"), so the sentinel is passed against
 // the NEEDED wire API and is currently ignored → cells fail until the wire-decode
 // commit adds the param + decodes it. Shares `CASES` + `ok_check`.
-impl SinglePathOp<WireWorld> for UpdateFrontmatter {
-    fn name(&self) -> &'static str {
-        "update_frontmatter"
-    }
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
+impl Op<WireWorld> for UpdateFrontmatter {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         let mut fm = serde_json::Map::new();
         fm.insert(KEY.to_string(), serde_json::json!(true));
@@ -116,9 +100,6 @@ impl SinglePathOp<WireWorld> for UpdateFrontmatter {
             w.call_tool("update_frontmatter", params).await,
             w.vault().read(rel),
         )
-    }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
     }
 }
 

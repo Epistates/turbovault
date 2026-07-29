@@ -1,5 +1,5 @@
 //! `edit_note` adapter — an in-place op (design doc §4 default: `ExpectExists`,
-//! dirty-gated). Single-path, so it rides the [`SinglePathOp`] mold.
+//! dirty-gated). Single-path, so it rides the [`Op`] mold.
 //!
 //! It surfaces one new primitive need: the SEARCH-not-found case is an
 //! [`Outcome::OpError`] — a refusal that is neither a concurrency conflict nor a
@@ -9,10 +9,10 @@
 
 use libtest_mimic::Trial;
 
-use super::{Case, REL, SinglePathOp, cell_trial, present_state};
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
 };
+use crate::harness::op::{Case, Op, OpAdapterMeta, REL, cell_trial, present_state};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -47,7 +47,9 @@ fn ok_check(observed: &Observed) -> Result<(), String> {
     }
 }
 
-impl SinglePathOp<ToolsWorld> for EditNote {
+// Op-level, layer-agnostic surface: identity + shared `CASES` + the OK-effect check,
+// stated ONCE (the per-layer invokers below carry only `invoke`).
+impl OpAdapterMeta for EditNote {
     fn name(&self) -> &'static str {
         "edit_note"
     }
@@ -56,6 +58,12 @@ impl SinglePathOp<ToolsWorld> for EditNote {
         CASES
     }
 
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        ok_check(observed)
+    }
+}
+
+impl Op<ToolsWorld> for EditNote {
     async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
         let current = w.vault().read(rel).unwrap_or_default();
         let edits = edits_replacing(&current);
@@ -65,24 +73,12 @@ impl SinglePathOp<ToolsWorld> for EditNote {
             .map(|_| ());
         observe(res, w.vault().read(rel))
     }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
-    }
 }
 
 // Manager-layer invoker (qae.9.2): call `VaultManager::edit_file` directly — the
 // enforcement/SDK surface, one rung below the tools wrapper (which is a thin
-// delegator to this same method). Shares `CASES` + `ok_check`.
-impl SinglePathOp<ManagerWorld> for EditNote {
-    fn name(&self) -> &'static str {
-        "edit_note"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+// delegator to this same method). Shares `CASES` + `ok_check` via `OpAdapterMeta`.
+impl Op<ManagerWorld> for EditNote {
     async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
         let current = w.vault().read(rel).unwrap_or_default();
         let edits = edits_replacing(&current);
@@ -94,25 +90,14 @@ impl SinglePathOp<ManagerWorld> for EditNote {
             .map(|_| ());
         observe(res, w.vault().read(rel))
     }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
-    }
 }
 
-// Batch-layer invoker (qae.9.3): the edit as a ONE-op `EditNote` batch. The
-// SEARCH block is computed from the on-disk bytes exactly as the standalone arm;
+// Batch-layer invoker (qae.9.3): the edit as a ONE-op `EditNote` batch. The SEARCH
+// block is computed from the on-disk bytes exactly as the standalone arm;
 // `blob_token` carries `ExpectBlob`, else a bare edit (the fold's read + the
-// substrate dirty gate enforce existence). Shares `CASES` + `ok_check`.
-impl SinglePathOp<BatchWorld> for EditNote {
-    fn name(&self) -> &'static str {
-        "edit_note"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+// substrate dirty gate enforce existence). `observe(w.apply_op(..))` is the same
+// shape as the Tools/Manager arms.
+impl Op<BatchWorld> for EditNote {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let current = w.vault().read(rel).unwrap_or_default();
         let edits = edits_replacing(&current);
@@ -121,24 +106,14 @@ impl SinglePathOp<BatchWorld> for EditNote {
             edits,
             expected_hash: BatchWorld::blob_token(&pc),
         };
-        w.run_batch_of_one(op, rel).await
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        observe(w.apply_op(op).await, w.vault().read(rel))
     }
 }
 
 // Wire-layer invoker (nbl.12): the real `edit_note` MCP handler in-process; the
 // SEARCH block is computed from the on-disk bytes as elsewhere, the precondition
 // encoded as the sentinel `expected_hash`. Shares `CASES` + `ok_check`.
-impl SinglePathOp<WireWorld> for EditNote {
-    fn name(&self) -> &'static str {
-        "edit_note"
-    }
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
+impl Op<WireWorld> for EditNote {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         let current = w.vault().read(rel).unwrap_or_default();
         let edits = edits_replacing(&current);
@@ -148,9 +123,6 @@ impl SinglePathOp<WireWorld> for EditNote {
             "expected_hash": sentinel(&pc),
         });
         observe_outcome(w.call_tool("edit_note", params).await, w.vault().read(rel))
-    }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
     }
 }
 

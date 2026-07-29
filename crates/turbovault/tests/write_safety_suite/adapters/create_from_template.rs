@@ -10,10 +10,10 @@
 
 use std::collections::HashMap;
 
-use super::{Case, SinglePathOp};
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
 };
+use crate::harness::op::{Case, Op, OpAdapterMeta};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -50,21 +50,13 @@ fn ok_check(observed: &Observed) -> Result<(), String> {
 #[derive(Clone, Copy)]
 pub struct CreateFromTemplate;
 
-impl SinglePathOp<ToolsWorld> for CreateFromTemplate {
+impl OpAdapterMeta for CreateFromTemplate {
     fn name(&self) -> &'static str {
         "create_from_template"
     }
 
     fn cases(&self) -> &'static [Case] {
         CASES
-    }
-
-    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
-        let res = TemplateEngine::new(w.vault().manager().clone())
-            .create_from_template("research", rel, fields(), pc, MSG)
-            .await
-            .map(|_| ());
-        observe(res, w.vault().read(rel))
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
@@ -72,18 +64,20 @@ impl SinglePathOp<ToolsWorld> for CreateFromTemplate {
     }
 }
 
+impl Op<ToolsWorld> for CreateFromTemplate {
+    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = TemplateEngine::new(w.vault().manager().clone())
+            .create_from_template("research", rel, fields(), pc, MSG)
+            .await
+            .map(|_| ());
+        observe(res, w.vault().read(rel))
+    }
+}
+
 // Batch-layer invoker (qae.9.3): render+create as a ONE-op `CreateFromTemplate`
 // batch. The precondition maps to `force`: `Blind` → force (upsert), `Absent` →
 // strict create. Shares `CASES` (only Blind/Absent rows exist for a create).
-impl SinglePathOp<BatchWorld> for CreateFromTemplate {
-    fn name(&self) -> &'static str {
-        "create_from_template"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+impl Op<BatchWorld> for CreateFromTemplate {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let force = match pc {
             Precondition::Blind => Some(true),
@@ -96,11 +90,7 @@ impl SinglePathOp<BatchWorld> for CreateFromTemplate {
             fields: fields(),
             force,
         };
-        w.run_batch_of_one(op, rel).await
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        observe(w.apply_op(op).await, w.vault().read(rel))
     }
 }
 
@@ -108,13 +98,7 @@ impl SinglePathOp<BatchWorld> for CreateFromTemplate {
 // in-process. NOTE the wire shape: `file_path` (not `path`) + `fields` as a JSON
 // STRING. No `expected_hash` wire param yet (hardcoded ExpectAbsent), so the
 // sentinel is aspirational. Shares `CASES` + `ok_check`.
-impl SinglePathOp<WireWorld> for CreateFromTemplate {
-    fn name(&self) -> &'static str {
-        "create_from_template"
-    }
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
+impl Op<WireWorld> for CreateFromTemplate {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         let params = serde_json::json!({
             "template_id": "research",
@@ -126,9 +110,6 @@ impl SinglePathOp<WireWorld> for CreateFromTemplate {
             w.call_tool("create_from_template", params).await,
             w.vault().read(rel),
         )
-    }
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
     }
 }
 

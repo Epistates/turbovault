@@ -1,14 +1,14 @@
 //! `write_note` adapter — a wholesale-replace op (design doc §4 default:
-//! `ExpectAbsent`). A single-path op, so it rides the [`SinglePathOp`] mold.
+//! `ExpectAbsent`). A single-path op, so it rides the [`Op`] mold.
 //!
 //! `invoke` drives the aspirational `write` op on the tools-layer surface,
 //! passing the [`Precondition`] directly. The tool layer does not take a
 //! precondition yet, so this does not compile until the cutover (qae.9.1).
 
-use super::{Case, SinglePathOp};
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
 };
+use crate::harness::op::{Case, Op, OpAdapterMeta};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -35,21 +35,14 @@ fn ok_check(observed: &Observed) -> Result<(), String> {
     }
 }
 
-// Tools-layer invoker: construct `FileTools` from the vault's manager and call it.
-impl SinglePathOp<ToolsWorld> for WriteNote {
+// Op-level surface: identity + shared `CASES` + the OK-effect check, stated once.
+impl OpAdapterMeta for WriteNote {
     fn name(&self) -> &'static str {
         "write_note"
     }
 
     fn cases(&self) -> &'static [Case] {
         CASES
-    }
-
-    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
-        let res = FileTools::new(w.vault().manager().clone())
-            .write_file_with_mode(rel, CONTENT, WriteMode::Overwrite, pc, MSG)
-            .await;
-        observe(res, w.vault().read(rel))
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
@@ -57,20 +50,20 @@ impl SinglePathOp<ToolsWorld> for WriteNote {
     }
 }
 
+// Tools-layer invoker: construct `FileTools` from the vault's manager and call it.
+impl Op<ToolsWorld> for WriteNote {
+    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = FileTools::new(w.vault().manager().clone())
+            .write_file_with_mode(rel, CONTENT, WriteMode::Overwrite, pc, MSG)
+            .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
 // Manager-layer invoker (qae.9.2 demo): call `VaultManager` directly. This one
 // COMPILES today — the manager already takes a `Precondition` — so the manager
-// arm can run pre-cutover. Not wired into `main` yet (qae.9.2 wires the arm); it
-// exists here to show the SAME op carrying a second, layer-specific invoker,
-// sharing `CASES` and `ok_check`.
-impl SinglePathOp<ManagerWorld> for WriteNote {
-    fn name(&self) -> &'static str {
-        "write_note"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+// arm can run pre-cutover. Shares `CASES`/`ok_check` via `OpAdapterMeta`.
+impl Op<ManagerWorld> for WriteNote {
     async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
         let res = w
             .vault()
@@ -79,25 +72,14 @@ impl SinglePathOp<ManagerWorld> for WriteNote {
             .await;
         observe(res, w.vault().read(rel))
     }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
-    }
 }
 
 // Batch-layer invoker (qae.9.3): wrap the write in a ONE-op batch. The
 // precondition picks the batch op that carries it — a strict create
 // (`CreateNote`, expect_absent) for `ExpectAbsent`, an upsert (`WriteNote`) for
-// `Blind`/`ExpectBlob`. Shares `CASES` + `ok_check`; batch-of-one == standalone.
-impl SinglePathOp<BatchWorld> for WriteNote {
-    fn name(&self) -> &'static str {
-        "write_note"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+// `Blind`/`ExpectBlob`. `observe(w.apply_op(..))` is the same shape as the other
+// arms; batch-of-one == standalone.
+impl Op<BatchWorld> for WriteNote {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let op = match pc {
             Precondition::ExpectAbsent => BatchOperation::CreateNote {
@@ -117,28 +99,16 @@ impl SinglePathOp<BatchWorld> for WriteNote {
                 expected_hash: None,
             },
         };
-        w.run_batch_of_one(op, rel).await
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        observe(w.apply_op(op).await, w.vault().read(rel))
     }
 }
 
 // Wire-layer invoker (nbl.12): drive the real `write_note` MCP handler in-process
 // via `w.call_tool`, encoding the precondition as the ratified sentinel
-// `expected_hash` string. Shares `CASES` + `ok_check`. ASPIRATIONAL: the handler
-// does not decode sentinels yet (qae.6.4 wire-decode commit), so the sentinel
-// cells fail until it does — the wire arm drives that requirement.
-impl SinglePathOp<WireWorld> for WriteNote {
-    fn name(&self) -> &'static str {
-        "write_note"
-    }
-
-    fn cases(&self) -> &'static [Case] {
-        CASES
-    }
-
+// `expected_hash` string. ASPIRATIONAL: the handler does not decode sentinels yet
+// (qae.6.4 wire-decode commit), so the sentinel cells fail until it does — the wire
+// arm drives that requirement.
+impl Op<WireWorld> for WriteNote {
     async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
         let params = serde_json::json!({
             "path": rel,
@@ -147,10 +117,6 @@ impl SinglePathOp<WireWorld> for WriteNote {
         });
         let outcome = w.call_tool("write_note", params).await;
         observe_outcome(outcome, w.vault().read(rel))
-    }
-
-    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
     }
 }
 
