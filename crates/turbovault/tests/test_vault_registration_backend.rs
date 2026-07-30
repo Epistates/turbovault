@@ -11,12 +11,15 @@
 //!
 //! Back-compat is half of the contract: omitting the parameter MUST still
 //! yield a `Direct` vault, which is why both directions live in one test.
+//!
+//! turbovault-74p rides along here: it is the same registration surface seen
+//! from the other side — what happens when the caller does *not* choose.
 
 use tempfile::TempDir;
 use turbomcp::{McpHandler, RequestContext};
 use turbovault::ObsidianMcpServer;
-use turbovault_core::config::WriteBackend;
-use turbovault_tools::VaultRepo;
+use turbovault_core::config::{VaultConfig, WriteBackend};
+use turbovault_tools::{VaultRepo, direct_over_git_repo_warning};
 
 /// Call a tool through the real handler dispatch, panicking loudly on error.
 async fn call(
@@ -119,5 +122,41 @@ async fn add_vault_selects_the_git_backend_and_omitting_it_stays_direct() {
             .unwrap()
             .write_backend,
         WriteBackend::Direct
+    );
+}
+
+/// turbovault-74p: a Direct vault over a git repo is a silent git bypass —
+/// every write lands on the filesystem and never commits, so the working tree
+/// drifts from HEAD with nothing to notice it by. Registration must say so.
+///
+/// The signal is tested through the pure warning function rather than by
+/// capturing the log line: same predicate, no global logger fixture.
+#[test]
+fn registering_a_git_repo_as_direct_warns_while_a_plain_path_stays_quiet() {
+    let repo = TempDir::new().unwrap();
+    init_repo(repo.path());
+    let shadow = VaultConfig::builder("shadow", repo.path()).build().unwrap();
+    assert_eq!(shadow.write_backend, WriteBackend::Direct);
+
+    let warning = direct_over_git_repo_warning(&shadow)
+        .expect("a Direct vault over a git repository must warn");
+    let lowercased = warning.to_lowercase();
+    assert!(
+        lowercased.contains("not be committed"),
+        "the warning must state that writes will not be committed: {warning:?}"
+    );
+    assert!(
+        warning.contains("write_backend"),
+        "the warning must name the parameter that selects the git backend: {warning:?}"
+    );
+
+    // A Direct vault over a plain directory is the ordinary case: no signal.
+    let plain = TempDir::new().unwrap();
+    let ordinary = VaultConfig::builder("ordinary", plain.path())
+        .build()
+        .unwrap();
+    assert!(
+        direct_over_git_repo_warning(&ordinary).is_none(),
+        "a non-git path must not warn"
     );
 }
