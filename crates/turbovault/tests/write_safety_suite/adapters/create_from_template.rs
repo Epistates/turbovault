@@ -2,11 +2,11 @@
 //! `ExpectAbsent`), the same mold as `write_note`'s create path. Precondition
 //! axis is {Blind, Absent} only (a create carries no in-place/blob token).
 //!
-//! `invoke` drives the aspirational `create_from_template` op on the
-//! tools-layer surface, passing the [`Precondition`] directly; the tool layer
-//! does not take one yet (cutover: qae.9.1). No fixture is needed: the built-in
+//! `invoke` passes the [`Precondition`] straight to the tools-layer surface, which
+//! takes one since the qae.9.1 cutover. No fixture is needed: the built-in
 //! `research` template is always registered by `TemplateEngine::default_templates`.
-//! The `ExpectAbsent`-clobber cells on uncommitted-present state are `pending`.
+//! Every `ExpectAbsent` cell here is ACTIVE — a strict create already refuses an
+//! existing target on both backends; only the `Blind`-on-dirty-git rows are pending.
 
 use std::collections::HashMap;
 

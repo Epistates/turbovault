@@ -1,10 +1,9 @@
 //! `update_frontmatter` adapter — an in-place op (design doc §4 default:
 //! `ExpectExists`, dirty-gated). Single-path → [`Op`] mold.
 //!
-//! `invoke` drives the aspirational `update_frontmatter` op on the
-//! tools-layer surface, passing the [`Precondition`] directly; the tool layer
-//! does not take one yet (cutover: qae.9.1). The dirty-gate / precond-vs-workdir
-//! cells are `pending` (the nbl.8 burndown).
+//! `invoke` passes the [`Precondition`] straight to the tools-layer surface, which
+//! takes one since the qae.9.1 cutover. The precond-vs-workdir cells are still
+//! `pending` (the nbl.8 burndown).
 
 use std::collections::HashMap;
 

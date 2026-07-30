@@ -727,11 +727,18 @@ fn apply_dest_precondition(
     to: &str,
     dest_expected_hash: Option<&str>,
 ) -> ChangePlan {
-    match dest_expected_hash {
-        None | Some("absent") => plan.expect_absent(to),
-        Some("blind") => plan,
-        Some("exists") => plan.with_precondition(to, turbovault_core::Precondition::ExpectExists),
-        Some(oid) => plan.expect_blob(to, oid.to_string()),
+    // Decode via the ONE canonical sentinel parser. This used to re-implement the
+    // `<oid> | "absent" | "exists" | "blind"` grammar inline, which meant two
+    // independent readings of the same wire contract that could drift apart (a new
+    // sentinel understood on one path and silently treated as an oid on the other).
+    // Omitted => ExpectAbsent: the destination clobber guard is the default.
+    match turbovault_core::Precondition::from_wire(
+        dest_expected_hash,
+        turbovault_core::Precondition::ExpectAbsent,
+    ) {
+        // Blind is the absence of a guard, so it adds no precondition entry.
+        turbovault_core::Precondition::Blind => plan,
+        pc => plan.with_precondition(to, pc),
     }
 }
 

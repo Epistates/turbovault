@@ -14,13 +14,11 @@
 //! the exact same cells. A world that can't meet a cell FAILS it (that divergence
 //! is the finding); we never fork a per-world table.
 //!
-//! **The batch arm is written against the API we NEED, not the API we HAVE**
-//! (WSS is aspirational): a one-op `MoveNote` batch that carries first-class
-//! source AND destination `Precondition`s. `BatchOperation::MoveNote` has only a
-//! source `expected_hash` today and hardcodes `expect_absent(to)`, so
-//! [`move_batch`] does **not compile** until that API lands (turbovault-qae.6.4).
-//! That compilation failure is the intentional signal — the batch surface must
-//! gain dual preconditions for move to be clobber-safe on the wire.
+//! The batch arm was written against the API we NEEDED rather than the one we had —
+//! a one-op `MoveNote` carrying first-class source AND destination preconditions —
+//! so it deliberately did **not compile** until that surface existed. It does now:
+//! `BatchOperation::MoveNote` gained `dest_expected_hash` in turbovault-qae.6.4,
+//! which is what the non-compiling test was there to force.
 
 use std::sync::Arc;
 
@@ -80,13 +78,12 @@ async fn move_batch(
     from_pc: Precondition,
     to_pc: Precondition,
 ) -> Result<(), turbovault_core::Error> {
-    // NEEDED API (turbovault-qae.6.4): batch `MoveNote` gains a `dest_expected_hash`
-    // parallel to the source `expected_hash`, both `Option<String>` (sentinel|oid),
-    // matching every other batch op's shape. The source keeps the existing
-    // `blob_token` idiom; the destination is sentinel-encoded so it can express
-    // the full dest axis (absent/exists/blind/oid), replacing the hardcoded
-    // `expect_absent(to)`. `dest_expected_hash` does NOT exist until qae.6.4 adds
-    // it, so this won't compile — the intentional WSS signal.
+    // `dest_expected_hash` runs parallel to the source `expected_hash`, both
+    // `Option<String>` (sentinel|oid), matching every other batch op's shape. The
+    // source keeps the `blob_token` idiom; the destination is sentinel-encoded so it
+    // can express the full dest axis (absent/exists/blind/oid), replacing what used
+    // to be a hardcoded `expect_absent(to)`. This adapter named that field before it
+    // existed — the resulting compile failure is what drove qae.6.4 to add it.
     let op = BatchOperation::MoveNote {
         from: from.to_string(),
         to: to.to_string(),

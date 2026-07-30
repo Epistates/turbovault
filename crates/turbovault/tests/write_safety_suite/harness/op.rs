@@ -43,12 +43,26 @@ pub fn present_state(backend: Backend) -> GitState {
 /// implemented yet.
 ///
 /// `only` scopes a cell to a single backend. Most cells run on every backend that
-/// can build their state, but the `e---u`/Untracked state is the one place git
-/// and direct diverge: on git it's a dirty/untracked burndown state (a refusal
-/// isn't unified to `ConcurrencyError` / the dirty gate isn't wired), while on
-/// direct it *is* the ordinary "present" state and already behaves correctly. A
-/// single shared `pending` flag can't be right for both, so those cells are split
-/// into a git-scoped pending arm and a direct-scoped active arm via [`Case::on`].
+/// can build their state, but the `e---u`/Untracked state is the one place git and
+/// direct diverge, because the same state CODE means different things: on git it is
+/// a dirty/untracked working tree, while on direct it is simply "the file exists"
+/// (`present_state(Direct)`). A single shared `pending` flag can't be right for
+/// both, so those cells are split with [`Case::on`] — same `expected`, differing
+/// only in the flag.
+///
+/// WHICH ARM IS PENDING (kept accurate; it has been backwards before): for the
+/// in-place ops the GIT arm is ACTIVE and passing — the dirty gate now unifies to
+/// `ConcurrencyError` (that landed in the nbl.8 error-unification fix) — and the
+/// DIRECT arm is `pending`. Do not "correct" this to the reverse: it is verified by
+/// `just wss-report`, and flipping it would mark a passing cell pending and a
+/// failing cell active, breaking the fixpoint in both directions at once.
+///
+/// KNOWN SPEC QUESTION on that direct arm: it demands `ConcurrencyError`, inherited
+/// from the shared table, but on direct `e---u` is just a present file, so
+/// `ExpectExists` is SATISFIED and `Ok` is arguably the right requirement. It may
+/// therefore be pending against a requirement that is wrong for that backend rather
+/// than against unimplemented behavior — the cost of reusing one state code for two
+/// meanings. Tracked with the burndown (turbovault-nbl.8), not silently blessed.
 #[derive(Clone, Copy, Debug)]
 pub struct Case {
     pub precondition: PreconditionKind,

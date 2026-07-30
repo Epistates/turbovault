@@ -437,6 +437,20 @@ def main():
     truth = parse_trials(run_matrix(["--include-ignored"]))
     if not truth:
         sys.exit("no trials parsed — did the wss_matrix binary build/run?")
+
+    # A run that dies partway still leaves `truth` non-empty, and the cells that
+    # never reported would simply VANISH from the grid — the reporter would then
+    # happily print a fixpoint and exit 0. For the reconcile oracle that is the
+    # worst possible failure, so cross-check against the declared trial list
+    # (`--list` executes nothing) and refuse to report on a partial run.
+    expected = set(list_trials())
+    missing = expected - set(truth)
+    if missing:
+        example = sorted(missing)[0]
+        sys.exit(f"INCOMPLETE RUN: {len(missing)} of {len(expected)} trials produced no "
+                 f"result (e.g. {example}). The matrix binary aborted mid-run — refusing "
+                 f"to report, because missing cells would look like a clean grid.")
+
     pending_set = set(parse_trials(run_matrix(["--ignored"])))
 
     rows, totals, unpend, newly_failing = build(truth, pending_set)

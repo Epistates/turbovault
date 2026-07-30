@@ -44,7 +44,7 @@ The universal rule the whole matrix encodes:
 | Axis | Type | What it is |
 |---|---|---|
 | **Backend** | `Backend { Git, Direct }` → a `Vault` | The on-disk vault: state construction + version tokens. Layer-agnostic. Git has the full 9-state grid; Direct has only `{absent, present}`. |
-| **Layer** | a **World** per layer (`Layer` trait) | *How* you reach the write surface. One type per layer — `ToolsWorld`, `ManagerWorld`, `BatchWorld`, (`WireWorld`, planned). |
+| **Layer** | a **World** per layer (`Layer` trait) | *How* you reach the write surface. One type per layer — `ToolsWorld`, `ManagerWorld`, `BatchWorld`, `WireWorld`. |
 | **Op** | `SinglePathOp<W>` **invoker** | One impl per `(op, layer)`. Binds an op's shared `Case` table to a layer-specific invocation. An op that doesn't map to a layer simply has no invoker there. |
 | **Cell** | `Case { precondition, state, expected, pending, only }` | One matrix cell. `pending` = ignored (burndown); `only` scopes a cell to one backend where git/direct diverge. |
 
@@ -69,8 +69,14 @@ so flipping a cell from pending to active is a mechanical `pending → new`.
   delete-of-absent short-circuits to an idempotent `Ok` while the standalone
   delete still refuses), the shared cell simply diverges — a failure or an
   un-pend candidate — instead of being blessed in a per-world table.
-- **`WireWorld`** *(planned)* — a spawned MCP server + JSON-RPC client, to verify
-  the agent-facing wire contract (precondition encoding, error mapping).
+- **`WireWorld`** — an **in-process** `ObsidianMcpServer` driven through its real
+  `call_tool` dispatch: the `#[tool]` handler, JSON param (de)serialization, and the
+  `ConcurrencyError → McpError` mapping, with no child process. It verifies the
+  agent-facing wire contract (sentinel precondition encoding, error mapping). The
+  typed error kind is erased at the wire boundary, so this arm classifies outcomes by
+  **message substring** — which is precisely the contract it exists to pin: that the
+  kind survives as a legible string. Its vault is registered directly via a
+  `VaultConfig`, bypassing the Direct-only `add_vault` tool.
 
 ## States, preconditions, outcomes
 

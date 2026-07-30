@@ -48,15 +48,19 @@ use turbovault_tools::{BatchOperation, FileTools, WriteMode};
 
 // ── Probe 1: setup fidelity ──────────────────────────────────────────────────
 
-/// What a cell's setup ACTUALLY looks like, measured rather than recalled: the
-/// state re-derived from the working tree, plus the precondition the op would be
-/// handed.
+/// What a cell's setup ACTUALLY looks like, MEASURED rather than recalled: the
+/// state re-derived from the working tree, and whether the target is there.
+///
+/// Deliberately does NOT echo back the precondition it was handed. An earlier
+/// version did, and the test compared that echo against the same value it passed
+/// in — which can never fail, so it asserted nothing (caught in review). What
+/// genuinely constrains the precondition axis is the N/A-rule check in the sweep
+/// below: that a token resolves exactly when it is DEFINED for the state. That one
+/// has an independent oracle ([`token_defined`]) and can fail.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProbedSetup {
     /// The state re-derived from disk (`None` == matches no canonical state).
     pub state: Option<GitState>,
-    /// The precondition resolved for this cell — echoed back verbatim.
-    pub precondition: Precondition,
     /// Working-tree content of the target (`None` == absent).
     pub content: Option<String>,
 }
@@ -82,12 +86,11 @@ impl Layer for ProbeWorld {
 
 impl ProbeWorld {
     /// Observe `rel`'s setup — the inspection-only counterpart to a real world's
-    /// `invoke`. Takes the precondition by reference and echoes a clone, so the
-    /// caller can compare it against what the cell asked for.
-    pub fn probe(&self, rel: &str, precondition: &Precondition) -> ProbedSetup {
+    /// `invoke`. Everything it reports is re-derived from disk; nothing is echoed
+    /// back from its caller (see [`ProbedSetup`]).
+    pub fn probe(&self, rel: &str) -> ProbedSetup {
         ProbedSetup {
             state: observed_state(self.vault(), rel),
-            precondition: precondition.clone(),
             content: self.vault().read(rel),
         }
     }
@@ -302,26 +305,26 @@ mod tests {
                         .expect("a supported state must build");
                     let label = format!("{}::{}::{}", backend.code(), kind.code(), state.code());
 
-                    // The N/A rule must hold exactly: a token resolves iff it is
-                    // defined for this state. Getting this wrong silently drops a
-                    // cell instead of failing one.
+                    // The only non-circular constraint available on the precondition
+                    // axis: a token must resolve exactly when it is DEFINED for this
+                    // state. Getting it wrong does not fail a cell — it silently
+                    // DELETES one (the runner skips unresolvable cells), so this is
+                    // the check that keeps a coverage hole from looking like a pass.
                     let resolved = kind.resolve(&oids);
                     assert_eq!(
                         resolved.is_some(),
                         token_defined(kind, state),
                         "{label}: precondition definedness disagrees with the N/A rule"
                     );
-                    let Some(pc) = resolved else { continue };
+                    if resolved.is_none() {
+                        continue;
+                    }
 
-                    let probed = w.probe(REL, &pc);
+                    let probed = w.probe(REL);
                     assert_eq!(
                         probed.state,
                         Some(state),
                         "{label}: built state is not the state the cell claims"
-                    );
-                    assert_eq!(
-                        probed.precondition, pc,
-                        "{label}: the op would receive a different precondition"
                     );
                     assert_eq!(
                         probed.content.is_some(),

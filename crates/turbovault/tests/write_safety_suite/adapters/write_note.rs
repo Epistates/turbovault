@@ -1,9 +1,8 @@
 //! `write_note` adapter — a wholesale-replace op (design doc §4 default:
 //! `ExpectAbsent`). A single-path op, so it rides the [`Op`] mold.
 //!
-//! `invoke` drives the aspirational `write` op on the tools-layer surface,
-//! passing the [`Precondition`] directly. The tool layer does not take a
-//! precondition yet, so this does not compile until the cutover (qae.9.1).
+//! `invoke` passes the [`Precondition`] straight to the tools-layer surface, which
+//! takes one since the qae.9.1 cutover.
 //!
 //! SCOPE: only `WriteMode::Overwrite` is covered. **`append`/`prepend` are a
 //! documented gap — turbovault-nbl.9**, deferred rather than guessed, for two

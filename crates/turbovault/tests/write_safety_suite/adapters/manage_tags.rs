@@ -2,10 +2,9 @@
 //! dirty-gated). Single-path → [`Op`] mold; a sibling of `edit_note` /
 //! `update_frontmatter`.
 //!
-//! `invoke` drives the aspirational `manage_tags` op on the tools-layer surface,
-//! passing the [`Precondition`] directly; the tool layer does not take one yet
-//! (cutover: qae.9.1). The dirty-gate / precond-vs-workdir cells are `pending`
-//! (nbl.8 burndown).
+//! `invoke` passes the [`Precondition`] straight to the tools-layer surface, which
+//! takes one since the qae.9.1 cutover. The precond-vs-workdir cells are still
+//! `pending` (nbl.8 burndown).
 
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
