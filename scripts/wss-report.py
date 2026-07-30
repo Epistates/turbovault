@@ -26,12 +26,18 @@ them in sync if those change.
 """
 
 import argparse
+import csv
 import html
+import os
 import re
 import subprocess
 import sys
 import unicodedata
 from collections import defaultdict
+
+# The authoritative WSS spec the Rust tables must agree with (`--audit`).
+CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "docs", "write-safety-suite", "wss-precondition-matrix.csv")
 
 # ── Canonical orders — mirror the Rust enums + the CSV (see module docstring) ──
 STATE_ORDER = ["-----", "etc--", "etcs-", "etc-u", "etcsu",
@@ -80,6 +86,62 @@ class Cell:
         self.expected = expected
         self.passed = passed
         self.pending = pending
+
+
+def list_trials():
+    """Every trial NAME, via libtest-mimic's `--list` — no cells are executed, so
+    this is near-instant (the audit only needs to know which cells exist)."""
+    out = run_matrix(["--list"])
+    return [line.rsplit(": test", 1)[0]
+            for line in out.splitlines() if line.endswith(": test")]
+
+
+def load_csv_spec(path):
+    """{(op, PRECOND, state): expected} from the source-of-truth CSV, skipping the
+    cells it declares untestable: `N/A` (token undefined for the state) and
+    `SKIP:X` (duplicate of another precondition). Op names normalise to the trial
+    convention (`move_note | src` -> `move_note::src`), preconditions upper-case."""
+    spec = {}
+    with open(path) as f:
+        for row in csv.reader(f):
+            if len(row) < 2 + len(STATE_ORDER) or row[0].strip() in ("", "operation"):
+                continue
+            op = row[0].replace(" | ", "::").strip()
+            precond = row[1].strip().upper()
+            if precond not in PRECOND_SET:
+                continue  # legend / notes rows
+            for state, value in zip(STATE_ORDER, row[2:2 + len(STATE_ORDER)]):
+                v = value.strip()
+                if v in ("", "N/A") or v.startswith("SKIP"):
+                    continue
+                spec[(op, precond, state)] = v
+    return spec
+
+
+def audit_against_csv(spec, names):
+    """Compare the CSV spec with the grid cells the suite actually emits, using the
+    reference arm (`tools::git`: the only one with the full 9-state grid and every
+    op). Returns (missing, extra, mismatched).
+
+    Why this exists: the CSV is documented as the AUTHORITATIVE WSS spec, so a table
+    that quietly drifts from it — a cell dropped, or asserting a different outcome —
+    would make the docs lie. `split_name` filters non-grid trials, so op-specific
+    one-offs (edit_note's SEARCH-not-found) are invisible here by construction and
+    never count as `extra`.
+    """
+    actual = {}
+    for name in names:
+        parsed = split_name(name)
+        if not parsed:
+            continue
+        world, backend, op, precond, state, expected = parsed
+        if (world, backend) == ("tools", "git"):
+            actual[(op, precond, state)] = expected
+    missing = sorted(k for k in spec if k not in actual)
+    extra = sorted(k for k in actual if k not in spec)
+    mismatched = sorted((k, spec[k], actual[k]) for k in spec
+                        if k in actual and actual[k] != spec[k])
+    return missing, extra, mismatched
 
 
 def run_matrix(extra_args):
@@ -345,7 +407,32 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--html", metavar="PATH", help="write a self-contained HTML report")
+    ap.add_argument("--audit", action="store_true",
+                    help="check the Rust tables against the source-of-truth CSV "
+                         "(fast: lists trials, runs none) and exit")
     args = ap.parse_args()
+
+    if args.audit:
+        spec = load_csv_spec(CSV_PATH)
+        names = list_trials()
+        if not names:
+            sys.exit("no trials listed — did the wss_matrix binary build?")
+        missing, extra, mismatched = audit_against_csv(spec, names)
+        print(f"CSV spec cells (excluding N/A + SKIP): {len(spec)}")
+        print(f"reference arm (tools::git) grid cells: "
+              f"{len(spec) - len(missing) + len(extra)}")
+        for label, items in (("MISSING (CSV requires a cell, the suite has none)", missing),
+                             ("EXTRA (the suite tests a cell the CSV does not list)", extra)):
+            print(f"\n{label}: {len(items)}")
+            for k in items:
+                print(f"  {FAIL} {'::'.join(k)}")
+        print(f"\nOUTCOME MISMATCH (CSV vs the suite): {len(mismatched)}")
+        for key, want, got in mismatched:
+            print(f"  {FAIL} {'::'.join(key)}: CSV says {want}, suite asserts {got}")
+        drift = len(missing) + len(extra) + len(mismatched)
+        if not drift:
+            print(f"\n{PASS} The suite matches the CSV spec exactly.")
+        sys.exit(1 if drift else 0)
 
     truth = parse_trials(run_matrix(["--include-ignored"]))
     if not truth:

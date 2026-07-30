@@ -92,6 +92,7 @@ cargo test --test wss_matrix -- git::write_note     # filter by trial-name subst
 just wss-report                     # ONE table: world×backend×op×precondition rows,
                                     #   state columns, emoji status + a legend
 just wss-report-html                # the same table as one self-contained HTML file
+just wss-audit                      # do the Case tables still match the CSV spec?
 ```
 
 Trial names are `<layer>::<backend>::<op>::<PRECOND>::<state>::<expected>`. The

@@ -68,14 +68,21 @@ coverage:
 # WRITE-SAFETY MATRIX (WSS)
 # =============================================================================
 
-# Write-safety burndown report: per-op precondition×state grid coloured by
-# pass/fail across both backends (terminal ANSI). Exits non-zero off-fixpoint.
+# Write-safety burndown report: ONE table (world×backend×op×precondition rows,
+# state columns) with emoji status + a legend, paste-able into a GitHub comment.
+# Exits non-zero off-fixpoint (un-pend candidates or newly-failing cells).
 wss-report:
     python3 scripts/wss-report.py
 
 # Same report as one self-contained HTML file (default: wss-report.html).
 wss-report-html OUT="wss-report.html":
     python3 scripts/wss-report.py --html {{ OUT }}
+
+# Check the Rust Case tables against the source-of-truth CSV: every non-N/A,
+# non-SKIP cell present, with the outcome the CSV specifies. FAST — it lists the
+# trials without running any. Exits non-zero on drift.
+wss-audit:
+    python3 scripts/wss-report.py --audit
 
 # Run only the write-safety matrix (active cells; pending are ignored).
 wss-test:
