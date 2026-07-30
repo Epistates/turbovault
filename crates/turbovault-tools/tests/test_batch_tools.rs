@@ -208,11 +208,11 @@ async fn test_batch_execute_rollback_on_error() {
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(!batch_result.success);
-    // write-substrate-layering M4d/M4e: the manager-routed batch folds every
-    // op into ONE ChangePlan and reports `executed: 0` on any apply failure
-    // (per-index `failed_at` tracking on the direct backend is M5.2 future
-    // work) — it does NOT mean nothing landed on disk; see below.
-    assert_eq!(batch_result.executed, 0);
+    // TV-016: the direct backend's apply loop is sequential with no rollback,
+    // so operation 0 landed. `executed` counts what landed, `failed_at` names
+    // the operation that stopped the batch.
+    assert_eq!(batch_result.executed, 1);
+    assert_eq!(batch_result.failed_at, Some(1));
 
     // Note: the direct backend's apply loop is sequential with no rollback
     // (only the precondition GATE is atomic) — operation 0 (success1.md) was
@@ -294,11 +294,11 @@ async fn test_batch_execute_atomic_guarantees() {
     assert!(result2.is_ok());
     let batch_result2 = result2.unwrap();
     assert!(!batch_result2.success);
-    // See test_batch_execute_rollback_on_error: the manager-routed batch
-    // reports `executed: 0` on any apply failure (M5.2 adds per-index
-    // `failed_at`); atomic3.md still landed (asserted below) since the
-    // direct backend's apply loop is sequential with no rollback.
-    assert_eq!(batch_result2.executed, 0);
+    // See test_batch_execute_rollback_on_error: atomic3.md landed (asserted
+    // below) since the direct backend's apply loop is sequential with no
+    // rollback, and TV-016 makes the report say so.
+    assert_eq!(batch_result2.executed, 1);
+    assert_eq!(batch_result2.failed_at, Some(1));
 
     // Verify first batch files still exist (different batch, unaffected)
     let vault_path = manager.vault_path();
