@@ -910,6 +910,23 @@
             "string",
             "null"
           ]
+        },
+        "write_backend": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_Map_of_AnyValue",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
         }
       },
       "required": [
@@ -941,6 +958,23 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "string",
           "type": "string"
+        },
+        "write_backend": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_string",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "title": "Nullable_Map_of_AnyValue",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
         }
       },
       "required": [

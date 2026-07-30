@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use turbovault_core::config::{VaultGitConfig, WriteBackend};
 use turbovault_core::prelude::*;
 
 /// Vault lifecycle operations
@@ -25,6 +26,11 @@ impl VaultLifecycleTools {
     /// - `name`: Unique vault identifier (no spaces)
     /// - `path`: Directory to create vault in (supports tilde expansion)
     /// - `template`: Optional template name ("default", "research", "team")
+    /// - `write_backend`: Which write path serves the vault. `Direct` is the
+    ///   pre-turbovault-kdq behaviour and stays the default for callers that
+    ///   don't choose.
+    /// - `git`: Per-vault git substrate settings, only meaningful with
+    ///   `WriteBackend::Git`. `None` = the substrate defaults.
     ///
     /// # Returns
     /// VaultInfo with the created vault details (includes fully resolved path)
@@ -38,6 +44,8 @@ impl VaultLifecycleTools {
         name: &str,
         path: &Path,
         template: Option<&str>,
+        write_backend: WriteBackend,
+        git: Option<VaultGitConfig>,
     ) -> Result<VaultInfo> {
         // Validation: name format
         if name.is_empty() {
@@ -112,7 +120,7 @@ impl VaultLifecycleTools {
         }
 
         // Create vault configuration (uses expanded path)
-        let config = VaultConfig::builder(name, &expanded_path).build()?;
+        let config = Self::build_config(name, &expanded_path, write_backend, git)?;
 
         // Register with multi-vault manager
         self.multi_manager.add_vault(config).await?;
@@ -126,10 +134,20 @@ impl VaultLifecycleTools {
     /// # Arguments
     /// - `name`: Unique vault identifier
     /// - `path`: Existing vault directory path (supports tilde expansion)
+    /// - `write_backend`: Which write path serves the vault (`Direct` unless
+    ///   the caller chooses git — turbovault-kdq).
+    /// - `git`: Per-vault git substrate settings, only meaningful with
+    ///   `WriteBackend::Git`.
     ///
     /// # Returns
     /// VaultInfo with the registered vault details
-    pub async fn add_vault_from_path(&self, name: &str, path: &Path) -> Result<VaultInfo> {
+    pub async fn add_vault_from_path(
+        &self,
+        name: &str,
+        path: &Path,
+        write_backend: WriteBackend,
+        git: Option<VaultGitConfig>,
+    ) -> Result<VaultInfo> {
         // Validation: name format
         if name.is_empty() || name.contains(' ') {
             return Err(Error::config_error(
@@ -165,13 +183,29 @@ impl VaultLifecycleTools {
         }
 
         // Create vault config
-        let config = VaultConfig::builder(name, &expanded_path).build()?;
+        let config = Self::build_config(name, &expanded_path, write_backend, git)?;
 
         // Register with multi-vault manager
         self.multi_manager.add_vault(config).await?;
 
         // Return vault info
         self.get_vault_info(name).await
+    }
+
+    /// turbovault-kdq: the single place a runtime-registered vault's config is
+    /// assembled, so `create_vault` and `add_vault_from_path` can never drift
+    /// on how the backend selection reaches the builder.
+    fn build_config(
+        name: &str,
+        path: &Path,
+        write_backend: WriteBackend,
+        git: Option<VaultGitConfig>,
+    ) -> Result<VaultConfig> {
+        let mut builder = VaultConfig::builder(name, path).write_backend(write_backend);
+        if let Some(git) = git {
+            builder = builder.git(git);
+        }
+        builder.build()
     }
 
     /// List all registered vaults

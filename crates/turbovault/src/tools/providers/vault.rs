@@ -1,8 +1,33 @@
 //! VaultProvider MCP capabilities.
 
+use std::collections::HashMap;
 use std::ops::Deref;
 
+use turbovault_core::config::{VaultGitConfig, WriteBackend};
+
 use super::super::*;
+
+/// turbovault-kdq: resolve the optional `write_backend` + `git` registration
+/// arguments into the typed pair the builder wants. Omitting `write_backend`
+/// yields `Direct` — the pre-kdq behaviour, unchanged.
+fn parse_backend_selection(
+    write_backend: Option<String>,
+    git: Option<HashMap<String, serde_json::Value>>,
+) -> McpResult<(WriteBackend, Option<VaultGitConfig>)> {
+    let backend = match write_backend {
+        Some(raw) => raw.parse::<WriteBackend>().map_err(to_mcp_error)?,
+        None => WriteBackend::default(),
+    };
+    let git = git
+        .map(|settings| {
+            serde_json::from_value::<VaultGitConfig>(serde_json::Value::Object(
+                settings.into_iter().collect(),
+            ))
+        })
+        .transpose()
+        .map_err(|error| McpError::invalid_request(format!("Invalid git settings: {error}")))?;
+    Ok((backend, git))
+}
 
 #[derive(Clone)]
 pub(super) struct VaultProvider(CoreToolHandler);
@@ -39,10 +64,19 @@ impl VaultProvider {
         name: String,
         path: String,
         template: Option<String>,
+        write_backend: Option<String>,
+        git: Option<HashMap<String, serde_json::Value>>,
     ) -> McpResult<serde_json::Value> {
+        let (write_backend, git) = parse_backend_selection(write_backend, git)?;
         let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
         let vault_info = tools
-            .create_vault(&name, Path::new(&path), template.as_deref())
+            .create_vault(
+                &name,
+                Path::new(&path),
+                template.as_deref(),
+                write_backend,
+                git,
+            )
             .await
             .map_err(to_mcp_error)?;
 
@@ -66,10 +100,17 @@ impl VaultProvider {
         examples = ["Add personal vault", "Register work vault", "Connect to shared knowledge base"],
         tags = ["write", "admin"],
     )]
-    async fn add_vault(&self, name: String, path: String) -> McpResult<serde_json::Value> {
+    async fn add_vault(
+        &self,
+        name: String,
+        path: String,
+        write_backend: Option<String>,
+        git: Option<HashMap<String, serde_json::Value>>,
+    ) -> McpResult<serde_json::Value> {
+        let (write_backend, git) = parse_backend_selection(write_backend, git)?;
         let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
         let vault_info = tools
-            .add_vault_from_path(&name, Path::new(&path))
+            .add_vault_from_path(&name, Path::new(&path), write_backend, git)
             .await
             .map_err(to_mcp_error)?;
 
