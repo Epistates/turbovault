@@ -7,6 +7,31 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
 use turbovault_core::prelude::*;
+use turbovault_git::VaultRepo;
+
+/// turbovault-74p: the direct-over-git footgun signal.
+///
+/// Returns the warning text when `config` puts the `Direct` backend over a
+/// path that IS a usable git repository — every write then lands straight on
+/// the filesystem and never commits, so the working tree silently drifts from
+/// HEAD. Returns `None` otherwise.
+///
+/// A pure function returning the message rather than an in-place `log::warn!`
+/// on purpose: every registration site stays a one-liner, and the predicate is
+/// testable without a global logger fixture. It only *warns* — the
+/// registration still succeeds and nothing about the write path changes.
+pub fn direct_over_git_repo_warning(config: &VaultConfig) -> Option<String> {
+    if config.write_backend != WriteBackend::Direct || !VaultRepo::is_git_repo(&config.path) {
+        return None;
+    }
+    Some(format!(
+        "Vault '{}' at {} is a Git repository but is registered with write_backend=direct: \
+         its writes will not be committed and the working tree will drift from HEAD. \
+         Register it with write_backend=git to write through the Git substrate.",
+        config.name,
+        config.path.display()
+    ))
+}
 
 /// Vault lifecycle operations
 pub struct VaultLifecycleTools {
@@ -205,7 +230,13 @@ impl VaultLifecycleTools {
         if let Some(git) = git {
             builder = builder.git(git);
         }
-        builder.build()
+        let config = builder.build()?;
+        // turbovault-74p: this is the funnel both registration entry points
+        // pass through, so the footgun check belongs here rather than in each.
+        if let Some(warning) = direct_over_git_repo_warning(&config) {
+            log::warn!("{warning}");
+        }
+        Ok(config)
     }
 
     /// List all registered vaults

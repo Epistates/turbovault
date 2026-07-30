@@ -11,7 +11,7 @@ use turbomcp::{McpServerExt, ProtocolConfig, VisibilityLayer};
 use turbovault_core::VaultConfig;
 use turbovault_core::cache::VaultCache;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
-use turbovault_tools::OutputFormat;
+use turbovault_tools::{OutputFormat, direct_over_git_repo_warning};
 
 /// TurboVault Server - AI-powered vault management
 #[derive(Parser, Debug)]
@@ -212,6 +212,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 // Add each cached vault to the multi-vault manager
                 for vault_config in cached_vaults {
+                    // turbovault-74p: a cached Direct vault over a git repo is
+                    // the same bypass, restored — warn on every recovery too.
+                    if let Some(warning) = direct_over_git_repo_warning(&vault_config) {
+                        log::warn!("{warning}");
+                    }
                     match server.multi_vault().add_vault(vault_config.clone()).await {
                         Ok(_) => {
                             log::info!(
@@ -459,6 +464,11 @@ async fn register_configured_vaults(
             )
             .into());
         }
+        // turbovault-74p: the inverse mismatch — direct over a git repo — is a
+        // silent bypass rather than an error, so it warns and registers.
+        if let Some(warning) = direct_over_git_repo_warning(&vault) {
+            log::warn!("{warning}");
+        }
         log::info!(
             "Registering configured vault '{}' ({:?}) with write_backend={:?}",
             vault.name,
@@ -594,6 +604,11 @@ async fn register_default_vault(
     let vault_config = builder
         .build()
         .map_err(|error| format!("Failed to create vault config: {error}"))?;
+    // turbovault-74p: --vault over a path that is already a git repo is the
+    // live footgun (it registers a shadow Direct vault beside the real one).
+    if let Some(warning) = direct_over_git_repo_warning(&vault_config) {
+        log::warn!("{warning}");
+    }
     server
         .multi_vault()
         .add_vault(vault_config)
