@@ -129,6 +129,28 @@ the `batch_execute` wire tool, on purpose. `batch_execute` returns
 envelope (and its atomicity semantics) is the transaction suite's concern, not
 WSS's.
 
+## <a name="known-gaps"></a>Known gaps (deliberate, tracked)
+
+Two write surfaces are **not** covered, in both cases because the *required
+behavior* is genuinely unsettled — encoding a guess in the matrix would publish a
+contract nobody ratified, which is worse than a documented hole:
+
+- **`write_note` `append`/`prepend` modes** (`turbovault-nbl.9`). Only
+  `Overwrite` has cells. WSS asserts clobber-safety, and an append never destroys
+  existing bytes — so an append carrying a *stale* `ExpectBlob` is arguably not a
+  clobber at all. It could refuse like every other in-place op (consistent with the
+  design's §4 "in-place → `ExpectExists` + dirty-gated") or proceed (nothing is
+  lost); the design's §9 explicitly leaves "append/prepend CAS semantics" open. The
+  layers also disagree on whether the mode exists — `FileTools::write_file_with_mode`
+  and the `write_note` wire param take a `WriteMode`, but `VaultManager::write_file`
+  and `BatchOperation` have none.
+- **`BatchOperation::UpdateLinks`** (`turbovault-0g4.8`). The only batch variant
+  with no arm, pending a decision on whether it survives at all (it is a naive,
+  non-OFM-aware `str::replace`). If it is removed, the gap closes by deletion.
+
+Neither is a *coverage* oversight: `just wss-audit` proves the tables match the CSV
+spec exactly for everything the spec does cover.
+
 ## Authoring rules — how to change WSS
 
 WSS is **aspirational**: a cell states the behavior we *want*, so the suite is

@@ -4,6 +4,28 @@
 //! `invoke` drives the aspirational `write` op on the tools-layer surface,
 //! passing the [`Precondition`] directly. The tool layer does not take a
 //! precondition yet, so this does not compile until the cutover (qae.9.1).
+//!
+//! SCOPE: only `WriteMode::Overwrite` is covered. **`append`/`prepend` are a
+//! documented gap — turbovault-nbl.9**, deferred rather than guessed, for two
+//! reasons found while scoping it:
+//!
+//! 1. An unresolved SPEC fork. WSS asserts clobber-safety, and an append never
+//!    destroys existing bytes — so an append carrying a STALE `ExpectBlob` is not a
+//!    clobber. Either it refuses like every other in-place op (consistent, and what
+//!    the code does today) or it proceeds (nothing is lost). The ratified design
+//!    says both: §4 calls append/prepend "in-place → `ExpectExists` + dirty-gated",
+//!    while §9 lists "nbl.9 append/prepend CAS semantics" as an OPEN non-goal.
+//!    Writing either answer into `wss-precondition-matrix.csv` would publish a
+//!    contract we are not sure of — the one expensive mistake for an authoritative
+//!    spec.
+//! 2. The layers disagree on whether the mode even exists: `FileTools::
+//!    write_file_with_mode` and the `write_note` wire param take a `WriteMode`, but
+//!    `VaultManager::write_file` has no mode parameter and `BatchOperation` has no
+//!    append/prepend variant. So the required LAYER coverage is unsettled too.
+//!
+//! Content-correctness of an append (does prepend land after the frontmatter?) is
+//! NOT what this gap is about — that is a plain functional test's job, never a WSS
+//! cell (see the README's scope boundary).
 
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
