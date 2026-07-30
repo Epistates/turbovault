@@ -82,7 +82,15 @@ impl BatchTools {
             Err(e) => return Ok(failed_batch(total, e, transaction_id, started)),
         };
         plan.message = message.to_string();
-        if let Err(e) = self.manager.apply_changes(&plan).await {
+        let outcome = match self.manager.apply_changes(&plan).await {
+            Ok(outcome) => outcome,
+            Err(e) => return Ok(failed_batch(total, e, transaction_id, started)),
+        };
+        // A best-effort direct apply that stopped mid-plan comes back as `Ok`
+        // carrying its error (M5 S2). Reporting it as today's whole-plan
+        // failure envelope keeps the wire shape unchanged here; turning it
+        // into a per-operation partial report is turbovault-qim.
+        if let Some(e) = outcome.error {
             return Ok(failed_batch(total, e, transaction_id, started));
         }
 
@@ -212,7 +220,10 @@ impl BatchTools {
                 expected_hash,
             )
             .await?;
-        self.manager.apply_changes(&plan).await?;
+        // All-or-nothing contract: a best-effort direct apply that stopped
+        // mid-plan comes back as `Ok` carrying its error (M5 S2), so re-raise
+        // it rather than reporting a half-rewritten move as a success.
+        self.manager.apply_changes(&plan).await?.into_result()?;
         Ok(updated)
     }
 
@@ -230,7 +241,8 @@ impl BatchTools {
         let (plan, updated) = self
             .fold_delete_with_stale_links(ChangePlan::new(message.to_string()), path, expected_hash)
             .await?;
-        self.manager.apply_changes(&plan).await?;
+        // Same all-or-nothing re-raise as `move_file_with_link_updates`.
+        self.manager.apply_changes(&plan).await?.into_result()?;
         Ok(updated)
     }
 

@@ -545,10 +545,20 @@ impl VaultManager {
             .upsert(rel_path.clone(), content.as_bytes())
             .with_precondition(rel_path, precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
+        self.apply_one(&plan).await
+    }
+
+    /// The single-op mutators' shared tail: apply, index whatever landed
+    /// (R7), then re-raise a best-effort apply's error so they keep their
+    /// all-or-nothing `Result` contract. Their plans hold ONE change, so
+    /// "what landed" is all-or-nothing anyway — the re-raise is what stops
+    /// a failed single write from being reported as a success now that
+    /// `DirectSubstrate::apply` returns `Ok` for a stopped apply loop.
+    async fn apply_one(&self, plan: &ChangePlan) -> Result<()> {
+        let outcome = self.substrate.apply(plan).await?;
         self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
-        Ok(())
+        self.fire_change_listener(outcome.changed.clone());
+        outcome.into_result().map(|_| ())
     }
 
     /// Apply an arbitrary multi-change [`ChangePlan`] — the R3 multi-change
@@ -559,6 +569,16 @@ impl VaultManager {
     /// bypass for callers (batch, rollback, …) that build their own plans.
     /// Delegates to the substrate and runs the same post-apply link-
     /// graph/cache sync (R7) as the single-op mutators.
+    ///
+    /// A best-effort direct apply that stopped mid-plan (M5 S2) comes back as
+    /// `Ok(outcome)` with `atomic: false`, `failed_at: Some(i)` and
+    /// `error: Some(_)` — the sync above still runs over the prefix that
+    /// landed, so a partially-applied plan is never invisible to the link
+    /// graph, file cache and search index. Callers that want all-or-nothing
+    /// `Result` semantics re-raise with [`ApplyOutcome::into_result`]; the
+    /// batch reports the partial per-operation instead. A whole-plan abort
+    /// (a stale precondition, or any git failure) is still a hard `Err` with
+    /// nothing written.
     #[instrument(skip(self, plan), fields(changes = plan.changes.len()), name = "vault_apply_changes")]
     pub async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         for touched in plan.touched_paths() {
@@ -689,10 +709,7 @@ impl VaultManager {
             .remove(rel_path.clone())
             .with_precondition(rel_path, precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
-        Ok(())
+        self.apply_one(&plan).await
     }
 
     /// Move file within vault with audit trail, graph update, and dual
@@ -727,10 +744,7 @@ impl VaultManager {
             .with_precondition(rel_from, src_precondition)
             .with_precondition(rel_to, dest_precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
-        Ok(())
+        self.apply_one(&plan).await
     }
 
     /// Get backlinks for a file
