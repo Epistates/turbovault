@@ -1,5 +1,17 @@
 //! Shared harness primitives for the WSS write-safety matrix (turbovault-nbl.1).
 //!
+//! **The promise this suite exists to hold TurboVault to:** TurboVault's promise
+//! is to **ABORT** if the content on disk doesn't match what you said the file
+//! looks like. WSS ensures this promise by setting up all possible scenario
+//! combinations and making sure TurboVault aborts when it *should* abort.
+//!
+//! **The same thing, stated as a scope boundary:** WSS tests **clobber-safety** —
+//! did the op refuse-or-proceed without silently losing an out-of-band change? —
+//! and **not content-correctness** — is the written text formatted right? Those are
+//! orthogonal axes; content-correctness belongs in a plain functional test, never
+//! in a WSS cell. (`harness::op::content_contains` says the same at the assertion
+//! level: it checks the write LANDED, never that the result is well-formed.)
+//!
 //! Primitives here are backend-independent and know nothing about any operation
 //! under test. Each mutating op is a thin adapter that composes these. See the
 //! design doc §7.

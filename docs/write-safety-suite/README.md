@@ -18,6 +18,16 @@ is the work. "No committed test asserts broken behavior."
 
 ## The one question WSS answers
 
+**The promise.** TurboVault's promise is to **ABORT** if the content on disk
+doesn't match what you said the file looks like. WSS ensures this promise by
+setting up all possible scenario combinations and making sure TurboVault aborts
+when it *should* abort.
+
+**The same thing, as a scope boundary.** WSS tests **clobber-safety** — did the op
+refuse-or-proceed without silently losing an out-of-band change? — and **not
+content-correctness** — is the written text formatted right? Those are orthogonal
+axes; content-correctness is a plain functional test's job, never a WSS cell.
+
 > Given a precondition and a working-tree state, does a **single write**
 > refuse-or-proceed **without silently clobbering** an out-of-band change?
 
