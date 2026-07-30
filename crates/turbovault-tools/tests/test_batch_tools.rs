@@ -527,3 +527,119 @@ async fn test_plan_rejects_intra_batch_same_path_collision() {
         "got: {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// TV-016 (turbovault-qim): the direct batch must REPORT what it mutated
+// ---------------------------------------------------------------------------
+
+/// (A) The ticket's repro. A direct batch is best-effort: op 0 lands, op 1
+/// fails, op 2 is never attempted. The response must say exactly that —
+/// `executed: 1`, `failed_at: Some(1)`, op 0 in `changes` and on disk, and a
+/// record per attempted op — instead of the pre-fix `executed: 0` /
+/// `failed_at: null` / empty `changes` + `records`, which claimed nothing
+/// happened while va.md sat on disk.
+#[tokio::test]
+async fn test_batch_partial_failure_reports_the_op_that_landed() {
+    let (temp_dir, manager) = setup_test_vault().await;
+    let tools = BatchTools::new(manager.clone());
+
+    let ops = vec![
+        BatchOperation::CreateNote {
+            path: "va.md".to_string(),
+            content: "# VA".to_string(),
+            force: None,
+        },
+        BatchOperation::DeleteNote {
+            path: "vb-absent.md".to_string(), // fails: no such file
+            expected_hash: None,
+            on_backlinks: None,
+        },
+        BatchOperation::CreateNote {
+            path: "vc.md".to_string(),
+            content: "# VC".to_string(),
+            force: None,
+        },
+    ];
+
+    let result = tools.batch_execute(ops, "tv-016 partial").await.unwrap();
+
+    assert!(
+        !result.success,
+        "a batch that stopped mid-plan is not a success"
+    );
+    assert_eq!(result.executed, 1, "op 0 genuinely landed");
+    assert_eq!(result.failed_at, Some(1), "op 1 is the op that failed");
+    assert_eq!(result.total, 3);
+    assert_eq!(
+        result.changes,
+        vec!["created va.md".to_string()],
+        "changes lists the ops that applied, not the whole batch"
+    );
+
+    assert_eq!(
+        result.records.len(),
+        2,
+        "one record per ATTEMPTED op — op 2 was never reached"
+    );
+    assert_eq!(result.records[0].operation_index, 0);
+    assert!(result.records[0].success);
+    assert!(result.records[0].error.is_none());
+    assert_eq!(result.records[0].affected_files, vec!["va.md".to_string()]);
+    assert_eq!(result.records[1].operation_index, 1);
+    assert!(!result.records[1].success);
+    assert!(
+        result.records[1].error.is_some(),
+        "the failing op carries its error"
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "the batch still surfaces the error"
+    );
+
+    // The report has to match the disk, which is the whole point.
+    assert!(temp_dir.path().join("va.md").exists());
+    assert!(!temp_dir.path().join("vc.md").exists());
+}
+
+/// (B) A SUCCESSFUL batch `MoveNote` rewrites every inbound wikilink in the
+/// same plan, so the linker it rewrote is a file this operation mutated —
+/// `affected_files` must name it. Pre-fix it was built from the operation's
+/// DECLARED paths (`BatchOperation::affected_files`), which cannot know about
+/// a linker the plan discovered from the link graph.
+#[tokio::test]
+async fn test_batch_move_reports_backlink_rewritten_linker_in_affected_files() {
+    let (temp_dir, manager) =
+        setup_vault_with_files(&[("bt.md", "# Target\n"), ("bl.md", "See [[bt]] here.\n")]).await;
+    let tools = BatchTools::new(manager.clone());
+
+    let ops = vec![BatchOperation::MoveNote {
+        from: "bt.md".to_string(),
+        to: "bt-renamed.md".to_string(),
+        expected_hash: None,
+        update_backlinks: None,
+    }];
+
+    let result = tools.batch_execute(ops, "tv-016 move").await.unwrap();
+
+    assert!(result.success, "errors: {:?}", result.errors);
+    assert_eq!(result.executed, 1);
+    let affected = &result.records[0].affected_files;
+    assert!(
+        affected.contains(&"bl.md".to_string()),
+        "the rewritten linker is a file this op mutated: {affected:?}"
+    );
+    assert!(affected.contains(&"bt.md".to_string()), "{affected:?}");
+    assert!(
+        affected.contains(&"bt-renamed.md".to_string()),
+        "{affected:?}"
+    );
+
+    // The linker really was rewritten on disk — affected_files is not a lie
+    // in the other direction either.
+    assert_eq!(
+        tokio::fs::read_to_string(temp_dir.path().join("bl.md"))
+            .await
+            .unwrap(),
+        "See [[bt-renamed]] here.\n"
+    );
+}
