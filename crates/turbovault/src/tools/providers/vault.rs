@@ -80,44 +80,13 @@ impl VaultProvider {
             name
         );
 
-        // Get the vault manager and initialize it
-        let vault_config = self
-            .multi_vault_mgr
-            .get_vault_config(&name)
-            .await
-            .map_err(|e| McpError::internal(format!("Failed to get vault config: {}", e)))?;
-
-        let mut server_config = ServerConfig::default();
-        let mut vault_cfg = vault_config;
-        vault_cfg.is_default = true;
-        server_config.vaults = vec![vault_cfg];
-
-        let mut manager = VaultManager::new(server_config)
-            .map_err(|e| McpError::internal(format!("Failed to create vault manager: {}", e)))?;
-
-        self.initialize_audit_for_manager(&name, &mut manager).await;
-
-        manager
-            .initialize()
-            .await
-            .map_err(|e| McpError::internal(format!("Failed to initialize vault: {}", e)))?;
-
-        let manager = Arc::new(manager);
-
-        // M4c (bite 3a, turbovault-qae.5.3): wire the manager-owned reindex +
-        // change-listener (git vaults; no-op on Direct) BEFORE publishing to
-        // the cache. `add_vault` is the primary runtime entry point, and
+        // Build, wire and publish through the single activation path. Wiring
+        // matters most here: `add_vault` is the primary runtime entry point and
         // `get_active_vault_manager` always cache-hits once a manager is
-        // published — so without wiring here the drainer / HEAD-ref listener
-        // would never start and search-staleness would never close for any
-        // git vault added at runtime.
-        self.wire_manager_reindex(&name, &manager).await;
-
-        // Cache the initialized manager
-        {
-            let mut cache = self.vault_managers.write().await;
-            cache.insert(name.clone(), manager);
-        }
+        // published — so an unwired manager published here would mean the
+        // drainer / HEAD-ref listener never start and search-staleness never
+        // closes for any git vault added at runtime (bite 3a, qae.5.3).
+        self.activate_vault_manager(&name).await?;
 
         log::info!("Vault '{}' initialized and ready", name);
 
