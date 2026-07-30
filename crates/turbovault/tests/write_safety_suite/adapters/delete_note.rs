@@ -109,7 +109,7 @@ impl Op<WireWorld> for DeleteNote {
     }
 }
 
-/// The **full** delete_note matrix. In-place op → precondition axis
+/// The **full** `delete_note` matrix. In-place op → precondition axis
 /// {Exists, Head, Index, Workdir, Wrong}. Two cells diverge from the other
 /// in-place ops (edit/frontmatter/tags): `Exists`+absent is an **idempotent OK**
 /// (the goal, absence, already holds — ratified) and `Wrong`+absent is a

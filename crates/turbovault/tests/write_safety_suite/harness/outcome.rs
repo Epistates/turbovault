@@ -52,7 +52,7 @@ pub struct Observed {
 
 impl Observed {
     pub fn ok(after_content: Option<String>) -> Self {
-        Observed {
+        Self {
             succeeded: true,
             error: None,
             after_content,
@@ -60,7 +60,7 @@ impl Observed {
     }
 
     pub fn failed(error: ObservedError, after_content: Option<String>) -> Self {
-        Observed {
+        Self {
             succeeded: false,
             error: Some(error),
             after_content,
@@ -80,12 +80,12 @@ impl Outcome {
     /// stays operation-agnostic.
     pub fn check(self, observed: &Observed, before: Option<&str>) -> Result<(), String> {
         match self {
-            Outcome::Ok => {
+            Self::Ok => {
                 if !observed.succeeded {
                     return Err(format!("expected OK, got failure {:?}", observed.error));
                 }
             }
-            Outcome::ConcurrencyError => {
+            Self::ConcurrencyError => {
                 if observed.succeeded {
                     return Err(
                         "expected ConcurrencyError, but the op SUCCEEDED (a clobber/defect)".into(),
@@ -104,7 +104,7 @@ impl Outcome {
                     );
                 }
             }
-            Outcome::NoFile => {
+            Self::NoFile => {
                 if observed.succeeded {
                     return Err("expected NoFile, but the op SUCCEEDED".into());
                 }
@@ -118,7 +118,7 @@ impl Outcome {
                     return Err("NoFile must not create the target".into());
                 }
             }
-            Outcome::OpError => {
+            Self::OpError => {
                 if observed.succeeded {
                     return Err("expected OpError, but the op SUCCEEDED".into());
                 }

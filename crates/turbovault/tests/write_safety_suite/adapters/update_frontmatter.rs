@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
 };
-use crate::harness::op::{Case, Op, OpAdapterMeta};
+use crate::harness::op::{Case, Op, OpAdapterMeta, content_contains};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -23,22 +23,6 @@ const KEY: &str = "wss_touched";
 #[derive(Clone, Copy)]
 pub struct UpdateFrontmatter;
 
-/// Shared OK-effect check for every layer's invoker (op-specific, layer-agnostic).
-fn ok_check(observed: &Observed) -> Result<(), String> {
-    if observed
-        .after_content
-        .as_deref()
-        .is_some_and(|c| c.contains(KEY))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "OK effect: frontmatter key {KEY:?} not present: {:?}",
-            observed.after_content
-        ))
-    }
-}
-
 impl OpAdapterMeta for UpdateFrontmatter {
     fn name(&self) -> &'static str {
         "update_frontmatter"
@@ -49,7 +33,7 @@ impl OpAdapterMeta for UpdateFrontmatter {
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        content_contains(observed, KEY)
     }
 }
 
@@ -103,7 +87,7 @@ impl Op<WireWorld> for UpdateFrontmatter {
     }
 }
 
-/// The **full** update_frontmatter matrix. In-place op → precondition axis
+/// The **full** `update_frontmatter` matrix. In-place op → precondition axis
 /// {Exists, Head, Index, Workdir, Wrong}; desired outcomes are identical to
 /// `edit_note`'s (same matrix rows). `pending` = a cell current code gets wrong
 /// (the nbl.8 burndown), with a trial-name-derived reason; `--include-ignored` is

@@ -12,7 +12,9 @@ use libtest_mimic::Trial;
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
 };
-use crate::harness::op::{Case, Op, OpAdapterMeta, REL, cell_trial, present_state};
+use crate::harness::op::{
+    Case, Op, OpAdapterMeta, REL, cell_trial, content_contains, present_state,
+};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -31,22 +33,6 @@ fn edits_replacing(current: &str) -> String {
     format!("<<<<<<< SEARCH\n{current}=======\n{NEW}\n>>>>>>> REPLACE\n")
 }
 
-/// Shared OK-effect check for every layer's invoker (op-specific, layer-agnostic).
-fn ok_check(observed: &Observed) -> Result<(), String> {
-    if observed
-        .after_content
-        .as_deref()
-        .is_some_and(|c| c.contains(NEW))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "OK effect: expected edited content containing {NEW:?}, got {:?}",
-            observed.after_content
-        ))
-    }
-}
-
 // Op-level, layer-agnostic surface: identity + shared `CASES` + the OK-effect check,
 // stated ONCE (the per-layer invokers below carry only `invoke`).
 impl OpAdapterMeta for EditNote {
@@ -59,7 +45,7 @@ impl OpAdapterMeta for EditNote {
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        content_contains(observed, NEW)
     }
 }
 
@@ -126,7 +112,7 @@ impl Op<WireWorld> for EditNote {
     }
 }
 
-/// The **full** edit_note matrix, transcribed from the corrected CSV (edit_note
+/// The **full** `edit_note` matrix, transcribed from the corrected CSV (`edit_note`
 /// is the 2nd operation there). In-place op → precondition axis
 /// {Exists, Head, Index, Workdir, Wrong} (no Blind/Absent). N/A cells (token
 /// undefined for the state) and SKIP duplicates (WORKDIR == HEAD/INDEX) are

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
 };
-use crate::harness::op::{Case, Op, OpAdapterMeta};
+use crate::harness::op::{Case, Op, OpAdapterMeta, content_contains};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -31,22 +31,6 @@ fn fields() -> HashMap<String, String> {
     ])
 }
 
-/// Shared OK-effect check for every layer's invoker (op-specific, layer-agnostic).
-fn ok_check(observed: &Observed) -> Result<(), String> {
-    if observed
-        .after_content
-        .as_deref()
-        .is_some_and(|c| c.contains(RENDERED_MARKER))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "OK effect: rendered template not present: {:?}",
-            observed.after_content
-        ))
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct CreateFromTemplate;
 
@@ -60,7 +44,7 @@ impl OpAdapterMeta for CreateFromTemplate {
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        content_contains(observed, RENDERED_MARKER)
     }
 }
 
@@ -113,7 +97,7 @@ impl Op<WireWorld> for CreateFromTemplate {
     }
 }
 
-/// The **full** create_from_template matrix (Blind + Absent rows of the CSV).
+/// The **full** `create_from_template` matrix (Blind + Absent rows of the CSV).
 /// Blind (force) overwrites/creates unconditionally → Ok everywhere. Absent is a
 /// strict create → Ok on an absent target, else refuse. `pending` = a cell current
 /// code gets wrong (the nbl.8 burndown), with a trial-name-derived reason;

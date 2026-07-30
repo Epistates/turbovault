@@ -51,8 +51,8 @@ impl Backend {
     /// Short label used in self-describing trial names.
     pub fn code(self) -> &'static str {
         match self {
-            Backend::Git => "git",
-            Backend::Direct => "direct",
+            Self::Git => "git",
+            Self::Direct => "direct",
         }
     }
 
@@ -60,16 +60,16 @@ impl Backend {
     /// Direct). The runner filters trials by this before constructing a target.
     pub fn supports_state(self, state: GitState) -> bool {
         match self {
-            Backend::Git => true,
-            Backend::Direct => matches!(state, GitState::Absent | GitState::Untracked),
+            Self::Git => true,
+            Self::Direct => matches!(state, GitState::Absent | GitState::Untracked),
         }
     }
 
     /// The production write-substrate enum this test axis names.
     pub fn write_backend(self) -> WriteBackend {
         match self {
-            Backend::Git => WriteBackend::Git,
-            Backend::Direct => WriteBackend::Direct,
+            Self::Git => WriteBackend::Git,
+            Self::Direct => WriteBackend::Direct,
         }
     }
 
@@ -133,7 +133,7 @@ pub struct Vault {
 }
 
 impl Vault {
-    pub fn new(backend: Backend) -> Vault {
+    pub fn new(backend: Backend) -> Self {
         make_libgit2_hermetic();
         let dir = match backend {
             Backend::Git => super::state::new_seeded_repo(),
@@ -143,7 +143,7 @@ impl Vault {
         let mut cfg = ServerConfig::new();
         cfg.vaults.push(backend.vault_config("t", &path));
         let manager = Arc::new(VaultManager::new(cfg).unwrap());
-        Vault {
+        Self {
             dir,
             backend,
             manager,
@@ -219,7 +219,7 @@ pub struct ToolsWorld {
 impl Layer for ToolsWorld {
     const LABEL: &'static str = "tools";
     fn new(backend: Backend) -> Self {
-        ToolsWorld {
+        Self {
             vault: Vault::new(backend),
         }
     }
@@ -239,7 +239,7 @@ pub struct ManagerWorld {
 impl Layer for ManagerWorld {
     const LABEL: &'static str = "manager";
     fn new(backend: Backend) -> Self {
-        ManagerWorld {
+        Self {
             vault: Vault::new(backend),
         }
     }
@@ -265,7 +265,7 @@ pub struct BatchWorld {
 impl Layer for BatchWorld {
     const LABEL: &'static str = "batch";
     fn new(backend: Backend) -> Self {
-        BatchWorld {
+        Self {
             vault: Vault::new(backend),
         }
     }
@@ -337,7 +337,7 @@ impl Layer for WireWorld {
         let vault = Vault::new(backend);
         // Same constructor the vault itself used — one mapping, no drift.
         let config = backend.vault_config("wss", vault.dir.path());
-        WireWorld {
+        Self {
             vault,
             server: ObsidianMcpServer::new().expect("wire server"),
             config,
@@ -488,7 +488,7 @@ mod tests {
     use crate::harness::outcome::Outcome;
     use crate::harness::precondition::{Precondition, PreconditionKind};
 
-    /// The pipeline composes end-to-end: build_state → Vault → a real manager
+    /// The pipeline composes end-to-end: `build_state` → Vault → a real manager
     /// write → observe → `Outcome::assert`. Uses the manager (which already takes a
     /// `Precondition`), so it compiles + runs while the tool arm stays aspirational.
     #[tokio::test]

@@ -1,10 +1,10 @@
 //! The harness's own self-test layer (turbovault-nbl.19) — the probes that keep
-//! the **suite** honest, as distinct from the matrix cells that keep **TurboVault**
+//! the **suite** honest, as distinct from the matrix cells that keep **`TurboVault`**
 //! honest.
 //!
-//! TurboVault's promise is to **ABORT** if the content on disk doesn't match what
+//! `TurboVault`'s promise is to **ABORT** if the content on disk doesn't match what
 //! you said the file looks like. WSS ensures this promise by setting up all
-//! possible scenario combinations and making sure TurboVault aborts when it
+//! possible scenario combinations and making sure `TurboVault` aborts when it
 //! *should* abort. Which means WSS is only as trustworthy as two things the
 //! harness itself must get right — and each gets a probe here, one per axis the
 //! matrix parameterizes over:
@@ -29,7 +29,7 @@
 //! refuses-or-proceeds without silently losing an out-of-band change.
 //!
 //! They run in the default-harness `write_safety_suite` target (they test the
-//! harness); the matrix cells run in `wss_matrix` (it tests TurboVault).
+//! harness); the matrix cells run in `wss_matrix` (it tests `TurboVault`).
 //!
 //! SEAM (turbovault-nbl.13): [`ProbeWorld`] + the setup sweep are portable — they
 //! need only `Vault`/`Layer`. [`Probe`]'s four invokers name the concrete worlds, so
@@ -71,7 +71,7 @@ pub struct ProbeWorld {
 impl Layer for ProbeWorld {
     const LABEL: &'static str = "probe";
     fn new(backend: Backend) -> Self {
-        ProbeWorld {
+        Self {
             vault: Vault::new(backend),
         }
     }

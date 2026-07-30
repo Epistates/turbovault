@@ -42,7 +42,7 @@ use GitState::*;
 
 impl GitState {
     /// Every state, in matrix column order.
-    pub const ALL: [GitState; 9] = [
+    pub const ALL: [Self; 9] = [
         Absent,
         CleanCommitted,
         CommittedStaged,

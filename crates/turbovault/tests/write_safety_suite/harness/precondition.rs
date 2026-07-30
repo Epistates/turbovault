@@ -56,7 +56,7 @@ pub enum PreconditionKind {
 impl PreconditionKind {
     /// Every kind, in matrix row order — lets the harness's own setup probe sweep
     /// the FULL precondition axis (`probe.rs`) rather than a hand-kept subset.
-    pub const ALL: [PreconditionKind; 7] = [
+    pub const ALL: [Self; 7] = [
         Self::Blind,
         Self::Absent,
         Self::Exists,
@@ -70,26 +70,26 @@ impl PreconditionKind {
     /// this kind names is undefined for the state, so no test is constructible).
     pub fn resolve(self, oids: &Oids) -> Option<Precondition> {
         match self {
-            PreconditionKind::Head => oids.head.clone().map(Precondition::ExpectBlob),
-            PreconditionKind::Index => oids.index.clone().map(Precondition::ExpectBlob),
-            PreconditionKind::Workdir => oids.workdir.clone().map(Precondition::ExpectBlob),
-            PreconditionKind::Wrong => Some(Precondition::ExpectBlob(WRONG_OID.to_string())),
-            PreconditionKind::Absent => Some(Precondition::ExpectAbsent),
-            PreconditionKind::Exists => Some(Precondition::ExpectExists),
-            PreconditionKind::Blind => Some(Precondition::Blind),
+            Self::Head => oids.head.clone().map(Precondition::ExpectBlob),
+            Self::Index => oids.index.clone().map(Precondition::ExpectBlob),
+            Self::Workdir => oids.workdir.clone().map(Precondition::ExpectBlob),
+            Self::Wrong => Some(Precondition::ExpectBlob(WRONG_OID.to_string())),
+            Self::Absent => Some(Precondition::ExpectAbsent),
+            Self::Exists => Some(Precondition::ExpectExists),
+            Self::Blind => Some(Precondition::Blind),
         }
     }
 
     /// Short label for self-describing test names.
     pub fn code(self) -> &'static str {
         match self {
-            PreconditionKind::Head => "HEAD",
-            PreconditionKind::Index => "INDEX",
-            PreconditionKind::Workdir => "WORKDIR",
-            PreconditionKind::Wrong => "WRONG",
-            PreconditionKind::Absent => "ABSENT",
-            PreconditionKind::Exists => "EXISTS",
-            PreconditionKind::Blind => "BLIND",
+            Self::Head => "HEAD",
+            Self::Index => "INDEX",
+            Self::Workdir => "WORKDIR",
+            Self::Wrong => "WRONG",
+            Self::Absent => "ABSENT",
+            Self::Exists => "EXISTS",
+            Self::Blind => "BLIND",
         }
     }
 }

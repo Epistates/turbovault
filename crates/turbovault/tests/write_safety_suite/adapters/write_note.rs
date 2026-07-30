@@ -142,7 +142,7 @@ impl Op<WireWorld> for WriteNote {
     }
 }
 
-/// The **full** write_note matrix, derived from the corrected CSV by collapsing
+/// The **full** `write_note` matrix, derived from the corrected CSV by collapsing
 /// the `force × expected_hash` grid onto the single precondition axis (design
 /// doc §3). Grouped by precondition; states in matrix column order. N/A cells
 /// (token undefined for the state) and SKIP duplicates (WORKDIR == HEAD/INDEX)

@@ -1,7 +1,7 @@
 //! WSS write-safety matrix suite (aspirational).
 //!
 //! Backend-parameterized, matrix-driven tests asserting the *desired*
-//! write-safety behavior of every mutating TurboVault operation across the
+//! write-safety behavior of every mutating `TurboVault` operation across the
 //! full space of working-tree state × precondition. Tests assert desired
 //! behavior, so many fail (or are `#[ignore]`d) until the behavior lands. The
 //! per-cell outcomes are encoded directly in each adapter's `Case` table, and

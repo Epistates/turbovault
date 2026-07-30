@@ -10,7 +10,7 @@
 use crate::harness::backend::{
     Backend, BatchWorld, Layer, MSG, ToolsWorld, WireWorld, observe, observe_outcome,
 };
-use crate::harness::op::{Case, Op, OpAdapterMeta};
+use crate::harness::op::{Case, Op, OpAdapterMeta, content_contains};
 use crate::harness::outcome::{Observed, Outcome as O};
 use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
 use crate::harness::state::GitState as S;
@@ -22,22 +22,6 @@ const TAG: &str = "wss-tag";
 #[derive(Clone, Copy)]
 pub struct ManageTags;
 
-/// Shared OK-effect check for every layer's invoker (op-specific, layer-agnostic).
-fn ok_check(observed: &Observed) -> Result<(), String> {
-    if observed
-        .after_content
-        .as_deref()
-        .is_some_and(|c| c.contains(TAG))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "OK effect: tag {TAG:?} not present: {:?}",
-            observed.after_content
-        ))
-    }
-}
-
 impl OpAdapterMeta for ManageTags {
     fn name(&self) -> &'static str {
         "manage_tags"
@@ -48,7 +32,7 @@ impl OpAdapterMeta for ManageTags {
     }
 
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
-        ok_check(observed)
+        content_contains(observed, TAG)
     }
 }
 
@@ -97,7 +81,7 @@ impl Op<WireWorld> for ManageTags {
     }
 }
 
-/// The **full** manage_tags matrix — same in-place shape and desired outcomes as
+/// The **full** `manage_tags` matrix — same in-place shape and desired outcomes as
 /// `edit_note` / `update_frontmatter`. `pending` = a cell current code gets wrong
 /// (the nbl.8 burndown), with a trial-name-derived reason; `--include-ignored` is
 /// the source of truth. The `e---u`/Untracked cells split the git arm (burndown)

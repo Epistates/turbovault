@@ -113,7 +113,7 @@ pub trait OpAdapterMeta {
 }
 
 /// A single-target op's invoker at layer `W` — one impl per `(op, layer)`. The
-/// op-level identity/cases/ok_effect come from the [`OpAdapterMeta`] supertrait, so
+/// op-level `identity/cases/ok_effect` come from the [`OpAdapterMeta`] supertrait, so
 /// a world's impl carries only `invoke`: the op-specific compute (edit string,
 /// frontmatter map, tags, template fields), the layer's call, and `observe`. Native
 /// `async fn` in trait + generic dispatch.
@@ -127,6 +127,30 @@ pub trait Op<W: Layer>: OpAdapterMeta {
     /// effect differs from the op's shared one.
     fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
         OpAdapterMeta::ok_effect(self, observed)
+    }
+}
+
+/// The OK-effect check shared by every op whose success is "the target now
+/// contains this marker" (edit / `update_frontmatter` / `manage_tags` / template).
+/// Their checks were four byte-identical copies differing only in the marker and
+/// the message (dupehound's largest cluster in the suite: 42 duplicate lines).
+///
+/// Note what this deliberately does NOT do: it asserts the write LANDED, not that
+/// the result is well-formed. Content-correctness is out of WSS scope — the suite
+/// pins clobber-safety, i.e. that a write refuses-or-proceeds without silently
+/// losing an out-of-band change.
+pub fn content_contains(observed: &Observed, marker: &str) -> Result<(), String> {
+    if observed
+        .after_content
+        .as_deref()
+        .is_some_and(|c| c.contains(marker))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "OK effect: expected content containing {marker:?}, got {:?}",
+            observed.after_content
+        ))
     }
 }
 
