@@ -11,7 +11,8 @@ is the work. "No committed test asserts broken behavior."
 
 - Runner: `crates/turbovault/tests/wss_matrix.rs` (`libtest-mimic`, `harness = false`).
 - Harness + adapters: `crates/turbovault/tests/write_safety_suite/`.
-- Report: `just wss-report` (colored grid) · `just wss-report-html` · `just wss-test`.
+- Report: `just wss-report` (one Markdown table + legend, paste-able into a GitHub
+  comment) · `just wss-report-html` · `just wss-test`.
 - Source-of-truth matrices: [`wss-precondition-matrix.csv`](./wss-precondition-matrix.csv),
   [`wss-batch-matrix.csv`](./wss-batch-matrix.csv).
 
@@ -88,8 +89,9 @@ invariant these tests exist to protect).
 just wss-test                       # active cells (pending are ignored) — the gate
 cargo test --test wss_matrix -- --ignored          # only the burndown cells
 cargo test --test wss_matrix -- git::write_note     # filter by trial-name substring
-just wss-report                     # per-op precondition×state grid, coloured by pass/fail
-just wss-report-html                # the same as one self-contained HTML file
+just wss-report                     # ONE table: world×backend×op×precondition rows,
+                                    #   state columns, emoji status + a legend
+just wss-report-html                # the same table as one self-contained HTML file
 ```
 
 Trial names are `<layer>::<backend>::<op>::<PRECOND>::<state>::<expected>`. The

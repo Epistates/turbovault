@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""WSS write-safety matrix reporter (turbovault-qae.9).
+"""WSS write-safety matrix reporter (turbovault-qae.9 / nbl.20).
 
 Runs the `wss_matrix` libtest-mimic binary with the pending flag bypassed
 (`--include-ignored`) — the source of truth for what actually passes/fails —
 plus an `--ignored`-only pass to learn which cells are currently marked
-`pending`. Renders, per (layer, backend, op), a precondition x state grid
-coloured by result, and prints a burndown summary plus the two lists that drive
-the pending/active reconciliation:
+`pending`. Renders ONE all-in-one table shaped like
+`docs/write-safety-suite/wss-precondition-matrix.csv` (same state column
+headers, with `world` and `backend` added as leading columns), then the burndown
+summary and the two lists that drive the pending/active reconciliation:
 
   * un-pend candidates : cells marked `pending` that now PASS  -> should activate
   * newly-failing      : active cells that FAIL                -> should pend
 
-Stdlib only, zero external deps. Terminal ANSI by default; `--html <path>`
-writes one self-contained HTML file.
+Output is **Markdown with emoji status**, so a terminal run can be pasted
+straight into a GitHub comment or PR body with no ANSI colour to strip and no
+legend to remember — every symbol is defined in the legend it prints.
 
-State/precondition column orders mirror the Rust source of truth
-(`harness/state.rs` GitState::ALL and `harness/precondition.rs`
-PreconditionKind); keep them in sync if those enums change.
+Stdlib only, zero external deps. `--html <path>` writes the same table as one
+self-contained HTML file.
+
+Column/row orders and the N/A rule mirror the Rust source of truth
+(`harness/state.rs` GitState::ALL + its `(e,t,c,s,u)` codes,
+`harness/precondition.rs` PreconditionKind, `Backend::supports_state`); keep
+them in sync if those change.
 """
 
 import argparse
@@ -24,21 +30,47 @@ import html
 import re
 import subprocess
 import sys
+import unicodedata
 from collections import defaultdict
 
-# Column/row orders — mirror the Rust enums (see module docstring).
+# ── Canonical orders — mirror the Rust enums + the CSV (see module docstring) ──
 STATE_ORDER = ["-----", "etc--", "etcs-", "etc-u", "etcsu",
                "et-s-", "et--u", "et-su", "e---u"]
 PRECOND_ORDER = ["BLIND", "ABSENT", "EXISTS", "HEAD", "INDEX", "WORKDIR", "WRONG"]
+# Layering order (not alphabetical): the surface each world drives, outermost last.
+WORLD_ORDER = ["tools", "manager", "batch", "wire"]
+# Git first — it carries the full 9-state grid; Direct only {absent, present}.
+BACKEND_ORDER = ["git", "direct"]
+# CSV operation order.
+OP_ORDER = ["write_note", "edit_note", "delete_note", "update_frontmatter",
+            "manage_tags", "create_from_template", "move_note::src", "move_note::dest"]
 STATE_SET, PRECOND_SET = set(STATE_ORDER), set(PRECOND_ORDER)
 
-# Compact outcome labels shown inside a grid cell.
-OUTCOME_ABBR = {"Ok": "OK", "ConcurrencyError": "CE", "NoFile": "NF", "OpError": "OE"}
+# The states `Backend::Direct` can represent (absent + present); the other seven
+# are git-only, so a direct row has no cell there.
+DIRECT_STATES = {"-----", "e---u"}
+
+# Compact outcome labels shown inside a cell.
+OUTCOME_ABBR = {"Ok": "Ok", "ConcurrencyError": "CE", "NoFile": "NF", "OpError": "OE"}
+
+# Status glyphs. Every cell is <status><outcome>, so one symbol carries both the
+# required behaviour and whether the code currently delivers it.
+PASS, FAIL, PEND_FAIL, PEND_PASS = "✅", "❌", "⏳", "🔶"
+NA, SKIP = "·", "⏩"
+
+# Every status glyph MUST be East-Asian-Wide, so ONE padding rule covers them all.
+# The trap this guards: SKIP was U+23ED (⏭), which has emoji *presentation* but
+# East_Asian_Width=Neutral — terminals and fonts then disagree on its advance and
+# the columns skew (observed in kitty). U+23E9 (⏩) is the same double-triangle
+# family and is properly Wide. Keep this assert: it makes that regression loud.
+STATUS_GLYPHS = (PASS, FAIL, PEND_FAIL, PEND_PASS, SKIP)
+assert all(unicodedata.east_asian_width(g) in ("W", "F") for g in STATUS_GLYPHS), (
+    "status glyphs must be East-Asian-Wide or terminal columns will not align"
+)
 
 TRIAL_RE = re.compile(r"^test (\S+)\s+\.\.\.\s+(ok|FAILED)\s*$")
 
-# ANSI
-GREEN, RED, GREY, BOLD, RESET = "\033[32m", "\033[31m", "\033[90m", "\033[1m", "\033[0m"
+BOLD, RESET = "\033[1m", "\033[0m"
 
 
 class Cell:
@@ -70,32 +102,70 @@ def parse_trials(output):
 
 
 def split_name(name):
-    """(op_key, precond, state, expected) for a grid trial, else None.
+    """(world, backend, op, precond, state, expected) for a grid trial, else None.
 
-    op_key groups move_note's src/dest sub-sweeps separately; batch_execute and
-    edit_note's one-off carry no precondition/state grid, so they return None.
+    `move_note` carries a src/dest role segment, so its op reads `move_note::src`
+    — matching the trial name, so a table cell can be grepped straight back to the
+    failing trial. Non-grid trials (e.g. edit_note's SEARCH-not-found one-off)
+    return None.
     """
     p = name.split("::")
     if len(p) == 7 and p[2] == "move_note":
-        op, precond, state, expected = f"{p[2]}/{p[3]}", p[4], p[5], p[6]
+        op, precond, state, expected = f"{p[2]}::{p[3]}", p[4], p[5], p[6]
     elif len(p) == 6:
         op, precond, state, expected = p[2], p[3], p[4], p[5]
     else:
         return None
     if precond not in PRECOND_SET or state not in STATE_SET:
         return None
-    return (p[0], p[1], op), precond, state, expected
+    return p[0], p[1], op, precond, state, expected
+
+
+def token_defined(precond, state):
+    """Whether `precond`'s version token is DEFINED in `state` — the CSV's N/A rule,
+    read off the `[e]xists[t]racked[c]ommitted[s]taged[u]nstaged` code exactly as
+    the Rust harness does: HEAD iff committed, INDEX iff staged, WORKDIR iff exists;
+    the non-token kinds are always defined."""
+    if precond == "HEAD":
+        return state[2] != "-"
+    if precond == "INDEX":
+        return state[3] != "-"
+    if precond == "WORKDIR":
+        return state[0] != "-"
+    return True
+
+
+def absent_reason(backend, precond, state):
+    """Why a (precond, state) pair has no trial: `NA` when it is not constructible
+    (this backend cannot build the state, or the token is undefined for it), else
+    `SKIP` — the cell is a deliberate duplicate of another precondition whose token
+    resolves equal here (the CSV's `SKIP:X`), so no test is emitted."""
+    if backend == "direct" and state not in DIRECT_STATES:
+        return NA
+    if not token_defined(precond, state):
+        return NA
+    return SKIP
+
+
+def cell_label(cell, backend, precond, state):
+    """`<status><outcome>` for one table cell."""
+    if cell is None:
+        return absent_reason(backend, precond, state)
+    code = OUTCOME_ABBR.get(cell.expected, cell.expected[:2])
+    if cell.pending:
+        return (PEND_PASS if cell.passed else PEND_FAIL) + code
+    return (PASS if cell.passed else FAIL) + code
 
 
 def build(truth, pending_set):
-    """grids[(layer,backend,op)][(state,precond)] = Cell, plus per-op totals and
-    the two reconciliation lists."""
-    grids = defaultdict(dict)
+    """rows[(world, backend, op, precond)][state] = Cell, plus per-op totals and the
+    two reconciliation lists."""
+    rows = defaultdict(dict)
     totals = defaultdict(lambda: {"pass": 0, "fail": 0, "pending": 0})
     unpend, newly_failing = [], []
     for name, passed in sorted(truth.items()):
         pending = name in pending_set
-        # per-op totals key: the plain op name (merge move sub-sweeps + non-grid).
+        # per-op totals key: the plain op name (merges move's sub-sweeps + non-grid).
         parts = name.split("::")
         op_total = parts[2] if len(parts) > 2 else name
         t = totals[op_total]
@@ -108,118 +178,166 @@ def build(truth, pending_set):
             newly_failing.append(name)
         parsed = split_name(name)
         if parsed:
-            key, precond, state, expected = parsed
-            grids[key][(state, precond)] = Cell(expected, passed, pending)
-    return grids, totals, unpend, newly_failing
+            world, backend, op, precond, state, expected = parsed
+            rows[(world, backend, op, precond)][state] = Cell(expected, passed, pending)
+    return rows, totals, unpend, newly_failing
 
 
-def render_terminal(grids, totals, unpend, newly_failing):
-    lines = []
-    for key in sorted(grids):
-        layer, backend, op = key
-        grid = grids[key]
-        states = [s for s in STATE_ORDER if any((s, p) in grid for p in PRECOND_ORDER)]
-        preconds = [p for p in PRECOND_ORDER if any((s, p) in grid for s in STATE_ORDER)]
-        lines.append(f"\n{BOLD}{layer}::{backend}::{op}{RESET}")
-        header = "  state \\ pc │" + "".join(f" {p:^7} │" for p in preconds)
-        lines.append(header)
-        lines.append("  " + "─" * (len(header) - 2))
-        for s in states:
-            row = [f"  {s:^9} │"]
-            for p in preconds:
-                cell = grid.get((s, p))
-                if cell is None:
-                    row.append(f" {GREY}{'·':^5}{RESET} │")
-                else:
-                    lab = OUTCOME_ABBR.get(cell.expected, cell.expected[:5])
-                    lab += "*" if cell.pending else " "
-                    color = GREEN if cell.passed else RED
-                    row.append(f" {color}{lab:^5}{RESET} │")
-            lines.append("".join(row))
-    lines.append(f"\n{BOLD}Summary{RESET}  (* = cell marked pending; "
-                 f"colour = actual pass/fail under --include-ignored)")
-    lines.append(f"  {'op':<22} {'pass':>5} {'fail':>5} {'pending':>8}")
+def _rank(value, order):
+    """Sort key: canonical position, then alphabetical for anything unlisted."""
+    return (order.index(value), "") if value in order else (len(order), value)
+
+
+def sorted_rows(rows):
+    """Row keys in world -> backend -> operation -> precondition order."""
+    return sorted(rows, key=lambda k: (_rank(k[0], WORLD_ORDER),
+                                       _rank(k[1], BACKEND_ORDER),
+                                       _rank(k[2], OP_ORDER),
+                                       _rank(k[3], PRECOND_ORDER)))
+
+
+def disp_width(text):
+    """Display columns `text` occupies: East-Asian Wide/Fullwidth glyphs take two,
+    everything else one. Ambiguous-width (`A`) counts as one, which is what a
+    non-CJK terminal does — the only `A` glyph here is `·` (U+00B7)."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in text)
+
+
+def _pad(text, width):
+    """Pad to `width` DISPLAY columns, not characters."""
+    return text + " " * max(0, width - disp_width(text))
+
+
+LEGEND = f"""
+Legend — every cell is <status><outcome>: the outcome WSS requires, and whether the
+code currently delivers it.
+
+  status   {PASS} active, passing — required behaviour holds
+           {FAIL} active, FAILING — a regression; this list must be empty
+           {PEND_FAIL} pending, failing — known burndown, expected (turbovault-nbl.8)
+           {PEND_PASS} pending, PASSING — un-pend candidate: activate this cell
+           {NA} no test: not constructible (backend cannot build the state, or the
+             precondition's token is undefined for it — the CSV's N/A)
+           {SKIP} no test: duplicate of another precondition whose token resolves
+             equal in this state (the CSV's SKIP:X)
+
+  outcome  Ok  succeeded and materialised
+           CE  ConcurrencyError — refused with NO disk change (CAS mismatch or
+               dirty-tree refusal; the matrix's DIRTY_ERR and CAS_FAIL unify here)
+           NF  NoFile — in-place op on an absent target (FileNotFound)
+           OE  OpError — op-specific refusal, no disk change (e.g. edit SEARCH
+               matched nothing)
+
+  precondition (checked against the WORKING TREE)
+           BLIND    no precondition; last-writer-wins
+           ABSENT   ExpectAbsent — create-only
+           EXISTS   ExpectExists — must exist, any content (in-place default)
+           HEAD     ExpectBlob(HEAD oid)    — defined iff committed
+           INDEX    ExpectBlob(INDEX oid)   — defined iff staged
+           WORKDIR  ExpectBlob(WORKDIR oid) — defined iff it exists
+           WRONG    ExpectBlob(bogus oid)   — never matches
+
+  state    [e]xists[t]racked[c]ommitted[s]taged[u]nstaged (columns, in CSV order)
+
+Cells are addressable as trials: <world>::<backend>::<operation>::<PRECONDITION>::
+<state>::<expected> — copy one into `cargo test --test wss_matrix -- <name>`.
+"""
+
+
+def render_markdown(rows, totals, unpend, newly_failing):
+    """One Markdown table + legend + summary + the reconciliation lists."""
+    head = ["world", "backend", "operation", "precondition"] + STATE_ORDER
+    # Widths: pad the four ASCII lead columns for terminal readability; GitHub
+    # ignores padding, so the same text renders as a table there.
+    lead_w = [max(len(h), *(len(k[i]) for k in rows)) for i, h in enumerate(head[:4])] \
+        if rows else [len(h) for h in head[:4]]
+    cell_w = max(len(s) for s in STATE_ORDER)
+
+    out = ["# WSS write-safety matrix", LEGEND]
+    out.append("| " + " | ".join(
+        [_pad(h, lead_w[i]) for i, h in enumerate(head[:4])]
+        + [_pad(s, cell_w) for s in STATE_ORDER]) + " |")
+    out.append("|" + "|".join(["-" * (w + 2) for w in lead_w]
+                              + ["-" * (cell_w + 2)] * len(STATE_ORDER)) + "|")
+    for key in sorted_rows(rows):
+        world, backend, op, precond = key
+        cells = [cell_label(rows[key].get(s), backend, precond, s) for s in STATE_ORDER]
+        out.append("| " + " | ".join(
+            [_pad(world, lead_w[0]), _pad(backend, lead_w[1]),
+             _pad(op, lead_w[2]), _pad(precond, lead_w[3])]
+            + [_pad(c, cell_w) for c in cells]) + " |")
+
+    out.append("\n## Summary\n")
+    out.append("| operation | pass | fail | pending |")
+    out.append("|---|---:|---:|---:|")
     tp = tf = tpend = 0
-    for op in sorted(totals):
+    for op in sorted(totals, key=lambda o: _rank(o, OP_ORDER)):
         c = totals[op]
         tp += c["pass"]; tf += c["fail"]; tpend += c["pending"]
-        lines.append(f"  {op:<22} {c['pass']:>5} {c['fail']:>5} {c['pending']:>8}")
-    lines.append(f"  {'─'*22} {'─'*5} {'─'*5} {'─'*8}")
-    lines.append(f"  {'TOTAL':<22} {tp:>5} {tf:>5} {tpend:>8}")
+        out.append(f"| {op} | {c['pass']} | {c['fail']} | {c['pending']} |")
+    out.append(f"| **TOTAL** | **{tp}** | **{tf}** | **{tpend}** |")
 
-    lines.append(f"\n{BOLD}Un-pend candidates{RESET} "
-                 f"(pending cells that PASS — should be activated): {len(unpend)}")
-    for n in unpend:
-        lines.append(f"  {GREEN}{n}{RESET}")
-    lines.append(f"\n{BOLD}Newly-failing{RESET} "
-                 f"(active cells that FAIL — should be pended): {len(newly_failing)}")
-    for n in newly_failing:
-        lines.append(f"  {RED}{n}{RESET}")
+    out.append(f"\n## Un-pend candidates ({len(unpend)})\n")
+    out.append("_Pending cells that PASS — activate them (`pending` -> `new`)._\n"
+               if unpend else "_None._\n")
+    out += [f"- {PEND_PASS} `{n}`" for n in unpend]
+    out.append(f"\n## Newly-failing ({len(newly_failing)})\n")
+    out.append("_Active cells that FAIL — a regression: fix the code or pend the cell._\n"
+               if newly_failing else "_None._\n")
+    out += [f"- {FAIL} `{n}`" for n in newly_failing]
     if not unpend and not newly_failing:
-        lines.append(f"\n  {GREEN}{BOLD}FIXPOINT: pending == failing, active == passing.{RESET}")
-    return "\n".join(lines)
+        out.append(f"\n{PASS} **FIXPOINT: pending == failing, active == passing.**")
+    return "\n".join(out)
 
 
-def render_html(grids, totals, unpend, newly_failing):
+def render_html(rows, totals, unpend, newly_failing):
+    """The same single table, as one self-contained HTML file."""
     css = """
     body{font:14px/1.5 system-ui,sans-serif;margin:2rem;color:#1a1a1a;background:#fff}
-    h2{margin:1.5rem 0 .4rem;font-size:1rem}
+    h1{font-size:1.3rem}h2{margin:1.5rem 0 .4rem;font-size:1rem}
     table{border-collapse:collapse;margin-bottom:.5rem}
     th,td{border:1px solid #ccc;padding:2px 8px;text-align:center;font-family:ui-monospace,monospace}
-    th{background:#f0f0f0}
-    td.na{color:#bbb}
-    td.pass{background:#d7f5dd;color:#0a5}
-    td.fail{background:#fbdcdc;color:#c00}
-    td.pending::after{content:" *";color:#888}
-    .sum td,.sum th{text-align:right;font-family:system-ui,sans-serif}
+    th{background:#f0f0f0;position:sticky;top:0}
+    td.lead{text-align:left;background:#fafafa}
+    pre{background:#f7f7f7;padding:.8rem;border-radius:4px;white-space:pre-wrap}
     ul{margin:.2rem 0 1rem;padding-left:1.2rem}
-    li.pass{color:#0a5}li.fail{color:#c00}
     .ok{color:#0a5;font-weight:bold}
     """
-    out = ["<title>WSS write-safety matrix</title>",
-           f"<style>{css}</style>", "<h1>WSS write-safety matrix</h1>",
-           "<p>Colour = actual pass/fail under <code>--include-ignored</code>; "
-           "<code>*</code> = cell marked <code>pending</code>.</p>"]
-    for key in sorted(grids):
-        layer, backend, op = key
-        grid = grids[key]
-        states = [s for s in STATE_ORDER if any((s, p) in grid for p in PRECOND_ORDER)]
-        preconds = [p for p in PRECOND_ORDER if any((s, p) in grid for s in STATE_ORDER)]
-        out.append(f"<h2>{html.escape(layer)}::{html.escape(backend)}::{html.escape(op)}</h2>")
-        out.append("<table><tr><th>state \\ pc</th>"
-                   + "".join(f"<th>{html.escape(p)}</th>" for p in preconds) + "</tr>")
-        for s in states:
-            row = [f"<tr><th>{html.escape(s)}</th>"]
-            for p in preconds:
-                cell = grid.get((s, p))
-                if cell is None:
-                    row.append('<td class="na">·</td>')
-                else:
-                    cls = "pass" if cell.passed else "fail"
-                    if cell.pending:
-                        cls += " pending"
-                    row.append(f'<td class="{cls}">{html.escape(OUTCOME_ABBR.get(cell.expected, cell.expected))}</td>')
-            out.append("".join(row) + "</tr>")
-        out.append("</table>")
+    out = ["<title>WSS write-safety matrix</title>", f"<style>{css}</style>",
+           "<h1>WSS write-safety matrix</h1>",
+           f"<pre>{html.escape(LEGEND.strip())}</pre>", "<table><tr>"]
+    out += [f"<th>{html.escape(h)}</th>"
+            for h in ["world", "backend", "operation", "precondition"] + STATE_ORDER]
+    out.append("</tr>")
+    for key in sorted_rows(rows):
+        world, backend, op, precond = key
+        out.append("<tr>" + "".join(
+            f'<td class="lead">{html.escape(v)}</td>' for v in key))
+        for s in STATE_ORDER:
+            out.append(f"<td>{cell_label(rows[key].get(s), backend, precond, s)}</td>")
+        out.append("</tr>")
+    out.append("</table>")
 
-    out.append("<h2>Summary</h2><table class='sum'><tr><th>op</th><th>pass</th>"
+    out.append("<h2>Summary</h2><table><tr><th>operation</th><th>pass</th>"
                "<th>fail</th><th>pending</th></tr>")
     tp = tf = tpend = 0
-    for op in sorted(totals):
+    for op in sorted(totals, key=lambda o: _rank(o, OP_ORDER)):
         c = totals[op]
         tp += c["pass"]; tf += c["fail"]; tpend += c["pending"]
-        out.append(f"<tr><th>{html.escape(op)}</th><td>{c['pass']}</td>"
+        out.append(f"<tr><td class='lead'>{html.escape(op)}</td><td>{c['pass']}</td>"
                    f"<td>{c['fail']}</td><td>{c['pending']}</td></tr>")
-    out.append(f"<tr><th>TOTAL</th><td>{tp}</td><td>{tf}</td><td>{tpend}</td></tr></table>")
+    out.append(f"<tr><th>TOTAL</th><th>{tp}</th><th>{tf}</th><th>{tpend}</th></tr></table>")
 
     out.append(f"<h2>Un-pend candidates ({len(unpend)})</h2><ul>")
-    out += [f'<li class="pass">{html.escape(n)}</li>' for n in unpend]
+    out += [f"<li>{PEND_PASS} <code>{html.escape(n)}</code></li>" for n in unpend]
     out.append("</ul>")
     out.append(f"<h2>Newly-failing ({len(newly_failing)})</h2><ul>")
-    out += [f'<li class="fail">{html.escape(n)}</li>' for n in newly_failing]
+    out += [f"<li>{FAIL} <code>{html.escape(n)}</code></li>" for n in newly_failing]
     out.append("</ul>")
     if not unpend and not newly_failing:
-        out.append("<p class='ok'>FIXPOINT: pending == failing, active == passing.</p>")
+        out.append(f"<p class='ok'>{PASS} FIXPOINT: pending == failing, "
+                   "active == passing.</p>")
     return "\n".join(out)
 
 
@@ -234,14 +352,14 @@ def main():
         sys.exit("no trials parsed — did the wss_matrix binary build/run?")
     pending_set = set(parse_trials(run_matrix(["--ignored"])))
 
-    grids, totals, unpend, newly_failing = build(truth, pending_set)
+    rows, totals, unpend, newly_failing = build(truth, pending_set)
 
     if args.html:
         with open(args.html, "w") as f:
-            f.write(render_html(grids, totals, unpend, newly_failing))
+            f.write(render_html(rows, totals, unpend, newly_failing))
         print(f"wrote {args.html}")
     else:
-        print(render_terminal(grids, totals, unpend, newly_failing))
+        print(render_markdown(rows, totals, unpend, newly_failing))
 
     # Non-zero exit iff the matrix is off its fixpoint, so CI/humans get a signal.
     sys.exit(1 if (unpend or newly_failing) else 0)
