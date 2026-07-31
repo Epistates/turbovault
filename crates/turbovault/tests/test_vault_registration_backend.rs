@@ -43,6 +43,21 @@ async fn call(
         .unwrap_or_else(|| panic!("tool {name:?} returned no structured content"))
 }
 
+/// Call a tool expecting failure, returning the message the caller would see.
+async fn call_err(server: &ObsidianMcpServer, name: &str, arguments: serde_json::Value) -> String {
+    match server
+        .call_tool(name, arguments, &RequestContext::new())
+        .await
+    {
+        Err(error) => error.to_string(),
+        Ok(result) if result.is_error() => result
+            .first_text()
+            .unwrap_or("tool returned an error without text")
+            .to_string(),
+        Ok(_) => panic!("tool {name:?} unexpectedly succeeded"),
+    }
+}
+
 /// A git repo with HEAD born — the substrate's baseline requirement.
 fn init_repo(path: &std::path::Path) {
     let mut opts = git2::RepositoryInitOptions::new();
@@ -122,6 +137,76 @@ async fn add_vault_selects_the_git_backend_and_omitting_it_stays_direct() {
             .unwrap()
             .write_backend,
         WriteBackend::Direct
+    );
+}
+
+/// The options argument is named after the *slot* (`backend_opts`), not after
+/// one backend, and it has to reach the substrate config rather than merely
+/// appear in the schema — otherwise the rename is cosmetic.
+#[tokio::test]
+#[serial_test::serial]
+async fn backend_opts_reaches_the_git_substrate_config() {
+    let repo = TempDir::new().unwrap();
+    init_repo(repo.path());
+    let server = ObsidianMcpServer::new().unwrap();
+
+    call(
+        &server,
+        "add_vault",
+        serde_json::json!({
+            "name": "optsvault",
+            "path": repo.path(),
+            "write_backend": "git",
+            "backend_opts": { "branch": "main", "require_commit_message": true },
+        }),
+    )
+    .await;
+
+    let git = server
+        .multi_vault()
+        .get_vault_config("optsvault")
+        .await
+        .unwrap()
+        .git
+        .expect("backend_opts must reach the vault's git substrate config");
+    assert_eq!(git.branch.as_deref(), Some("main"));
+    assert!(git.require_commit_message);
+}
+
+/// `backend_opts` carries the *selected* backend's settings, and Direct has
+/// none. Accepting the pair and dropping the options would be a silent wrong
+/// answer — the caller asked for substrate settings and got a vault with none,
+/// with nothing to notice it by. The refusal must name both values so the
+/// caller knows which of the two to change.
+#[tokio::test]
+#[serial_test::serial]
+async fn backend_opts_with_the_direct_backend_is_refused_naming_both_values() {
+    let plain = TempDir::new().unwrap();
+    let server = ObsidianMcpServer::new().unwrap();
+
+    let message = call_err(
+        &server,
+        "add_vault",
+        serde_json::json!({
+            "name": "mismatched",
+            "path": plain.path(),
+            "write_backend": "direct",
+            "backend_opts": { "require_commit_message": true },
+        }),
+    )
+    .await;
+
+    assert!(
+        message.contains("backend_opts"),
+        "the refusal must name the ignored argument: {message:?}"
+    );
+    assert!(
+        message.contains("direct"),
+        "the refusal must name the backend that has no options: {message:?}"
+    );
+    assert!(
+        !server.multi_vault().vault_exists("mismatched").await,
+        "a refused registration must not leave a vault behind"
     );
 }
 

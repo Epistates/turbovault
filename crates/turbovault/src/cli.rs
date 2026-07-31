@@ -659,6 +659,24 @@ mod tests {
         assert!(args.require_read_only_tools);
     }
 
+    /// The --vault shorthand's backend selection is a wire-visible name with no
+    /// golden catalog behind it, so pin the spelling here.
+    #[test]
+    fn parses_the_vault_backend_selection_flags() {
+        let args = args(&[
+            "--vault-write-backend",
+            "git",
+            "--vault-backend-opts",
+            r#"{"branch":"main"}"#,
+        ]);
+
+        assert_eq!(args.vault_write_backend, Some(WriteBackend::Git));
+        assert_eq!(
+            args.vault_backend_opts.as_deref(),
+            Some(r#"{"branch":"main"}"#)
+        );
+    }
+
     #[test]
     fn stdio_always_resolves_to_json_output() {
         let args = args(&[
