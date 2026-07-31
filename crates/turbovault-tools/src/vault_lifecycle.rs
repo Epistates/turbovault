@@ -54,8 +54,8 @@ impl VaultLifecycleTools {
     /// - `write_backend`: Which write path serves the vault. `Direct` is the
     ///   pre-turbovault-kdq behaviour and stays the default for callers that
     ///   don't choose.
-    /// - `git`: Per-vault git substrate settings, only meaningful with
-    ///   `WriteBackend::Git`. `None` = the substrate defaults.
+    /// - `backend_opts`: Settings for the selected backend. Only `Git` has any,
+    ///   so `None` = the substrate defaults; `Some` with `Direct` is an error.
     ///
     /// # Returns
     /// VaultInfo with the created vault details (includes fully resolved path)
@@ -64,13 +64,14 @@ impl VaultLifecycleTools {
     /// - Invalid name (empty, spaces)
     /// - Path I/O errors
     /// - Vault already registered
+    /// - `backend_opts` supplied for a backend that has none
     pub async fn create_vault(
         &self,
         name: &str,
         path: &Path,
         template: Option<&str>,
         write_backend: WriteBackend,
-        git: Option<VaultGitConfig>,
+        backend_opts: Option<VaultGitConfig>,
     ) -> Result<VaultInfo> {
         // Validation: name format
         if name.is_empty() {
@@ -111,6 +112,10 @@ impl VaultLifecycleTools {
         // Expand tilde and convert to absolute path
         let expanded_path = Self::expand_path(path)?;
 
+        // Build the config before touching the filesystem: a rejected backend
+        // selection must not leave a half-created vault directory behind.
+        let config = Self::build_config(name, &expanded_path, write_backend, backend_opts)?;
+
         // If path doesn't exist, create it
         if !expanded_path.exists() {
             tokio::fs::create_dir_all(&expanded_path)
@@ -144,9 +149,6 @@ impl VaultLifecycleTools {
             self.initialize_default_structure(&expanded_path).await?;
         }
 
-        // Create vault configuration (uses expanded path)
-        let config = Self::build_config(name, &expanded_path, write_backend, git)?;
-
         // Register with multi-vault manager
         self.multi_manager.add_vault(config).await?;
 
@@ -161,8 +163,8 @@ impl VaultLifecycleTools {
     /// - `path`: Existing vault directory path (supports tilde expansion)
     /// - `write_backend`: Which write path serves the vault (`Direct` unless
     ///   the caller chooses git — turbovault-kdq).
-    /// - `git`: Per-vault git substrate settings, only meaningful with
-    ///   `WriteBackend::Git`.
+    /// - `backend_opts`: Settings for the selected backend. Only `Git` has any;
+    ///   `Some` with `Direct` is an error.
     ///
     /// # Returns
     /// VaultInfo with the registered vault details
@@ -171,7 +173,7 @@ impl VaultLifecycleTools {
         name: &str,
         path: &Path,
         write_backend: WriteBackend,
-        git: Option<VaultGitConfig>,
+        backend_opts: Option<VaultGitConfig>,
     ) -> Result<VaultInfo> {
         // Validation: name format
         if name.is_empty() || name.contains(' ') {
@@ -208,7 +210,7 @@ impl VaultLifecycleTools {
         }
 
         // Create vault config
-        let config = Self::build_config(name, &expanded_path, write_backend, git)?;
+        let config = Self::build_config(name, &expanded_path, write_backend, backend_opts)?;
 
         // Register with multi-vault manager
         self.multi_manager.add_vault(config).await?;
@@ -218,17 +220,35 @@ impl VaultLifecycleTools {
     }
 
     /// turbovault-kdq: the single place a runtime-registered vault's config is
-    /// assembled, so `create_vault` and `add_vault_from_path` can never drift
-    /// on how the backend selection reaches the builder.
-    fn build_config(
+    /// assembled, so `create_vault`, `add_vault_from_path` and the `--vault`
+    /// CLI shorthand can never drift on how the backend selection reaches the
+    /// builder — or on what they do when the selection is contradictory.
+    ///
+    /// `backend_opts` are the *selected* backend's settings. This does not
+    /// touch [`VaultConfig`]'s own shape: the options still land in its `git`
+    /// field, and the YAML config format is unchanged. The generic name is a
+    /// wire-level one, because `write_backend` picks the backend and its
+    /// companion argument should not be named after one of the choices.
+    pub fn build_config(
         name: &str,
         path: &Path,
         write_backend: WriteBackend,
-        git: Option<VaultGitConfig>,
+        backend_opts: Option<VaultGitConfig>,
     ) -> Result<VaultConfig> {
+        // The direct backend has no options. Accepting the pair and dropping
+        // them would hand back a vault without the settings the caller asked
+        // for, with no signal at all — so refuse, and name both values so the
+        // caller can see which of the two to change.
+        if write_backend == WriteBackend::Direct && backend_opts.is_some() {
+            return Err(Error::config_error(
+                "backend_opts was supplied with write_backend=direct, which has no backend \
+                 options: pass write_backend=git to use them, or omit backend_opts"
+                    .to_string(),
+            ));
+        }
         let mut builder = VaultConfig::builder(name, path).write_backend(write_backend);
-        if let Some(git) = git {
-            builder = builder.git(git);
+        if let Some(backend_opts) = backend_opts {
+            builder = builder.git(backend_opts);
         }
         let config = builder.build()?;
         // turbovault-74p: this is the funnel both registration entry points

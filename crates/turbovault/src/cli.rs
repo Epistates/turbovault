@@ -8,10 +8,9 @@ use clap::Parser;
 use std::path::PathBuf;
 use turbomcp::telemetry::TelemetryConfig;
 use turbomcp::{McpServerExt, ProtocolConfig, VisibilityLayer};
-use turbovault_core::VaultConfig;
 use turbovault_core::cache::VaultCache;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
-use turbovault_tools::{OutputFormat, direct_over_git_repo_warning};
+use turbovault_tools::{OutputFormat, VaultLifecycleTools, direct_over_git_repo_warning};
 
 /// TurboVault Server - AI-powered vault management
 #[derive(Parser, Debug)]
@@ -27,11 +26,11 @@ pub struct Args {
     #[arg(long, env = "TURBOVAULT_VAULT_WRITE_BACKEND")]
     vault_write_backend: Option<WriteBackend>,
 
-    /// Git substrate settings for the --vault shorthand, as JSON
-    /// (e.g. '{"branch":"main","require_commit_message":true}'). Only
-    /// meaningful with --vault-write-backend git.
-    #[arg(long, env = "TURBOVAULT_VAULT_GIT")]
-    vault_git: Option<String>,
+    /// Settings for the --vault shorthand's selected write backend, as JSON
+    /// (e.g. '{"branch":"main","require_commit_message":true}'). Only the git
+    /// backend has any, so this requires --vault-write-backend git.
+    #[arg(long, env = "TURBOVAULT_VAULT_BACKEND_OPTS")]
+    vault_backend_opts: Option<String>,
 
     /// Configuration profile to use (development, production, etc.)
     #[arg(short, long, default_value = "development", env = "TURBOVAULT_PROFILE")]
@@ -287,14 +286,14 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         // Expand tilde and environment variables in the path
         let vault_path = expand_vault_path(&vault_path)?;
         let write_backend = args.vault_write_backend.unwrap_or_default();
-        let git = args
-            .vault_git
+        let backend_opts = args
+            .vault_backend_opts
             .as_deref()
             .map(serde_json::from_str::<VaultGitConfig>)
             .transpose()
-            .map_err(|error| format!("Invalid --vault-git JSON: {error}"))?;
+            .map_err(|error| format!("Invalid --vault-backend-opts JSON: {error}"))?;
         log::info!("Adding vault from CLI argument: {:?}", vault_path);
-        register_default_vault(&server, &vault_path, write_backend, git).await?;
+        register_default_vault(&server, &vault_path, write_backend, backend_opts).await?;
     } else {
         log::info!("No vault path provided. Use add_vault MCP tool to register a vault.");
         log::info!("Available tools: add_vault, list_vaults, set_active_vault");
@@ -567,7 +566,7 @@ async fn register_default_vault(
     server: &ObsidianMcpServer,
     vault_path: &std::path::Path,
     write_backend: WriteBackend,
-    git: Option<VaultGitConfig>,
+    backend_opts: Option<VaultGitConfig>,
 ) -> Result<DefaultVaultRegistration, Box<dyn std::error::Error>> {
     if server.multi_vault().vault_exists("default").await {
         return match server.multi_vault().get_vault_config("default").await {
@@ -597,18 +596,13 @@ async fn register_default_vault(
         };
     }
 
-    let mut builder = VaultConfig::builder("default", vault_path).write_backend(write_backend);
-    if let Some(git) = git {
-        builder = builder.git(git);
-    }
-    let vault_config = builder
-        .build()
-        .map_err(|error| format!("Failed to create vault config: {error}"))?;
-    // turbovault-74p: --vault over a path that is already a git repo is the
-    // live footgun (it registers a shadow Direct vault beside the real one).
-    if let Some(warning) = direct_over_git_repo_warning(&vault_config) {
-        log::warn!("{warning}");
-    }
+    // Through the same funnel the MCP tools use, so the shorthand cannot drift
+    // on the backend selection — including the turbovault-74p footgun warning,
+    // which --vault over an existing git repo is the live case of, and the
+    // refusal of backend options for a backend that has none.
+    let vault_config =
+        VaultLifecycleTools::build_config("default", vault_path, write_backend, backend_opts)
+            .map_err(|error| format!("Failed to create vault config: {error}"))?;
     server
         .multi_vault()
         .add_vault(vault_config)

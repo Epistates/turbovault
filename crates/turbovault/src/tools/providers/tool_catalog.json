@@ -889,7 +889,7 @@
   },
   {
     "name": "create_vault",
-    "description": "Create and register a new Obsidian vault at the specified filesystem path with an optional template",
+    "description": "Create and register a new Obsidian vault at the specified filesystem path with an optional template. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -919,7 +919,7 @@
             "null"
           ]
         },
-        "git": {
+        "backend_opts": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_Map_of_AnyValue",
           "type": [
@@ -945,7 +945,7 @@
   },
   {
     "name": "add_vault",
-    "description": "Register an existing Obsidian vault with the MCP server and auto-initialize",
+    "description": "Register an existing Obsidian vault with the MCP server and auto-initialize. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -967,7 +967,7 @@
             "null"
           ]
         },
-        "git": {
+        "backend_opts": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "title": "Nullable_Map_of_AnyValue",
           "type": [
