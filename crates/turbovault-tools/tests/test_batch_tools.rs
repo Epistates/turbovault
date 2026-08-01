@@ -534,25 +534,52 @@ async fn test_plan_rejects_intra_batch_same_path_collision() {
 
 /// (A) The ticket's repro. A direct batch is best-effort: op 0 lands, op 1
 /// fails, op 2 is never attempted. The response must say exactly that —
-/// `executed: 1`, `failed_at: Some(1)`, op 0 in `changes` and on disk, and a
-/// record per attempted op — instead of the pre-fix `executed: 0` /
-/// `failed_at: null` / empty `changes` + `records`, which claimed nothing
-/// happened while va.md sat on disk.
+/// `executed: 1`, `failed_at: Some(1)`, op 0 in `changes`, on disk AND in the
+/// link graph, and a record per attempted op — instead of the pre-fix
+/// `executed: 0` / `failed_at: null` / empty `changes` + `records`, which
+/// claimed nothing happened while va.md sat on disk.
+///
+/// THE FAILING OP MUST FAIL IN THE APPLY LOOP, NOT AT THE PRECONDITION GATE.
+/// `DirectSubstrate::apply` checks every precondition before applying any
+/// change and aborts the whole plan with nothing written, so a precondition
+/// failure can never leave the partial this test exists to pin — a scenario
+/// built on one would silently stop testing anything. Hence a `WriteNote`
+/// with `expected_hash: None`, which contributes NO precondition (the gate
+/// never even reads the path), targeting a path whose parent component is an
+/// existing regular FILE: the apply loop's `create_dir_all` cannot turn a
+/// regular file into a directory. That refusal comes from the kernel, so it
+/// is deterministic, holds when the process runs as root, and is not a
+/// semantic the write-safety matrix can ever redefine.
+///
+/// It replaces the ticket's original failing op — a `DeleteNote` of an ABSENT
+/// file — which the ratified spec says must SUCCEED:
+/// `docs/write-safety-suite/wss-precondition-matrix.csv`, row
+/// `delete_note,Exists`, all-absent (`-----`) column, is `Ok`. Once the
+/// direct backend catches up to that cell the old batch stops failing and the
+/// old test goes red for a FIX rather than a regression.
 #[tokio::test]
 async fn test_batch_partial_failure_reports_the_op_that_landed() {
-    let (temp_dir, manager) = setup_test_vault().await;
+    let (temp_dir, manager) = setup_vault_with_files(&[
+        ("existing.md", "# Existing\n"),
+        // A regular FILE, not a directory — nothing can be created under it.
+        ("blocker.md", "# Blocker\n"),
+    ])
+    .await;
     let tools = BatchTools::new(manager.clone());
 
     let ops = vec![
         BatchOperation::CreateNote {
             path: "va.md".to_string(),
-            content: "# VA".to_string(),
+            content: "# VA\n\nSee [[existing]].\n".to_string(),
             force: None,
         },
-        BatchOperation::DeleteNote {
-            path: "vb-absent.md".to_string(), // fails: no such file
+        BatchOperation::WriteNote {
+            // Fails in the apply loop: create_dir_all("blocker.md") hits the
+            // existing regular file. No expected_hash => no precondition, so
+            // the gate never touches this path.
+            path: "blocker.md/child.md".to_string(),
+            content: "# never lands".to_string(),
             expected_hash: None,
-            on_backlinks: None,
         },
         BatchOperation::CreateNote {
             path: "vc.md".to_string(),
@@ -587,9 +614,15 @@ async fn test_batch_partial_failure_reports_the_op_that_landed() {
     assert_eq!(result.records[0].affected_files, vec!["va.md".to_string()]);
     assert_eq!(result.records[1].operation_index, 1);
     assert!(!result.records[1].success);
+    let failure = result.records[1]
+        .error
+        .as_deref()
+        .expect("the failing op carries its error");
     assert!(
-        result.records[1].error.is_some(),
-        "the failing op carries its error"
+        failure.starts_with("I/O error:"),
+        "the apply loop must have stopped on a filesystem failure — a \
+         precondition rejection would have aborted at the gate with nothing \
+         written, and this test would be pinning nothing. Got: {failure}"
     );
     assert!(
         !result.errors.is_empty(),
@@ -599,6 +632,27 @@ async fn test_batch_partial_failure_reports_the_op_that_landed() {
     // The report has to match the disk, which is the whole point.
     assert!(temp_dir.path().join("va.md").exists());
     assert!(!temp_dir.path().join("vc.md").exists());
+    assert!(
+        temp_dir.path().join("blocker.md").is_file(),
+        "the failing write must not have clobbered the blocker"
+    );
+
+    // ...and the manager indexed what landed, so the op that survived the
+    // partial is visible to every read path, not just to `ls`.
+    let linkers = {
+        let lg = manager.link_graph();
+        let graph = lg.read().await;
+        graph
+            .backlinks(&temp_dir.path().join("existing.md"))
+            .unwrap()
+            .into_iter()
+            .map(|(path, _links)| path)
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        linkers.contains(&temp_dir.path().join("va.md")),
+        "the landed op must be in the link graph, not only on disk: {linkers:?}"
+    );
 }
 
 /// (B) A SUCCESSFUL batch `MoveNote` rewrites every inbound wikilink in the
