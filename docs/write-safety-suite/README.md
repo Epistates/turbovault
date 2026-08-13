@@ -43,7 +43,7 @@ The universal rule the whole matrix encodes:
 
 | Axis | Type | What it is |
 |---|---|---|
-| **Backend** | `Backend { Git, Direct }` → a `Vault` | The on-disk vault: state construction + version tokens. Layer-agnostic. Git has the full 9-state grid; Direct has only `{absent, present}`. |
+| **Backend** | `Backend { Git, Direct }` → a `Vault` | The on-disk vault: state construction + version tokens. Layer-agnostic. Git runs the full 9-state grid; the harness currently *builds* only `{absent, present}` on Direct — a harness limit, not a property of the backend. |
 | **Layer** | a **World** per layer (`Layer` trait) | *How* you reach the write surface. One type per layer — `ToolsWorld`, `ManagerWorld`, `BatchWorld`, `WireWorld`. |
 | **Op** | `SinglePathOp<W>` **invoker** | One impl per `(op, layer)`. Binds an op's shared `Case` table to a layer-specific invocation. An op that doesn't map to a layer simply has no invoker there. |
 | **Cell** | `Case { precondition, state, expected, pending, only }` | One matrix cell. `pending` = ignored (burndown); `only` scopes a cell to one backend where git/direct diverge. |
@@ -81,8 +81,11 @@ so flipping a cell from pending to active is a mechanical `pending → new`.
 ## States, preconditions, outcomes
 
 **States** (column code `[e]xists[t]racked[c]ommitted[s]taged[u]nstaged`): the 9
-git working-tree states, built by backend-independent git plumbing. Direct
-represents only `{absent, present}`.
+git working-tree states, built by backend-independent git plumbing. The CSV
+specifies all nine on both backends; the harness builds only `{absent, present}`
+on Direct today. Direct is **git-blind** — its version token is
+the sha256 of the file's bytes, so staged/committed are invisible and all eight
+"present" states collapse to one behaviour.
 
 **Preconditions** (HTTP conditional-request analogues):
 
@@ -189,10 +192,24 @@ written against the **API we need, not the API we have**.
 4. **`pending` = required-but-unimplemented AND out-of-scope-to-fix-now.** A
    shared property of the *cell* — it keeps agents off out-of-scope work and
    keeps the gate legible. Never a per-world lever to hide divergence.
-5. **`Case::on(Backend)` — same outcome, backend behavior lags.** Copy the cell,
-   `.on(Git)` / `.on(Direct)`, so one is `pending` (backend lags) and the other
-   `new` (backend works). The two MUST carry the **same `expected`**; differing
-   expected per backend is itself an enshrined divergence (a bug).
+5. **`Case::on(Backend)` — two legitimate splits, and they are not
+   interchangeable.**
+   - **Same requirement, one backend lags.** Copy the cell, `.on(Git)` /
+     `.on(Direct)`, carrying the **same `expected`** and differing only in the
+     `pending` flag. The working backend is guarded against regression; the
+     lagging one stays out of scope.
+   - **Different requirement, because the backends genuinely disagree.** The
+     copies carry **different `expected`**. Legal ONLY when the CSV says so — it
+     is keyed by `backend`, and `just wss-audit` checks both arms against it.
+     That is the guard: a divergence cannot be hand-written into a `Case`, it has
+     to be written into a reviewed spec first, so this can never become a licence
+     to turn a red cell green.
+
+   The distinguishing question is **is the difference in the requirement or in
+   the code?** Recording a code lag as a spec difference is the bug the first
+   form exists to prevent. `e---u` is the second form: on git it is a dirty
+   untracked tree, on direct it is merely a present file, and direct is
+   git-blind, so there is nothing to lose and nothing to refuse.
 
 ### Commit & gate discipline
 
@@ -208,7 +225,21 @@ written against the **API we need, not the API we have**.
 ## Source-of-truth matrices
 
 - **`wss-precondition-matrix.csv`** — the per-op precondition × state grid with
-  the desired outcome code per cell. The authoritative WSS spec.
+  the desired outcome code per cell, keyed by **`backend`**. The authoritative WSS
+  spec.
+
+  It carries a `backend` column and deliberately **no `world` column**: backend is
+  the one axis along which the spec may legitimately vary (git and direct disagree
+  because direct is git-blind), whereas a world that diverges *fails its cell*, so
+  a world key would encode a degree of freedom the spec does not have.
+
+  It describes **the real world, not the harness**. The direct rows specify all
+  nine states even though the harness currently builds only `{absent, present}`
+  there — a limitation of `Vault::new(Direct)`, not a fact about the backend, since
+  a direct vault can sit inside a git repo perfectly well. `just wss-audit` prints
+  those cells as a counted **NOT BUILT** total rather than skipping them silently,
+  so the gap cannot read as coverage. The CSV's own `note:` row records that
+  decision and why the cells are specified regardless.
 - **`wss-batch-matrix.csv`** — the batch spec. Its per-op section ("batch-of-one
   == standalone") is realized by `BatchWorld`; its atomicity section is the
   transaction suite's (out of WSS scope).

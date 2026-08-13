@@ -50,7 +50,8 @@ BACKEND_ORDER = ["git", "direct"]
 # CSV operation order.
 OP_ORDER = ["write_note", "edit_note", "delete_note", "update_frontmatter",
             "manage_tags", "create_from_template", "move_note::src", "move_note::dest"]
-STATE_SET, PRECOND_SET = set(STATE_ORDER), set(PRECOND_ORDER)
+STATE_SET, PRECOND_SET, BACKEND_SET = (
+    set(STATE_ORDER), set(PRECOND_ORDER), set(BACKEND_ORDER))
 
 # The states `Backend::Direct` can represent (absent + present); the other seven
 # are git-only, so a direct row has no cell there.
@@ -97,37 +98,67 @@ def list_trials():
 
 
 def load_csv_spec(path):
-    """{(op, PRECOND, state): expected} from the source-of-truth CSV, skipping the
-    cells it declares untestable: `N/A` (token undefined for the state) and
-    `SKIP:X` (duplicate of another precondition). Op names normalise to the trial
-    convention (`move_note | src` -> `move_note::src`), preconditions upper-case."""
+    """{(backend, op, PRECOND, state): expected} from the source-of-truth CSV,
+    skipping the cells it declares untestable: `N/A` (the version TOKEN is undefined
+    for the state — e.g. no HEAD token for a never-committed path) and `SKIP:X`
+    (duplicate of another precondition whose token resolves equal here).
+
+    The CSV is keyed by BACKEND because that is the one axis along which the spec is
+    permitted to vary: git and direct genuinely disagree (direct is git-blind, so a
+    staged tree is invisible to it). There is deliberately no `world` column — a
+    world that diverges FAILS its cell, so a world key would encode a degree of
+    freedom the spec does not have.
+
+    Op names normalise to the trial convention (`move_note | src` ->
+    `move_note::src`), preconditions upper-case."""
     spec = {}
     with open(path) as f:
         for row in csv.reader(f):
-            if len(row) < 2 + len(STATE_ORDER) or row[0].strip() in ("", "operation"):
+            if len(row) < 3 + len(STATE_ORDER):
                 continue
-            op = row[0].replace(" | ", "::").strip()
-            precond = row[1].strip().upper()
+            backend = row[0].strip().lower()
+            if backend not in BACKEND_SET:
+                continue  # header / legend / notes rows
+            op = row[1].replace(" | ", "::").strip()
+            precond = row[2].strip().upper()
             if precond not in PRECOND_SET:
-                continue  # legend / notes rows
-            for state, value in zip(STATE_ORDER, row[2:2 + len(STATE_ORDER)]):
+                continue
+            for state, value in zip(STATE_ORDER, row[3:3 + len(STATE_ORDER)]):
                 v = value.strip()
                 if v in ("", "N/A") or v.startswith("SKIP"):
                     continue
-                spec[(op, precond, state)] = v
+                spec[(backend, op, precond, state)] = v
     return spec
+
+
+def backend_can_build(backend, state):
+    """Whether the HARNESS can construct `state` on `backend` — mirrors
+    `Backend::supports_state`.
+
+    This is a property of the harness, NOT of the backend: the CSV describes the
+    real world, and a direct vault can perfectly well sit inside a git repo (direct
+    never inspects git, exactly like editing tracked files with vi). Today
+    `Vault::new(Direct)` makes a bare TempDir, so the seven git-only states cannot
+    be built there — see the `note:` row in `wss-precondition-matrix.csv`, which
+    records that decision and why the cells are specified anyway."""
+    return backend != "direct" or state in DIRECT_STATES
 
 
 def audit_against_csv(spec, names):
     """Compare the CSV spec with the grid cells the suite actually emits, using the
-    reference arm (`tools::git`: the only one with the full 9-state grid and every
-    op). Returns (missing, extra, mismatched).
+    reference WORLD (`tools`) on BOTH backends. Returns
+    (missing, extra, mismatched, not_built).
 
     Why this exists: the CSV is documented as the AUTHORITATIVE WSS spec, so a table
     that quietly drifts from it — a cell dropped, or asserting a different outcome —
     would make the docs lie. `split_name` filters non-grid trials, so op-specific
     one-offs (edit_note's SEARCH-not-found) are invisible here by construction and
     never count as `extra`.
+
+    `not_built` is reported SEPARATELY and does not fail the audit: those cells are
+    specified, and deliberately not constructed yet, per the CSV's own `note:` row.
+    They are printed rather than dropped, because a silently-skipped spec cell reads
+    as coverage.
     """
     actual = {}
     for name in names:
@@ -135,13 +166,15 @@ def audit_against_csv(spec, names):
         if not parsed:
             continue
         world, backend, op, precond, state, expected = parsed
-        if (world, backend) == ("tools", "git"):
-            actual[(op, precond, state)] = expected
-    missing = sorted(k for k in spec if k not in actual)
+        if world == "tools":
+            actual[(backend, op, precond, state)] = expected
+    not_built = sorted(k for k in spec if not backend_can_build(k[0], k[3]))
+    buildable = {k: v for k, v in spec.items() if backend_can_build(k[0], k[3])}
+    missing = sorted(k for k in buildable if k not in actual)
     extra = sorted(k for k in actual if k not in spec)
-    mismatched = sorted((k, spec[k], actual[k]) for k in spec
-                        if k in actual and actual[k] != spec[k])
-    return missing, extra, mismatched
+    mismatched = sorted((k, buildable[k], actual[k]) for k in buildable
+                        if k in actual and actual[k] != buildable[k])
+    return missing, extra, mismatched, not_built
 
 
 def run_matrix(extra_args):
@@ -417,11 +450,16 @@ def main():
         names = list_trials()
         if not names:
             sys.exit("no trials listed — did the wss_matrix binary build?")
-        missing, extra, mismatched = audit_against_csv(spec, names)
-        print(f"CSV spec cells (excluding N/A + SKIP): {len(spec)}")
-        print(f"reference arm (tools::git) grid cells: "
-              f"{len(spec) - len(missing) + len(extra)}")
-        for label, items in (("MISSING (CSV requires a cell, the suite has none)", missing),
+        missing, extra, mismatched, not_built = audit_against_csv(spec, names)
+        per_backend = defaultdict(int)
+        for key in spec:
+            per_backend[key[0]] += 1
+        print(f"CSV spec cells (excluding N/A + SKIP): {len(spec)}"
+              + "  [" + ", ".join(f"{b} {per_backend[b]}"
+                                  for b in BACKEND_ORDER if per_backend[b]) + "]")
+        print(f"reference world (tools) grid cells: "
+              f"{len(spec) - len(not_built) - len(missing) + len(extra)}")
+        for label, items in (("MISSING (CSV requires a buildable cell, the suite has none)", missing),
                              ("EXTRA (the suite tests a cell the CSV does not list)", extra)):
             print(f"\n{label}: {len(items)}")
             for k in items:
@@ -429,9 +467,19 @@ def main():
         print(f"\nOUTCOME MISMATCH (CSV vs the suite): {len(mismatched)}")
         for key, want, got in mismatched:
             print(f"  {FAIL} {'::'.join(key)}: CSV says {want}, suite asserts {got}")
+        # Specified but never constructed. NOT drift, and NOT a silent skip: printed
+        # with a count so a coverage hole cannot masquerade as coverage.
+        print(f"\nNOT BUILT (specified; the harness does not construct the state on "
+              f"that backend — see the `note:` row in the CSV): {len(not_built)}")
+        by_state = defaultdict(int)
+        for backend, _, _, state in not_built:
+            by_state[(backend, state)] += 1
+        for (backend, state), n in sorted(by_state.items()):
+            print(f"  · {backend} × {state}: {n}")
         drift = len(missing) + len(extra) + len(mismatched)
         if not drift:
-            print(f"\n{PASS} The suite matches the CSV spec exactly.")
+            print(f"\n{PASS} The suite matches the CSV spec exactly "
+                  f"for every cell it builds.")
         sys.exit(1 if drift else 0)
 
     truth = parse_trials(run_matrix(["--include-ignored"]))

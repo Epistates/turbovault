@@ -42,27 +42,28 @@ pub fn present_state(backend: Backend) -> GitState {
 /// the desired outcome. `pending` marks a cell whose desired behavior isn't
 /// implemented yet.
 ///
-/// `only` scopes a cell to a single backend. Most cells run on every backend that
-/// can build their state, but the `e---u`/Untracked state is the one place git and
-/// direct diverge, because the same state CODE means different things: on git it is
-/// a dirty/untracked working tree, while on direct it is simply "the file exists"
-/// (`present_state(Direct)`). A single shared `pending` flag can't be right for
-/// both, so those cells are split with [`Case::on`] — same `expected`, differing
-/// only in the flag.
+/// `only` scopes a cell to a single backend, via [`Case::on`]. There are exactly two
+/// legitimate reasons to split a cell, and they are not interchangeable:
 ///
-/// WHICH ARM IS PENDING (kept accurate; it has been backwards before): for the
-/// in-place ops the GIT arm is ACTIVE and passing — the dirty gate now unifies to
-/// `ConcurrencyError` (that landed in the nbl.8 error-unification fix) — and the
-/// DIRECT arm is `pending`. Do not "correct" this to the reverse: it is verified by
-/// `just wss-report`, and flipping it would mark a passing cell pending and a
-/// failing cell active, breaking the fixpoint in both directions at once.
+/// 1. **Same requirement, one backend lags.** Both copies carry the SAME `expected`
+///    and differ only in the `pending` flag, so the working backend is guarded
+///    against regression while the lagging one stays out of scope.
+/// 2. **Different requirement, because the backends genuinely disagree.** The copies
+///    carry DIFFERENT `expected`. This is legal ONLY when the source-of-truth CSV
+///    says so — it has a `backend` column, and `just wss-audit` checks both arms
+///    against it. That is the guard that keeps this from becoming a licence to make
+///    a red cell green: a divergence cannot be hand-written here, it has to be
+///    written into a reviewed spec first.
 ///
-/// KNOWN SPEC QUESTION on that direct arm: it demands `ConcurrencyError`, inherited
-/// from the shared table, but on direct `e---u` is just a present file, so
-/// `ExpectExists` is SATISFIED and `Ok` is arguably the right requirement. It may
-/// therefore be pending against a requirement that is wrong for that backend rather
-/// than against unimplemented behavior — the cost of reusing one state code for two
-/// meanings. Tracked with the burndown (turbovault-nbl.8), not silently blessed.
+/// The `e---u`/Untracked state is case 2, and the reason is that the state CODE means
+/// two different things: on git it is a dirty untracked working tree, so an in-place
+/// op refuses; on direct it is merely "the file exists" (`present_state(Direct)`), so
+/// `ExpectExists` is SATISFIED and the op proceeds. Direct is git-blind — its version
+/// token is the sha256 of the bytes, and staged/committed are invisible to it — so
+/// there is no out-of-band change to lose and nothing to refuse.
+///
+/// Do NOT "unify" these two arms to one `expected`. They disagree because the spec
+/// disagrees, not because one backend is behind.
 #[derive(Clone, Copy, Debug)]
 pub struct Case {
     pub precondition: PreconditionKind,

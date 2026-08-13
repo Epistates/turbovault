@@ -118,8 +118,10 @@ impl Op<WireWorld> for EditNote {
 /// undefined for the state) and SKIP duplicates (WORKDIR == HEAD/INDEX) are
 /// omitted. `pending` = a cell current code gets wrong (the nbl.8 burndown), with
 /// a trial-name-derived reason; `--include-ignored` is the source of truth. The
-/// `e---u`/Untracked cell splits the git arm (burndown) from the direct arm
-/// (already correct → active).
+/// `e---u`/Untracked cell splits the two backends with DIFFERENT `expected`: on git
+/// it is a dirty untracked tree (refuse), on direct it is merely a present file, so
+/// `ExpectExists` is satisfied and the write proceeds. Both values come from the
+/// CSV's `backend` column and `just wss-audit` enforces them.
 const CASES: &[Case] = &[
     // ── ExpectExists (in-place default, dirty-gated) ─────────────────────────
     Case::new(P::Exists, S::Absent, O::NoFile),
@@ -130,8 +132,12 @@ const CASES: &[Case] = &[
     Case::new(P::Exists, S::NewStaged, O::ConcurrencyError),
     Case::new(P::Exists, S::IntentToAdd, O::ConcurrencyError),
     Case::new(P::Exists, S::NewStagedUnstaged, O::ConcurrencyError),
+    // DIFFERENT `expected` per backend, straight from the CSV's `backend` column:
+    // on git `e---u` is a dirty untracked tree, so an in-place edit refuses; on
+    // direct it is merely a present file (direct is git-blind), so `ExpectExists`
+    // is satisfied and the edit proceeds. Not a backend lag — do not unify them.
     Case::new(P::Exists, S::Untracked, O::ConcurrencyError).on(Backend::Git),
-    Case::pending(P::Exists, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
+    Case::new(P::Exists, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectBlob(HEAD) — defined iff committed (HEAD-token refusal already unified) ─
     Case::new(P::Head, S::CleanCommitted, O::Ok),
     Case::new(P::Head, S::CommittedStaged, O::ConcurrencyError),

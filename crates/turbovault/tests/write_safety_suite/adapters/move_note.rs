@@ -284,8 +284,10 @@ impl Op<WireWorld> for MoveDest {
 // Same shape as delete/edit's in-place rows: the source must exist and match.
 // The desired outcome is layer-invariant; `pending` marks a cell the current
 // code gets wrong (the nbl.8 / 9n6 burndown), shared across all worlds. The
-// `e---u`/Untracked cells split the git arm (burndown) from the direct arm
-// (already correct) via `.on()` — SAME expected, differing only in the flag.
+// `e---u`/Untracked cells split the two backends via `.on()` with DIFFERENT
+// `expected`: on git it is a dirty untracked tree (refuse), on direct it is merely
+// a present source, so `ExpectExists` is satisfied and the move proceeds. Both
+// values come from the CSV's `backend` column; `just wss-audit` enforces them.
 const SRC_CASES: &[Case] = &[
     // ExpectExists (in-place default, dirty-gated) — the source is the removed
     // target; NoFile-on-absent must precede the precondition check.
@@ -297,8 +299,12 @@ const SRC_CASES: &[Case] = &[
     Case::new(P::Exists, S::NewStaged, O::ConcurrencyError),
     Case::new(P::Exists, S::IntentToAdd, O::ConcurrencyError),
     Case::new(P::Exists, S::NewStagedUnstaged, O::ConcurrencyError),
+    // DIFFERENT `expected` per backend, straight from the CSV's `backend` column:
+    // on git `e---u` is a dirty untracked tree, so the move refuses; on direct it is
+    // merely a present source (direct is git-blind), so `ExpectExists` is satisfied
+    // and the move proceeds. Not a backend lag — do not unify them.
     Case::new(P::Exists, S::Untracked, O::ConcurrencyError).on(Backend::Git),
-    Case::pending(P::Exists, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
+    Case::new(P::Exists, S::Untracked, O::Ok).on(Backend::Direct),
     // ExpectBlob(HEAD) — defined iff committed
     Case::new(P::Head, S::CleanCommitted, O::Ok),
     Case::new(P::Head, S::CommittedStaged, O::ConcurrencyError),
