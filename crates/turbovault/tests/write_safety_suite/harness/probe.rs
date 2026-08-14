@@ -1,0 +1,540 @@
+//! The harness's own self-test layer (turbovault-nbl.19) — the probes that keep
+//! the **suite** honest, as distinct from the matrix cells that keep **`TurboVault`**
+//! honest.
+//!
+//! `TurboVault`'s promise is to **ABORT** if the content on disk doesn't match what
+//! you said the file looks like. WSS ensures this promise by setting up all
+//! possible scenario combinations and making sure `TurboVault` aborts when it
+//! *should* abort. Which means WSS is only as trustworthy as two things the
+//! harness itself must get right — and each gets a probe here, one per axis the
+//! matrix parameterizes over:
+//!
+//! 1. **Setup fidelity** ([`ProbeWorld`]) — the scenario a cell *claims* to set up
+//!    is the scenario actually on disk, and the precondition it hands the op is the
+//!    one the cell named. If `build_state(etcsu)` silently produced `etc-u`, every
+//!    cell in that column would be exercising the wrong scenario and still "pass".
+//!    [`ProbeWorld`] re-derives the state from git **independently** of
+//!    `build_state` (via [`observe_git_state`]) and echoes back the resolved
+//!    precondition.
+//! 2. **Plumbing fidelity** ([`Probe`]) — every World actually reaches the write
+//!    surface it names, and they all agree. The matrix asserts each world
+//!    *separately* against a coarse expected [`Outcome`], so two worlds can diverge
+//!    in ways no cell catches — a `classify_wire` mis-mapping, or a batch invoker
+//!    swallowing an error kind. [`Probe`] is the minimal deterministic op, run on
+//!    **all four** worlds over settled cells, asserting the observations are
+//!    IDENTICAL.
+//!
+//! Scope: these probes check **clobber-safety plumbing, not content-correctness** —
+//! WSS never asserts that written text is *formatted* right, only that a write
+//! refuses-or-proceeds without silently losing an out-of-band change.
+//!
+//! They run in the default-harness `write_safety_suite` target (they test the
+//! harness); the matrix cells run in `wss_matrix` (it tests `TurboVault`).
+//!
+//! SEAM (turbovault-nbl.13): [`ProbeWorld`] + the setup sweep are portable — they
+//! need only `Vault`/`Layer`. [`Probe`]'s four invokers name the concrete worlds, so
+//! they are the conformance checklist a new World (or a third-party backend) must
+//! pass.
+
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, Vault, WireWorld, observe,
+    observe_outcome,
+};
+use crate::harness::op::{Case, Op, OpAdapterMeta, REL};
+use crate::harness::outcome::{Observed, Outcome};
+use crate::harness::precondition::{Precondition, PreconditionKind, sentinel};
+use crate::harness::state::{GitState, head_commit, observe_git_state};
+use turbovault_tools::{BatchOperation, FileTools, WriteMode};
+
+// ── Probe 1: setup fidelity ──────────────────────────────────────────────────
+
+/// What a cell's setup ACTUALLY looks like, MEASURED rather than recalled: the
+/// state re-derived from the working tree, and whether the target is there.
+///
+/// Deliberately does NOT echo back the precondition it was handed. An earlier
+/// version did, and the test compared that echo against the same value it passed
+/// in — which can never fail, so it asserted nothing (caught in review). What
+/// genuinely constrains the precondition axis is the N/A-rule check in the sweep
+/// below: that a token resolves exactly when it is DEFINED for the state. That one
+/// has an independent oracle ([`token_defined`]) and can fail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbedSetup {
+    /// The state re-derived from disk (`None` == matches no canonical state).
+    pub state: Option<GitState>,
+    /// Working-tree content of the target (`None` == absent).
+    pub content: Option<String>,
+}
+
+/// A World that writes **nothing**: its "invocation" only observes. It exists so
+/// the state × precondition setup can be checked through the same `Vault`
+/// construction path the real worlds use, without a mutation confusing the reading.
+pub struct ProbeWorld {
+    vault: Vault,
+}
+
+impl Layer for ProbeWorld {
+    const LABEL: &'static str = "probe";
+    fn new(backend: Backend) -> Self {
+        Self {
+            vault: Vault::new(backend),
+        }
+    }
+    fn vault(&self) -> &Vault {
+        &self.vault
+    }
+}
+
+impl ProbeWorld {
+    /// Observe `rel`'s setup — the inspection-only counterpart to a real world's
+    /// `invoke`. Everything it reports is re-derived from disk; nothing is echoed
+    /// back from its caller (see [`ProbedSetup`]).
+    pub fn probe(&self, rel: &str) -> ProbedSetup {
+        ProbedSetup {
+            state: observed_state(self.vault(), rel),
+            content: self.vault().read(rel),
+        }
+    }
+}
+
+/// Re-derive `rel`'s state on either backend, independently of `build_state`.
+/// Git measures the real `(e,t,c,s,u)` flags out of git plumbing; Direct has no
+/// git at all, and its only representable states are absent and present — where
+/// "present" is the `e---u` (Untracked) cell that `present_state(Direct)` names.
+fn observed_state(vault: &Vault, rel: &str) -> Option<GitState> {
+    match vault.backend() {
+        Backend::Git => observe_git_state(vault.dir.path(), rel),
+        Backend::Direct => Some(if vault.read(rel).is_some() {
+            GitState::Untracked
+        } else {
+            GitState::Absent
+        }),
+    }
+}
+
+/// Whether `kind`'s token is *defined* in `state` — the matrix's N/A rule, stated
+/// independently of `Oids` so the probe can catch a token that silently failed to
+/// resolve. That failure mode is nastier than a wrong answer: an unresolved token
+/// makes `resolve` return `None`, which does not FAIL a cell — it silently DELETES
+/// it from the matrix (a coverage hole that looks like a clean run).
+fn token_defined(kind: PreconditionKind, state: GitState) -> bool {
+    match kind {
+        PreconditionKind::Head => state.committed(),
+        PreconditionKind::Index => state.staged(),
+        PreconditionKind::Workdir => state.exists(),
+        // Not token-backed: always constructible.
+        PreconditionKind::Blind
+        | PreconditionKind::Absent
+        | PreconditionKind::Exists
+        | PreconditionKind::Wrong => true,
+    }
+}
+
+// ── Probe 2: plumbing fidelity ───────────────────────────────────────────────
+
+/// The bytes the probe writes — distinct from every state generation, so a
+/// successful write is observable as a real change.
+const PROBE_CONTENT: &str = "wss-probe\n";
+
+/// The minimal deterministic write op, implemented for **every** world. Its only
+/// job is to prove a world's plumbing reaches the write surface and reports the
+/// outcome faithfully; being minimal is the point — a divergence between worlds is
+/// then attributable to the world, not to op-specific semantics.
+#[derive(Clone, Copy)]
+pub struct Probe;
+
+impl OpAdapterMeta for Probe {
+    fn name(&self) -> &'static str {
+        "probe"
+    }
+
+    fn cases(&self) -> &'static [Case] {
+        AGREEMENT_CASES
+    }
+
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        if observed.after_content.as_deref() == Some(PROBE_CONTENT) {
+            Ok(())
+        } else {
+            Err(format!(
+                "OK effect: expected probe content {PROBE_CONTENT:?}, got {:?}",
+                observed.after_content
+            ))
+        }
+    }
+}
+
+impl Op<ToolsWorld> for Probe {
+    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = FileTools::new(w.vault().manager().clone())
+            .write_file_with_mode(rel, PROBE_CONTENT, WriteMode::Overwrite, pc, MSG)
+            .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<ManagerWorld> for Probe {
+    async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = w
+            .vault()
+            .manager()
+            .write_file(std::path::Path::new(rel), PROBE_CONTENT, pc, MSG)
+            .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<BatchWorld> for Probe {
+    async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
+        // Same precondition → batch-op mapping the write_note adapter uses: a
+        // strict create carries ExpectAbsent, an upsert carries the blob (or none).
+        let op = match pc {
+            Precondition::ExpectAbsent => BatchOperation::CreateNote {
+                path: rel.to_string(),
+                content: PROBE_CONTENT.to_string(),
+                force: None,
+            },
+            Precondition::ExpectBlob(oid) => BatchOperation::WriteNote {
+                path: rel.to_string(),
+                content: PROBE_CONTENT.to_string(),
+                expected_hash: Some(oid),
+            },
+            _ => BatchOperation::WriteNote {
+                path: rel.to_string(),
+                content: PROBE_CONTENT.to_string(),
+                expected_hash: None,
+            },
+        };
+        observe(w.apply_op(op).await, w.vault().read(rel))
+    }
+}
+
+impl Op<WireWorld> for Probe {
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let params = serde_json::json!({
+            "path": rel,
+            "content": PROBE_CONTENT,
+            "expected_hash": sentinel(&pc),
+        });
+        observe_outcome(w.call_tool("write_note", params).await, w.vault().read(rel))
+    }
+}
+
+/// Cells every world must agree on **today** — deliberately only *settled*
+/// behavior (each is an active, non-pending cell of the real `write_note` grid), so
+/// a failure here means a world's plumbing broke, never that a burndown item is
+/// outstanding. `present` differs by backend (`etc--` on git, `e---u` on direct),
+/// so those cells are `.on()`-split — same expected outcome either way.
+const AGREEMENT_CASES: &[Case] = &[
+    // Blind → last-writer-wins: create and overwrite both succeed.
+    Case::new(PreconditionKind::Blind, GitState::Absent, Outcome::Ok),
+    Case::new(
+        PreconditionKind::Blind,
+        GitState::CleanCommitted,
+        Outcome::Ok,
+    )
+    .on(Backend::Git),
+    Case::new(PreconditionKind::Blind, GitState::Untracked, Outcome::Ok).on(Backend::Direct),
+    // ExpectAbsent → the create guard: OK on absent, refuse on present.
+    Case::new(PreconditionKind::Absent, GitState::Absent, Outcome::Ok),
+    Case::new(
+        PreconditionKind::Absent,
+        GitState::CleanCommitted,
+        Outcome::ConcurrencyError,
+    )
+    .on(Backend::Git),
+    Case::new(
+        PreconditionKind::Absent,
+        GitState::Untracked,
+        Outcome::ConcurrencyError,
+    )
+    .on(Backend::Direct),
+    // ExpectBlob(HEAD) on a clean commit → the caller proved the bytes: OK.
+    Case::new(
+        PreconditionKind::Head,
+        GitState::CleanCommitted,
+        Outcome::Ok,
+    )
+    .on(Backend::Git),
+    // ExpectBlob(WORKDIR) on direct → exercises the sha256 token round-trip.
+    Case::new(PreconditionKind::Workdir, GitState::Untracked, Outcome::Ok).on(Backend::Direct),
+    // ExpectBlob(WRONG) → never matches the tree: refuse everywhere.
+    Case::new(
+        PreconditionKind::Wrong,
+        GitState::Absent,
+        Outcome::ConcurrencyError,
+    ),
+    Case::new(
+        PreconditionKind::Wrong,
+        GitState::CleanCommitted,
+        Outcome::ConcurrencyError,
+    )
+    .on(Backend::Git),
+    Case::new(
+        PreconditionKind::Wrong,
+        GitState::Untracked,
+        Outcome::ConcurrencyError,
+    )
+    .on(Backend::Direct),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Does this cell run on `backend`? Mirrors the runner's own filtering, so the
+    /// probes cover exactly the cells the matrix would emit.
+    fn runs_on(case: &Case, backend: Backend) -> bool {
+        backend.supports_state(case.state) && case.only.is_none_or(|b| b == backend)
+    }
+
+    /// **Setup fidelity.** For every (precondition × state) the matrix can build on
+    /// a backend: the state on disk is the state the cell named, and the resolved
+    /// precondition is the one it asked for. Sweeps the FULL axes, not a subset.
+    #[test]
+    fn every_cell_is_set_up_as_it_claims() {
+        for backend in [Backend::Git, Backend::Direct] {
+            for state in GitState::ALL {
+                if !backend.supports_state(state) {
+                    continue;
+                }
+                for kind in PreconditionKind::ALL {
+                    let w = ProbeWorld::new(backend);
+                    let oids = w
+                        .vault()
+                        .build_state(REL, state)
+                        .expect("a supported state must build");
+                    let label = format!("{}::{}::{}", backend.code(), kind.code(), state.code());
+
+                    // The only non-circular constraint available on the precondition
+                    // axis: a token must resolve exactly when it is DEFINED for this
+                    // state. Getting it wrong does not fail a cell — it silently
+                    // DELETES one (the runner skips unresolvable cells), so this is
+                    // the check that keeps a coverage hole from looking like a pass.
+                    let resolved = kind.resolve(&oids);
+                    assert_eq!(
+                        resolved.is_some(),
+                        token_defined(kind, state),
+                        "{label}: precondition definedness disagrees with the N/A rule"
+                    );
+                    if resolved.is_none() {
+                        continue;
+                    }
+
+                    let probed = w.probe(REL);
+                    assert_eq!(
+                        probed.state,
+                        Some(state),
+                        "{label}: built state is not the state the cell claims"
+                    );
+                    assert_eq!(
+                        probed.content.is_some(),
+                        state.exists(),
+                        "{label}: target presence disagrees with the state's `e` flag"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Build a cell on world `W` and run the probe op against it.
+    async fn run_probe<W>(backend: Backend, case: Case) -> (Observed, Option<String>)
+    where
+        W: Layer,
+        Probe: Op<W>,
+    {
+        let w = W::new(backend);
+        let oids = w
+            .vault()
+            .build_state(REL, case.state)
+            .expect("a probe cell's state must build on this backend");
+        let pc = case
+            .precondition
+            .resolve(&oids)
+            .expect("a probe cell's precondition must be defined in its state");
+        let before = w.vault().read(REL);
+        let observed = Probe.invoke(&w, REL, pc).await;
+        (observed, before)
+    }
+
+    /// **Plumbing fidelity.** Every world reaches its write surface and reports the
+    /// same thing: each satisfies the cell, AND all four observations are identical.
+    /// The agreement half is what the matrix cannot check — it asserts each world
+    /// against a coarse `Outcome` separately, so two worlds can differ while both
+    /// still satisfy it.
+    #[tokio::test]
+    async fn every_world_agrees_on_a_settled_cell() {
+        for backend in [Backend::Git, Backend::Direct] {
+            for case in Probe.cases() {
+                if !runs_on(case, backend) {
+                    continue;
+                }
+                assert!(
+                    !case.pending,
+                    "a probe cell must be settled behavior, never pending"
+                );
+                let label = format!(
+                    "{}::{}::{}::{:?}",
+                    backend.code(),
+                    case.precondition.code(),
+                    case.state.code(),
+                    case.expected
+                );
+
+                let (tools, before) = run_probe::<ToolsWorld>(backend, *case).await;
+                let (manager, _) = run_probe::<ManagerWorld>(backend, *case).await;
+                let (batch, _) = run_probe::<BatchWorld>(backend, *case).await;
+                let (wire, _) = run_probe::<WireWorld>(backend, *case).await;
+
+                for (world, observed) in [
+                    ("tools", &tools),
+                    ("manager", &manager),
+                    ("batch", &batch),
+                    ("wire", &wire),
+                ] {
+                    case.expected
+                        .check(observed, before.as_deref())
+                        .unwrap_or_else(|e| panic!("{label}: {world} world: {e}"));
+                    if case.expected == Outcome::Ok {
+                        // Op-level form: `ok_effect` exists on both traits, so the
+                        // bare call would be ambiguous (E0034).
+                        OpAdapterMeta::ok_effect(&Probe, observed)
+                            .unwrap_or_else(|e| panic!("{label}: {world} world: {e}"));
+                    }
+                }
+
+                assert_eq!(tools, manager, "{label}: tools vs manager DIVERGED");
+                assert_eq!(tools, batch, "{label}: tools vs batch DIVERGED");
+                assert_eq!(tools, wire, "{label}: tools vs wire DIVERGED");
+            }
+        }
+    }
+
+    /// Build a cell on world `W`, write through it, and report HEAD either side.
+    async fn head_around_write<W>(backend: Backend) -> (Option<String>, Option<String>, Observed)
+    where
+        W: Layer,
+        Probe: Op<W>,
+    {
+        // A cell that definitely mutates: no precondition, nothing in the way.
+        let w = W::new(backend);
+        let oids = w
+            .vault()
+            .build_state(REL, GitState::Absent)
+            .expect("absent builds on every backend");
+        let pc = PreconditionKind::Blind
+            .resolve(&oids)
+            .expect("Blind is always defined");
+        let before = head_commit(w.vault().dir.path());
+        let observed = Probe.invoke(&w, REL, pc).await;
+        let after = head_commit(w.vault().dir.path());
+        (before, after, observed)
+    }
+
+    /// **Backend identity.** Each world must drive the substrate it CLAIMS, measured
+    /// against git history rather than re-read from the config under test: a git
+    /// world's successful write advances HEAD, a direct world's has no repo at all.
+    ///
+    /// Nothing else in WSS checks this. `Outcome::Ok` asserts only that the op
+    /// *succeeded* — while the design doc defines git-`Ok` as "a new HEAD commit" —
+    /// so a world wired to the DIRECT substrate over a git repo (turbovault-74p:
+    /// writes land in the working tree but never commit) would pass every single
+    /// `Ok` cell with the whole suite green against the wrong substrate.
+    #[tokio::test]
+    async fn every_world_drives_the_backend_it_claims() {
+        for backend in [Backend::Git, Backend::Direct] {
+            for (world, (before, after, observed)) in [
+                ("tools", head_around_write::<ToolsWorld>(backend).await),
+                ("manager", head_around_write::<ManagerWorld>(backend).await),
+                ("batch", head_around_write::<BatchWorld>(backend).await),
+                ("wire", head_around_write::<WireWorld>(backend).await),
+            ] {
+                let at = format!("{}::{world}", backend.code());
+                assert!(
+                    observed.succeeded,
+                    "{at}: the probe write must succeed for this check to mean anything ({:?})",
+                    observed.error
+                );
+                match backend {
+                    Backend::Git => {
+                        assert!(before.is_some(), "{at}: a git vault must start with a HEAD");
+                        assert_ne!(
+                            before, after,
+                            "{at}: a successful git write must ADVANCE HEAD — this world is not \
+                             committing, so it is not really driving the git substrate"
+                        );
+                    }
+                    Backend::Direct => {
+                        assert!(
+                            before.is_none() && after.is_none(),
+                            "{at}: a direct vault must have no git repo, so no write can commit"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Trial names are `<layer>::…`, so two worlds sharing a `LABEL` would silently
+    /// merge their cells and mis-attribute them in the reporter. A property of the
+    /// SET of worlds — not a restatement of any one impl.
+    #[test]
+    fn world_labels_are_distinct() {
+        let labels = [
+            ToolsWorld::LABEL,
+            ManagerWorld::LABEL,
+            BatchWorld::LABEL,
+            WireWorld::LABEL,
+            ProbeWorld::LABEL,
+        ];
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(
+            unique.len(),
+            labels.len(),
+            "world LABELs must be distinct: {labels:?}"
+        );
+    }
+
+    /// **Wire liveness + response shape.** The server takes a well-shaped command
+    /// and its result is interpretable as an outcome — with the write actually
+    /// landing where the harness reads it.
+    #[tokio::test]
+    async fn the_wire_server_answers_a_well_shaped_call() {
+        let w = WireWorld::new(Backend::Direct);
+        let outcome = w
+            .call_tool(
+                "write_note",
+                serde_json::json!({
+                    "path": REL,
+                    "content": PROBE_CONTENT,
+                    "expected_hash": "blind",
+                }),
+            )
+            .await;
+        assert!(outcome.is_ok(), "wire call failed: {outcome:?}");
+        assert_eq!(
+            w.vault().read(REL).as_deref(),
+            Some(PROBE_CONTENT),
+            "the wire write must land in the vault the harness reads"
+        );
+    }
+
+    /// **Wire shape guard bites.** A misspelled param must be REFUSED, not silently
+    /// ignored — this test is the fault injection, permanently wired in: without the
+    /// guard the call below would succeed as an unconditional write, and the suite
+    /// would report precondition coverage it never actually exercised.
+    #[tokio::test]
+    #[should_panic(expected = "is not declared by tool")]
+    async fn a_misspelled_wire_param_is_refused() {
+        let w = WireWorld::new(Backend::Direct);
+        let _ = w
+            .call_tool(
+                "write_note",
+                serde_json::json!({
+                    "path": REL,
+                    "content": PROBE_CONTENT,
+                    "expected_hsah": "blind", // typo
+                }),
+            )
+            .await;
+    }
+}

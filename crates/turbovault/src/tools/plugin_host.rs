@@ -154,7 +154,7 @@ impl VaultHost for PluginVaultHost {
                         &request.path,
                         &request.content,
                         WriteMode::Overwrite,
-                        Some(version),
+                        turbovault_core::Precondition::ExpectBlob(version.clone()),
                         &message,
                     )
                     .await

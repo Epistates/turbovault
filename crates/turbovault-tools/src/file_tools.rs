@@ -79,10 +79,9 @@ impl FileTools {
         path: &str,
         content: &str,
         mode: WriteMode,
-        expected_hash: Option<&str>,
+        precondition: Precondition,
         message: &str,
     ) -> Result<()> {
-        let precondition = Precondition::for_replace(expected_hash, true);
         match mode {
             WriteMode::Overwrite => {
                 let file_path = PathBuf::from(path);
@@ -144,7 +143,7 @@ impl FileTools {
             path,
             content,
             WriteMode::Overwrite,
-            None,
+            Precondition::Blind,
             &format!("write_file {path}"),
         )
         .await
@@ -175,76 +174,48 @@ impl FileTools {
         &self,
         path: &str,
         edits: &str,
-        expected_hash: Option<&str>,
+        precondition: Precondition,
         dry_run: bool,
         message: &str,
     ) -> Result<turbovault_vault::EditResult> {
         let file_path = PathBuf::from(path);
         self.manager
-            .edit_file(
-                &file_path,
-                edits,
-                Precondition::for_in_place(expected_hash),
-                dry_run,
-                message,
-            )
+            .edit_file(&file_path, edits, precondition, dry_run, message)
             .await
     }
 
-    /// Delete a file from the vault (with audit trail and graph cleanup)
-    pub async fn delete_file(&self, path: &str) -> Result<()> {
-        self.manager
-            .delete_file(
-                &PathBuf::from(path),
-                Precondition::for_in_place(None),
-                &format!("delete_file {path}"),
-            )
-            .await
-    }
-
-    /// Delete a file with optional optimistic concurrency hash check
-    pub async fn delete_file_with_hash(
+    /// Delete a file from the vault (with audit trail and graph cleanup),
+    /// guarded by `precondition`. `message` is the git commit subject (ignored
+    /// on direct).
+    pub async fn delete_file(
         &self,
         path: &str,
-        expected_hash: Option<&str>,
+        precondition: Precondition,
         message: &str,
     ) -> Result<()> {
         self.manager
-            .delete_file(
-                &PathBuf::from(path),
-                Precondition::for_in_place(expected_hash),
-                message,
-            )
+            .delete_file(&PathBuf::from(path), precondition, message)
             .await
     }
 
-    /// Move a file within the vault (with audit trail and graph update)
-    pub async fn move_file(&self, from: &str, to: &str) -> Result<()> {
-        self.manager
-            .move_file(
-                &PathBuf::from(from),
-                &PathBuf::from(to),
-                Precondition::for_in_place(None),
-                Precondition::Blind,
-                &format!("move_file {from} -> {to}"),
-            )
-            .await
-    }
-
-    /// Move a file with optional optimistic concurrency hash check
-    pub async fn move_file_with_hash(
+    /// Move a file within the vault (with audit trail and graph update).
+    /// `src_precondition` guards the source path; `dest_precondition` guards the
+    /// destination ([`Precondition::ExpectAbsent`] is the no-clobber guard).
+    /// `message` is the git commit subject (ignored on direct).
+    pub async fn move_file(
         &self,
         from: &str,
         to: &str,
-        expected_hash: Option<&str>,
+        src_precondition: Precondition,
+        dest_precondition: Precondition,
         message: &str,
     ) -> Result<()> {
         self.manager
             .move_file(
                 &PathBuf::from(from),
                 &PathBuf::from(to),
-                Precondition::for_in_place(expected_hash),
-                Precondition::Blind,
+                src_precondition,
+                dest_precondition,
                 message,
             )
             .await

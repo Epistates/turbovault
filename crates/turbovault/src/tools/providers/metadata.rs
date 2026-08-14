@@ -105,6 +105,7 @@ impl MetadataProvider {
         path: String,
         frontmatter: HashMap<String, serde_json::Value>,
         merge: Option<bool>,
+        expected_hash: Option<String>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -114,7 +115,15 @@ impl MetadataProvider {
             .resolve_commit_message(commit_message, || format!("update_frontmatter {path}"))
             .await?;
         let result = tools
-            .update_frontmatter(&path, fm_map, merge.unwrap_or(true), &message)
+            .update_frontmatter(
+                &path,
+                fm_map,
+                merge.unwrap_or(true),
+                // Sentinel-or-oid `expected_hash` (qae.6.4); omitted → the
+                // in-place default `ExpectExists`.
+                turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 
@@ -144,6 +153,7 @@ impl MetadataProvider {
         path: String,
         operation: String,
         tags: Option<Vec<String>>,
+        expected_hash: Option<String>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -168,7 +178,9 @@ impl MetadataProvider {
                 .write_file(
                     std::path::Path::new(&path),
                     &content,
-                    turbovault_core::Precondition::for_in_place(None),
+                    // Sentinel-or-oid `expected_hash` (qae.6.4); omitted →
+                    // in-place default `ExpectExists`.
+                    turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
                     &message,
                 )
                 .await
@@ -251,7 +263,13 @@ impl MetadataProvider {
             .resolve_commit_message(commit_message, || format!("move_file {from} -> {to}"))
             .await?;
         FileTools::new(manager)
-            .move_file_with_hash(&from, &to, expected_hash.as_deref(), &message)
+            .move_file(
+                &from,
+                &to,
+                turbovault_core::Precondition::for_in_place(expected_hash.as_deref()),
+                turbovault_core::Precondition::Blind,
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 
