@@ -788,6 +788,12 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         std::fs::write(&path, "---\nstatus: \"published\"\n---\n# Note").unwrap();
 
+        // Reconciled explicitly rather than by querying twice: the freshness
+        // gate is debounced, so back-to-back calls deliberately share one pass.
+        // This asserts what the query answers once a pass has run, which is the
+        // part this test is about.
+        tools.manager.reconcile_now().await;
+
         // After external modification, cache is invalidated and query reflects new state.
         let after_draft = tools.query_metadata(r#"status: "draft""#).await.unwrap();
         let after_published = tools

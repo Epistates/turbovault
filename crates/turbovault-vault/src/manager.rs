@@ -2,10 +2,12 @@
 
 use crate::reindex::CommitOrigin;
 use path_trav::PathTrav;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
@@ -37,18 +39,31 @@ fn with_origin(
         .collect()
 }
 
+/// The work a [`ChangeListener`] hands back to be awaited.
+pub type ChangeListenerFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+
 /// R2 change-listener (design §6.3): a callback fired with the collapsed
-/// `(path, present, origin)` set after every `sync_index` (both backends) and
-/// every reindex drain pass.
+/// `(path, present, origin)` set after every `sync_index` (both backends),
+/// every reindex drain pass, and every freshness sweep.
 ///
-/// `origin` says whether this process made the change or merely observed it on
-/// the ref afterwards. A consumer that also reports writes at the point of the
-/// write needs that distinction, or it announces its own mutations twice: once
-/// when it makes them and again when the drain pass sees the commit. The server registers one that feeds its full-text
-/// search + similarity indexes — those engines stay ABOVE the vault layer;
-/// `VaultManager` only invokes the callback (the R2 dependency inversion,
-/// design §6.6/§6.7).
-pub type ChangeListener = Arc<dyn Fn(Vec<(String, bool, CommitOrigin)>) + Send + Sync>;
+/// `origin` says whether this process made the change or merely observed it
+/// afterwards. A consumer that also reports writes at the point of the write
+/// needs that distinction, or it announces its own mutations twice: once when
+/// it makes them and again when the drain pass or sweep sees the result. The
+/// server registers one that feeds its full-text search + similarity indexes —
+/// those engines stay ABOVE the vault layer; `VaultManager` only invokes the
+/// callback (the R2 dependency inversion, design §6.6/§6.7).
+///
+/// The listener returns a future that the manager **awaits** before its
+/// freshness gate returns. That is what makes [`VaultManager::ensure_fresh`] a
+/// guarantee rather than a hint: without it the manager could report the link
+/// graph as current while the search index was still catching up in a spawned
+/// task, and a caller gated on one would read the other stale. The cost is a
+/// re-entrancy rule, enforced structurally by the no-manager-capture rule in
+/// [`VaultManager::set_change_listener`]: a listener must not call back into
+/// the gate.
+pub type ChangeListener =
+    Arc<dyn Fn(Vec<(String, bool, CommitOrigin)>) -> ChangeListenerFuture + Send + Sync>;
 
 /// Path components that the note APIs may never traverse, whatever the vault
 /// configuration says.
@@ -65,19 +80,325 @@ pub struct ScannedNote {
     pub path: PathBuf,
     /// Size in bytes at scan time.
     pub size_bytes: u64,
-    /// Last-modified time as Unix epoch milliseconds, when the platform
-    /// reports one.
-    pub modified_ms: Option<u64>,
+    /// Last-modified time exactly as the platform reports it.
+    ///
+    /// Kept as a `SystemTime` rather than a rounded integer because it doubles
+    /// as half of the freshness fingerprint: two edits inside the same
+    /// millisecond that land on the same byte length become indistinguishable
+    /// once the timestamp is truncated. Use [`Self::modified_ms`] for the
+    /// rounded form that the plugin-facing note listing publishes.
+    pub modified: Option<SystemTime>,
 }
 
-/// File cache entry with timestamp
-/// Used during initialization to populate link graph; read path bypasses cache
-/// to ensure raw file content (including frontmatter) is always returned.
+impl ScannedNote {
+    /// Last-modified time as Unix epoch milliseconds, when the platform reports
+    /// one.
+    pub fn modified_ms(&self) -> Option<u64> {
+        self.modified
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .and_then(|since| u64::try_from(since.as_millis()).ok())
+    }
+
+    fn fingerprint(&self) -> FileFingerprint {
+        FileFingerprint {
+            size_bytes: self.size_bytes,
+            modified: self.modified,
+        }
+    }
+}
+
+/// What the manager last observed about a note on disk.
+///
+/// [`VaultManager::ensure_fresh`] compares this against a fresh scan to work out
+/// what changed underneath the process. It is deliberately an *identity* test
+/// ("is this the same revision we parsed?") rather than a *happens-before* test
+/// ("was it touched after we looked?"). Happens-before needs the file's clock
+/// and ours to agree, and they do not: a sync tool that restores the original
+/// mtime, a checkout that rewinds it, or a machine whose clock steps all defeat
+/// it, each time by declaring a changed file fresh.
+///
+/// On a platform that reports no modification time at all this degrades to a
+/// size comparison. Every platform TurboVault targets reports one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileFingerprint {
+    size_bytes: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileFingerprint {
+    async fn observe(path: &Path) -> Option<Self> {
+        let metadata = tokio::fs::metadata(path).await.ok()?;
+        Some(Self {
+            size_bytes: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+/// One note in the cache: what was parsed, and the revision it was parsed from.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct CacheEntry {
     file: VaultFile,
-    cached_at: f64,
+    /// The fingerprint of the bytes `file` was parsed from, when it could be
+    /// established. `None` means "unknown", which no scan result can equal, so
+    /// the next sweep re-parses the note. Unknown resolves to "assume stale".
+    observed: Option<FileFingerprint>,
+}
+
+/// Never reconcile more often than this, however cheap the sweep turns out to
+/// be. Agent tool calls arrive a model round-trip apart and human edits are
+/// seconds apart, so a bound in this range is imperceptible while still
+/// collapsing a burst of calls onto a single scan.
+const RECONCILE_MIN_INTERVAL: Duration = Duration::from_millis(500);
+
+/// ...and never less often than this, however expensive it turns out to be.
+const RECONCILE_MAX_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Reconciliation may consume at most `1/RECONCILE_DUTY_DIVISOR` of wall clock.
+/// Scaling the interval to the measured cost is what lets one default serve a
+/// 200-note vault and a 200k-note vault: the small vault sweeps at the floor,
+/// the large one backs off on its own, and nobody has to tune a number per
+/// vault to avoid either staleness or a stall.
+///
+/// Measured on an M-series Mac, release build, warm page cache, no changes to
+/// apply: 0.8ms at 100 notes, 1.7ms at 1k, 19ms at 10k. So every vault up to
+/// roughly 13k notes sits at the floor and the duty cycle never binds; past
+/// that it stretches the interval rather than the pass.
+const RECONCILE_DUTY_DIVISOR: u32 = 20;
+
+/// The reconcile schedule.
+#[derive(Debug)]
+struct ReconcileState {
+    /// When the last completed sweep finished. `None` until the first one runs,
+    /// so the first gated call after startup always sweeps.
+    last_finished: Option<Instant>,
+    /// What that sweep cost, which sets how long until the next one is due.
+    last_cost: Duration,
+}
+
+impl ReconcileState {
+    fn new() -> Self {
+        Self {
+            last_finished: None,
+            last_cost: Duration::ZERO,
+        }
+    }
+
+    fn interval(&self) -> Duration {
+        (self.last_cost * RECONCILE_DUTY_DIVISOR)
+            .clamp(RECONCILE_MIN_INTERVAL, RECONCILE_MAX_INTERVAL)
+    }
+
+    fn is_due(&self) -> bool {
+        match self.last_finished {
+            None => true,
+            Some(finished) => finished.elapsed() >= self.interval(),
+        }
+    }
+
+    fn record(&mut self, cost: Duration) {
+        self.last_cost = cost;
+        self.last_finished = Some(Instant::now());
+    }
+}
+
+/// A live claim on the paths one write plan touches, released on drop.
+///
+/// Between the substrate landing bytes and `sync_index` recording the new
+/// fingerprint there is a window in which a freshness sweep would see a change
+/// this process is in the middle of making. Publishing it would attribute one
+/// of TurboVault's own mutations to an external actor, which is a lie to
+/// anything consuming the change feed for provenance, and would re-parse a file
+/// the write path is about to re-parse anyway. Claimed paths are skipped; the
+/// write that claimed them reports them.
+struct WriteClaim<'a> {
+    claims: &'a StdMutex<HashMap<String, usize>>,
+    paths: Vec<String>,
+}
+
+impl<'a> WriteClaim<'a> {
+    /// Counted rather than a plain set: two plans may legitimately have
+    /// overlapping paths in flight, and the first to finish must not release
+    /// the second's claim.
+    fn new(claims: &'a StdMutex<HashMap<String, usize>>, paths: Vec<String>) -> Self {
+        {
+            let mut held = claims.lock().unwrap_or_else(|e| e.into_inner());
+            for path in &paths {
+                *held.entry(path.clone()).or_insert(0) += 1;
+            }
+        }
+        Self { claims, paths }
+    }
+}
+
+impl Drop for WriteClaim<'_> {
+    fn drop(&mut self) {
+        let mut held = self.claims.lock().unwrap_or_else(|e| e.into_inner());
+        for path in &self.paths {
+            match held.get_mut(path) {
+                Some(count) if *count > 1 => *count -= 1,
+                _ => {
+                    held.remove(path);
+                }
+            }
+        }
+    }
+}
+
+/// Everything a vault scan needs, detached from the manager once at
+/// construction so the walk can move to the blocking pool without borrowing it.
+#[derive(Debug)]
+struct ScanSpec {
+    root: PathBuf,
+    excluded: HashSet<String>,
+    /// Admitted extensions, lower-cased and *without* the leading dot, so the
+    /// per-entry test is a hash lookup on the raw `Path::extension` slice in
+    /// the overwhelmingly common already-lower-case case.
+    allowed_extensions: HashSet<String>,
+    max_file_size: u64,
+}
+
+impl ScanSpec {
+    fn new(config: &ServerConfig, root: PathBuf) -> Self {
+        Self {
+            root,
+            excluded: config.excluded_paths.clone(),
+            allowed_extensions: config
+                .allowed_extensions
+                .iter()
+                .map(|ext| ext.trim_start_matches('.').to_lowercase())
+                .collect(),
+            max_file_size: config.max_file_size,
+        }
+    }
+
+    /// Case-insensitive, matching `sync_index`'s markdown test.
+    ///
+    /// The two have to agree. A note the write path caches but the scan cannot
+    /// find would be reported deleted by the very next sweep, so `Note.MD`
+    /// would quietly fall out of the link graph after being written.
+    fn admits_extension(&self, ext: &str) -> bool {
+        self.allowed_extensions.contains(ext)
+            || (ext.bytes().any(|b| b.is_ascii_uppercase())
+                && self.allowed_extensions.contains(&ext.to_lowercase()))
+    }
+
+    /// Walk the vault and return every note the configuration admits, carrying
+    /// the `(size, mtime)` the walk had to read anyway.
+    ///
+    /// Symlinks are never followed, as directories or as notes. A vault is a
+    /// directory of files the operator owns, and a link inside it can point
+    /// anywhere: at an ancestor, which makes the walk recurse until it exhausts
+    /// memory, or outside the vault root, which would pull content into the
+    /// index that `resolve_path` refuses to hand out. Skipping them keeps the
+    /// walk terminating and keeps discovery inside the boundary the read and
+    /// write paths already enforce.
+    ///
+    /// [`PROTECTED_COMPONENTS`] is skipped alongside the configured exclusions:
+    /// `.turbovault/` is TurboVault's own audit trail and snapshot store, not
+    /// vault content, and walking it is pure cost on every pass.
+    fn walk(&self) -> Result<Vec<ScannedNote>> {
+        let mut notes = Vec::new();
+        let mut stack = vec![self.root.clone()];
+
+        while let Some(dir) = stack.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                // A subdirectory that vanished between being pushed and being
+                // read is the vault changing underneath us, not a scan failure.
+                // A missing vault root still is one.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir != self.root => continue,
+                Err(e) => return Err(Error::io(e)),
+            };
+
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if PROTECTED_COMPONENTS.contains(&name) || self.excluded.contains(name) {
+                    continue;
+                }
+
+                // `file_type` reads `d_type` straight off the dirent where the
+                // platform supplies it, so the test costs no extra syscall, and
+                // it describes the link itself rather than its target.
+                let Ok(file_type) = entry.file_type() else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue; // symlinks, fifos, sockets, devices
+                }
+
+                let admitted = path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| self.admits_extension(ext));
+                if !admitted {
+                    continue;
+                }
+
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if metadata.len() > self.max_file_size {
+                    continue;
+                }
+                notes.push(ScannedNote {
+                    path,
+                    size_bytes: metadata.len(),
+                    modified: metadata.modified().ok(),
+                });
+            }
+        }
+
+        Ok(notes)
+    }
+}
+
+/// Whether a path is a *note*: something the note cache, the link graph, and
+/// the search index model.
+///
+/// Markdown only, which is narrower than `allowed_extensions` — that also
+/// admits `.txt` and `.canvas`, because those are worth *discovering*, not
+/// worth parsing as notes. The two have to be kept apart, and every consumer of
+/// the note cache has to use this same test, because the freshness sweep
+/// compares what the cache holds against what a scan finds: a path one side
+/// includes and the other does not is reported changed on every single pass
+/// forever, since nothing ever records having seen it.
+fn is_note(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
+/// Read a note and fingerprint the exact revision that was read.
+///
+/// The fingerprint is taken before and after the read and kept only if it did
+/// not move. A write landing inside that window would otherwise be recorded as
+/// "already seen", and because the sweep compares against precisely this value
+/// the note would then stay stale forever rather than for one interval. When
+/// the two disagree the content still stands (it is a coherent snapshot of one
+/// of the two revisions) but the fingerprint is dropped, which makes the next
+/// sweep look again.
+///
+/// `expected` is a fingerprint the caller already holds, from the scan that
+/// found the file, and passing it saves the leading stat.
+async fn read_note_with_fingerprint(
+    path: &Path,
+    expected: Option<FileFingerprint>,
+) -> std::io::Result<(String, Option<FileFingerprint>)> {
+    let before = match expected {
+        Some(fingerprint) => Some(fingerprint),
+        None => FileFingerprint::observe(path).await,
+    };
+    let content = tokio::fs::read_to_string(path).await?;
+    let after = FileFingerprint::observe(path).await;
+    Ok((content, if before == after { after } else { None }))
 }
 
 /// Main vault manager with file operations and watching
@@ -108,9 +429,18 @@ pub struct VaultManager {
     /// The spawned tasks hold `Weak<Self>` (not `Arc`), so this abort is the
     /// sole thing that stops them (there is no other shutdown path).
     reindex_tasks: StdMutex<Vec<tokio::task::JoinHandle<()>>>,
-    /// R7 change-listener slot (design §6.3). Fired after every `sync_index`
-    /// and drain pass; both backends. See [`ChangeListener`].
+    /// R7 change-listener slot (design §6.3). Fired after every `sync_index`,
+    /// drain pass, and freshness sweep; both backends. See [`ChangeListener`].
     change_listener: StdMutex<Option<ChangeListener>>,
+    /// Scan configuration lifted out of `config` once, so a freshness sweep can
+    /// move the walk to the blocking pool without borrowing the manager.
+    scan_spec: Arc<ScanSpec>,
+    /// Serializes freshness sweeps with each other AND with their fan-out, so
+    /// two passes can never hand the layers above their diffs out of order. A
+    /// `tokio` mutex because the critical section awaits disk I/O.
+    reconcile: tokio::sync::Mutex<ReconcileState>,
+    /// Vault-relative paths with a write in flight. See [`WriteClaim`].
+    write_claims: StdMutex<HashMap<String, usize>>,
 }
 
 impl VaultManager {
@@ -216,6 +546,8 @@ impl VaultManager {
             }
         };
 
+        let scan_spec = Arc::new(ScanSpec::new(&config, vault_path.clone()));
+
         Ok(Self {
             config,
             vault_path,
@@ -229,6 +561,9 @@ impl VaultManager {
             self_ref,
             reindex_tasks: StdMutex::new(Vec::new()),
             change_listener: StdMutex::new(None),
+            scan_spec,
+            reconcile: tokio::sync::Mutex::new(ReconcileState::new()),
+            write_claims: StdMutex::new(HashMap::new()),
         })
     }
 
@@ -318,25 +653,39 @@ impl VaultManager {
     }
 
     /// Register the R7 change-listener (design §6.3). Fired after every
-    /// `sync_index` and every drain pass with the collapsed `(path, present)`
-    /// set. The server registers one that updates its full-text search index +
-    /// invalidates similarity — those engines live ABOVE the vault layer; the
-    /// manager only invokes this callback (the R2 dependency inversion).
-    /// Both backends fire it.
+    /// `sync_index`, every drain pass, and every freshness sweep with the
+    /// collapsed `(path, present, origin)` set. The server registers one that
+    /// updates its full-text search index + invalidates similarity — those
+    /// engines live ABOVE the vault layer; the manager only invokes this
+    /// callback (the R2 dependency inversion). Both backends fire it.
+    ///
+    /// # Contract
+    ///
+    /// A listener must not capture an `Arc<VaultManager>`, for two reasons that
+    /// happen to have the same remedy. It would cycle (`vault_managers` holds
+    /// the manager, which holds the listener) and defeat the `Drop`-based
+    /// teardown of the reindex tasks. And because the manager now *awaits* the
+    /// returned future inside its freshness gate, a listener holding a manager
+    /// could re-enter that gate and deadlock on the lock the caller already
+    /// holds. Capturing only the state the listener actually maintains rules
+    /// both out by construction.
     pub fn set_change_listener(&self, listener: ChangeListener) {
         *self.change_listener.lock().unwrap() = Some(listener);
     }
 
-    /// Invoke the change-listener (if registered) with `changed`. Cheap no-op
-    /// when nothing changed or none is set. The listener is a synchronous
-    /// `Fn`; the server's registered listener spawns its own async work.
-    fn fire_change_listener(&self, changed: Vec<(String, bool, CommitOrigin)>) {
+    /// Invoke the change-listener (if registered) with `changed` and wait for
+    /// the work it hands back. Cheap no-op when nothing changed or none is set.
+    ///
+    /// Awaiting rather than spawning is what lets [`Self::ensure_fresh`] promise
+    /// that every derived view agrees once it returns. See [`ChangeListener`]
+    /// for the re-entrancy rule that buys.
+    async fn fire_change_listener(&self, changed: Vec<(String, bool, CommitOrigin)>) {
         if changed.is_empty() {
             return;
         }
         let listener = self.change_listener.lock().unwrap().clone();
         if let Some(listener) = listener {
-            listener(changed);
+            listener(changed).await;
         }
     }
 
@@ -409,7 +758,217 @@ impl VaultManager {
             collapsed.extend(with_origin(changes, origin));
             queue.advance_cursor(commit);
         }
-        self.fire_change_listener(collapsed);
+        // Fired while the flush guard is still held, deliberately. The guard is
+        // what orders passes against each other; releasing it first would let a
+        // later pass's fan-out overtake an earlier one's and leave the search
+        // index holding an older revision of a path than the link graph does.
+        self.fire_change_listener(collapsed).await;
+    }
+
+    /// Bring every derived view this manager owns into agreement with what is
+    /// on disk right now, then return.
+    ///
+    /// This is the freshness gate, and it is the single thing a caller has to
+    /// remember. Read paths that consult derived state (the link graph, the
+    /// note cache, and — through the change-listener — the server's search and
+    /// similarity indexes and any plugin's own index) call it first, so that
+    /// every one of them answers from the same observation of the vault.
+    ///
+    /// # Why a gate and not a watcher
+    ///
+    /// A vault is a shared directory. Obsidian is usually open on it, an editor
+    /// or a `git pull` or a sync client may touch it, and none of that goes
+    /// through this process. Filesystem notifications look like the obvious
+    /// answer and are not a correctness mechanism anywhere: inotify queues
+    /// overflow and its watch budget is finite, FSEvents degrades to
+    /// directory-granularity rescan hints under load, and network and
+    /// cloud-synced vaults (iCloud, Dropbox, Syncthing — all ordinary for
+    /// Obsidian) deliver nothing at all for a peer's changes. A watcher yields
+    /// *mostly* fresh, and for an agent that is worse than plainly stale,
+    /// because nothing marks the answers it should not have trusted.
+    ///
+    /// Comparing state cannot miss an event, because it is not listening for
+    /// one. The comparison is a scan of `(size, mtime)` against what the note
+    /// cache recorded when it parsed each note, debounced so a burst of calls
+    /// pays for one pass. What it costs is bounded by
+    /// [`RECONCILE_DUTY_DIVISOR`]; how stale an answer can be is bounded by
+    /// [`ReconcileState::interval`].
+    ///
+    /// The two halves run in this order on purpose. Draining first settles any
+    /// commit this process has already been told about and records the
+    /// fingerprints that go with it, so the sweep that follows sees those notes
+    /// as settled instead of reporting them a second time.
+    pub async fn ensure_fresh(&self) {
+        self.flush_reindex().await;
+        self.reconcile_external_changes().await;
+    }
+
+    /// Reconcile right now, ignoring both the schedule and the configured
+    /// opt-out.
+    ///
+    /// [`Self::ensure_fresh`] is what a read path should call: it is scheduled,
+    /// so a burst of calls costs one pass and an idle server costs nothing. Use
+    /// this when something out of band says the vault moved and waiting out the
+    /// interval is not acceptable. Being explicit is also why it overrides
+    /// `reconcile_external_changes`: someone asking for this has said what they
+    /// want more recently than the config did.
+    pub async fn reconcile_now(&self) {
+        self.flush_reindex().await;
+        let mut state = self.reconcile.lock().await;
+        self.reconcile_holding(&mut state).await;
+    }
+
+    /// The sweep half of [`Self::ensure_fresh`], with its schedule.
+    async fn reconcile_external_changes(&self) {
+        if !self.config.reconcile_external_changes {
+            return;
+        }
+        // Taking the lock before testing the schedule is what collapses
+        // concurrent gate calls onto one pass: the losers block here, and by
+        // the time they hold the lock the winner has recorded a fresh
+        // timestamp, so they find the sweep no longer due and return having
+        // paid only the wait. Testing first and then locking would let them all
+        // through.
+        let mut state = self.reconcile.lock().await;
+        if !state.is_due() {
+            return;
+        }
+        self.reconcile_holding(&mut state).await;
+    }
+
+    /// One reconcile pass. The caller holds the reconcile lock and has already
+    /// decided the pass should happen.
+    ///
+    /// The fan-out runs under that lock too, for the reason the drain pass keeps
+    /// its flush guard: it orders one pass's fan-out against the next, so the
+    /// search index can never be left holding an older revision of a path than
+    /// the link graph.
+    async fn reconcile_holding(&self, state: &mut ReconcileState) {
+        let started = Instant::now();
+        let changed = self.sweep_for_external_changes().await;
+        state.record(started.elapsed());
+        self.fire_change_listener(with_origin(changed, CommitOrigin::External))
+            .await;
+    }
+
+    /// Compare a fresh scan against what the note cache believes and bring the
+    /// cache and link graph into line. Returns the vault-relative
+    /// `(path, present)` set that moved, in the shape the change listener and
+    /// the search index already consume.
+    async fn sweep_for_external_changes(&self) -> Vec<(String, bool)> {
+        let spec = Arc::clone(&self.scan_spec);
+        let scanned = match tokio::task::spawn_blocking(move || spec.walk()).await {
+            Ok(Ok(scanned)) => scanned,
+            // A scan that fails leaves derived state exactly as it was. Acting
+            // on a partial walk would report every note it did not reach as
+            // deleted and tear the link graph down.
+            Ok(Err(e)) => {
+                log::warn!("freshness sweep: vault scan failed, derived state unchanged: {e}");
+                return Vec::new();
+            }
+            Err(e) => {
+                log::warn!("freshness sweep: scan task failed, derived state unchanged: {e}");
+                return Vec::new();
+            }
+        };
+
+        // Notes only, on both sides of the diff. The scan admits more than the
+        // cache models, and comparing across that gap would report every
+        // non-note as newly created on every pass.
+        let mut on_disk: HashMap<PathBuf, FileFingerprint> = HashMap::with_capacity(scanned.len());
+        for note in scanned {
+            if !is_note(&note.path) {
+                continue;
+            }
+            let fingerprint = note.fingerprint();
+            on_disk.insert(note.path, fingerprint);
+        }
+
+        let mut changed: Vec<(PathBuf, bool)> = Vec::new();
+        {
+            let cache = self.file_cache.read().await;
+            for (path, entry) in cache.iter() {
+                match on_disk.remove(path) {
+                    // Same revision we parsed. Nothing to do.
+                    Some(found) if entry.observed == Some(found) => {}
+                    // Still there, but not the bytes we parsed.
+                    Some(_) => changed.push((path.clone(), true)),
+                    // Gone from the vault.
+                    None => changed.push((path.clone(), false)),
+                }
+            }
+        }
+        // Whatever the scan found that the cache had never heard of was created
+        // underneath us. This is the case a per-entry mtime check structurally
+        // cannot see, because it can only re-check entries it already holds.
+        changed.extend(on_disk.into_keys().map(|path| (path, true)));
+
+        let changed = self.without_claimed_paths(
+            changed
+                .into_iter()
+                .filter_map(|(path, present)| Some((self.relative_key(&path)?, present)))
+                .collect(),
+        );
+        if changed.is_empty() {
+            return Vec::new();
+        }
+        log::debug!(
+            "freshness sweep: {} path(s) changed outside this process",
+            changed.len()
+        );
+        self.sync_index(&changed).await;
+        changed
+    }
+
+    /// Vault-relative, `/`-separated — the spelling a git diff produces, and so
+    /// the one the search index is already keyed by. Building it from path
+    /// components rather than replacing separators keeps a sweep-reported path
+    /// and a commit-reported path for the same note identical on every
+    /// platform, without mangling a Unix filename that legitimately contains a
+    /// backslash.
+    fn relative_key(&self, path: &Path) -> Option<String> {
+        let relative = path.strip_prefix(&self.vault_path).ok()?;
+        let mut key = String::with_capacity(relative.as_os_str().len());
+        for component in relative.components() {
+            let std::path::Component::Normal(part) = component else {
+                return None;
+            };
+            if !key.is_empty() {
+                key.push('/');
+            }
+            key.push_str(&part.to_string_lossy());
+        }
+        (!key.is_empty()).then_some(key)
+    }
+
+    /// Drop the paths this process is actively writing. See [`WriteClaim`].
+    fn without_claimed_paths(&self, changed: Vec<(String, bool)>) -> Vec<(String, bool)> {
+        let claims = self.write_claims.lock().unwrap_or_else(|e| e.into_inner());
+        if claims.is_empty() {
+            return changed;
+        }
+        changed
+            .into_iter()
+            .filter(|(path, _)| !claims.contains_key(path))
+            .collect()
+    }
+
+    /// Apply `plan` through the substrate, then run the one post-apply sync and
+    /// notification every mutator shares (design R7).
+    ///
+    /// The plan's paths stay claimed across the apply and the sync so a
+    /// concurrent freshness sweep cannot catch this write half-applied and
+    /// republish it as somebody else's ([`WriteClaim`]).
+    async fn apply_through_substrate(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
+        let outcome = {
+            let _claim = WriteClaim::new(&self.write_claims, plan.touched_paths());
+            let outcome = self.substrate.apply(plan).await?;
+            self.sync_index(&outcome.changed).await;
+            outcome
+        };
+        self.fire_change_listener(with_origin(outcome.changed.clone(), CommitOrigin::Local))
+            .await;
+        Ok(outcome)
     }
 
     /// Get vault path
@@ -470,21 +1029,32 @@ impl VaultManager {
         let mut cache = self.file_cache.write().await;
         let mut graph = self.link_graph.write().await;
 
-        // Scan for markdown files
-        let md_files = self.scan_files()?;
-        log::info!("Found {} markdown files", md_files.len());
+        // Scan for markdown files, keeping the metadata the scan already read:
+        // it becomes each cache entry's fingerprint, so the first freshness
+        // sweep after startup compares against the same observation the graph
+        // was built from and reports nothing.
+        let scanned = self.scan_files_with_metadata()?;
+        log::info!("Found {} markdown files", scanned.len());
 
         // Two-pass initialization: first add all files to the graph index,
         // then resolve links. This ensures every file is discoverable when
         // resolving wikilink targets, regardless of scan order.
-        let mut parsed_files = Vec::with_capacity(md_files.len());
-        let now = self.current_timestamp();
+        let mut parsed_files = Vec::with_capacity(scanned.len());
 
         // Pass 1: parse all files, populate cache and graph nodes
-        for file_path in md_files {
+        for note in scanned {
+            // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
+            // note file here (a `.txt`, a `.canvas`) would put it somewhere no
+            // applier ever updates it, so every freshness sweep would report it
+            // changed again.
+            if !is_note(&note.path) {
+                continue;
+            }
+            let scanned_fingerprint = note.fingerprint();
+            let file_path = note.path;
             log::debug!("Processing file: {:?}", file_path);
-            if let Ok(content) = tokio::fs::read_to_string(&file_path).await {
-                match self.parser.parse_file(&file_path, &content) {
+            match read_note_with_fingerprint(&file_path, Some(scanned_fingerprint)).await {
+                Ok((content, observed)) => match self.parser.parse_file(&file_path, &content) {
                     Ok(vault_file) => {
                         log::debug!(
                             "Parsed {}: {} links extracted",
@@ -496,7 +1066,7 @@ impl VaultManager {
                             file_path.clone(),
                             CacheEntry {
                                 file: vault_file.clone(),
-                                cached_at: now,
+                                observed,
                             },
                         );
 
@@ -508,9 +1078,10 @@ impl VaultManager {
                     Err(e) => {
                         log::warn!("Failed to parse {}: {}", file_path.display(), e);
                     }
+                },
+                Err(e) => {
+                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
                 }
-            } else {
-                log::warn!("Failed to read file: {:?}", file_path);
             }
         }
 
@@ -619,9 +1190,7 @@ impl VaultManager {
             .upsert(rel_path.clone(), content.as_bytes())
             .with_precondition(rel_path, precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(with_origin(outcome.changed, CommitOrigin::Local));
+        self.apply_through_substrate(&plan).await?;
         Ok(())
     }
 
@@ -639,10 +1208,7 @@ impl VaultManager {
             self.resolve_path(Path::new(&touched))?;
         }
 
-        let outcome = self.substrate.apply(plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(with_origin(outcome.changed.clone(), CommitOrigin::Local));
-        Ok(outcome)
+        self.apply_through_substrate(plan).await
     }
 
     /// Edit file using SEARCH/REPLACE blocks (LLM-optimized)
@@ -763,9 +1329,7 @@ impl VaultManager {
             .remove(rel_path.clone())
             .with_precondition(rel_path, precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(with_origin(outcome.changed, CommitOrigin::Local));
+        self.apply_through_substrate(&plan).await?;
         Ok(())
     }
 
@@ -801,9 +1365,7 @@ impl VaultManager {
             .with_precondition(rel_from, src_precondition)
             .with_precondition(rel_to, dest_precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(with_origin(outcome.changed, CommitOrigin::Local));
+        self.apply_through_substrate(&plan).await?;
         Ok(())
     }
 
@@ -814,7 +1376,7 @@ impl VaultManager {
     /// them without the server's `get_vault_pair_with_reindex` wrapper.
     /// A no-op on Direct / an empty queue.
     pub async fn get_backlinks(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        self.flush_reindex().await;
+        self.ensure_fresh().await;
         let vault_path = self.resolve_path(path)?;
         let graph = self.link_graph.read().await;
         let backlinks = graph.backlinks(&vault_path)?;
@@ -823,7 +1385,7 @@ impl VaultManager {
 
     /// Get forward links for a file (self-flushing — see `get_backlinks`).
     pub async fn get_forward_links(&self, path: &Path) -> Result<Vec<PathBuf>> {
-        self.flush_reindex().await;
+        self.ensure_fresh().await;
         let vault_path = self.resolve_path(path)?;
         let graph = self.link_graph.read().await;
         let forward_links = graph.forward_links(&vault_path)?;
@@ -832,14 +1394,14 @@ impl VaultManager {
 
     /// Get orphaned notes (self-flushing — see `get_backlinks`).
     pub async fn get_orphaned_notes(&self) -> Result<Vec<PathBuf>> {
-        self.flush_reindex().await;
+        self.ensure_fresh().await;
         let graph = self.link_graph.read().await;
         Ok(graph.orphaned_notes())
     }
 
     /// Get related notes (self-flushing — see `get_backlinks`).
     pub async fn get_related_notes(&self, path: &Path, max_hops: usize) -> Result<Vec<PathBuf>> {
-        self.flush_reindex().await;
+        self.ensure_fresh().await;
         let vault_path = self.resolve_path(path)?;
         let graph = self.link_graph.read().await;
         graph.related_notes(&vault_path, max_hops)
@@ -847,7 +1409,7 @@ impl VaultManager {
 
     /// Get graph statistics (self-flushing — see `get_backlinks`).
     pub async fn get_stats(&self) -> Result<turbovault_graph::GraphStats> {
-        self.flush_reindex().await;
+        self.ensure_fresh().await;
         let graph = self.link_graph.read().await;
         Ok(graph.stats())
     }
@@ -981,85 +1543,32 @@ impl VaultManager {
     ///
     /// The size filter stats every candidate anyway, so returning that stat
     /// costs nothing. Consumers that maintain their own derived state — a
-    /// search or vector index — can diff `(size, modified_ms)` against what
+    /// search or vector index — can diff `(size_bytes, modified)` against what
     /// they stored and re-read only what actually changed, instead of reading
-    /// every note to discover that most of them did not.
+    /// every note to discover that most of them did not. It is the same
+    /// comparison [`Self::ensure_fresh`] makes for the manager's own state.
     pub fn scan_vault_with_metadata(&self) -> Result<Vec<ScannedNote>> {
         self.scan_files_with_metadata()
     }
 
     fn scan_files_with_metadata(&self) -> Result<Vec<ScannedNote>> {
-        use std::fs;
-
-        let mut files = Vec::new();
-        let mut stack = vec![self.vault_path.clone()];
-        let excluded = &self.config.excluded_paths;
-
-        while let Some(dir) = stack.pop() {
-            let entries = fs::read_dir(&dir).map_err(Error::io)?;
-
-            for entry in entries {
-                let entry = entry.map_err(Error::io)?;
-                let path = entry.path();
-
-                // Skip excluded paths
-                if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                    && excluded.contains(&name.to_string())
-                {
-                    continue;
-                }
-
-                if path.is_dir() {
-                    stack.push(path);
-                } else if let Some(ext) = path.extension().and_then(|e| e.to_str())
-                    && self
-                        .config
-                        .allowed_extensions
-                        .contains(&format!(".{}", ext))
-                    && let Ok(metadata) = path.metadata()
-                    && metadata.len() <= self.config.max_file_size
-                {
-                    let modified_ms = metadata
-                        .modified()
-                        .ok()
-                        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-                        .and_then(|since| u64::try_from(since.as_millis()).ok());
-                    files.push(ScannedNote {
-                        path,
-                        size_bytes: metadata.len(),
-                        modified_ms,
-                    });
-                }
-            }
-        }
-
-        Ok(files)
+        self.scan_spec.walk()
     }
 
-    /// Get current timestamp
-    fn current_timestamp(&self) -> f64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64()
-    }
-
-    /// Insert a parsed `VaultFile` into the file cache with `cached_at = now`.
+    /// Insert a parsed `VaultFile` into the note cache alongside the
+    /// fingerprint of the revision it was parsed from.
     ///
-    /// Setting `cached_at` to the current wall-clock time after a write ensures the
-    /// invariant `cached_at >= file_mtime` holds: `vault_files_validated()` treats
-    /// `mtime > cached_at` as stale, so stamping the entry after the write prevents
-    /// false-positive re-parses on the very next validated read.
-    async fn insert_cache_entry(&self, path: PathBuf, file: VaultFile) {
-        let now = self.current_timestamp();
+    /// Recording the fingerprint here is what keeps the freshness sweep quiet
+    /// about this process's own writes: the next scan finds exactly what this
+    /// entry says it saw, so the note never enters the diff.
+    async fn insert_cache_entry(
+        &self,
+        path: PathBuf,
+        file: VaultFile,
+        observed: Option<FileFingerprint>,
+    ) {
         let mut cache = self.file_cache.write().await;
-        cache.insert(
-            path,
-            CacheEntry {
-                file,
-                cached_at: now,
-            },
-        );
+        cache.insert(path, CacheEntry { file, observed });
     }
 
     /// Bring the link graph + note cache into agreement with a substrate
@@ -1077,17 +1586,13 @@ impl VaultManager {
     async fn sync_index(&self, changed: &[(String, bool)]) {
         for (rel_path, present) in changed {
             let full_path = self.vault_path.join(rel_path);
-            let is_markdown = full_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("md"));
-            if !is_markdown {
+            if !is_note(&full_path) {
                 continue;
             }
 
             if *present {
-                match tokio::fs::read_to_string(&full_path).await {
-                    Ok(content) => match self.parser.parse_file(&full_path, &content) {
+                match read_note_with_fingerprint(&full_path, None).await {
+                    Ok((content, observed)) => match self.parser.parse_file(&full_path, &content) {
                         Ok(vault_file) => {
                             {
                                 let mut graph = self.link_graph.write().await;
@@ -1106,7 +1611,8 @@ impl VaultManager {
                                     );
                                 }
                             }
-                            self.insert_cache_entry(full_path, vault_file).await;
+                            self.insert_cache_entry(full_path, vault_file, observed)
+                                .await;
                         }
                         Err(e) => log::warn!(
                             "Failed to parse {} after apply (graph not updated): {}",
@@ -1147,13 +1653,6 @@ impl VaultManager {
         }
     }
 
-    /// Check if cache entry is expired (TTL-based)
-    #[allow(dead_code)]
-    fn is_cache_expired(&self, cached_at: f64) -> bool {
-        let now = self.current_timestamp();
-        now - cached_at > self.config.cache_ttl as f64
-    }
-
     /// Get a reference to the link graph (read-only access)
     ///
     /// NOT self-flushing — internal reindex/drain machinery
@@ -1175,7 +1674,7 @@ impl VaultManager {
     /// guarantee as `get_backlinks`/`get_stats`/etc. without each call site
     /// having to remember to flush itself.
     pub async fn link_graph_flushed(&self) -> Arc<RwLock<LinkGraph>> {
-        self.flush_reindex().await;
+        self.ensure_fresh().await;
         self.link_graph()
     }
 
@@ -1198,8 +1697,11 @@ impl VaultManager {
     /// `write_file`/`delete_file` paths.
     pub async fn refresh_file_state(&self, path: &Path) -> Result<()> {
         let full_path = self.resolve_path(path)?;
-        match tokio::fs::read_to_string(&full_path).await {
-            Ok(content) => {
+        if !is_note(&full_path) {
+            return Ok(()); // Not something the cache or the graph models.
+        }
+        match read_note_with_fingerprint(&full_path, None).await {
+            Ok((content, observed)) => {
                 let vault_file = self
                     .parser
                     .parse_file(&full_path, &content)
@@ -1209,7 +1711,8 @@ impl VaultManager {
                     graph.add_file(&vault_file)?;
                     graph.update_links(&vault_file)?;
                 }
-                self.insert_cache_entry(full_path, vault_file).await;
+                self.insert_cache_entry(full_path, vault_file, observed)
+                    .await;
                 Ok(())
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1230,64 +1733,6 @@ impl VaultManager {
         self.scan_files()
     }
 
-    /// Scan for markdown files using `DirEntry::file_type()` instead of `Path::is_dir()`.
-    ///
-    /// On Linux, `readdir` (via `read_dir`) returns `d_type` for each entry, so
-    /// `DirEntry::file_type()` requires no additional syscall. The original
-    /// `scan_files` calls `path.is_dir()` (which issues `statx`) and
-    /// `path.metadata()` (another `statx`) — two extra kernel round-trips per entry.
-    /// This variant eliminates both.
-    ///
-    /// Symlinks to directories are not followed. For normal Obsidian vaults (no symlinks)
-    /// this is identical in behaviour.
-    fn scan_files_dtype(&self) -> Result<Vec<PathBuf>> {
-        let mut files = Vec::new();
-        let mut stack = vec![self.vault_path.clone()];
-        let excluded = &self.config.excluded_paths;
-
-        while let Some(dir) = stack.pop() {
-            let entries = std::fs::read_dir(&dir).map_err(Error::io)?;
-
-            for entry in entries.flatten() {
-                let path = entry.path();
-
-                if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                    && excluded.contains(&name.to_string())
-                {
-                    continue;
-                }
-
-                // file_type() reads d_type from the dirent — no extra syscall on Linux.
-                let Ok(ft) = entry.file_type() else { continue };
-
-                if ft.is_dir() {
-                    stack.push(path);
-                } else if ft.is_file()
-                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                    && self
-                        .config
-                        .allowed_extensions
-                        .contains(&format!(".{}", ext))
-                {
-                    // entry.metadata() may reuse the stat info the OS already fetched.
-                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    if size <= self.config.max_file_size {
-                        files.push(path);
-                    }
-                }
-                // symlinks silently skipped — uncommon in Obsidian vaults
-            }
-        }
-
-        Ok(files)
-    }
-
-    /// Scan vault using `DirEntry::file_type()` — benchmark variant for A/B comparison.
-    #[instrument(skip(self), name = "vault_scan_dtype")]
-    pub async fn scan_vault_dtype(&self) -> Result<Vec<PathBuf>> {
-        self.scan_files_dtype()
-    }
-
     /// Return clones of all `VaultFile` objects currently in the in-memory cache.
     ///
     /// The cache is populated during `initialize()` and kept up-to-date on every
@@ -1300,91 +1745,19 @@ impl VaultManager {
         cache.values().map(|e| e.file.clone()).collect()
     }
 
-    /// Return cached vault files, re-parsing any that have been modified on disk since
-    /// they were last cached.
+    /// Return every cached vault file, after bringing the cache into agreement
+    /// with disk.
     ///
-    /// Uses a two-phase locking strategy to avoid holding any lock during I/O:
-    ///
-    /// 1. Read lock — snapshot `(path, cached_at)` pairs.
-    /// 2. No lock — batch all `stat` calls in a `spawn_blocking` task (one thread dispatch
-    ///    for N files instead of N async task dispatches), then re-read and re-parse any
-    ///    stale files.
-    /// 3. Write lock — update stale entries; remove entries whose files were deleted.
-    /// 4. Read lock — return the now-validated cache contents.
-    ///
-    /// On the hot path (nothing changed) this costs N synchronous `stat` calls inside one
-    /// `spawn_blocking` task and zero file reads. For a 100-note vault with no external
-    /// changes this is ~150–200 µs vs ~3.5 ms for the previous scan-on-every-call approach.
+    /// Thin wrapper over [`Self::ensure_fresh`] plus
+    /// [`Self::all_cached_vault_files`], and that is the point: it used to run
+    /// its own per-call mtime sweep over the entries it already held, which
+    /// meant it could never discover a note created outside this process, and
+    /// meant a burst of tool calls paid for one scan each. Sharing the gate
+    /// fixes both, and lines this view up with the link graph and the search
+    /// index rather than letting each drift on its own schedule.
     pub async fn vault_files_validated(&self) -> Vec<VaultFile> {
-        // Phase 1: snapshot path + timestamp under read lock (no I/O inside lock).
-        let snapshot: Vec<(PathBuf, f64)> = {
-            let cache = self.file_cache.read().await;
-            cache
-                .iter()
-                .map(|(p, e)| (p.clone(), e.cached_at))
-                .collect()
-        };
-
-        // Phase 2: batch all mtime checks into one spawn_blocking call.
-        // Each individual tokio::fs::metadata call carries async task overhead;
-        // batching them into std::fs::metadata calls inside a single blocking task
-        // cuts that overhead from O(N) task dispatches to O(1).
-        let stale_paths: Vec<PathBuf> = tokio::task::spawn_blocking(move || -> Vec<PathBuf> {
-            snapshot
-                .into_iter()
-                .filter(|(path, cached_at)| {
-                    std::fs::metadata(path)
-                        .and_then(|m| m.modified())
-                        .map(|mtime| {
-                            mtime
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs_f64()
-                                > *cached_at
-                        })
-                        .unwrap_or(true) // missing file treated as modified
-                })
-                .map(|(path, _)| path)
-                .collect()
-        })
-        .await
-        .unwrap_or_default();
-
-        // Re-read and re-parse each stale file (no lock held during I/O).
-        let mut to_update: Vec<(PathBuf, Option<VaultFile>)> = Vec::new();
-        for path in &stale_paths {
-            let result = tokio::fs::read_to_string(path)
-                .await
-                .ok()
-                .and_then(|content| self.parser.parse_file(path, &content).ok());
-            to_update.push((path.clone(), result));
-        }
-
-        // Phase 3: apply updates under write lock.
-        if !to_update.is_empty() {
-            let now = self.current_timestamp();
-            let mut cache = self.file_cache.write().await;
-            for (path, maybe_vf) in to_update {
-                match maybe_vf {
-                    Some(vf) => {
-                        cache.insert(
-                            path,
-                            CacheEntry {
-                                file: vf,
-                                cached_at: now,
-                            },
-                        );
-                    }
-                    None => {
-                        cache.remove(&path);
-                    }
-                }
-            }
-        }
-
-        // Phase 4: return the validated cache contents.
-        let cache = self.file_cache.read().await;
-        cache.values().map(|e| e.file.clone()).collect()
+        self.ensure_fresh().await;
+        self.all_cached_vault_files().await
     }
 }
 
@@ -2219,8 +2592,14 @@ mod tests {
         assert_eq!(files.len(), 2);
     }
 
+    /// An edit made outside the process reaches `vault_files_validated`.
+    ///
+    /// Reconciled explicitly rather than by calling the accessor twice: the
+    /// gate is debounced, so back-to-back calls deliberately share one pass.
+    /// `the_gate_debounces_repeated_calls` covers that schedule; this covers
+    /// what the accessor answers once a pass has run.
     #[tokio::test]
-    async fn test_validated_detects_external_modification() {
+    async fn test_validated_reflects_external_modification() {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(temp_dir.path());
         let manager = VaultManager::new(config).unwrap();
@@ -2246,7 +2625,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         std::fs::write(&path, "---\nstatus: published\n---\n# Note").unwrap();
 
-        // vault_files_validated must detect the mtime change and re-parse.
+        manager.reconcile_now().await;
         let files = manager.vault_files_validated().await;
         let updated = files
             .iter()
@@ -2259,8 +2638,9 @@ mod tests {
         assert_eq!(updated, "published");
     }
 
+    /// A deletion made outside the process reaches `vault_files_validated`.
     #[tokio::test]
-    async fn test_validated_removes_deleted_file_from_cache() {
+    async fn test_validated_reflects_external_deletion() {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(temp_dir.path());
         let manager = VaultManager::new(config).unwrap();
@@ -2272,41 +2652,16 @@ mod tests {
         assert_eq!(manager.vault_files_validated().await.len(), 1);
 
         std::fs::remove_file(&path).unwrap();
+        manager.reconcile_now().await;
 
-        // After deletion the entry must be evicted from the cache.
         assert_eq!(manager.vault_files_validated().await.len(), 0);
     }
 
-    // ── scan_vault_dtype ─────────────────────────────────────────────────────
+    // ── scan_vault ───────────────────────────────────────────────────────────
 
-    /// scan_vault_dtype must find the same markdown files as scan_vault for a
-    /// normal vault (no symlinks).
+    /// The scan must recurse into nested subdirectories.
     #[tokio::test]
-    async fn test_scan_vault_dtype_parity_with_scan_vault() {
-        let temp_dir = TempDir::new().unwrap();
-        let config = create_test_config(temp_dir.path());
-        let manager = VaultManager::new(config).unwrap();
-
-        std::fs::write(temp_dir.path().join("root.md"), "# Root").unwrap();
-        std::fs::create_dir(temp_dir.path().join("sub")).unwrap();
-        std::fs::write(temp_dir.path().join("sub/child.md"), "# Child").unwrap();
-        std::fs::write(temp_dir.path().join("ignored.txt"), "not markdown").unwrap();
-
-        let mut classic = manager.scan_vault().await.unwrap();
-        let mut dtype = manager.scan_vault_dtype().await.unwrap();
-
-        classic.sort();
-        dtype.sort();
-
-        assert_eq!(
-            classic, dtype,
-            "scan_vault_dtype must find identical files as scan_vault"
-        );
-    }
-
-    /// scan_vault_dtype must recurse into nested subdirectories.
-    #[tokio::test]
-    async fn test_scan_vault_dtype_recurses_subdirectories() {
+    async fn test_scan_vault_recurses_subdirectories() {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(temp_dir.path());
         let manager = VaultManager::new(config).unwrap();
@@ -2314,14 +2669,15 @@ mod tests {
         std::fs::create_dir_all(temp_dir.path().join("a/b/c")).unwrap();
         std::fs::write(temp_dir.path().join("a/b/c/deep.md"), "# Deep").unwrap();
 
-        let files = manager.scan_vault_dtype().await.unwrap();
+        let files = manager.scan_vault().await.unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("deep.md"));
     }
 
-    /// scan_vault_dtype must skip non-markdown files.
+    /// The scan must skip files whose extension the configuration does not
+    /// admit.
     #[tokio::test]
-    async fn test_scan_vault_dtype_skips_non_markdown() {
+    async fn test_scan_vault_skips_disallowed_extensions() {
         let temp_dir = TempDir::new().unwrap();
         let config = create_test_config(temp_dir.path());
         let manager = VaultManager::new(config).unwrap();
@@ -2330,9 +2686,402 @@ mod tests {
         std::fs::write(temp_dir.path().join("image.png"), "fake png").unwrap();
         std::fs::write(temp_dir.path().join("data.json"), "{}").unwrap();
 
-        let files = manager.scan_vault_dtype().await.unwrap();
+        let files = manager.scan_vault().await.unwrap();
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("note.md"));
+    }
+
+    /// Extension matching is case-insensitive, because `sync_index`'s markdown
+    /// test is. If the two disagreed, a note the write path caches under one
+    /// spelling would be reported deleted by the very next freshness sweep.
+    #[tokio::test]
+    async fn test_scan_vault_admits_uppercase_extensions() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("Shouty.MD"), "# Shouty").unwrap();
+
+        let files = manager.scan_vault().await.unwrap();
+        assert_eq!(files.len(), 1, "expected Shouty.MD to be discovered");
+    }
+
+    /// The scan must not descend through a symlink.
+    ///
+    /// A link pointing at an ancestor makes a following walk recurse until it
+    /// exhausts memory, and one pointing outside the vault would pull content
+    /// into the index that `resolve_path` refuses to hand back out. Both are
+    /// reachable by anyone who can write a file into the vault.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_scan_vault_does_not_follow_symlinks() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("real.md"), "# Real").unwrap();
+        // A loop: `vault/loop` -> `vault`. A following walk never terminates.
+        std::os::unix::fs::symlink(temp_dir.path(), temp_dir.path().join("loop")).unwrap();
+
+        let outside = TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.md"), "# Outside").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.md"),
+            temp_dir.path().join("escape.md"),
+        )
+        .unwrap();
+
+        let files = manager.scan_vault().await.unwrap();
+        assert_eq!(files.len(), 1, "expected only the one real note: {files:?}");
+        assert!(files[0].ends_with("real.md"));
+    }
+
+    /// `.turbovault/` is TurboVault's own audit trail and snapshot store, not
+    /// vault content, and the scan runs on a schedule now.
+    #[tokio::test]
+    async fn test_scan_vault_skips_the_protected_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("real.md"), "# Real").unwrap();
+        std::fs::create_dir_all(temp_dir.path().join(".turbovault/snapshots")).unwrap();
+        std::fs::write(
+            temp_dir.path().join(".turbovault/snapshots/old.md"),
+            "# Snapshot",
+        )
+        .unwrap();
+
+        let files = manager.scan_vault().await.unwrap();
+        assert_eq!(files.len(), 1, "expected only the one real note: {files:?}");
+        assert!(files[0].ends_with("real.md"));
+    }
+
+    // ── external-change reconciliation ───────────────────────────────────────
+
+    /// A note created by somebody else reaches the link graph and the cache.
+    ///
+    /// This is the case a per-entry mtime check cannot reach, because it can
+    /// only re-check entries it already holds. Nothing tells this process the
+    /// file appeared; the scan finds it by comparing state.
+    #[tokio::test]
+    async fn reconcile_discovers_a_note_created_outside_the_process() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("seed.md"), "# Seed\n").unwrap();
+        manager.initialize().await.unwrap();
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
+
+        std::fs::write(
+            temp_dir.path().join("outside.md"),
+            "# Outside\n\nsee [[seed]]\n",
+        )
+        .unwrap();
+
+        manager.reconcile_now().await;
+
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 2);
+        let backlinks = manager.get_backlinks(Path::new("seed.md")).await.unwrap();
+        assert_eq!(
+            backlinks.len(),
+            1,
+            "the externally created note's link must reach the graph: {backlinks:?}"
+        );
+    }
+
+    /// An edit made by somebody else replaces what the graph and cache hold,
+    /// including the links it added and the ones it took away.
+    #[tokio::test]
+    async fn reconcile_applies_an_edit_made_outside_the_process() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("a.md"), "# A\n").unwrap();
+        std::fs::write(temp_dir.path().join("b.md"), "# B\n").unwrap();
+        manager.initialize().await.unwrap();
+        assert!(
+            manager
+                .get_forward_links(Path::new("a.md"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        std::fs::write(temp_dir.path().join("a.md"), "# A\n\nnow links to [[b]]\n").unwrap();
+        manager.reconcile_now().await;
+
+        let forward = manager.get_forward_links(Path::new("a.md")).await.unwrap();
+        assert_eq!(forward.len(), 1, "expected the added link: {forward:?}");
+        assert!(forward[0].ends_with("b.md"));
+
+        let cached = manager.all_cached_vault_files().await;
+        let a = cached
+            .iter()
+            .find(|file| file.path.ends_with("a.md"))
+            .expect("a.md must still be cached");
+        assert!(
+            a.content.contains("now links to"),
+            "the cache must hold the new revision, not the parsed original"
+        );
+    }
+
+    /// A note deleted by somebody else leaves the graph and the cache.
+    #[tokio::test]
+    async fn reconcile_drops_a_note_deleted_outside_the_process() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("doomed.md"), "# Doomed\n").unwrap();
+        manager.initialize().await.unwrap();
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
+
+        std::fs::remove_file(temp_dir.path().join("doomed.md")).unwrap();
+        manager.reconcile_now().await;
+
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 0);
+        assert!(manager.all_cached_vault_files().await.is_empty());
+    }
+
+    /// A pass that finds nothing must not announce anything.
+    ///
+    /// The listener drives index rebuilds and the plugin change feed, so a
+    /// sweep that reported every note on every pass would be worse than no
+    /// sweep at all. This is the property that makes recording the fingerprint
+    /// on the write path matter.
+    #[tokio::test]
+    async fn reconcile_is_silent_when_nothing_moved() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("one.md"), "# One\n").unwrap();
+        std::fs::write(temp_dir.path().join("two.md"), "# Two\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        let captured: Arc<StdMutex<Vec<(String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
+            Box::pin(async {})
+        }));
+
+        manager.reconcile_now().await;
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "an unchanged vault must produce no change events: {:?}",
+            captured.lock().unwrap()
+        );
+
+        // And a write this process makes is announced once, by the write path,
+        // not again by the sweep that follows it.
+        manager
+            .write_file(
+                Path::new("three.md"),
+                "# Three\n",
+                Precondition::Blind,
+                "add",
+            )
+            .await
+            .unwrap();
+        assert_eq!(captured.lock().unwrap().len(), 1);
+
+        manager.reconcile_now().await;
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "the sweep must not re-announce this process's own write: {:?}",
+            captured.lock().unwrap()
+        );
+    }
+
+    /// A file the vault admits for discovery but does not model as a note must
+    /// not be reported over and over.
+    ///
+    /// `allowed_extensions` also covers `.txt` and `.canvas`, while the note
+    /// cache, the link graph, and the search index are markdown only. If the
+    /// sweep compared across that gap, nothing would ever record having seen
+    /// such a file, so every pass would rediscover it and republish it: a
+    /// permanent, silent event storm through the change feed.
+    #[tokio::test]
+    async fn reconcile_does_not_republish_files_it_does_not_model() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("attachment.txt"), "one").unwrap();
+        std::fs::write(temp_dir.path().join("note.md"), "# Note\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        let captured: Arc<StdMutex<Vec<(String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
+            Box::pin(async {})
+        }));
+
+        // Untouched, and admitted for discovery but not modelled.
+        for _ in 0..3 {
+            manager.reconcile_now().await;
+        }
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "a file the cache does not model must not be reported: {:?}",
+            captured.lock().unwrap()
+        );
+
+        // Changed, still not modelled, still silent.
+        std::fs::write(temp_dir.path().join("attachment.txt"), "two").unwrap();
+        for _ in 0..3 {
+            manager.reconcile_now().await;
+        }
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "changing it must not start an event storm either: {:?}",
+            captured.lock().unwrap()
+        );
+
+        // And the note beside it is still reported, exactly once.
+        std::fs::write(temp_dir.path().join("note.md"), "# Note\n\nedited\n").unwrap();
+        for _ in 0..3 {
+            manager.reconcile_now().await;
+        }
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![("note.md".to_string(), true)],
+            "a real note change is reported once, not once per pass"
+        );
+    }
+
+    /// External changes are reported as external, so a consumer that reports
+    /// its own writes at the write site can tell them apart.
+    #[tokio::test]
+    async fn reconcile_reports_external_origin() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        manager.initialize().await.unwrap();
+
+        let captured: Arc<StdMutex<Vec<CommitOrigin>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock()
+                .unwrap()
+                .extend(changed.into_iter().map(|(_, _, origin)| origin));
+            Box::pin(async {})
+        }));
+
+        std::fs::write(temp_dir.path().join("theirs.md"), "# Theirs\n").unwrap();
+        manager.reconcile_now().await;
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![CommitOrigin::External],
+            "a change this process did not make is external"
+        );
+
+        captured.lock().unwrap().clear();
+        manager
+            .write_file(Path::new("ours.md"), "# Ours\n", Precondition::Blind, "add")
+            .await
+            .unwrap();
+        assert_eq!(
+            *captured.lock().unwrap(),
+            vec![CommitOrigin::Local],
+            "a change this process made is local"
+        );
+    }
+
+    /// The schedule bounds both how stale an answer can be and what
+    /// reconciliation costs, without a per-vault knob.
+    #[test]
+    fn reconcile_interval_scales_with_the_last_pass() {
+        let mut state = ReconcileState::new();
+        assert!(state.is_due(), "the first gated call must always sweep");
+
+        // A vault small enough that the duty cycle would ask for less than the
+        // floor still waits the floor.
+        state.record(Duration::from_micros(200));
+        assert_eq!(state.interval(), RECONCILE_MIN_INTERVAL);
+        assert!(!state.is_due(), "a pass just ran");
+
+        // 40ms is roughly a 10k-note vault; 20x is under a second.
+        state.record(Duration::from_millis(40));
+        assert_eq!(state.interval(), Duration::from_millis(800));
+
+        // A vault large enough to blow past the ceiling is capped there rather
+        // than backing off without limit.
+        state.record(Duration::from_secs(10));
+        assert_eq!(state.interval(), RECONCILE_MAX_INTERVAL);
+    }
+
+    /// The gate is scheduled, so a burst of read calls costs one pass. Without
+    /// this the sweep would dominate the cost of every cheap tool call.
+    #[tokio::test]
+    async fn the_gate_debounces_repeated_calls() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        manager.initialize().await.unwrap();
+
+        // First call sweeps and records a timestamp.
+        manager.ensure_fresh().await;
+
+        std::fs::write(temp_dir.path().join("late.md"), "# Late\n").unwrap();
+        manager.ensure_fresh().await;
+        assert_eq!(
+            manager.get_stats().await.unwrap().total_files,
+            0,
+            "a second call inside the interval must not pay for another scan"
+        );
+
+        // An explicit request overrides the schedule.
+        manager.reconcile_now().await;
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
+    }
+
+    /// Turning reconciliation off leaves the scheduled gate inert, and leaves
+    /// the explicit call working.
+    #[tokio::test]
+    async fn reconciliation_can_be_turned_off() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = create_test_config(temp_dir.path());
+        config.reconcile_external_changes = false;
+        let manager = VaultManager::new(config).unwrap();
+        manager.initialize().await.unwrap();
+
+        std::fs::write(temp_dir.path().join("ignored.md"), "# Ignored\n").unwrap();
+        manager.ensure_fresh().await;
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 0);
+
+        manager.reconcile_now().await;
+        assert_eq!(
+            manager.get_stats().await.unwrap().total_files,
+            1,
+            "an explicit reconcile is a request, not a setting"
+        );
+    }
+
+    /// `vault_files_validated` sees notes created outside the process, which is
+    /// what it could never do while it re-checked only the entries it held.
+    #[tokio::test]
+    async fn validated_files_include_externally_created_notes() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("known.md"), "# Known\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        std::fs::write(temp_dir.path().join("new.md"), "# New\n").unwrap();
+        manager.reconcile_now().await;
+
+        let files = manager.vault_files_validated().await;
+        assert_eq!(files.len(), 2, "expected both notes: {files:?}");
     }
 
     // ── all_cached_vault_files ───────────────────────────────────────────────
@@ -2963,6 +3712,7 @@ mod tests {
                     .into_iter()
                     .map(|(path, present, _)| (path, present)),
             );
+            Box::pin(async {})
         }));
 
         manager
@@ -3004,6 +3754,7 @@ mod tests {
                     .into_iter()
                     .map(|(path, present, _)| (path, present)),
             );
+            Box::pin(async {})
         }));
 
         // Fast ref poll so the test doesn't wait the production 5s.

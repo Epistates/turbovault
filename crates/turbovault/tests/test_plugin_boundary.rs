@@ -93,6 +93,7 @@ impl PluginProvider for ProbeProvider {
             Tool::new("survey", "List notes with change-detection metadata"),
             Tool::new("read_many", "Batch-read notes"),
             Tool::new("cursor", "Record and check a durable feed position"),
+            Tool::new("feed", "Drain the event feed and report what arrived"),
         ]
     }
 
@@ -298,6 +299,32 @@ impl PluginProvider for ProbeProvider {
                         .as_ref()
                         .map(|cursor| cursor.resumes_on(&self.hooks)),
                 })
+            }
+            // Drain the feed and report what it delivered, so a test can check
+            // that a change nobody told the host about still reaches a plugin.
+            "feed" => {
+                let mut seen = Vec::new();
+                let mut events = self.events.lock().await;
+                loop {
+                    match events.try_recv() {
+                        Ok(envelope) => seen.push(match envelope.event {
+                            HookEvent::FileCreated { path } => format!("created {path}"),
+                            HookEvent::FileModified { path } => format!("modified {path}"),
+                            HookEvent::FileDeleted { path } => format!("deleted {path}"),
+                            HookEvent::FileRenamed { from, to } => {
+                                format!("renamed {from} -> {to}")
+                            }
+                            HookEvent::ResyncRequired { reason } => format!("resync {reason}"),
+                            // `HookEvent` is `#[non_exhaustive]`, so a real
+                            // consumer has to keep working when the host learns
+                            // to report something it has never seen.
+                            other => format!("unknown {other:?}"),
+                        }),
+                        Err(HookRecvError::Empty | HookRecvError::Closed) => break,
+                        Err(HookRecvError::Lagged { .. }) => continue,
+                    }
+                }
+                serde_json::json!({ "events": seen })
             }
             "boom" => panic!("probe plugin panicked on purpose"),
             other => return Err(PluginError::not_found(format!("unknown tool {other:?}"))),
@@ -1172,6 +1199,65 @@ async fn a_persisted_feed_position_does_not_resume_after_a_restart() {
     assert_eq!(
         reloaded["resumes"], false,
         "but it says nothing about the new run, so the plugin must reconcile"
+    );
+}
+
+/// A plugin learns about edits nobody made through TurboVault.
+///
+/// This is what makes the change feed usable as the sole input to a plugin's
+/// own index. Without it a plugin could only ever be as current as the writes
+/// this process happened to perform, which on a vault a human also edits means
+/// diverging quietly and forever. Note the vault here is on the default Direct
+/// backend, where there are no commits at all to observe: the host reconciles
+/// by comparing state, and publishes what moved through the same feed.
+#[tokio::test]
+async fn a_plugin_is_told_about_edits_made_outside_the_host() {
+    let harness = Harness::new(PluginCapabilities::none()).await;
+
+    harness
+        .server
+        .call_tool(
+            "write_note",
+            serde_json::json!({"path": "ours.md", "content": "# Ours"}),
+            &RequestContext::new(),
+        )
+        .await
+        .expect("seed a note");
+
+    // Clear the feed of what the host itself did, so what remains is only what
+    // it had to discover.
+    harness
+        .call("probe_feed", serde_json::json!({}))
+        .await
+        .expect("drain");
+
+    std::fs::write(harness._temp.path().join("theirs.md"), "# Theirs\n").expect("external write");
+    std::fs::remove_file(harness._temp.path().join("ours.md")).expect("external delete");
+    // Past the reconcile debounce, which is the bound the host promises.
+    tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+
+    // Any gated tool call is enough to advance the feed; a plugin's own tool
+    // call is gated too, precisely so a plugin that never calls a host tool
+    // still keeps up.
+    let seen = structured(
+        harness
+            .call("probe_feed", serde_json::json!({}))
+            .await
+            .expect("drain again"),
+    );
+    let events: Vec<&str> = seen["events"]
+        .as_array()
+        .expect("events array")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        events.contains(&"modified theirs.md"),
+        "a note created outside the host must reach the feed: {events:?}"
+    );
+    assert!(
+        events.contains(&"deleted ours.md"),
+        "a note deleted outside the host must reach the feed: {events:?}"
     );
 }
 

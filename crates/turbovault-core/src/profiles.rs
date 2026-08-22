@@ -42,7 +42,7 @@ impl ConfigProfile {
                 config.debug_mode = true;
                 config.max_file_size = 50 * 1024 * 1024; // 50MB
                 config.cache_ttl = 60; // 1 minute (frequent refresh)
-                config.watch_for_changes = true;
+                config.reconcile_external_changes = true;
                 config.link_graph_enabled = true;
                 config.full_text_search_enabled = true;
             }
@@ -53,7 +53,7 @@ impl ConfigProfile {
                 config.debug_mode = false;
                 config.max_file_size = 10 * 1024 * 1024; // 10MB
                 config.cache_ttl = 3600; // 1 hour
-                config.watch_for_changes = true;
+                config.reconcile_external_changes = true;
                 config.link_graph_enabled = true;
                 config.full_text_search_enabled = true;
                 config.editor_atomic_writes = true;
@@ -65,7 +65,10 @@ impl ConfigProfile {
                 config.metrics_enabled = true;
                 config.max_file_size = 10 * 1024 * 1024;
                 config.cache_ttl = 300; // 5 minutes
-                config.watch_for_changes = false;
+                // A vault this process never writes is the one most likely to
+                // be edited underneath it: read-only means somebody else is
+                // doing the writing.
+                config.reconcile_external_changes = true;
                 config.link_graph_enabled = true;
                 config.full_text_search_enabled = true;
                 config.editor_atomic_writes = false;
@@ -77,7 +80,7 @@ impl ConfigProfile {
                 config.metrics_enabled = false; // Disable for performance
                 config.debug_mode = false;
                 config.cache_ttl = 7200; // 2 hours
-                config.watch_for_changes = true;
+                config.reconcile_external_changes = true;
                 config.enable_caching = true;
                 config.link_suggestions_enabled = false; // Too expensive
                 config.full_text_search_enabled = false;
@@ -88,7 +91,10 @@ impl ConfigProfile {
                 config.metrics_enabled = false;
                 config.debug_mode = false;
                 config.cache_ttl = 10800; // 3 hours
-                config.watch_for_changes = false;
+                // Consistent with the rest of this profile rather than an
+                // exception to it: with the link graph and search off there is
+                // barely any derived state left to keep in agreement.
+                config.reconcile_external_changes = false;
                 config.link_graph_enabled = false;
                 config.full_text_search_enabled = false;
                 config.link_suggestions_enabled = false;
@@ -99,7 +105,7 @@ impl ConfigProfile {
                 config.metrics_enabled = true;
                 config.debug_mode = false;
                 config.cache_ttl = 1800; // 30 minutes
-                config.watch_for_changes = true;
+                config.reconcile_external_changes = true;
                 config.multi_vault_enabled = true;
                 // vaults will be populated externally
             }
@@ -108,7 +114,7 @@ impl ConfigProfile {
                 config.log_level = "INFO".to_string();
                 config.metrics_enabled = true;
                 config.debug_mode = false;
-                config.watch_for_changes = true;
+                config.reconcile_external_changes = true;
                 config.multi_vault_enabled = true;
                 config.link_graph_enabled = true;
                 config.full_text_search_enabled = true;
@@ -172,7 +178,7 @@ mod tests {
         let config = ConfigProfile::Development.create_config();
         assert_eq!(config.log_level, "DEBUG");
         assert!(config.metrics_enabled);
-        assert!(config.watch_for_changes);
+        assert!(config.reconcile_external_changes);
     }
 
     #[test]
@@ -180,7 +186,7 @@ mod tests {
         let config = ConfigProfile::Production.create_config();
         assert_eq!(config.log_level, "INFO");
         assert!(config.metrics_enabled);
-        assert!(config.watch_for_changes);
+        assert!(config.reconcile_external_changes);
         assert!(config.editor_atomic_writes);
     }
 

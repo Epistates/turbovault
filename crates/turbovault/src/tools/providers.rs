@@ -935,6 +935,17 @@ impl McpHandler for ObsidianMcpServer {
                 .tool_routes
                 .get(name)
                 .ok_or_else(|| McpError::tool_not_found(name))?;
+            // A plugin tool answers from the plugin's own derived state, which
+            // this process cannot see and therefore cannot gate at the point of
+            // use the way the vault's own tools gate at the manager accessors
+            // they call. Reconciling here is what advances the change feed that
+            // state is built from, so a plugin index is as current as the
+            // vault's own, on the same debounce, without the plugin having to
+            // arrange it.
+            #[cfg(feature = "plugin-api")]
+            if self.plugin_owning_name(name).is_some() {
+                self.core.ensure_active_vault_fresh().await;
+            }
             self.composite.call_tool(routed, args, ctx).await
         }
     }

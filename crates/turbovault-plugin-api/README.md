@@ -221,10 +221,19 @@ event feed is the fast path; the listing is how you catch up on what the feed
 could not tell you.
 
 **Watch.** `HookBus` carries every change TurboVault performs or observes — its
-own MCP tool writes, plugin writes, and commits that arrive on the ref from
-outside the process. Delivery is bounded and best-effort: a subscriber that
-falls behind receives `HookRecvError::Lagged`, and the bus is in-memory, so it
-says nothing about what happened while the process was down.
+own MCP tool writes, plugin writes, commits that arrive on the ref from outside
+the process, and edits made by anyone else at all. That last case is the host
+comparing state rather than being told: before serving anything derived it
+compares a `(size, mtime)` scan against what it last recorded, and publishes
+what moved with `plugin_id: None`. So a note that Obsidian saved, or that a sync
+client delivered, reaches this feed the same way a tool write does, on both
+write backends. The bound is a debounce, at least 500ms and scaled up on a very
+large vault; your own tool calls are gated on it too, so a plugin that never
+calls a host tool still keeps up.
+
+Delivery is bounded and best-effort: a subscriber that falls behind receives
+`HookRecvError::Lagged`, and the bus is in-memory, so it says nothing about what
+happened while the process was down. Reconcile is still the answer to both.
 
 Use `VaultEventEnvelope::plugin_id` for loop prevention. It is stamped by the
 host from the mounted descriptor, unlike `WriteProvenance`, which is

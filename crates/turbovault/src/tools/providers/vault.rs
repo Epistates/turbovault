@@ -123,7 +123,7 @@ impl VaultProvider {
         // published — so without wiring here the drainer / HEAD-ref listener
         // would never start and search-staleness would never close for any
         // git vault added at runtime.
-        self.wire_manager_reindex(&name, &manager).await;
+        self.wire_manager_indexes(&name, &manager).await;
 
         // Cache the initialized manager
         {

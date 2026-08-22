@@ -259,7 +259,7 @@ mod tests {
             name: name.to_string(),
             path: std::path::PathBuf::from(format!("/tmp/{}", name)),
             is_default,
-            watch_for_changes: None,
+            reconcile_external_changes: None,
             max_file_size: None,
             allowed_extensions: None,
             excluded_paths: None,

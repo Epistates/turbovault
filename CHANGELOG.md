@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tools no longer contradict each other after an external edit**: Search, the link graph, similarity, vault stats, and the plugin change feed are all derived state, and until now only writes TurboVault itself performed ever updated them. Anyone else touching the vault (Obsidian, an editor, `git pull`, a sync client, a second TurboVault) left them wrong indefinitely, while `read_note` and `list_notes` went to disk and stayed correct. An agent could read a note, see a phrase, search for that phrase, and be told it does not exist. The Git backend was no safer: its ref watcher only ever saw external *commits*, and an Obsidian save does not commit.
+
+  `VaultManager::ensure_fresh` is now a single freshness gate that every derived read passes through. It compares a `(size, mtime)` scan against what the note cache recorded when it parsed each note, and applies whatever moved through the machinery that already existed for Git commits, so search, similarity, and the plugin feed are updated from one place. The comparison cannot miss a change, because it is comparing state rather than listening for events, which is also why this is not a filesystem watcher: inotify queues overflow and its watch budget is finite, FSEvents degrades to directory-granularity rescan hints under load, and network and cloud-synced vaults deliver nothing at all for a peer's changes. A watcher yields *mostly* fresh, and for an agent that is worse than plainly stale, because nothing marks the answers it should not have trusted.
+
+  The pass is debounced, so a burst of tool calls costs one scan and an idle server costs nothing. The interval is the greater of 500ms and twenty times the last pass, which caps reconciliation at 5% of wall clock without a knob to tune per vault. Measured on an M-series Mac: 0.8ms at 100 notes, 1.7ms at 1k, 19ms at 10k, so every vault up to roughly 13k notes sits at the floor. `VaultManager::reconcile_now` reconciles immediately when waiting is not acceptable.
+
+- **A note created outside the process is now discovered.** `vault_files_validated` re-checked only the entries it already held, so it could see an external modification or deletion but never a creation. It now shares the freshness gate, which also replaces its unconditional per-call stat sweep with the debounced one, making the ten tools built on it both more correct and cheaper.
+
+- **The vault scan no longer follows symlinks.** It used `Path::is_dir`, which follows them, with no visited set: a link pointing at an ancestor made the walk recurse until it exhausted memory, and one pointing outside the vault pulled content into the index that `resolve_path` refuses to hand back out. Both were reachable by anyone able to write a file into the vault. The scan also skips `.turbovault/` now, and matches extensions case-insensitively so `Note.MD` is discovered rather than quietly falling out of the link graph.
+
+- **A drain pass no longer returns before the search index has caught up.** The change-listener was spawned rather than awaited, so a search racing a Git reindex drain could read an index that was behind the link graph. The listener now hands back a future the manager awaits, which is also what makes the freshness gate a guarantee rather than a hint.
+
 ### Added
 
 - **Compiled-in plugin boundary** ([#34](https://github.com/Epistates/turbovault/issues/34)): Added the default-off `plugin-api` feature and the publishable `turbovault-plugin-api` crate. Plugins receive a curated CAS-only `VaultApi`, an object-safe tool provider contract, redacted request context, strict MCP namespaces, and a bounded hook bus with explicit lag/resync and close semantics.
@@ -31,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Plugin write receipts read back the stored note** rather than hashing the request, so the returned CAS token always matches what a subsequent read returns.
 - **Capabilities advertise only what is implemented**: `listChanged` is now reported as `false` for tools, resources, and prompts. TurboMCP derives `true` from a non-empty listing, but TurboVault's catalog is fixed when the server is assembled and it emits no `notifications/*/list_changed` — a client that trusted the derived claim would stop re-listing and wait for a message that never arrives.
 - **Derived-cache invalidation is vault-scoped**: writes invalidate the caches of the vault that was written rather than whichever vault happens to be active, which could evict the wrong vault's caches — and always did for the background Git reindex drainer.
+- **`watch_for_changes` is now `reconcile_external_changes`**, since it describes reconciliation and never described a watcher. The old spelling still deserializes, so existing configuration keeps working. It also does something now: it was read by nothing at all. The `readonly` profile turns it on rather than off, because a vault this process never writes is the one most likely to be edited underneath it.
+- **The note cache holds notes only.** `initialize` cached everything `allowed_extensions` admitted, including `.txt` and `.canvas`, while every applier and index downstream is markdown-only. Beyond parsing non-notes as notes, the mismatch meant nothing ever recorded having seen them, so each freshness pass would have rediscovered and republished them forever.
+- **One vault scanner instead of two.** The two implementations disagreed about symlinks, protected directories, and syscall count, and the one used in production was the unsafe and slower of the pair. Unifying on the other halves the per-entry syscalls (`d_type` off the dirent rather than two `statx` calls), which is why a 10k-note scan measures 19ms rather than the 40ms it did before.
 
 ### Security
 

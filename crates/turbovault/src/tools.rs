@@ -436,7 +436,7 @@ impl CoreToolHandler {
             let manager = Arc::new(manager);
             // M4c (bite 3a): wire before publishing (git vaults; no-op on
             // Direct), same as the lazy `get_active_vault_manager` path.
-            self.wire_manager_reindex(&name, &manager).await;
+            self.wire_manager_indexes(&name, &manager).await;
             self.vault_managers
                 .write()
                 .await
@@ -705,7 +705,7 @@ impl CoreToolHandler {
         // cache-hit and observe an unwired manager. If we lose the
         // double-check race below, our wired manager is dropped and its `Drop`
         // aborts the tasks it started.
-        self.wire_manager_reindex(&vault_name, &manager).await;
+        self.wire_manager_indexes(&vault_name, &manager).await;
 
         // Cache it — double-check to handle concurrent initialization races
         {
@@ -720,34 +720,32 @@ impl CoreToolHandler {
         Ok(manager)
     }
 
-    /// M4c (bite 3a, turbovault-qae.5.3): wiring for a freshly-built
-    /// git-backend manager — start its OWN reindex tasks (drainer +
-    /// HEAD-ref listener, manager-owned) and register the R7 change-listener
-    /// that feeds THIS server's tantivy + similarity engines. write-substrate-
-    /// layering M4e deleted the server's own duplicate reindex machinery
-    /// (the old `GitFileTools` path), so this is now the ONLY reindex wiring
-    /// for a git-backend vault. No-op on a Direct vault.
-    async fn wire_manager_reindex(&self, vault_name: &str, manager: &Arc<VaultManager>) {
-        let is_git = self
-            .multi_vault_mgr
-            .get_vault_config(vault_name)
-            .await
-            .map(|c| matches!(c.write_backend, WriteBackend::Git))
-            .unwrap_or(false);
-        if !is_git {
-            return;
-        }
-
+    /// Wiring for a freshly-built manager: register the R7 change-listener that
+    /// feeds THIS server's tantivy + similarity engines and the plugin change
+    /// feed, and on a git vault start the manager's own reindex tasks (drainer +
+    /// HEAD-ref listener).
+    ///
+    /// The listener is registered on **every** backend. It used to be git-only,
+    /// on the reasoning that only a commit could change the vault behind our
+    /// back, and that was never true: an Obsidian save does not commit, and a
+    /// Direct vault has no commits at all. The manager's freshness sweep reports
+    /// through this same listener, so registering it everywhere is what lets an
+    /// external edit reach the search index and the plugin feed regardless of
+    /// which backend the vault is on. write-substrate-layering M4e deleted the
+    /// server's own duplicate reindex machinery (the old `GitFileTools` path),
+    /// so this is the ONLY such wiring.
+    async fn wire_manager_indexes(&self, vault_name: &str, manager: &Arc<VaultManager>) {
         // Register the R7 change-listener BEFORE starting the drainer, so a
         // drain pass can't fire into an unset listener. The listener captures
         // ONLY the search + similarity engine maps — NOT a whole `self` clone,
         // which would hold `vault_managers` → the `Arc<VaultManager>` → this
         // listener: a reference cycle that defeats the manager's `Drop`-based
         // task teardown (the manager would never drop absent an explicit
-        // `remove_vault`, undoing the `Weak<Self>` care the tasks take). Those
-        // two maps never hold the manager, so there is no cycle; search /
-        // similarity stay ABOVE the vault layer — the manager only invokes this
-        // callback (R2 dependency inversion).
+        // `remove_vault`, undoing the `Weak<Self>` care the tasks take), and
+        // which would also let this listener re-enter the freshness gate that
+        // awaits it. Those two maps never hold the manager, so neither is
+        // possible; search / similarity stay ABOVE the vault layer — the
+        // manager only invokes this callback (R2 dependency inversion).
         let search_engines = Arc::clone(&self.search_engines);
         let similarity_engines = Arc::clone(&self.similarity_engines);
         // The sink holds only the hook bus, never a manager, so capturing it
@@ -755,8 +753,8 @@ impl CoreToolHandler {
         #[cfg(feature = "plugin-api")]
         let event_sink = Arc::clone(&self.event_sink);
         let name = vault_name.to_string();
-        let listener: ChangeListener = Arc::new(
-            move |changed: Vec<(String, bool, CommitOrigin)>| {
+        let listener: ChangeListener =
+            Arc::new(move |changed: Vec<(String, bool, CommitOrigin)>| {
                 // Announce the changes this process did not make. A local write was
                 // already reported at the write site, with the attribution only
                 // that site knows; reporting it again here would double-report
@@ -767,10 +765,11 @@ impl CoreToolHandler {
                         if !matches!(origin, CommitOrigin::External) {
                             continue;
                         }
-                        // A commit diff says whether a path is present afterwards,
-                        // not whether it existed before, so an external creation
-                        // arrives as `Modified`. Consumers that maintain derived
-                        // state treat the two identically.
+                        // Neither a commit diff nor a freshness sweep says
+                        // whether a path existed before, only whether it is
+                        // there now, so an external creation arrives as
+                        // `Modified`. Consumers that maintain derived state
+                        // treat the two identically.
                         let change = if *present {
                             VaultChange::Modified { path: path.clone() }
                         } else {
@@ -786,28 +785,39 @@ impl CoreToolHandler {
                 let search_engines = Arc::clone(&search_engines);
                 let similarity_engines = Arc::clone(&similarity_engines);
                 let name = name.clone();
-                // The listener is a synchronous `Fn`; spawn the async index work.
-                tokio::spawn(async move {
+                // Handed back rather than spawned: the manager awaits this
+                // before its freshness gate returns, so a caller that gated on
+                // the link graph cannot then read a search index that is still
+                // catching up. Spawning here would leave exactly that gap.
+                Box::pin(async move {
                     if !changed.is_empty() {
                         let cached = { search_engines.read().await.get(&name).cloned() };
                         if let Some(engine) = cached
                             && let Err(e) = engine.apply_changes(changed).await
                         {
                             log::warn!(
-                                "M4c change-listener: search apply failed for '{name}', evicting: {e}"
+                                "change-listener: search apply failed for '{name}', evicting: {e}"
                             );
                             search_engines.write().await.remove(&name);
                         }
                     }
                     similarity_engines.write().await.remove(&name);
-                });
-            },
-        );
+                })
+            });
         manager.set_change_listener(listener);
 
-        // Start the background drainer + HEAD-ref listener only after the
-        // change-listener is registered.
-        manager.ensure_reindex_started();
+        let is_git = self
+            .multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .map(|c| matches!(c.write_backend, WriteBackend::Git))
+            .unwrap_or(false);
+        if is_git {
+            // Start the background drainer + HEAD-ref listener only after the
+            // change-listener is registered. No-op on a Direct vault, which has
+            // no queue to drain.
+            manager.ensure_reindex_started();
+        }
     }
 
     /// Get audit tools for the active vault
@@ -846,7 +856,7 @@ impl CoreToolHandler {
     /// write operation).
     ///
     /// write-substrate-layering M4e: the GWS.14c git-backend skip is gone.
-    /// `VaultManager`'s own change-listener (`wire_manager_reindex`) now feeds
+    /// `VaultManager`'s own change-listener (`wire_manager_indexes`) now feeds
     /// the cached search engine incrementally on every git-backend apply or
     /// drain, so this hammer eviction is redundant but harmless there. On the
     /// direct backend, where no change-listener is wired, it remains the only
@@ -864,6 +874,14 @@ impl CoreToolHandler {
         vault_name: &str,
         manager: &Arc<VaultManager>,
     ) -> McpResult<Arc<SearchEngine>> {
+        // Gate before the cache check, not after, and before the cold build
+        // too. Both branches have to reflect the same observation of the vault:
+        // a cold build reads disk and is fresh by construction, so skipping the
+        // gate there would leave the index ahead of the link graph instead of
+        // behind it. Incoherent either way. The manager's change-listener
+        // applies whatever moved to the engine below before this returns.
+        manager.ensure_fresh().await;
+
         // Check cache first (read lock — fast path)
         {
             let cache = self.search_engines.read().await;
@@ -893,6 +911,10 @@ impl CoreToolHandler {
     /// Get or build similarity engine for the active vault
     async fn get_similarity_engine(&self) -> McpResult<Arc<SimilarityEngine>> {
         let vault_name = self.get_active_vault_name().await?;
+        let manager = self.get_active_vault_manager().await?;
+        // Gated for the same reason as the search engine: an external edit
+        // invalidates this cache entry, and only the sweep can notice.
+        manager.ensure_fresh().await;
 
         // Check cache
         {
@@ -903,7 +925,6 @@ impl CoreToolHandler {
         }
 
         // Build new engine
-        let manager = self.get_active_vault_manager().await?;
         let engine = SimilarityEngine::new(manager)
             .await
             .map_err(|e| McpError::internal(format!("Failed to build similarity engine: {}", e)))?;
@@ -1105,6 +1126,19 @@ impl CoreToolHandler {
     /// can read the link graph after a substrate write.
     pub async fn get_active_vault_manager_test(&self) -> McpResult<Arc<VaultManager>> {
         self.get_active_vault_manager().await
+    }
+
+    /// Run the active vault's freshness gate, if there is one.
+    ///
+    /// Best effort on purpose. A request with no active vault, or one whose
+    /// vault cannot be opened, is about to fail on its own terms with a better
+    /// message than anything this could produce, and refusing to reconcile is
+    /// not a reason to refuse the request.
+    #[cfg(feature = "plugin-api")]
+    pub(crate) async fn ensure_active_vault_fresh(&self) {
+        if let Ok(manager) = self.get_active_vault_manager().await {
+            manager.ensure_fresh().await;
+        }
     }
 
     /// turbovault-5nn test-only: resolve a commit subject through the same

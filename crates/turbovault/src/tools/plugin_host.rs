@@ -137,7 +137,7 @@ impl VaultHost for PluginVaultHost {
                 NoteListing::new(
                     manager.relative_path(&note.path),
                     note.size_bytes,
-                    note.modified_ms,
+                    note.modified_ms(),
                 )
             })
             .collect::<Vec<_>>();

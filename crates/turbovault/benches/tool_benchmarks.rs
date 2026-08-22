@@ -187,7 +187,12 @@ fn bench_batch_operations(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark vault scanning
+/// Benchmark vault scanning.
+///
+/// This is also the cost of one freshness sweep (`VaultManager::ensure_fresh`),
+/// which is a scan plus a hash comparison per note. The reconcile duty cycle
+/// divides that cost into a debounce interval, so the interval a vault settles
+/// at is roughly 20x whatever this reports.
 fn bench_vault_scan(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let mut group = c.benchmark_group("vault_scan");
@@ -246,40 +251,7 @@ fn bench_metadata_queries(c: &mut Criterion) {
 // ── A/B benchmarks ────────────────────────────────────────────────────────────
 //
 // Each group compares the current implementation against a proposed alternative.
-// Run with: cargo bench -- "vault_scan_ab|metadata_query_ab"
-
-/// A/B: scan_files (path.is_dir + path.metadata) vs scan_files_dtype (DirEntry::file_type)
-///
-/// Hypothesis: DirEntry::file_type() reads d_type from the Linux dirent struct returned
-/// by readdir(3) — no additional statx/readlink syscall per entry. The current
-/// implementation calls path.is_dir() (statx) + path.metadata() (statx) per entry.
-fn bench_vault_scan_ab(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
-    let mut group = c.benchmark_group("vault_scan_ab");
-
-    for size in [10, 50, 100, 500].iter() {
-        let (_temp_dir, manager) = rt.block_on(setup_bench_vault(*size));
-
-        group.bench_with_input(
-            BenchmarkId::new("current_path_is_dir", size),
-            size,
-            |b, _| {
-                b.to_async(&rt)
-                    .iter(|| async { manager.scan_vault().await.unwrap() })
-            },
-        );
-
-        group.bench_with_input(
-            BenchmarkId::new("proposed_entry_file_type", size),
-            size,
-            |b, _| {
-                b.to_async(&rt)
-                    .iter(|| async { manager.scan_vault_dtype().await.unwrap() })
-            },
-        );
-    }
-    group.finish();
-}
+// Run with: cargo bench -- "metadata_query_ab|cache_read_ab"
 
 /// A/B: query_metadata (scan_vault + parse_file per call) vs query_metadata_cached (file_cache)
 ///
@@ -319,13 +291,14 @@ fn bench_metadata_query_ab(c: &mut Criterion) {
     group.finish();
 }
 
-/// A/B: all_cached_vault_files (zero I/O) vs vault_files_validated (N stat calls)
+/// A/B: all_cached_vault_files (zero I/O) vs vault_files_validated (freshness gate).
 ///
-/// Hypothesis: all_cached_vault_files() acquires a read lock and clones the HashMap
-/// values — no I/O at all. vault_files_validated() issues N synchronous stat calls
-/// inside one spawn_blocking task and zero file reads on the hot path (nothing changed).
-/// The gap quantifies the cost of the mtime-validation safety net callers pay for
-/// choosing the validated path over the raw fast path.
+/// `all_cached_vault_files` acquires a read lock and clones the map values, no
+/// I/O at all, and answers from whatever the cache last recorded.
+/// `vault_files_validated` runs the freshness gate first, so it also sees notes
+/// created, changed, or deleted outside this process. The gap is what that
+/// agreement costs, and because the gate is debounced most calls in a burst pay
+/// nothing beyond the lock.
 fn bench_cache_read_ab(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let (_temp_dir, manager) = rt.block_on(setup_metadata_vault(100));
@@ -336,7 +309,7 @@ fn bench_cache_read_ab(c: &mut Criterion) {
             .iter(|| async { manager.all_cached_vault_files().await })
     });
 
-    group.bench_function("validated_n_stats", |b| {
+    group.bench_function("validated_through_gate", |b| {
         b.to_async(&rt)
             .iter(|| async { manager.vault_files_validated().await })
     });
@@ -355,7 +328,6 @@ criterion_group!(
     bench_vault_scan,
     bench_concurrent_reads,
     bench_metadata_queries,
-    bench_vault_scan_ab,
     bench_metadata_query_ab,
     bench_cache_read_ab,
 );
