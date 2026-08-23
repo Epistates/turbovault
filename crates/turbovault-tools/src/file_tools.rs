@@ -49,6 +49,104 @@ pub struct NoteInfo {
     pub has_frontmatter: Option<bool>,
 }
 
+/// Which part of a note a partial read should return.
+///
+/// A default (all-`None`) spec selects nothing, and [`slice_content`] reports
+/// that by returning `Ok(None)` so the caller can read the whole file instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SliceSpec {
+    /// Return only the first N lines.
+    pub head_lines: Option<usize>,
+    /// Return only the last N lines.
+    pub tail_lines: Option<usize>,
+}
+
+impl SliceSpec {
+    /// Is any selector set?
+    pub fn selects_anything(&self) -> bool {
+        self.head_lines.is_some() || self.tail_lines.is_some()
+    }
+}
+
+/// The outcome of a partial read.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SliceResult {
+    /// The selected content — a verbatim substring of the original.
+    pub content: String,
+    /// Whether anything was omitted.
+    pub truncated: bool,
+    /// Line count of the complete file.
+    pub total_lines: usize,
+    /// Returned line span, 1-indexed and inclusive. `None` for an empty file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub returned_lines: Option<(usize, usize)>,
+}
+
+/// Byte offset at which each line of `content` starts.
+///
+/// A trailing newline ends the last line rather than beginning a new one, so
+/// `"a\nb\n"` yields `[0, 2]` — two lines, not three. An empty string yields
+/// `[0]`, which callers must treat as zero lines.
+fn line_start_offsets(content: &str) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for (idx, byte) in content.bytes().enumerate() {
+        if byte == b'\n' && idx + 1 < content.len() {
+            starts.push(idx + 1);
+        }
+    }
+    starts
+}
+
+/// Apply a partial-read selector to `content`.
+///
+/// Returns `Ok(None)` when `spec` selects nothing, so the caller can return the
+/// whole file unchanged. Contradictory specs are an error rather than a guess.
+///
+/// Slicing happens on line boundaries by byte offset, so the result is always a
+/// verbatim substring: line endings and any trailing newline survive intact.
+pub fn slice_content(content: &str, spec: &SliceSpec) -> Result<Option<SliceResult>> {
+    let starts = line_start_offsets(content);
+    let total_lines = if content.is_empty() { 0 } else { starts.len() };
+
+    // Matching the two options as a pair makes the four cases exhaustive, so no
+    // arm needs to reason about which selector "must" be set.
+    let (start, end, first_line, last_line) = match (spec.head_lines, spec.tail_lines) {
+        (Some(_), Some(_)) => {
+            return Err(Error::validation_error(
+                "Cannot combine head_lines with tail_lines",
+            ));
+        }
+        // No selector: let the caller read the whole file instead.
+        (None, None) => return Ok(None),
+        (Some(n), None) => {
+            let kept = n.min(total_lines);
+            // Keeping every line means slicing to the end, trailing newline
+            // included; `starts[total_lines]` would be one past the last line.
+            let end = if kept >= total_lines {
+                content.len()
+            } else {
+                starts[kept]
+            };
+            (0, end, 1, kept)
+        }
+        (None, Some(n)) => {
+            let skipped = total_lines.saturating_sub(n);
+            // `skipped == total_lines` (n == 0) has no line start to point at.
+            let start = starts.get(skipped).copied().unwrap_or(content.len());
+            (start, content.len(), skipped + 1, total_lines)
+        }
+    };
+
+    Ok(Some(SliceResult {
+        content: content[start..end].to_string(),
+        truncated: start > 0 || end < content.len(),
+        total_lines,
+        // An empty selection has no meaningful span: `last_line` sits below
+        // `first_line` (head_lines: 0 gives 1..0, tail_lines: 0 gives 5..4).
+        returned_lines: (first_line <= last_line).then_some((first_line, last_line)),
+    }))
+}
+
 /// File tools context
 #[derive(Clone)]
 pub struct FileTools {
@@ -832,5 +930,171 @@ mod tests {
         let overlay = serde_json::json!({"a": 1});
         deep_merge(&mut base, overlay);
         assert_eq!(base["a"], 1);
+    }
+
+    // ---- partial reads: positional selector ----
+
+    /// Four lines, trailing newline. Line starts: 0, 2, 4, 6.
+    const FOUR: &str = "a\nb\nc\nd\n";
+
+    fn head(n: usize) -> SliceResult {
+        slice_content(
+            FOUR,
+            &SliceSpec {
+                head_lines: Some(n),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn tail(n: usize) -> SliceResult {
+        slice_content(
+            FOUR,
+            &SliceSpec {
+                tail_lines: Some(n),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn test_slice_no_selector_returns_none() {
+        assert!(
+            slice_content(FOUR, &SliceSpec::default())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_slice_head() {
+        let r = head(2);
+        assert_eq!(r.content, "a\nb\n");
+        assert!(r.truncated);
+        assert_eq!(r.total_lines, 4);
+        assert_eq!(r.returned_lines, Some((1, 2)));
+    }
+
+    #[test]
+    fn test_slice_tail() {
+        let r = tail(2);
+        assert_eq!(r.content, "c\nd\n");
+        assert!(r.truncated);
+        assert_eq!(r.returned_lines, Some((3, 4)));
+    }
+
+    #[test]
+    fn test_slice_n_larger_than_file_is_not_truncated() {
+        for r in [head(99), tail(99)] {
+            assert_eq!(r.content, FOUR);
+            assert!(!r.truncated);
+            assert_eq!(r.returned_lines, Some((1, 4)));
+        }
+    }
+
+    #[test]
+    fn test_slice_exact_line_count_is_not_truncated() {
+        for r in [head(4), tail(4)] {
+            assert_eq!(r.content, FOUR);
+            assert!(!r.truncated);
+        }
+    }
+
+    #[test]
+    fn test_slice_zero_lines() {
+        for r in [head(0), tail(0)] {
+            assert_eq!(r.content, "");
+            assert!(r.truncated);
+            assert_eq!(r.returned_lines, None);
+        }
+    }
+
+    #[test]
+    fn test_slice_empty_file() {
+        let r = slice_content(
+            "",
+            &SliceSpec {
+                tail_lines: Some(3),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.content, "");
+        assert!(!r.truncated);
+        assert_eq!(r.total_lines, 0);
+        assert_eq!(r.returned_lines, None);
+    }
+
+    #[test]
+    fn test_slice_no_trailing_newline() {
+        let content = "a\nb\nc";
+        let r = slice_content(
+            content,
+            &SliceSpec {
+                tail_lines: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.content, "b\nc");
+        assert_eq!(r.total_lines, 3);
+        assert_eq!(r.returned_lines, Some((2, 3)));
+    }
+
+    /// The slice must be a byte-for-byte substring: CRLF endings survive.
+    #[test]
+    fn test_slice_preserves_crlf() {
+        let content = "a\r\nb\r\nc\r\n";
+        let r = slice_content(
+            content,
+            &SliceSpec {
+                head_lines: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.content, "a\r\nb\r\n");
+        assert_eq!(r.total_lines, 3);
+    }
+
+    /// Line boundaries never split a UTF-8 codepoint.
+    #[test]
+    fn test_slice_multibyte_content() {
+        let content = "🎒 resources\nzweite Zeile\n";
+        let r = slice_content(
+            content,
+            &SliceSpec {
+                tail_lines: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.content, "zweite Zeile\n");
+    }
+
+    #[test]
+    fn test_slice_rejects_head_and_tail_together() {
+        let spec = SliceSpec {
+            head_lines: Some(1),
+            tail_lines: Some(1),
+        };
+        let err = slice_content(FOUR, &spec).unwrap_err();
+        assert!(err.to_string().contains("head_lines"), "got: {err}");
+    }
+
+    #[test]
+    fn test_line_start_offsets() {
+        assert_eq!(line_start_offsets("a\nb\n"), vec![0, 2]);
+        assert_eq!(line_start_offsets("a\nb"), vec![0, 2]);
+        assert_eq!(line_start_offsets(""), vec![0]);
+        assert_eq!(line_start_offsets("\n"), vec![0]);
     }
 }
