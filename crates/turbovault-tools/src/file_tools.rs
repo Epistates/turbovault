@@ -51,6 +51,11 @@ pub struct NoteInfo {
 
 /// Which part of a note a partial read should return.
 ///
+/// This mirrors the flat, all-optional shape the MCP tool layer receives, so
+/// every field is independently settable and some combinations are nonsense.
+/// [`SliceSpec::selector`] converts it into a [`Selector`], which can only
+/// represent a valid request.
+///
 /// A default (all-`None`) spec selects nothing, and [`slice_content`] reports
 /// that by returning `Ok(None)` so the caller can read the whole file instead.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -59,27 +64,123 @@ pub struct SliceSpec {
     pub head_lines: Option<usize>,
     /// Return only the last N lines.
     pub tail_lines: Option<usize>,
+    /// Only headings at this level delimit a selectable section.
+    pub heading_level: Option<u8>,
+    /// Exact heading text a section must have to be selectable. Compared
+    /// against the heading without its `#` markers, case-sensitively.
+    pub heading_equals: Option<String>,
+    /// Take the first N matching sections.
+    pub first_sections: Option<usize>,
+    /// Take the last N matching sections.
+    pub last_sections: Option<usize>,
+}
+
+/// Which end of the matching-section list to take from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Take {
+    First(usize),
+    Last(usize),
+}
+
+/// A validated partial-read request: exactly one selector, already checked.
+///
+/// Constructing this is the only place combination rules are enforced, so the
+/// slicing code below never has to ask which fields were set.
+enum Selector {
+    /// The first N lines.
+    Head(usize),
+    /// The last N lines.
+    Tail(usize),
+    /// Heading-delimited sections, filtered then taken from one end.
+    Sections {
+        level: Option<u8>,
+        heading: Option<String>,
+        take: Option<Take>,
+    },
 }
 
 impl SliceSpec {
-    /// Is any selector set?
-    pub fn selects_anything(&self) -> bool {
-        self.head_lines.is_some() || self.tail_lines.is_some()
+    /// Normalise the flat spec into a validated [`Selector`].
+    ///
+    /// `Ok(None)` means nothing was selected. Contradictory combinations are
+    /// rejected here rather than resolved by guessing: there is no defensible
+    /// answer to "the first 10 lines *and* the last 10 lines".
+    fn selector(&self) -> Result<Option<Selector>> {
+        let take = match (self.first_sections, self.last_sections) {
+            (Some(_), Some(_)) => {
+                return Err(Error::validation_error(
+                    "Cannot combine first_sections with last_sections",
+                ));
+            }
+            (Some(n), None) => Some(Take::First(n)),
+            (None, Some(n)) => Some(Take::Last(n)),
+            (None, None) => None,
+        };
+
+        let positional = match (self.head_lines, self.tail_lines) {
+            (Some(_), Some(_)) => {
+                return Err(Error::validation_error(
+                    "Cannot combine head_lines with tail_lines",
+                ));
+            }
+            (Some(n), None) => Some(Selector::Head(n)),
+            (None, Some(n)) => Some(Selector::Tail(n)),
+            (None, None) => None,
+        };
+
+        let wants_sections =
+            self.heading_level.is_some() || self.heading_equals.is_some() || take.is_some();
+
+        match (positional, wants_sections) {
+            (Some(_), true) => Err(Error::validation_error(
+                "Cannot combine line selectors (head_lines/tail_lines) with section \
+                 selectors (heading_level/heading_equals/first_sections/last_sections)",
+            )),
+            (Some(selector), false) => Ok(Some(selector)),
+            (None, true) => Ok(Some(Selector::Sections {
+                level: self.heading_level,
+                heading: self.heading_equals.clone(),
+                take,
+            })),
+            (None, false) => Ok(None),
+        }
     }
+}
+
+/// One heading-delimited section returned by a structural slice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SectionSlice {
+    /// Heading text, without the leading `#` markers.
+    pub heading: String,
+    /// Heading level (1-6).
+    pub level: u8,
+    /// First line of the section, 1-indexed — the heading itself.
+    pub start_line: usize,
+    /// Last line of the section, 1-indexed and inclusive.
+    pub end_line: usize,
 }
 
 /// The outcome of a partial read.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SliceResult {
-    /// The selected content — a verbatim substring of the original.
+    /// The selected content. A verbatim substring for a line slice; for a
+    /// section slice, the selected sections concatenated in document order
+    /// (byte-identical to the original when they are adjacent).
     pub content: String,
     /// Whether anything was omitted.
     pub truncated: bool,
     /// Line count of the complete file.
     pub total_lines: usize,
-    /// Returned line span, 1-indexed and inclusive. `None` for an empty file.
+    /// Returned line span, 1-indexed and inclusive. Line slices only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub returned_lines: Option<(usize, usize)>,
+    /// Sections matching the filter, before `first_sections`/`last_sections`
+    /// was applied. Section slices only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sections_matched: Option<usize>,
+    /// The sections actually returned. Section slices only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<SectionSlice>,
 }
 
 /// Byte offset at which each line of `content` starts.
@@ -97,6 +198,18 @@ fn line_start_offsets(content: &str) -> Vec<usize> {
     starts
 }
 
+/// 1-indexed number of the line containing byte `offset`.
+///
+/// `starts` is sorted, so a binary search either lands exactly on a line start
+/// (`Ok(i)` → line `i + 1`) or reports the insertion point (`Err(i)`), in which
+/// case the offset falls inside line `i`.
+fn line_of_offset(starts: &[usize], offset: usize) -> usize {
+    match starts.binary_search(&offset) {
+        Ok(idx) => idx + 1,
+        Err(idx) => idx.max(1),
+    }
+}
+
 /// Apply a partial-read selector to `content`.
 ///
 /// Returns `Ok(None)` when `spec` selects nothing, so the caller can return the
@@ -105,20 +218,31 @@ fn line_start_offsets(content: &str) -> Vec<usize> {
 /// Slicing happens on line boundaries by byte offset, so the result is always a
 /// verbatim substring: line endings and any trailing newline survive intact.
 pub fn slice_content(content: &str, spec: &SliceSpec) -> Result<Option<SliceResult>> {
+    let Some(selector) = spec.selector()? else {
+        // No selector: let the caller read the whole file instead.
+        return Ok(None);
+    };
+
     let starts = line_start_offsets(content);
     let total_lines = if content.is_empty() { 0 } else { starts.len() };
 
-    // Matching the two options as a pair makes the four cases exhaustive, so no
-    // arm needs to reason about which selector "must" be set.
-    let (start, end, first_line, last_line) = match (spec.head_lines, spec.tail_lines) {
-        (Some(_), Some(_)) => {
-            return Err(Error::validation_error(
-                "Cannot combine head_lines with tail_lines",
-            ));
+    let (start, end, first_line, last_line) = match selector {
+        // Sections produce many disjoint slices, so they build their own result.
+        Selector::Sections {
+            level,
+            heading,
+            take,
+        } => {
+            return Ok(Some(slice_sections(
+                content,
+                &starts,
+                total_lines,
+                level,
+                heading.as_deref(),
+                take,
+            )));
         }
-        // No selector: let the caller read the whole file instead.
-        (None, None) => return Ok(None),
-        (Some(n), None) => {
+        Selector::Head(n) => {
             let kept = n.min(total_lines);
             // Keeping every line means slicing to the end, trailing newline
             // included; `starts[total_lines]` would be one past the last line.
@@ -129,7 +253,7 @@ pub fn slice_content(content: &str, spec: &SliceSpec) -> Result<Option<SliceResu
             };
             (0, end, 1, kept)
         }
-        (None, Some(n)) => {
+        Selector::Tail(n) => {
             let skipped = total_lines.saturating_sub(n);
             // `skipped == total_lines` (n == 0) has no line start to point at.
             let start = starts.get(skipped).copied().unwrap_or(content.len());
@@ -144,7 +268,76 @@ pub fn slice_content(content: &str, spec: &SliceSpec) -> Result<Option<SliceResu
         // An empty selection has no meaningful span: `last_line` sits below
         // `first_line` (head_lines: 0 gives 1..0, tail_lines: 0 gives 5..4).
         returned_lines: (first_line <= last_line).then_some((first_line, last_line)),
+        sections_matched: None,
+        sections: Vec::new(),
     }))
+}
+
+/// Select heading-delimited sections from `content`.
+///
+/// Headings come from [`turbovault_parser::parse_headings`], so a `#` inside a
+/// fenced code block is correctly not treated as a heading, and each heading
+/// carries a byte offset we can slice at directly.
+///
+/// A section runs from its heading to the next heading whose level is
+/// numerically **less than or equal to** its own — a sibling or an ancestor —
+/// or to end of file. Deeper headings do not end it, so subheadings and their
+/// content stay inside the parent section.
+fn slice_sections(
+    content: &str,
+    starts: &[usize],
+    total_lines: usize,
+    level: Option<u8>,
+    heading_equals: Option<&str>,
+    take: Option<Take>,
+) -> SliceResult {
+    let headings = turbovault_parser::parse_headings(content);
+
+    // Indices into `headings`, not the headings themselves: the boundary scan
+    // below needs to look at what follows a match in the full document order.
+    let matched: Vec<usize> = headings
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| level.is_none_or(|want| h.level == want))
+        .filter(|(_, h)| heading_equals.is_none_or(|want| h.text == want))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    let sections_matched = matched.len();
+    let selected: &[usize] = match take {
+        Some(Take::First(n)) => &matched[..n.min(sections_matched)],
+        Some(Take::Last(n)) => &matched[sections_matched.saturating_sub(n)..],
+        None => &matched,
+    };
+
+    let mut out = String::new();
+    let mut sections = Vec::with_capacity(selected.len());
+    for &idx in selected {
+        let heading = &headings[idx];
+        let start = heading.position.offset;
+        let end = headings[idx + 1..]
+            .iter()
+            .find(|next| next.level <= heading.level)
+            .map_or(content.len(), |next| next.position.offset);
+
+        sections.push(SectionSlice {
+            heading: heading.text.clone(),
+            level: heading.level,
+            start_line: line_of_offset(starts, start),
+            // `end` is exclusive, so the last byte of the section is `end - 1`.
+            end_line: line_of_offset(starts, end.saturating_sub(1)),
+        });
+        out.push_str(&content[start..end]);
+    }
+
+    SliceResult {
+        truncated: out.len() < content.len(),
+        content: out,
+        total_lines,
+        returned_lines: None,
+        sections_matched: Some(sections_matched),
+        sections,
+    }
 }
 
 /// File tools context
@@ -1085,6 +1278,7 @@ mod tests {
         let spec = SliceSpec {
             head_lines: Some(1),
             tail_lines: Some(1),
+            ..Default::default()
         };
         let err = slice_content(FOUR, &spec).unwrap_err();
         assert!(err.to_string().contains("head_lines"), "got: {err}");
@@ -1096,5 +1290,251 @@ mod tests {
         assert_eq!(line_start_offsets("a\nb"), vec![0, 2]);
         assert_eq!(line_start_offsets(""), vec![0]);
         assert_eq!(line_start_offsets("\n"), vec![0]);
+    }
+
+    // ---- partial reads: structural selector ----
+
+    /// A log-shaped note: three level-2 entries, one with a level-3 subheading.
+    const LOG: &str = "\
+# Log
+
+intro text
+
+## 2026-08-20
+Did: a
+
+## 2026-08-21
+Did: b
+### Detail
+nested text
+
+## 2026-08-22
+Did: c
+";
+
+    fn sections(content: &str, spec: SliceSpec) -> SliceResult {
+        slice_content(content, &spec).unwrap().unwrap()
+    }
+
+    fn level2(take: SliceSpec) -> SliceSpec {
+        SliceSpec {
+            heading_level: Some(2),
+            ..take
+        }
+    }
+
+    #[test]
+    fn test_sections_last_n() {
+        let r = sections(
+            LOG,
+            level2(SliceSpec {
+                last_sections: Some(2),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.sections_matched, Some(3));
+        assert_eq!(r.sections.len(), 2);
+        assert_eq!(r.sections[0].heading, "2026-08-21");
+        assert_eq!(r.sections[1].heading, "2026-08-22");
+        assert!(r.truncated);
+        // The intro and the first entry are gone; the nested block survives.
+        assert!(!r.content.contains("2026-08-20"));
+        assert!(r.content.starts_with("## 2026-08-21\n"));
+        assert!(r.content.contains("### Detail\nnested text\n"));
+    }
+
+    /// D4: a level-2 section ends at the next level-2 heading, not at its own
+    /// level-3 subheading.
+    #[test]
+    fn test_sections_subheading_does_not_end_section() {
+        let r = sections(
+            LOG,
+            level2(SliceSpec {
+                heading_equals: Some("2026-08-21".to_string()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.sections.len(), 1);
+        assert_eq!(
+            r.content,
+            "## 2026-08-21\nDid: b\n### Detail\nnested text\n\n"
+        );
+        // Lines 8-12: the heading, its body, the nested block, and the
+        // trailing blank line that belongs to this section.
+        assert_eq!(r.sections[0].start_line, 8);
+        assert_eq!(r.sections[0].end_line, 12);
+    }
+
+    /// A level-3 section ends at the next level-2 heading — an ancestor.
+    #[test]
+    fn test_sections_ancestor_ends_section() {
+        let r = sections(
+            LOG,
+            SliceSpec {
+                heading_level: Some(3),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.sections.len(), 1);
+        assert_eq!(r.sections[0].heading, "Detail");
+        assert_eq!(r.content, "### Detail\nnested text\n\n");
+    }
+
+    /// The last section runs to end of file.
+    #[test]
+    fn test_sections_last_runs_to_eof() {
+        let r = sections(
+            LOG,
+            level2(SliceSpec {
+                last_sections: Some(1),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.content, "## 2026-08-22\nDid: c\n");
+        assert_eq!(r.sections[0].start_line, 13);
+        assert_eq!(r.sections[0].end_line, 14);
+    }
+
+    /// A level-1 heading swallows everything below it.
+    #[test]
+    fn test_sections_level_one_takes_whole_document() {
+        let r = sections(
+            LOG,
+            SliceSpec {
+                heading_level: Some(1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.content, LOG);
+        assert!(!r.truncated);
+    }
+
+    #[test]
+    fn test_sections_first_n() {
+        let r = sections(
+            LOG,
+            level2(SliceSpec {
+                first_sections: Some(1),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.sections.len(), 1);
+        assert_eq!(r.sections[0].heading, "2026-08-20");
+    }
+
+    #[test]
+    fn test_sections_take_more_than_matched() {
+        let r = sections(
+            LOG,
+            level2(SliceSpec {
+                last_sections: Some(99),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.sections.len(), 3);
+        assert_eq!(r.sections_matched, Some(3));
+    }
+
+    #[test]
+    fn test_sections_pattern_matching_nothing() {
+        let r = sections(
+            LOG,
+            level2(SliceSpec {
+                heading_equals: Some("nope".to_string()),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.sections_matched, Some(0));
+        assert!(r.sections.is_empty());
+        assert_eq!(r.content, "");
+        assert!(r.truncated);
+    }
+
+    /// A `#` inside a fenced code block is not a heading.
+    #[test]
+    fn test_sections_ignores_headings_in_code_fences() {
+        let content = "## Real\n\n```bash\n# not a heading\n## also not\n```\n\n## Second\n";
+        let r = sections(
+            content,
+            level2(SliceSpec {
+                first_sections: Some(1),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.sections_matched, Some(2));
+        assert!(r.content.contains("# not a heading"));
+        assert!(r.content.contains("## also not"));
+        assert!(!r.content.contains("## Second"));
+    }
+
+    /// Frontmatter shifts byte offsets; line numbers must still line up.
+    #[test]
+    fn test_sections_with_frontmatter() {
+        let content = "---\ntitle: Log\n---\n\n## First\nbody\n\n## Second\nmore\n";
+        let r = sections(
+            content,
+            level2(SliceSpec {
+                last_sections: Some(1),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.content, "## Second\nmore\n");
+        assert_eq!(r.sections[0].start_line, 8);
+        assert_eq!(r.total_lines, 9);
+    }
+
+    #[test]
+    fn test_sections_no_headings_at_all() {
+        let r = sections(
+            "just prose\nno headings\n",
+            level2(SliceSpec {
+                last_sections: Some(3),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.sections_matched, Some(0));
+        assert_eq!(r.content, "");
+    }
+
+    // ---- partial reads: validation ----
+
+    #[test]
+    fn test_slice_rejects_line_and_section_selectors_together() {
+        let spec = SliceSpec {
+            tail_lines: Some(10),
+            heading_level: Some(2),
+            ..Default::default()
+        };
+        let err = slice_content(LOG, &spec).unwrap_err();
+        assert!(
+            err.to_string().contains("Cannot combine line selectors"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_slice_rejects_first_and_last_sections_together() {
+        let spec = SliceSpec {
+            first_sections: Some(1),
+            last_sections: Some(1),
+            ..Default::default()
+        };
+        let err = slice_content(LOG, &spec).unwrap_err();
+        assert!(err.to_string().contains("first_sections"), "got: {err}");
+    }
+
+    /// Exact match only: a prefix of a real heading selects nothing.
+    #[test]
+    fn test_sections_heading_equals_is_not_a_substring_match() {
+        for probe in ["2026-08", "08-21", "2026-08-21 "] {
+            let r = sections(
+                LOG,
+                level2(SliceSpec {
+                    heading_equals: Some(probe.to_string()),
+                    ..Default::default()
+                }),
+            );
+            assert_eq!(r.sections_matched, Some(0), "probe: {probe:?}");
+        }
     }
 }
