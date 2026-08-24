@@ -358,6 +358,21 @@ impl FileTools {
         self.manager.read_file(&file_path).await
     }
 
+    /// Read part of a file from the vault.
+    ///
+    /// Reads the full raw content through [`Self::read_file`], inheriting its
+    /// frontmatter-preserving guarantee, then applies `spec`. Returns
+    /// `Ok(None)` when `spec` selects nothing, so the caller can fall through
+    /// to the unchanged whole-file path.
+    pub async fn read_file_slice(
+        &self,
+        path: &str,
+        spec: &SliceSpec,
+    ) -> Result<Option<SliceResult>> {
+        let content = self.read_file(path).await?;
+        slice_content(&content, spec)
+    }
+
     /// Write a file to the vault with mode support (creates directories as needed)
     ///
     /// `message` is the commit subject the underlying `VaultManager` write
@@ -1536,5 +1551,104 @@ Did: c
             );
             assert_eq!(r.sections_matched, Some(0), "probe: {probe:?}");
         }
+    }
+
+    // ---- partial reads through the vault ----
+
+    fn slice_manager(vault_dir: &std::path::Path) -> Arc<VaultManager> {
+        use turbovault_core::{ServerConfig, VaultConfig};
+        let mut config = ServerConfig::new();
+        config
+            .vaults
+            .push(VaultConfig::builder("test", vault_dir).build().unwrap());
+        Arc::new(VaultManager::new(config).unwrap())
+    }
+
+    /// `read_file_slice` must return the same bytes `read_file` would, for the
+    /// portion selected — including the frontmatter `read_file` preserves.
+    #[tokio::test]
+    async fn test_read_file_slice_tail() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("log.md"),
+            "---\ntitle: Log\n---\n\n## First\nbody\n\n## Second\nmore\n",
+        )
+        .unwrap();
+        let tools = FileTools::new(slice_manager(temp.path()));
+
+        let result = tools
+            .read_file_slice(
+                "log.md",
+                &SliceSpec {
+                    tail_lines: Some(2),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.content, "## Second\nmore\n");
+        assert_eq!(result.total_lines, 9);
+        assert!(result.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_read_file_slice_sections() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("log.md"), LOG).unwrap();
+        let tools = FileTools::new(slice_manager(temp.path()));
+
+        let result = tools
+            .read_file_slice(
+                "log.md",
+                &SliceSpec {
+                    heading_level: Some(2),
+                    last_sections: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.content, "## 2026-08-22\nDid: c\n");
+        assert_eq!(result.sections_matched, Some(3));
+    }
+
+    /// No selector: `None`, so the caller keeps using the whole-file path.
+    #[tokio::test]
+    async fn test_read_file_slice_without_selector_returns_none() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("log.md"), LOG).unwrap();
+        let tools = FileTools::new(slice_manager(temp.path()));
+
+        let result = tools
+            .read_file_slice("log.md", &SliceSpec::default())
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    /// A missing file must surface as an I/O error, not an empty slice.
+    #[tokio::test]
+    async fn test_read_file_slice_propagates_read_error() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let tools = FileTools::new(slice_manager(temp.path()));
+
+        let err = tools
+            .read_file_slice(
+                "nope.md",
+                &SliceSpec {
+                    tail_lines: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Io(_) | Error::FileNotFound { .. }),
+            "got: {err:?}"
+        );
     }
 }
