@@ -106,6 +106,17 @@ impl SliceSpec {
     /// rejected here rather than resolved by guessing: there is no defensible
     /// answer to "the first 10 lines *and* the last 10 lines".
     fn selector(&self) -> Result<Option<Selector>> {
+        // Markdown has six heading levels. The wire type is `u8`, so the
+        // generated JSON schema advertises 0-255; reject the rest here rather
+        // than silently matching nothing.
+        if let Some(level) = self.heading_level
+            && !(1..=6).contains(&level)
+        {
+            return Err(Error::validation_error(format!(
+                "heading_level must be between 1 and 6, got {level}"
+            )));
+        }
+
         let take = match (self.first_sections, self.last_sections) {
             (Some(_), Some(_)) => {
                 return Err(Error::validation_error(
@@ -356,21 +367,6 @@ impl FileTools {
     pub async fn read_file(&self, path: &str) -> Result<String> {
         let file_path = PathBuf::from(path);
         self.manager.read_file(&file_path).await
-    }
-
-    /// Read part of a file from the vault.
-    ///
-    /// Reads the full raw content through [`Self::read_file`], inheriting its
-    /// frontmatter-preserving guarantee, then applies `spec`. Returns
-    /// `Ok(None)` when `spec` selects nothing, so the caller can fall through
-    /// to the unchanged whole-file path.
-    pub async fn read_file_slice(
-        &self,
-        path: &str,
-        spec: &SliceSpec,
-    ) -> Result<Option<SliceResult>> {
-        let content = self.read_file(path).await?;
-        slice_content(&content, spec)
     }
 
     /// Write a file to the vault with mode support (creates directories as needed)
@@ -1528,6 +1524,33 @@ Did: c
     }
 
     #[test]
+    fn test_slice_rejects_out_of_range_heading_level() {
+        for level in [0u8, 7, 200] {
+            let spec = SliceSpec {
+                heading_level: Some(level),
+                ..Default::default()
+            };
+            let err = slice_content(LOG, &spec).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("heading_level must be between 1 and 6"),
+                "level {level}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_slice_accepts_all_valid_heading_levels() {
+        for level in 1u8..=6 {
+            let spec = SliceSpec {
+                heading_level: Some(level),
+                ..Default::default()
+            };
+            assert!(slice_content(LOG, &spec).is_ok(), "level {level}");
+        }
+    }
+
+    #[test]
     fn test_slice_rejects_first_and_last_sections_together() {
         let spec = SliceSpec {
             first_sections: Some(1),
@@ -1551,104 +1574,5 @@ Did: c
             );
             assert_eq!(r.sections_matched, Some(0), "probe: {probe:?}");
         }
-    }
-
-    // ---- partial reads through the vault ----
-
-    fn slice_manager(vault_dir: &std::path::Path) -> Arc<VaultManager> {
-        use turbovault_core::{ServerConfig, VaultConfig};
-        let mut config = ServerConfig::new();
-        config
-            .vaults
-            .push(VaultConfig::builder("test", vault_dir).build().unwrap());
-        Arc::new(VaultManager::new(config).unwrap())
-    }
-
-    /// `read_file_slice` must return the same bytes `read_file` would, for the
-    /// portion selected — including the frontmatter `read_file` preserves.
-    #[tokio::test]
-    async fn test_read_file_slice_tail() {
-        let temp = tempfile::TempDir::new().unwrap();
-        std::fs::write(
-            temp.path().join("log.md"),
-            "---\ntitle: Log\n---\n\n## First\nbody\n\n## Second\nmore\n",
-        )
-        .unwrap();
-        let tools = FileTools::new(slice_manager(temp.path()));
-
-        let result = tools
-            .read_file_slice(
-                "log.md",
-                &SliceSpec {
-                    tail_lines: Some(2),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(result.content, "## Second\nmore\n");
-        assert_eq!(result.total_lines, 9);
-        assert!(result.truncated);
-    }
-
-    #[tokio::test]
-    async fn test_read_file_slice_sections() {
-        let temp = tempfile::TempDir::new().unwrap();
-        std::fs::write(temp.path().join("log.md"), LOG).unwrap();
-        let tools = FileTools::new(slice_manager(temp.path()));
-
-        let result = tools
-            .read_file_slice(
-                "log.md",
-                &SliceSpec {
-                    heading_level: Some(2),
-                    last_sections: Some(1),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(result.content, "## 2026-08-22\nDid: c\n");
-        assert_eq!(result.sections_matched, Some(3));
-    }
-
-    /// No selector: `None`, so the caller keeps using the whole-file path.
-    #[tokio::test]
-    async fn test_read_file_slice_without_selector_returns_none() {
-        let temp = tempfile::TempDir::new().unwrap();
-        std::fs::write(temp.path().join("log.md"), LOG).unwrap();
-        let tools = FileTools::new(slice_manager(temp.path()));
-
-        let result = tools
-            .read_file_slice("log.md", &SliceSpec::default())
-            .await
-            .unwrap();
-        assert!(result.is_none());
-    }
-
-    /// A missing file must surface as an I/O error, not an empty slice.
-    #[tokio::test]
-    async fn test_read_file_slice_propagates_read_error() {
-        let temp = tempfile::TempDir::new().unwrap();
-        let tools = FileTools::new(slice_manager(temp.path()));
-
-        let err = tools
-            .read_file_slice(
-                "nope.md",
-                &SliceSpec {
-                    tail_lines: Some(1),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::Io(_) | Error::FileNotFound { .. }),
-            "got: {err:?}"
-        );
     }
 }

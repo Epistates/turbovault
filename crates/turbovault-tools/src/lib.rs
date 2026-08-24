@@ -199,7 +199,10 @@ pub use batch_tools::BatchTools;
 pub use diff_tools::{DiffResult, DiffSummary, DiffTools};
 pub use duplicate_tools::{CompareResult, DuplicateGroup, DuplicateTools};
 pub use export_tools::ExportTools;
-pub use file_tools::{FileTools, NoteInfo, WriteMode, obsidian_uri};
+pub use file_tools::{
+    FileTools, NoteInfo, SectionSlice, SliceResult, SliceSpec, WriteMode, obsidian_uri,
+    slice_content,
+};
 pub use graph_tools::{BrokenLinkInfo, GraphTools, HealthInfo};
 pub use grounding::{GroundingAnalysis, GroundingTools, UngroundedNote, UngroundedReport};
 pub use metadata_tools::MetadataTools;

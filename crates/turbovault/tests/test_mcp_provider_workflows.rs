@@ -1882,3 +1882,198 @@ async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consist
     assert_eq!(stats["data"]["operations_by_type"]["MOVE"], 1);
     assert_eq!(stats["data"]["operations_by_type"]["ROLLBACK"], 2);
 }
+
+const PARTIAL_LOG: &str = r#"---
+type: log
+---
+# Progress Log
+
+## 2026-08-20
+Did: a
+
+## 2026-08-21
+Did: b
+### Detail
+nested
+
+## 2026-08-22
+Did: c
+"#;
+
+/// Partial `read_note` reads: the selectors, the metadata, and above all the
+/// deliberate absence of a content hash.
+#[tokio::test]
+async fn read_note_partial_reads_omit_the_hash_and_report_what_was_returned() {
+    let (_temp, server) = registered_server("partial-reads").await;
+    write_note(&server, "notes/log.md", PARTIAL_LOG).await;
+
+    // Baseline: no selector means the pre-existing whole-file contract.
+    let whole = call(&server, "read_note", json!({"path": "notes/log.md"})).await;
+    assert_eq!(whole["data"]["content"], PARTIAL_LOG);
+    assert!(
+        whole["data"]["hash"].is_string(),
+        "a whole-file read must still return a hash"
+    );
+    assert!(whole["data"]["truncated"].is_null());
+    assert_eq!(
+        whole["next_steps"],
+        json!(["write_note", "get_backlinks"]),
+        "whole-file next_steps must not change"
+    );
+
+    // Line slice from the end.
+    let tail = call(
+        &server,
+        "read_note",
+        json!({"path": "notes/log.md", "tail_lines": 2}),
+    )
+    .await;
+    assert_eq!(tail["data"]["content"], "## 2026-08-22\nDid: c\n");
+    assert_eq!(tail["data"]["truncated"], true);
+    assert_eq!(tail["data"]["total_lines"], 15);
+    assert_eq!(tail["data"]["returned_lines"], json!([14, 15]));
+    assert!(
+        tail["data"]["hash"].is_null(),
+        "a partial read must not return a hash: it would certify a file the \
+         caller has only partly seen, letting a whole-file write_note pass its \
+         precondition and destroy the remainder"
+    );
+    assert!(
+        tail["data"]["sections"].is_null(),
+        "line slices carry no section metadata"
+    );
+    assert_eq!(tail["next_steps"], json!(["edit_note", "get_backlinks"]));
+
+    // Section slice from the end. The level-3 subheading stays inside its
+    // level-2 parent rather than ending it.
+    let sections = call(
+        &server,
+        "read_note",
+        json!({"path": "notes/log.md", "heading_level": 2, "last_sections": 2}),
+    )
+    .await;
+    assert_eq!(sections["data"]["sections_matched"], 3);
+    assert_eq!(sections["count"], 2);
+    assert!(sections["data"]["hash"].is_null());
+    assert!(sections["data"]["returned_lines"].is_null());
+    let returned = sections["data"]["content"].as_str().expect("slice content");
+    assert!(returned.starts_with("## 2026-08-21\n"));
+    assert!(returned.contains("### Detail\nnested\n"));
+    assert!(!returned.contains("2026-08-20"));
+    assert_eq!(sections["data"]["sections"][0]["heading"], "2026-08-21");
+    assert_eq!(sections["data"]["sections"][0]["level"], 2);
+    assert_eq!(sections["data"]["sections"][1]["heading"], "2026-08-22");
+
+    // A named section, wherever it sits in the file.
+    let named = call(
+        &server,
+        "read_note",
+        json!({
+            "path": "notes/log.md",
+            "heading_level": 2,
+            "heading_equals": "2026-08-20",
+        }),
+    )
+    .await;
+    assert_eq!(named["data"]["sections_matched"], 1);
+    assert_eq!(named["data"]["content"], "## 2026-08-20\nDid: a\n\n");
+
+    // Exact match: a prefix selects nothing rather than the nearest heading.
+    let prefix = call(
+        &server,
+        "read_note",
+        json!({"path": "notes/log.md", "heading_level": 2, "heading_equals": "2026-08"}),
+    )
+    .await;
+    assert_eq!(prefix["data"]["sections_matched"], 0);
+    assert_eq!(prefix["data"]["content"], "");
+
+    // The note is untouched by any of the above.
+    let after = call(&server, "read_note", json!({"path": "notes/log.md"})).await;
+    assert_eq!(after["data"]["content"], PARTIAL_LOG);
+}
+
+/// Without a hash from the partial read, a whole-file overwrite is refused —
+/// the reason the hash is withheld in the first place.
+#[tokio::test]
+async fn read_note_partial_read_cannot_be_followed_by_an_unhashed_overwrite() {
+    let (_temp, server) = registered_server("partial-read-guard").await;
+    write_note(&server, "notes/log.md", PARTIAL_LOG).await;
+
+    let partial = call(
+        &server,
+        "read_note",
+        json!({"path": "notes/log.md", "tail_lines": 2}),
+    )
+    .await;
+    assert!(partial["data"]["hash"].is_null());
+
+    let refused = call_error(
+        &server,
+        "write_note",
+        json!({"path": "notes/log.md", "content": "## 2026-08-22\nDid: c edited\n"}),
+    )
+    .await;
+    assert!(
+        !refused.is_empty(),
+        "an unhashed overwrite of an existing note must be refused"
+    );
+
+    // The note survived the attempt intact.
+    let after = call(&server, "read_note", json!({"path": "notes/log.md"})).await;
+    assert_eq!(after["data"]["content"], PARTIAL_LOG);
+
+    // edit_note is the intended follow-up and needs no hash.
+    let edited = call(
+        &server,
+        "edit_note",
+        json!({
+            "path": "notes/log.md",
+            "edits": "<<<<<<< SEARCH\nDid: c\n=======\nDid: c edited\n>>>>>>> REPLACE\n",
+        }),
+    )
+    .await;
+    assert_eq!(edited["success"], true);
+    let after_edit = call(&server, "read_note", json!({"path": "notes/log.md"})).await;
+    assert!(
+        after_edit["data"]["content"]
+            .as_str()
+            .expect("content")
+            .contains("Did: c edited")
+    );
+}
+
+/// Contradictory selectors are the caller's mistake and must be reported, not
+/// silently resolved.
+#[tokio::test]
+async fn read_note_rejects_contradictory_slice_selectors() {
+    let (_temp, server) = registered_server("partial-read-validation").await;
+    write_note(&server, "notes/log.md", PARTIAL_LOG).await;
+
+    let cases = [
+        (
+            json!({"path": "notes/log.md", "head_lines": 2, "tail_lines": 2}),
+            "head_lines",
+        ),
+        (
+            json!({"path": "notes/log.md", "tail_lines": 2, "heading_level": 2}),
+            "Cannot combine line selectors",
+        ),
+        (
+            json!({"path": "notes/log.md", "heading_level": 0}),
+            "heading_level must be between 1 and 6",
+        ),
+        (
+            json!({"path": "notes/log.md", "heading_level": 7}),
+            "heading_level must be between 1 and 6",
+        ),
+    ];
+
+    for (arguments, expected) in cases {
+        let error = call_error(&server, "read_note", arguments.clone()).await;
+        assert!(
+            error.contains(expected),
+            "arguments {arguments} should mention {expected:?}, got: {error}"
+        );
+    }
+}
