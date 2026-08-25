@@ -2057,7 +2057,7 @@ async fn read_note_rejects_contradictory_slice_selectors() {
         ),
         (
             json!({"path": "notes/log.md", "tail_lines": 2, "heading_level": 2}),
-            "Cannot combine line selectors",
+            "Cannot combine a line selector",
         ),
         (
             json!({"path": "notes/log.md", "heading_level": 0}),

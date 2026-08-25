@@ -144,8 +144,9 @@ impl SliceSpec {
 
         match (positional, wants_sections) {
             (Some(_), true) => Err(Error::validation_error(
-                "Cannot combine line selectors (head_lines/tail_lines) with section \
-                 selectors (heading_level/heading_equals/first_sections/last_sections)",
+                "Cannot combine a line selector (head_lines or tail_lines) with a \
+                 heading selector (heading_level, heading_equals, last_sections). \
+                 Pick one or the other",
             )),
             (Some(selector), false) => Ok(Some(selector)),
             (None, true) => Ok(Some(Selector::Sections {
@@ -1518,7 +1519,7 @@ Did: c
         };
         let err = slice_content(LOG, &spec).unwrap_err();
         assert!(
-            err.to_string().contains("Cannot combine line selectors"),
+            err.to_string().contains("Cannot combine a line selector"),
             "got: {err}"
         );
     }
