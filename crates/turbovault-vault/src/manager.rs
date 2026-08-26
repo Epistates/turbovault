@@ -545,10 +545,20 @@ impl VaultManager {
             .upsert(rel_path.clone(), content.as_bytes())
             .with_precondition(rel_path, precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
+        self.apply_one(&plan).await
+    }
+
+    /// The single-op mutators' shared tail: apply, index whatever landed
+    /// (R7), then re-raise a best-effort apply's error so they keep their
+    /// all-or-nothing `Result` contract. Their plans hold ONE change, so
+    /// "what landed" is all-or-nothing anyway — the re-raise is what stops
+    /// a failed single write from being reported as a success now that
+    /// `DirectSubstrate::apply` returns `Ok` for a stopped apply loop.
+    async fn apply_one(&self, plan: &ChangePlan) -> Result<()> {
+        let outcome = self.substrate.apply(plan).await?;
         self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
-        Ok(())
+        self.fire_change_listener(outcome.changed.clone());
+        outcome.into_result().map(|_| ())
     }
 
     /// Apply an arbitrary multi-change [`ChangePlan`] — the R3 multi-change
@@ -559,6 +569,16 @@ impl VaultManager {
     /// bypass for callers (batch, rollback, …) that build their own plans.
     /// Delegates to the substrate and runs the same post-apply link-
     /// graph/cache sync (R7) as the single-op mutators.
+    ///
+    /// A best-effort direct apply that stopped mid-plan (M5 S2) comes back as
+    /// `Ok(outcome)` with `atomic: false`, `failed_at: Some(i)` and
+    /// `error: Some(_)` — the sync above still runs over the prefix that
+    /// landed, so a partially-applied plan is never invisible to the link
+    /// graph, file cache and search index. Callers that want all-or-nothing
+    /// `Result` semantics re-raise with [`ApplyOutcome::into_result`]; the
+    /// batch reports the partial per-operation instead. A whole-plan abort
+    /// (a stale precondition, or any git failure) is still a hard `Err` with
+    /// nothing written.
     #[instrument(skip(self, plan), fields(changes = plan.changes.len()), name = "vault_apply_changes")]
     pub async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         for touched in plan.touched_paths() {
@@ -689,10 +709,7 @@ impl VaultManager {
             .remove(rel_path.clone())
             .with_precondition(rel_path, precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
-        Ok(())
+        self.apply_one(&plan).await
     }
 
     /// Move file within vault with audit trail, graph update, and dual
@@ -727,10 +744,7 @@ impl VaultManager {
             .with_precondition(rel_from, src_precondition)
             .with_precondition(rel_to, dest_precondition);
 
-        let outcome = self.substrate.apply(&plan).await?;
-        self.sync_index(&outcome.changed).await;
-        self.fire_change_listener(outcome.changed);
-        Ok(())
+        self.apply_one(&plan).await
     }
 
     /// Get backlinks for a file
@@ -1359,6 +1373,110 @@ mod tests {
             manager.read_file(Path::new("removed.md")).await.is_err(),
             "removed.md should no longer exist after apply_changes"
         );
+    }
+
+    /// M5 S2 (`turbovault-qae.6.3`): a multi-change DIRECT plan is applied
+    /// best-effort — sequential, stop at the first failure, no rollback — so
+    /// the outcome must SAY so instead of claiming atomicity it does not
+    /// have. Change 0 lands, change 1 fails, change 2 is never attempted:
+    /// `atomic` false, `failed_at` Some(1), the typed error survives to the
+    /// manager boundary, and what landed is indexed (R7) rather than being
+    /// discarded along with the error.
+    ///
+    /// The same plan on a GIT vault is all-or-nothing: it aborts with
+    /// nothing written, and every GitSubstrate apply reports `atomic` true.
+    #[tokio::test]
+    async fn test_direct_partial_apply_reports_failed_at_and_indexes_what_landed() {
+        // Change 1 renames a file that does not exist: on direct the apply
+        // loop fails there (ENOENT) with change 0 already on disk; on git
+        // the rename source is missing from the base tree, so the whole plan
+        // aborts before any commit.
+        let partial_plan = || {
+            ChangePlan::new("partial apply")
+                .create("landed.md", "# Landed")
+                .with_change(Change::Rename {
+                    from: "ghost.md".to_string(),
+                    to: "moved.md".to_string(),
+                })
+                .create("never.md", "# Never")
+        };
+
+        // -------- direct: best-effort, partial state, honest report --------
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+        let outcome = manager.apply_changes(&partial_plan()).await.unwrap();
+
+        assert!(
+            !outcome.atomic,
+            "a multi-change direct plan is best-effort, not atomic"
+        );
+        assert_eq!(
+            outcome.failed_at,
+            Some(1),
+            "failed_at must name the change that stopped the loop"
+        );
+        assert!(
+            matches!(outcome.error, Some(Error::Io(_))),
+            "the loop failure's typed error kind must survive to the manager \
+             boundary, got {:?}",
+            outcome.error
+        );
+        assert_eq!(
+            outcome.changed,
+            vec![("landed.md".to_string(), true)],
+            "only the changes that actually landed are reported"
+        );
+        assert!(
+            temp_dir.path().join("landed.md").exists(),
+            "change 0 landed"
+        );
+        assert!(
+            !temp_dir.path().join("never.md").exists(),
+            "change 2 must not be attempted after change 1 failed"
+        );
+
+        // The partial is INDEXED, not just on disk: pre-M5-S2 the `?` in the
+        // apply loop skipped sync_index entirely, leaving landed.md invisible
+        // to the link graph, file cache and search index.
+        assert_eq!(
+            manager.get_stats().await.unwrap().total_files,
+            1,
+            "the change that landed must be in the link graph, not just on disk"
+        );
+
+        // -------- git: unchanged all-or-nothing, always atomic --------
+        let git_dir = TempDir::new().unwrap();
+        init_git_repo(git_dir.path());
+        let git_manager = VaultManager::new(create_git_test_config(git_dir.path())).unwrap();
+
+        let ok = git_manager
+            .apply_changes(
+                &ChangePlan::new("git multi")
+                    .create("a.md", "# A")
+                    .create("b.md", "# B"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            ok.atomic,
+            "every GitSubstrate apply is one all-or-nothing commit"
+        );
+        assert_eq!(ok.failed_at, None);
+        assert!(ok.error.is_none());
+
+        let head_before = head_oid(git_dir.path());
+        assert!(
+            git_manager.apply_changes(&partial_plan()).await.is_err(),
+            "git must abort the whole plan, not apply it best-effort"
+        );
+        assert_eq!(
+            head_oid(git_dir.path()),
+            head_before,
+            "an aborted git plan lands no commit"
+        );
+        assert!(!git_dir.path().join("landed.md").exists());
+        assert!(!git_dir.path().join("never.md").exists());
     }
 
     #[tokio::test]

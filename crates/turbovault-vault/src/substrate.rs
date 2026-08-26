@@ -29,21 +29,46 @@ use crate::edit::compute_hash;
 
 /// Outcome of applying one [`ChangePlan`] to a substrate (design §6.3) — the
 /// substrate-level analogue of `BatchResult`.
-#[derive(Debug, Clone, Default)]
+///
+/// NOT `Clone`: [`Self::error`] carries a typed [`Error`], which is not
+/// clonable (it wraps `io::Error`). Clone the individual fields instead.
+#[derive(Debug, Default)]
 pub struct ApplyOutcome {
-    /// `(vault-relative path, present-after-apply)` for every path the plan
-    /// touched — feeds the manager's link-graph + file-cache update (R7).
+    /// `(vault-relative path, present-after-apply)` for every path that
+    /// actually landed — feeds the manager's link-graph + file-cache update
+    /// (R7). On a partial direct apply this is the prefix of the plan that
+    /// ran before [`Self::failed_at`], NOT the whole plan.
     pub changed: Vec<(String, bool)>,
     /// git: the commit oid as hex. direct: `None`.
     pub commit: Option<String>,
-    /// `true` when every change in the plan landed atomically (git: always,
-    /// one commit; direct: single-change plans only — M3a's manager never
-    /// builds multi-change plans, so this is filled trivially here; true
-    /// best-effort semantics for direct batches land in M4/M5).
+    /// `true` when the plan was applied all-or-nothing: git always (one
+    /// commit), direct only for a single-change plan. A multi-change direct
+    /// plan is best-effort — sequential, no rollback — so it reports `false`
+    /// whether or not it happened to run to completion.
     pub atomic: bool,
-    /// Direct best-effort only: the change index that stopped a multi-change
-    /// plan. Always `None` in M3a.
+    /// The index into `plan.changes` of the change that stopped a
+    /// best-effort direct apply; `None` when every change landed. Never
+    /// `Some` on git, which aborts the whole plan instead.
     pub failed_at: Option<usize>,
+    /// The typed error that stopped the apply loop — carried out alongside
+    /// the accounting for what DID land, rather than discarded by a `?`.
+    /// `Some` exactly when [`Self::failed_at`] is `Some`; see
+    /// [`Self::into_result`] for the all-or-nothing callers that re-raise it.
+    pub error: Option<Error>,
+}
+
+impl ApplyOutcome {
+    /// Re-raise a best-effort apply's error, for callers that want
+    /// all-or-nothing `Result` semantics (every single-op mutator, and the
+    /// link-aware tool-layer writes). Callers run their post-apply index
+    /// sync over [`Self::changed`] FIRST, so whatever landed is still
+    /// indexed before the error surfaces.
+    pub fn into_result(self) -> Result<Self> {
+        match self.error {
+            Some(e) => Err(e),
+            None => Ok(self),
+        }
+    }
 }
 
 /// Dispatches a [`ChangePlan`] to whichever backend a vault is configured
@@ -177,19 +202,41 @@ impl DirectSubstrate {
             Self::check_precondition(path, precondition, before.as_deref())?;
         }
 
-        for change in &plan.changes {
-            match change {
-                Change::Upsert { path, content } => self.upsert(path, content).await?,
-                Change::Remove { path } => self.remove(path).await?,
-                Change::Rename { from, to } => self.rename(from, to).await?,
+        // Past the gate the apply is BEST-EFFORT (design R4): the changes run
+        // in order, the first failure stops the loop, and nothing already
+        // written is rolled back. A single-change plan is still all-or-
+        // nothing by construction — one change either lands or does not.
+        let atomic = plan.changes.len() <= 1;
+
+        for (idx, change) in plan.changes.iter().enumerate() {
+            let applied = match change {
+                Change::Upsert { path, content } => self.upsert(path, content).await,
+                Change::Remove { path } => self.remove(path).await,
+                Change::Rename { from, to } => self.rename(from, to).await,
+            };
+            if let Err(e) = applied {
+                // Report what landed instead of discarding it with `?` —
+                // the changes before `idx` are genuinely on disk and the
+                // manager still has to index them. The typed error rides
+                // along so an all-or-nothing caller can re-raise it
+                // (`ApplyOutcome::into_result`) and the batch can report it
+                // per-operation.
+                return Ok(ApplyOutcome {
+                    changed: changes_to_outcome(&plan.changes[..idx]),
+                    commit: None,
+                    atomic,
+                    failed_at: Some(idx),
+                    error: Some(e),
+                });
             }
         }
 
         Ok(ApplyOutcome {
             changed: changes_to_outcome(&plan.changes),
             commit: None,
-            atomic: true,
+            atomic,
             failed_at: None,
+            error: None,
         })
     }
 
@@ -483,8 +530,11 @@ impl GitSubstrate {
         Ok(ApplyOutcome {
             changed,
             commit: Some(changeset.commit.to_string()),
+            // One commit, all-or-nothing: git never leaves a partial, so it
+            // never reports one either.
             atomic: true,
             failed_at: None,
+            error: None,
         })
     }
 }
