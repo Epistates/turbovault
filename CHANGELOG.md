@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Plugin contract review follow-up**: Plugin-local and fully namespaced tool names are centrally validated against MCP SEP-986, enabled namespaces are described during MCP initialization only when plugins are registered, feature-on tests are required for every vertical, and core/plugin complete-note writes share preparation and cache-finalization orchestration.
 
+### Security
+
+- **Cleared four advisories in the dependency lock**: `h2` 0.4.14 to 0.4.18 (RUSTSEC-2026-0258, unbounded empty DATA frames) and `rkyv` 0.8.16 to 0.8.17 (RUSTSEC-2026-0233, -0234 and -0235, use-after-free and out-of-bounds reads on crafted archives). `rust_decimal` moves to 1.42.1 alongside them.
+
+  One advisory is left, and is now recorded in `.cargo/audit.toml` with the reason: `rkyv` 0.7.46 arrives through `rust_decimal` and GlueSQL, wants a major bump neither has made, and is only reachable under the default-off `sql` feature.
+
+- **CI audits on a schedule, not only on a diff**: advisories get published against code that has not changed, so a job wired to push and pull request alone kept reporting green on a `main` that had gone unaudited for weeks. All four of these landed in that window. CI now also runs weekly.
+
 ## [1.6.0] - 2026-07-17
 
 ### Added

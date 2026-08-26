@@ -416,7 +416,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             if state.item_depth == 1 {
                 let (content, mut inline, remaining_blocks) = if !state.paragraph_buffer.is_empty()
                 {
-                    let all_blocks: Vec<ContentBlock> = state.item_blocks.drain(..).collect();
+                    let all_blocks: Vec<ContentBlock> = std::mem::take(&mut state.item_blocks);
                     (
                         state.paragraph_buffer.clone(),
                         state.inline_buffer.clone(),
@@ -428,7 +428,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     let remaining: Vec<ContentBlock> = state.item_blocks.drain(1..).collect();
                     (content, inline, remaining)
                 } else {
-                    let all_blocks: Vec<ContentBlock> = state.item_blocks.drain(..).collect();
+                    let all_blocks: Vec<ContentBlock> = std::mem::take(&mut state.item_blocks);
                     (String::new(), Vec::new(), all_blocks)
                 };
 
