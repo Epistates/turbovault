@@ -80,13 +80,11 @@ async fn batch_response_reports_partial_failure_contract() {
         .expect("batch response should expose structured content");
     assert_eq!(response["success"], false);
     assert_eq!(response["data"]["success"], false);
-    // M4d: the direct batch routes through `manager.apply_changes`. Per-op
-    // `executed`/`failed_at` reporting is NOT provided this bite — direct
-    // best-effort reporting (failed_at / partial-rollback) is M5.2 — so the
-    // batch reports a plain `success: false` with the aborting error and no
-    // per-op index.
-    assert_eq!(response["data"]["executed"], 0);
-    assert!(response["data"]["failed_at"].is_null());
+    // TV-016: the direct batch is best-effort, and the wire reports the
+    // partial it leaves — the CreateNote landed, the DeleteNote of a missing
+    // path is the operation that stopped the batch.
+    assert_eq!(response["data"]["executed"], 1);
+    assert_eq!(response["data"]["failed_at"], 1);
     assert_eq!(response["meta"]["execution_mode"], "sequential_direct");
     assert!(
         response["warnings"][0]

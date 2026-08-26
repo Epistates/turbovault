@@ -1,11 +1,12 @@
 //! Batch operation tools for coordinated multi-file operations
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use turbovault_batch::{BatchOperation, BatchResult, OperationRecord};
-use turbovault_core::ChangePlan;
 use turbovault_core::prelude::*;
+use turbovault_core::{Change, ChangePlan};
 use turbovault_vault::{EditEngine, VaultManager};
 
 /// Batch operation tools
@@ -32,19 +33,20 @@ impl BatchTools {
     /// and per-op CAS preconditions) and applies it through
     /// [`VaultManager::apply_changes`] — so the SAME batch surface runs on
     /// both substrates. `message` becomes the git commit subject (ignored on
-    /// direct). On a direct vault the plan gets today's `DirectSubstrate::apply`
-    /// semantics (precondition-gate → sequential → `atomic:true`); direct
-    /// best-effort `failed_at` reporting is M5.2.
+    /// direct).
     ///
     /// Reindex is flushed first so any link-aware op (`MoveNote`/`DeleteNote`)
     /// resolves against a coherent graph. A batch failure (stale precondition,
     /// intra-batch path collision, unreadable link source) is reported as a
     /// soft `BatchResult { success: false, errors }` — NOT a hard `Err` — so the
-    /// pre-M4d batch wire shape (R10) holds. On git `apply_changes` aborts the
-    /// whole plan atomically (nothing written). On direct only the precondition
-    /// GATE is atomic — the apply loop is sequential with no rollback, so a
-    /// mid-loop failure can leave partial state while this still reports
-    /// `executed: 0`; true direct best-effort/`failed_at` reporting is M5.2.
+    /// pre-M4d batch wire shape (R10) holds.
+    ///
+    /// On git `apply_changes` aborts the whole plan atomically (nothing
+    /// written). On direct only the precondition GATE is atomic — the apply
+    /// loop is sequential with no rollback, so a mid-loop failure leaves the
+    /// earlier operations on disk. That partial is REPORTED, not hidden
+    /// (TV-016): `executed`/`changes`/`records` cover the operations that
+    /// landed and `failed_at` names the one that stopped the batch.
     pub async fn batch_execute(
         &self,
         operations: Vec<BatchOperation>,
@@ -69,44 +71,70 @@ impl BatchTools {
         }
 
         self.manager.flush_reindex().await;
-        // A batch failure (intra-batch collision, a stale/absent precondition,
-        // an unreadable link source) is reported as `success: false` in the
-        // BatchResult envelope — NOT propagated as a hard error — preserving
-        // the pre-M4d wire shape (R10): the batch tool call itself succeeds and
-        // the caller inspects `success`/`errors`. On git `apply_changes` is
-        // whole-plan atomic (nothing written on failure); on direct only the
-        // precondition gate is atomic — a mid-apply failure may leave partial
-        // state (M5.2 adds `failed_at`).
-        let mut plan = match self.plan(&operations).await {
-            Ok(plan) => plan,
+        // A batch failure that wrote NOTHING (intra-batch collision, a
+        // stale/absent precondition, an unreadable link source, any git
+        // failure) is reported as `success: false` in the BatchResult
+        // envelope — NOT propagated as a hard error — preserving the pre-M4d
+        // wire shape (R10): the batch tool call itself succeeds and the caller
+        // inspects `success`/`errors`.
+        let (mut plan, op_spans) = match self.plan_with_op_spans(&operations).await {
+            Ok(planned) => planned,
             Err(e) => return Ok(failed_batch(total, e, transaction_id, started)),
         };
         plan.message = message.to_string();
-        if let Err(e) = self.manager.apply_changes(&plan).await {
-            return Ok(failed_batch(total, e, transaction_id, started));
-        }
+        let outcome = match self.manager.apply_changes(&plan).await {
+            Ok(outcome) => outcome,
+            Err(e) => return Ok(failed_batch(total, e, transaction_id, started)),
+        };
 
-        let changes = operations.iter().map(describe_op).collect();
-        let records = operations
-            .iter()
-            .enumerate()
-            .map(|(idx, op)| OperationRecord {
-                operation_index: idx,
-                operation: format!("{:?}", op),
-                success: true,
-                error: None,
-                affected_files: op.affected_files(),
-            })
-            .collect();
+        // A best-effort direct apply that stopped mid-plan comes back as `Ok`
+        // carrying its error and the CHANGE index that stopped it. Translate
+        // that into the operation-level report the wire speaks (TV-016): the
+        // operations before the failing one genuinely landed and must be
+        // counted, listed and recorded as successes.
+        if let Some(error) = outcome.error {
+            let stopped_at = outcome.failed_at.unwrap_or(plan.changes.len());
+            // The failing operation is the first whose span extends past the
+            // change that stopped the loop (`> `, not `contains`, so an
+            // operation contributing zero changes can't swallow the index).
+            let failed_op = op_spans
+                .iter()
+                .position(|span| span.end > stopped_at)
+                .unwrap_or(total.saturating_sub(1));
+
+            let mut records = op_records(&operations[..failed_op], &plan, &op_spans);
+            records.push(OperationRecord {
+                operation_index: failed_op,
+                operation: format!("{:?}", operations[failed_op]),
+                success: false,
+                error: Some(error.to_string()),
+                // Only the changes this operation applied BEFORE the failure
+                // — usually none, but a multi-change operation (a move plus
+                // its backlink rewrites) can stop partway through its own span.
+                affected_files: changed_paths(&plan.changes[op_spans[failed_op].start..stopped_at]),
+            });
+
+            return Ok(BatchResult {
+                success: false,
+                executed: failed_op,
+                total,
+                failed_at: Some(failed_op),
+                changes: operations[..failed_op].iter().map(describe_op).collect(),
+                errors: vec![error.to_string()],
+                records,
+                transaction_id,
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
 
         Ok(BatchResult {
             success: true,
             executed: total,
             total,
             failed_at: None,
-            changes,
+            changes: operations.iter().map(describe_op).collect(),
             errors: vec![],
-            records,
+            records: op_records(&operations, &plan, &op_spans),
             transaction_id,
             duration_ms: started.elapsed().as_millis() as u64,
         })
@@ -130,12 +158,30 @@ impl BatchTools {
     /// (turbovault-0g4.5): a path may be mutated by at most one operation
     /// per batch.
     pub async fn plan(&self, operations: &[BatchOperation]) -> Result<ChangePlan> {
+        Ok(self.plan_with_op_spans(operations).await?.0)
+    }
+
+    /// [`Self::plan`] plus, per operation, the half-open range of
+    /// `plan.changes` that operation contributed. The batch report needs that
+    /// mapping in both directions: change index -> operation index (the
+    /// substrate's `failed_at` counts CHANGES; the wire reports OPERATIONS)
+    /// and operation index -> paths (so `records[].affected_files` names what
+    /// the plan actually touches, including the link-rewrite upserts a
+    /// `MoveNote`/`DeleteNote` discovers from the link graph and never
+    /// declares itself — TV-016).
+    async fn plan_with_op_spans(
+        &self,
+        operations: &[BatchOperation],
+    ) -> Result<(ChangePlan, Vec<Range<usize>>)> {
         let mut plan = ChangePlan::new(format!("batch_execute ({} ops)", operations.len()));
         let mut seen_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut op_spans = Vec::with_capacity(operations.len());
 
         for (idx, op) in operations.iter().enumerate() {
+            let before_changes = plan.changes.len();
             let before = plan.touched_paths().len();
             plan = self.translate_op(plan, op).await?;
+            op_spans.push(before_changes..plan.changes.len());
             if let Some(dup) = plan
                 .touched_paths()
                 .into_iter()
@@ -149,7 +195,7 @@ impl BatchTools {
             }
         }
 
-        Ok(plan)
+        Ok((plan, op_spans))
     }
 
     /// Atomic move + inbound-wikilink rewrite, as a plan. Ports
@@ -212,7 +258,10 @@ impl BatchTools {
                 expected_hash,
             )
             .await?;
-        self.manager.apply_changes(&plan).await?;
+        // All-or-nothing contract: a best-effort direct apply that stopped
+        // mid-plan comes back as `Ok` carrying its error (M5 S2), so re-raise
+        // it rather than reporting a half-rewritten move as a success.
+        self.manager.apply_changes(&plan).await?.into_result()?;
         Ok(updated)
     }
 
@@ -230,7 +279,8 @@ impl BatchTools {
         let (plan, updated) = self
             .fold_delete_with_stale_links(ChangePlan::new(message.to_string()), path, expected_hash)
             .await?;
-        self.manager.apply_changes(&plan).await?;
+        // Same all-or-nothing re-raise as `move_file_with_link_updates`.
+        self.manager.apply_changes(&plan).await?.into_result()?;
         Ok(updated)
     }
 
@@ -702,10 +752,48 @@ fn remove_expecting(plan: ChangePlan, path: &str, expected_hash: Option<&str>) -
     p
 }
 
+/// A `success: true` [`OperationRecord`] per operation, with `affected_files`
+/// read off the operation's span of the applied [`ChangePlan`].
+///
+/// The paths come from the PLAN, not from `BatchOperation::affected_files`
+/// (the operation's DECLARED paths): a `MoveNote`/`DeleteNote` folds an
+/// inbound-backlink rewrite for every linker it finds in the link graph, and
+/// the operation itself cannot name those files (TV-016 manifestation B).
+fn op_records(
+    operations: &[BatchOperation],
+    plan: &ChangePlan,
+    op_spans: &[Range<usize>],
+) -> Vec<OperationRecord> {
+    operations
+        .iter()
+        .enumerate()
+        .map(|(idx, op)| OperationRecord {
+            operation_index: idx,
+            operation: format!("{:?}", op),
+            success: true,
+            error: None,
+            affected_files: changed_paths(&plan.changes[op_spans[idx].clone()]),
+        })
+        .collect()
+}
+
+/// The paths a run of plan changes mutates — the span-scoped counterpart of
+/// [`ChangePlan::touched_paths`].
+fn changed_paths(changes: &[Change]) -> Vec<String> {
+    changes
+        .iter()
+        .flat_map(Change::touched_paths)
+        .map(String::from)
+        .collect()
+}
+
 /// The soft `success: false` [`BatchResult`] a manager-routed batch returns
-/// when the plan cannot be built or applied — nothing was written (the plan
-/// aborts atomically). Mirrors the pre-M4d executor's failure envelope so the
-/// batch tool's wire shape is unchanged (R10).
+/// when the plan cannot be built or applied and NOTHING was written — the
+/// plan aborted at the precondition gate, or on git, where every apply is
+/// all-or-nothing. Mirrors the pre-M4d executor's failure envelope so the
+/// batch tool's wire shape is unchanged (R10). A direct apply that stopped
+/// mid-plan does NOT come here: it left state behind, so `batch_execute`
+/// reports it per-operation instead.
 fn failed_batch(
     total: usize,
     error: Error,

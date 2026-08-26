@@ -15,8 +15,8 @@ use turbovault_tools::{
     AnalysisTools, AuditTools, BatchOperation, BatchTools, CommitLocks, DiffTools, DuplicateTools,
     ExportTools, FanoutInfo, FileTools, GitMergeStrategy, GraphTools, GroundingTools,
     MetadataTools, OkfTools, QualityTools, RelationshipTools, SearchEngine, SearchQuery,
-    SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo, ViewerTools,
-    WriteMode, obsidian_uri,
+    SearchTools, SimilarityEngine, SliceResult, SliceSpec, TemplateEngine, VaultLifecycleTools,
+    VaultRepo, ViewerTools, WriteMode, obsidian_uri, slice_content,
 };
 use turbovault_vault::{ChangeListener, VaultManager};
 
@@ -370,29 +370,9 @@ impl CoreToolHandler {
                     continue;
                 }
             }
-            let vault_config = self
-                .multi_vault_mgr
-                .get_vault_config(&name)
+            self.activate_vault_manager(&name)
                 .await
-                .map_err(|e| Error::config_error(format!("get_vault_config({name}): {e}")))?;
-            let mut server_config = ServerConfig::default();
-            let mut vault_cfg = vault_config;
-            vault_cfg.is_default = true;
-            server_config.vaults = vec![vault_cfg];
-            let manager = VaultManager::new(server_config)
-                .map_err(|e| Error::config_error(format!("VaultManager::new({name}): {e}")))?;
-            manager
-                .initialize()
-                .await
-                .map_err(|e| Error::config_error(format!("initialize({name}): {e}")))?;
-            let manager = Arc::new(manager);
-            // M4c (bite 3a): wire before publishing (git vaults; no-op on
-            // Direct), same as the lazy `get_active_vault_manager` path.
-            self.wire_manager_reindex(&name, &manager).await;
-            self.vault_managers
-                .write()
-                .await
-                .insert(name.clone(), manager);
+                .map_err(|e| Error::config_error(e.to_string()))?;
             log::info!("Initialized vault '{}' (--init)", name);
         }
         Ok(())
@@ -615,13 +595,7 @@ impl CoreToolHandler {
 
     /// Get a vault manager for the currently active vault (cached)
     async fn get_active_vault_manager(&self) -> McpResult<Arc<VaultManager>> {
-        let vault_name = self.multi_vault_mgr.get_active_vault().await;
-
-        let vault_config = self
-            .multi_vault_mgr
-            .get_active_vault_config()
-            .await
-            .map_err(|e| McpError::internal(format!("No active vault: {}", e)))?;
+        let vault_name = self.get_active_vault_name().await?;
 
         // Check cache first
         {
@@ -631,23 +605,51 @@ impl CoreToolHandler {
             }
         }
 
-        // Not in cache - create and initialize
+        // Not in cache - build, wire and publish it
+        self.activate_vault_manager(&vault_name).await
+    }
+
+    /// turbovault-qae.5.5: THE activation path — the ONE place that builds a
+    /// `VaultManager` and publishes it into `vault_managers`.
+    ///
+    /// Build → audit → initialize → wire → publish is a single operation, so a
+    /// caller cannot publish an unwired manager: it never gets its hands on a
+    /// manager that is not already wired and cached. That is the structural
+    /// form of the bite-3a (turbovault-qae.5.3) fix, which was previously a
+    /// three-step dance open-coded at every insert site — a git-backend manager
+    /// cached before its reindex machinery was wired makes
+    /// `get_active_vault_manager` cache-hit the unwired manager forever, and
+    /// search staleness never closes. Every new call site gets the wiring for
+    /// free; there is no site left that could forget it.
+    async fn activate_vault_manager(&self, vault_name: &str) -> McpResult<Arc<VaultManager>> {
+        let vault_config = self
+            .multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .map_err(|e| McpError::internal(format!("No config for vault '{vault_name}': {e}")))?;
+
         let mut server_config = ServerConfig::default();
         let mut vault_config = vault_config;
         vault_config.is_default = true; // Mark as default so VaultManager::new() can find it
         server_config.vaults = vec![vault_config];
 
-        let mut manager = VaultManager::new(server_config)
-            .map_err(|e| McpError::internal(format!("Failed to create vault manager: {}", e)))?;
+        let mut manager = VaultManager::new(server_config).map_err(|e| {
+            McpError::internal(format!(
+                "Failed to create vault manager for '{vault_name}': {e}"
+            ))
+        })?;
 
-        self.initialize_audit_for_manager(&vault_name, &mut manager)
+        // Audit state attaches through `&mut` — it has to land between `new()`
+        // and the `Arc`, which is exactly what used to force each call site
+        // into its own multi-step publish. Owning the whole sequence here is
+        // what resolves it.
+        self.initialize_audit_for_manager(vault_name, &mut manager)
             .await;
 
         // Initialize vault (scan files and build link graph) on first access
-        manager
-            .initialize()
-            .await
-            .map_err(|e| McpError::internal(format!("Failed to initialize vault: {}", e)))?;
+        manager.initialize().await.map_err(|e| {
+            McpError::internal(format!("Failed to initialize vault '{vault_name}': {e}"))
+        })?;
 
         let manager = Arc::new(manager);
 
@@ -657,17 +659,15 @@ impl CoreToolHandler {
         // cache-hit and observe an unwired manager. If we lose the
         // double-check race below, our wired manager is dropped and its `Drop`
         // aborts the tasks it started.
-        self.wire_manager_reindex(&vault_name, &manager).await;
+        self.wire_manager_reindex(vault_name, &manager).await;
 
-        // Cache it — double-check to handle concurrent initialization races
-        {
-            let mut cache = self.vault_managers.write().await;
-            // Another task may have initialized between our read-check and here; first writer wins
-            if let Some(existing) = cache.get(&vault_name) {
-                return Ok(existing.clone());
-            }
-            cache.insert(vault_name.clone(), manager.clone());
+        // Publish — double-check to handle concurrent initialization races
+        let mut cache = self.vault_managers.write().await;
+        // Another task may have activated between our read-check and here; first writer wins
+        if let Some(existing) = cache.get(vault_name) {
+            return Ok(existing.clone());
         }
+        cache.insert(vault_name.to_string(), manager.clone());
 
         Ok(manager)
     }

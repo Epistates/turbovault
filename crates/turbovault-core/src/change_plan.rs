@@ -39,6 +39,17 @@ impl Change {
             Change::Rename { from, .. } => from,
         }
     }
+
+    /// Every path this change mutates: `path` for `Upsert`/`Remove`, BOTH
+    /// endpoints for `Rename`. [`ChangePlan::touched_paths`] is the
+    /// plan-wide fold of this; a caller holding only a SUB-RANGE of a plan's
+    /// changes (the batch's per-operation span) folds it itself.
+    pub fn touched_paths(&self) -> Vec<&str> {
+        match self {
+            Change::Upsert { path, .. } | Change::Remove { path } => vec![path],
+            Change::Rename { from, to } => vec![from, to],
+        }
+    }
 }
 
 /// A backend-agnostic description of one mutation: an ordered set of
@@ -214,17 +225,11 @@ impl ChangePlan {
     /// `commit_changeset`) and by the tool layer's intra-batch path-collision
     /// check.
     pub fn touched_paths(&self) -> Vec<String> {
-        let mut out = Vec::with_capacity(self.changes.len());
-        for c in &self.changes {
-            match c {
-                Change::Upsert { path, .. } | Change::Remove { path } => out.push(path.clone()),
-                Change::Rename { from, to } => {
-                    out.push(from.clone());
-                    out.push(to.clone());
-                }
-            }
-        }
-        out
+        self.changes
+            .iter()
+            .flat_map(Change::touched_paths)
+            .map(String::from)
+            .collect()
     }
 }
 

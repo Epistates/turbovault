@@ -223,11 +223,10 @@ async fn test_batch_tools_partial_failure_rollback() {
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(!batch_result.success);
-    // write-substrate-layering M4d/M4e: the manager-routed batch folds every
-    // op into ONE ChangePlan and reports `executed: 0` on any apply failure
-    // (per-index `failed_at` tracking on the direct backend is M5.2 future
-    // work) — it does NOT mean nothing landed on disk; see below.
-    assert_eq!(batch_result.executed, 0);
+    // TV-016: operations 0 and 1 landed before the delete of a nonexistent
+    // file failed, and the report says so.
+    assert_eq!(batch_result.executed, 2);
+    assert_eq!(batch_result.failed_at, Some(2));
 
     // Note: the direct backend's apply loop is sequential with no rollback
     // (only the precondition GATE is atomic) — operations 0 and 1 already

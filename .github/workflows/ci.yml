@@ -5,6 +5,11 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # New advisories are published against code that has not changed, so a job
+  # that only runs on push and pull_request reports "green" on a main nobody
+  # has audited in weeks. Monday morning, UTC.
+  schedule:
+    - cron: '0 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always

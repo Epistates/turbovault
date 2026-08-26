@@ -1,8 +1,37 @@
 //! VaultProvider MCP capabilities.
 
+use std::collections::HashMap;
 use std::ops::Deref;
 
+use turbovault_core::config::{VaultGitConfig, WriteBackend};
+
 use super::super::*;
+
+/// turbovault-kdq: resolve the optional `write_backend` + `backend_opts`
+/// registration arguments into the typed pair the builder wants. Omitting
+/// `write_backend` yields `Direct` — the pre-kdq behaviour, unchanged.
+///
+/// Whether the pair is *coherent* is not decided here: `VaultLifecycleTools`
+/// is the funnel every registration passes through (the CLI shorthand
+/// included), so the direct-plus-options refusal lives there.
+fn parse_backend_selection(
+    write_backend: Option<String>,
+    backend_opts: Option<HashMap<String, serde_json::Value>>,
+) -> McpResult<(WriteBackend, Option<VaultGitConfig>)> {
+    let backend = match write_backend {
+        Some(raw) => raw.parse::<WriteBackend>().map_err(to_mcp_error)?,
+        None => WriteBackend::default(),
+    };
+    let backend_opts = backend_opts
+        .map(|settings| {
+            serde_json::from_value::<VaultGitConfig>(serde_json::Value::Object(
+                settings.into_iter().collect(),
+            ))
+        })
+        .transpose()
+        .map_err(|error| McpError::invalid_request(format!("Invalid backend_opts: {error}")))?;
+    Ok((backend, backend_opts))
+}
 
 #[derive(Clone)]
 pub(super) struct VaultProvider(CoreToolHandler);
@@ -26,8 +55,11 @@ impl VaultProvider {
     // ==================== Vault Lifecycle (Multi-Vault Management) ====================
 
     /// Create a new Obsidian vault
+    // The `backend_opts` schema is a free-form object with no field names, so
+    // this description is the only place a calling agent can discover the keys
+    // it accepts. Spell them out here or they are undiscoverable.
     #[tool(
-        description = "Create and register a new Obsidian vault at the specified filesystem path with an optional template",
+        description = "Create and register a new Obsidian vault at the specified filesystem path with an optional template. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
         usage = "Use for programmatic vault creation. The new vault is registered immediately; use set_active_vault if another vault is currently active",
         performance = "Fast (<50ms), creates .obsidian directory and config files",
         related = ["set_active_vault", "list_vaults"],
@@ -39,10 +71,19 @@ impl VaultProvider {
         name: String,
         path: String,
         template: Option<String>,
+        write_backend: Option<String>,
+        backend_opts: Option<HashMap<String, serde_json::Value>>,
     ) -> McpResult<serde_json::Value> {
+        let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
         let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
         let vault_info = tools
-            .create_vault(&name, Path::new(&path), template.as_deref())
+            .create_vault(
+                &name,
+                Path::new(&path),
+                template.as_deref(),
+                write_backend,
+                backend_opts,
+            )
             .await
             .map_err(to_mcp_error)?;
 
@@ -59,17 +100,24 @@ impl VaultProvider {
 
     /// Add an existing vault (automatically initializes it for better DX)
     #[tool(
-        description = "Register an existing Obsidian vault with the MCP server and auto-initialize",
+        description = "Register an existing Obsidian vault with the MCP server and auto-initialize. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
         usage = "Use as first step when working with existing vaults. Idempotent and safe to call multiple times",
         performance = "Depends on vault size: 100ms for small vaults, 1-5s for large (1000+ files) due to initialization",
         related = ["list_vaults", "set_active_vault", "get_vault_context"],
         examples = ["Add personal vault", "Register work vault", "Connect to shared knowledge base"],
         tags = ["write", "admin"],
     )]
-    async fn add_vault(&self, name: String, path: String) -> McpResult<serde_json::Value> {
+    async fn add_vault(
+        &self,
+        name: String,
+        path: String,
+        write_backend: Option<String>,
+        backend_opts: Option<HashMap<String, serde_json::Value>>,
+    ) -> McpResult<serde_json::Value> {
+        let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
         let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
         let vault_info = tools
-            .add_vault_from_path(&name, Path::new(&path))
+            .add_vault_from_path(&name, Path::new(&path), write_backend, backend_opts)
             .await
             .map_err(to_mcp_error)?;
 
@@ -80,44 +128,13 @@ impl VaultProvider {
             name
         );
 
-        // Get the vault manager and initialize it
-        let vault_config = self
-            .multi_vault_mgr
-            .get_vault_config(&name)
-            .await
-            .map_err(|e| McpError::internal(format!("Failed to get vault config: {}", e)))?;
-
-        let mut server_config = ServerConfig::default();
-        let mut vault_cfg = vault_config;
-        vault_cfg.is_default = true;
-        server_config.vaults = vec![vault_cfg];
-
-        let mut manager = VaultManager::new(server_config)
-            .map_err(|e| McpError::internal(format!("Failed to create vault manager: {}", e)))?;
-
-        self.initialize_audit_for_manager(&name, &mut manager).await;
-
-        manager
-            .initialize()
-            .await
-            .map_err(|e| McpError::internal(format!("Failed to initialize vault: {}", e)))?;
-
-        let manager = Arc::new(manager);
-
-        // M4c (bite 3a, turbovault-qae.5.3): wire the manager-owned reindex +
-        // change-listener (git vaults; no-op on Direct) BEFORE publishing to
-        // the cache. `add_vault` is the primary runtime entry point, and
+        // Build, wire and publish through the single activation path. Wiring
+        // matters most here: `add_vault` is the primary runtime entry point and
         // `get_active_vault_manager` always cache-hits once a manager is
-        // published — so without wiring here the drainer / HEAD-ref listener
-        // would never start and search-staleness would never close for any
-        // git vault added at runtime.
-        self.wire_manager_reindex(&name, &manager).await;
-
-        // Cache the initialized manager
-        {
-            let mut cache = self.vault_managers.write().await;
-            cache.insert(name.clone(), manager);
-        }
+        // published — so an unwired manager published here would mean the
+        // drainer / HEAD-ref listener never start and search-staleness never
+        // closes for any git vault added at runtime (bite 3a, qae.5.3).
+        self.activate_vault_manager(&name).await?;
 
         log::info!("Vault '{}' initialized and ready", name);
 
