@@ -15,8 +15,8 @@ use turbovault_tools::{
     AnalysisTools, AuditTools, BatchOperation, BatchTools, CommitLocks, DiffTools, DuplicateTools,
     ExportTools, FanoutInfo, FileTools, GitMergeStrategy, GraphTools, GroundingTools,
     MetadataTools, OkfTools, QualityTools, RelationshipTools, SearchEngine, SearchQuery,
-    SearchTools, SimilarityEngine, TemplateEngine, VaultLifecycleTools, VaultRepo, ViewerTools,
-    WriteMode, obsidian_uri,
+    SearchTools, SimilarityEngine, SliceResult, SliceSpec, TemplateEngine, VaultLifecycleTools,
+    VaultRepo, ViewerTools, WriteMode, obsidian_uri, slice_content,
 };
 use turbovault_vault::{ChangeListener, VaultManager};
 
