@@ -219,7 +219,7 @@ pub use turbovault_git::{
     CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, OrphanFanout, VaultRepo,
 };
 pub use validation_tools::{ValidationReportInfo, ValidationTools};
-pub use vault_lifecycle::VaultLifecycleTools;
+pub use vault_lifecycle::{VaultLifecycleTools, direct_over_git_repo_warning};
 pub use viewer::{ViewerTools, VisualizationResult};
 
 #[cfg(feature = "sql")]

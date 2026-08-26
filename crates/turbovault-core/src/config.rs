@@ -31,6 +31,24 @@ pub enum WriteBackend {
     Git,
 }
 
+/// turbovault-kdq: parse the backend out of a runtime registration parameter
+/// (the `write_backend` MCP argument, the `--vault-write-backend` CLI flag).
+/// Accepts exactly the serde spellings, `legacy` alias included, so a config
+/// value and a wire value can never disagree.
+impl std::str::FromStr for WriteBackend {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "direct" | "legacy" => Ok(Self::Direct),
+            "git" => Ok(Self::Git),
+            other => Err(Error::config_error(format!(
+                "Unknown write_backend '{other}' (expected 'direct' or 'git')"
+            ))),
+        }
+    }
+}
+
 /// How the git substrate merges a fan-out's wip branch back into main
 /// (mirrors `turbovault_git::MergeStrategy` as a serializable config type so
 /// `turbovault-core` doesn't pick up a git2/libgit2 dependency). The consumer
