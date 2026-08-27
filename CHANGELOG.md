@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The vault scan no longer follows symlinks.** It used `Path::is_dir`, which follows them, with no visited set: a link pointing at an ancestor made the walk recurse until it exhausted memory, and one pointing outside the vault pulled content into the index that `resolve_path` refuses to hand back out. Both were reachable by anyone able to write a file into the vault. The scan also skips `.turbovault/` now, and matches extensions case-insensitively so `Note.MD` is discovered rather than quietly falling out of the link graph.
 
 - **A drain pass no longer returns before the search index has caught up.** The change-listener was spawned rather than awaited, so a search racing a Git reindex drain could read an index that was behind the link graph. The listener now hands back a future the manager awaits, which is also what makes the freshness gate a guarantee rather than a hint.
+- **Images inside links are reported again.** `[![badge](b.png)](https://ci.example)` emitted the link and dropped the image entirely, so a README badge row reported zero images. The image is now emitted alongside its enclosing link, and the two keep their own destinations rather than sharing one.
+
+- **An image title is no longer folded into its source.** `![a](x.png "Title")` parsed to `src: "x.png \"Title\""` with `title: None`. The preprocessor that rewrites genuinely spaced destinations into angle-bracket form was wrapping the title along with the destination. It now splits the title off first, so a spaced destination still gets its brackets and keeps its title.
+
+- **A list item keeps its own text and its images.** Text before an image in the same item was discarded, because an image parked its title in the buffer the paragraph was accumulating into. In a tight list it was worse: with no paragraph events to catch it, the image was hoisted out to a top-level block, so the same content reported differently depending only on whether a blank line sat between the items.
+
+- **Blockquote lines stay separable.** Body lines were concatenated with no separator, so `> [!NOTE] Heads up` followed by two lines became `[!NOTE] Heads upSome text.More text.`. Anything reading a GFM alert or an Obsidian callout takes the first line as the marker and the rest as the body, so the whole body was being swallowed into the title. Breaks inside a quote now reach the quote rather than the surrounding paragraph, which also removes the stray whitespace-only paragraph that was emitted beside every blockquote.
+
+- **A fenced block inside a blockquote stays inside it.** It was emitted as a top-level sibling *ahead of* the blockquote still being buffered, so code in a callout rendered above the callout header.
+
+  All five were reported from treemd ([#79](https://github.com/Epistates/treemd/issues/79), [#80](https://github.com/Epistates/treemd/issues/80)) and none could be worked around downstream, since the information was already gone by the time a consumer received the blocks.
 
 ### Added
 
