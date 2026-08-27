@@ -21,28 +21,95 @@ impl Deref for FileProvider {
     }
 }
 
+/// Response payload for a partial `read_note`.
+///
+/// [`SliceResult`] is flattened in, so its `skip_serializing_if` attributes
+/// still apply: a line slice carries `returned_lines` and no section fields, a
+/// section slice the reverse. Note the absence of `hash` — see `read_note`.
+#[derive(serde::Serialize)]
+struct PartialReadPayload<'a> {
+    path: &'a str,
+    uri: String,
+    #[serde(flatten)]
+    slice: SliceResult,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
 impl FileProvider {
     // ==================== File Operations ====================
 
-    /// Read the contents of a note
+    /// Read the contents of a note, optionally only part of it
     #[tool(
-        description = "Read complete markdown content of a note from active vault",
-        usage = "Use before editing, analyzing, or displaying notes. Supports all Obsidian Flavored Markdown syntax including wikilinks [[note]], embeds ![[image.png]], and block references ^block-id",
-        performance = "Fast (<10ms typical). Returns path, content, and content hash for conflict detection",
-        related = ["write_note", "edit_note", "get_backlinks"],
-        examples = ["daily/2024-01-15.md", "projects/website-redesign.md"],
+        description = "Read markdown content of a note from active vault, either whole or a selected part",
+        usage = "Use before editing, analyzing, or displaying notes. Supports all Obsidian Flavored Markdown syntax including wikilinks [[note]], embeds ![[image.png]], and block references ^block-id. Omit every optional parameter to read the whole note. To read part of a long note, pass EITHER line selectors (head_lines or tail_lines, not both) OR section selectors (heading_level, heading_equals, last_sections) - mixing the two is an error. heading_level must be 1-6 and sets which heading level delimits a section; a section runs to the next heading of the same or a higher level, so subheadings stay inside it. heading_equals matches heading text exactly, case-sensitively, without the leading # markers. Omit last_sections to get every matching section. A partial read returns no hash, so do not follow it with a whole-file write_note: use edit_note for a targeted change, or read the note again in full first.",
+        performance = "Fast (<10ms typical). A whole-file read returns path, content and a content hash for conflict detection. A partial read returns the selected content plus truncated, total_lines, and either returned_lines or sections - and deliberately no hash",
+        related = ["edit_note", "write_note", "get_backlinks"],
+        examples = [
+            "path: daily/2024-01-15.md (whole note)",
+            "path: projects/log.md, tail_lines: 40 (last 40 lines)",
+            "path: projects/log.md, heading_level: 2, last_sections: 3 (last 3 entries)",
+            "path: projects/log.md, heading_level: 2, heading_equals: 2026-08-15 (one named entry)",
+        ],
         tags = ["read"],
         read_only = true,
     )]
-    async fn read_note(&self, path: String) -> McpResult<serde_json::Value> {
+    async fn read_note(
+        &self,
+        path: String,
+        head_lines: Option<usize>,
+        tail_lines: Option<usize>,
+        heading_level: Option<u8>,
+        heading_equals: Option<String>,
+        last_sections: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = FileTools::new(manager);
         let content = tools.read_file(&path).await.map_err(to_mcp_error)?;
+        let uri = obsidian_uri(&vault_name, &path);
+
+        // `SliceSpec::first_sections` stays available to library callers; it is
+        // simply not exposed as a tool parameter. `heading_equals` already
+        // reaches a named section anywhere in the file, and omitting the count
+        // returns every match, so the only phrasing lost is "the first N
+        // sections".
+        let spec = SliceSpec {
+            head_lines,
+            tail_lines,
+            heading_level,
+            heading_equals,
+            last_sections,
+            ..Default::default()
+        };
+        // Contradictory selectors are the caller's mistake, not a server fault.
+        let slice =
+            slice_content(&content, &spec).map_err(|e| McpError::invalid_request(e.to_string()))?;
+
+        // A partial read deliberately returns no `hash`. That token asserts the
+        // caller has seen this file's current state, which is false when only
+        // part of it was returned: handing it to `write_note` would let a
+        // whole-file overwrite satisfy its precondition and silently destroy
+        // the unread remainder. `edit_note` needs no token, and a caller that
+        // really wants to replace the file can re-read it in full.
+        if let Some(slice) = slice {
+            let sections_returned = slice.sections.len();
+            let mut response = StandardResponse::new(
+                &vault_name,
+                "read_note",
+                PartialReadPayload {
+                    path: &path,
+                    uri,
+                    slice,
+                },
+            );
+            if sections_returned > 0 {
+                response = response.with_count(sections_returned);
+            }
+            return response
+                .with_next_steps(&["edit_note", "get_backlinks"])
+                .to_json();
+        }
 
         let hash = self.hash_for_active_backend(&content).await?;
-
-        let uri = obsidian_uri(&vault_name, &path);
         StandardResponse::new(
             &vault_name,
             "read_note",

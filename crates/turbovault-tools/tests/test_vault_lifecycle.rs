@@ -31,7 +31,7 @@ async fn every_template_creates_and_registers_its_expected_structure() {
     for (template, directories) in templates {
         let path = root.path().join(template);
         let info = tools
-            .create_vault(template, &path, Some(template))
+            .create_vault(template, &path, Some(template), WriteBackend::Direct, None)
             .await
             .unwrap_or_else(|error| panic!("create {template} template: {error}"));
 
@@ -82,7 +82,7 @@ async fn default_creation_and_registered_directory_validation_report_real_state(
     let default_path = root.path().join("implicit-default");
 
     tools
-        .create_vault("implicit", &default_path, None)
+        .create_vault("implicit", &default_path, None, WriteBackend::Direct, None)
         .await
         .expect("create implicit default template");
     assert!(default_path.join("Areas").is_dir());
@@ -93,7 +93,7 @@ async fn default_creation_and_registered_directory_validation_report_real_state(
         .await
         .expect("plain directory");
     tools
-        .add_vault_from_path("plain", &plain_path, WriteBackend::Direct)
+        .add_vault_from_path("plain", &plain_path, WriteBackend::Direct, None)
         .await
         .expect("register plain directory");
 
@@ -135,14 +135,25 @@ async fn lifecycle_rejects_invalid_names_templates_paths_and_duplicates() {
 
     for name in ["", "contains spaces", &"x".repeat(65)] {
         let path = root.path().join("invalid-name");
-        assert!(tools.create_vault(name, &path, None).await.is_err());
+        assert!(
+            tools
+                .create_vault(name, &path, None, WriteBackend::Direct, None)
+                .await
+                .is_err()
+        );
         assert!(!path.exists());
     }
 
     let invalid_template_path = root.path().join("invalid-template");
     assert!(
         tools
-            .create_vault("invalid-template", &invalid_template_path, Some("unknown"))
+            .create_vault(
+                "invalid-template",
+                &invalid_template_path,
+                Some("unknown"),
+                WriteBackend::Direct,
+                None,
+            )
             .await
             .is_err()
     );
@@ -150,7 +161,7 @@ async fn lifecycle_rejects_invalid_names_templates_paths_and_duplicates() {
 
     let missing_path = root.path().join("missing");
     let missing = tools
-        .add_vault_from_path("missing", &missing_path, WriteBackend::Direct)
+        .add_vault_from_path("missing", &missing_path, WriteBackend::Direct, None)
         .await
         .expect_err("registration must not create a missing path");
     assert!(missing.to_string().contains("Use create_vault"));
@@ -160,10 +171,15 @@ async fn lifecycle_rejects_invalid_names_templates_paths_and_duplicates() {
     tokio::fs::write(&file_path, "not a directory")
         .await
         .expect("file fixture");
-    assert!(tools.create_vault("file", &file_path, None).await.is_err());
     assert!(
         tools
-            .add_vault_from_path("other-file", &file_path, WriteBackend::Direct)
+            .create_vault("file", &file_path, None, WriteBackend::Direct, None)
+            .await
+            .is_err()
+    );
+    assert!(
+        tools
+            .add_vault_from_path("other-file", &file_path, WriteBackend::Direct, None)
             .await
             .is_err()
     );
@@ -173,18 +189,24 @@ async fn lifecycle_rejects_invalid_names_templates_paths_and_duplicates() {
         .await
         .expect("registered directory");
     tools
-        .add_vault_from_path("registered", &registered_path, WriteBackend::Direct)
+        .add_vault_from_path("registered", &registered_path, WriteBackend::Direct, None)
         .await
         .expect("first registration");
     assert!(
         tools
-            .add_vault_from_path("registered", &registered_path, WriteBackend::Direct)
+            .add_vault_from_path("registered", &registered_path, WriteBackend::Direct, None)
             .await
             .is_err()
     );
     assert!(
         tools
-            .create_vault("registered", &root.path().join("duplicate"), None)
+            .create_vault(
+                "registered",
+                &root.path().join("duplicate"),
+                None,
+                WriteBackend::Direct,
+                None,
+            )
             .await
             .is_err()
     );

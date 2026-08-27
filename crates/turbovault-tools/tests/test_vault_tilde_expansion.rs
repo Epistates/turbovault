@@ -27,7 +27,7 @@ async fn test_add_vault_with_absolute_temp_path() {
 
     // Add existing vault
     let vault_info = lifecycle_tools
-        .add_vault_from_path("test_add", &test_dir, WriteBackend::Direct)
+        .add_vault_from_path("test_add", &test_dir, WriteBackend::Direct, None)
         .await
         .unwrap();
 

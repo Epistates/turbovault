@@ -31,19 +31,20 @@ pub enum WriteBackend {
     Git,
 }
 
-impl WriteBackend {
-    /// Parse a caller-supplied backend name.
-    ///
-    /// `direct` is accepted as a synonym for `legacy` so callers can already
-    /// use the clearer name — "legacy" describes the implementation's history
-    /// rather than what it does, which is write straight to the working tree.
-    pub fn parse(value: &str) -> std::result::Result<Self, String> {
+/// turbovault-kdq: parse the backend out of a runtime registration parameter
+/// (the `write_backend` MCP argument, the `--vault-write-backend` CLI flag).
+/// Accepts exactly the serde spellings, `legacy` alias included, so a config
+/// value and a wire value can never disagree.
+impl std::str::FromStr for WriteBackend {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "legacy" | "direct" => Ok(Self::Direct),
+            "direct" | "legacy" => Ok(Self::Direct),
             "git" => Ok(Self::Git),
-            other => Err(format!(
-                "unknown write_backend {other:?}; expected \"git\" or \"direct\" (alias \"legacy\")"
-            )),
+            other => Err(Error::config_error(format!(
+                "Unknown write_backend '{other}' (expected 'direct' or 'git')"
+            ))),
         }
     }
 }

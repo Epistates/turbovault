@@ -208,11 +208,11 @@ async fn test_batch_execute_rollback_on_error() {
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(!batch_result.success);
-    // write-substrate-layering M4d/M4e: the manager-routed batch folds every
-    // op into ONE ChangePlan and reports `executed: 0` on any apply failure
-    // (per-index `failed_at` tracking on the direct backend is M5.2 future
-    // work) — it does NOT mean nothing landed on disk; see below.
-    assert_eq!(batch_result.executed, 0);
+    // TV-016: the direct backend's apply loop is sequential with no rollback,
+    // so operation 0 landed. `executed` counts what landed, `failed_at` names
+    // the operation that stopped the batch.
+    assert_eq!(batch_result.executed, 1);
+    assert_eq!(batch_result.failed_at, Some(1));
 
     // Note: the direct backend's apply loop is sequential with no rollback
     // (only the precondition GATE is atomic) — operation 0 (success1.md) was
@@ -294,11 +294,11 @@ async fn test_batch_execute_atomic_guarantees() {
     assert!(result2.is_ok());
     let batch_result2 = result2.unwrap();
     assert!(!batch_result2.success);
-    // See test_batch_execute_rollback_on_error: the manager-routed batch
-    // reports `executed: 0` on any apply failure (M5.2 adds per-index
-    // `failed_at`); atomic3.md still landed (asserted below) since the
-    // direct backend's apply loop is sequential with no rollback.
-    assert_eq!(batch_result2.executed, 0);
+    // See test_batch_execute_rollback_on_error: atomic3.md landed (asserted
+    // below) since the direct backend's apply loop is sequential with no
+    // rollback, and TV-016 makes the report say so.
+    assert_eq!(batch_result2.executed, 1);
+    assert_eq!(batch_result2.failed_at, Some(1));
 
     // Verify first batch files still exist (different batch, unaffected)
     let vault_path = manager.vault_path();
@@ -525,5 +525,175 @@ async fn test_plan_rejects_intra_batch_same_path_collision() {
     assert!(
         msg.contains("intra-batch path collision") && msg.contains("a.md"),
         "got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TV-016 (turbovault-qim): the direct batch must REPORT what it mutated
+// ---------------------------------------------------------------------------
+
+/// (A) The ticket's repro. A direct batch is best-effort: op 0 lands, op 1
+/// fails, op 2 is never attempted. The response must say exactly that —
+/// `executed: 1`, `failed_at: Some(1)`, op 0 in `changes`, on disk AND in the
+/// link graph, and a record per attempted op — instead of the pre-fix
+/// `executed: 0` / `failed_at: null` / empty `changes` + `records`, which
+/// claimed nothing happened while va.md sat on disk.
+///
+/// THE FAILING OP MUST FAIL IN THE APPLY LOOP, NOT AT THE PRECONDITION GATE.
+/// `DirectSubstrate::apply` checks every precondition before applying any
+/// change and aborts the whole plan with nothing written, so a precondition
+/// failure can never leave the partial this test exists to pin — a scenario
+/// built on one would silently stop testing anything. Hence a `WriteNote`
+/// with `expected_hash: None`, which contributes NO precondition (the gate
+/// never even reads the path), targeting a path whose parent component is an
+/// existing regular FILE: the apply loop's `create_dir_all` cannot turn a
+/// regular file into a directory. That refusal comes from the kernel, so it
+/// is deterministic, holds when the process runs as root, and is not a
+/// semantic the write-safety matrix can ever redefine.
+///
+/// It replaces the ticket's original failing op — a `DeleteNote` of an ABSENT
+/// file — which the ratified spec says must SUCCEED:
+/// `docs/write-safety-suite/wss-precondition-matrix.csv`, row
+/// `delete_note,Exists`, all-absent (`-----`) column, is `Ok`. Once the
+/// direct backend catches up to that cell the old batch stops failing and the
+/// old test goes red for a FIX rather than a regression.
+#[tokio::test]
+async fn test_batch_partial_failure_reports_the_op_that_landed() {
+    let (temp_dir, manager) = setup_vault_with_files(&[
+        ("existing.md", "# Existing\n"),
+        // A regular FILE, not a directory — nothing can be created under it.
+        ("blocker.md", "# Blocker\n"),
+    ])
+    .await;
+    let tools = BatchTools::new(manager.clone());
+
+    let ops = vec![
+        BatchOperation::CreateNote {
+            path: "va.md".to_string(),
+            content: "# VA\n\nSee [[existing]].\n".to_string(),
+            force: None,
+        },
+        BatchOperation::WriteNote {
+            // Fails in the apply loop: create_dir_all("blocker.md") hits the
+            // existing regular file. No expected_hash => no precondition, so
+            // the gate never touches this path.
+            path: "blocker.md/child.md".to_string(),
+            content: "# never lands".to_string(),
+            expected_hash: None,
+        },
+        BatchOperation::CreateNote {
+            path: "vc.md".to_string(),
+            content: "# VC".to_string(),
+            force: None,
+        },
+    ];
+
+    let result = tools.batch_execute(ops, "tv-016 partial").await.unwrap();
+
+    assert!(
+        !result.success,
+        "a batch that stopped mid-plan is not a success"
+    );
+    assert_eq!(result.executed, 1, "op 0 genuinely landed");
+    assert_eq!(result.failed_at, Some(1), "op 1 is the op that failed");
+    assert_eq!(result.total, 3);
+    assert_eq!(
+        result.changes,
+        vec!["created va.md".to_string()],
+        "changes lists the ops that applied, not the whole batch"
+    );
+
+    assert_eq!(
+        result.records.len(),
+        2,
+        "one record per ATTEMPTED op — op 2 was never reached"
+    );
+    assert_eq!(result.records[0].operation_index, 0);
+    assert!(result.records[0].success);
+    assert!(result.records[0].error.is_none());
+    assert_eq!(result.records[0].affected_files, vec!["va.md".to_string()]);
+    assert_eq!(result.records[1].operation_index, 1);
+    assert!(!result.records[1].success);
+    let failure = result.records[1]
+        .error
+        .as_deref()
+        .expect("the failing op carries its error");
+    assert!(
+        failure.starts_with("I/O error:"),
+        "the apply loop must have stopped on a filesystem failure — a \
+         precondition rejection would have aborted at the gate with nothing \
+         written, and this test would be pinning nothing. Got: {failure}"
+    );
+    assert!(
+        !result.errors.is_empty(),
+        "the batch still surfaces the error"
+    );
+
+    // The report has to match the disk, which is the whole point.
+    assert!(temp_dir.path().join("va.md").exists());
+    assert!(!temp_dir.path().join("vc.md").exists());
+    assert!(
+        temp_dir.path().join("blocker.md").is_file(),
+        "the failing write must not have clobbered the blocker"
+    );
+
+    // ...and the manager indexed what landed, so the op that survived the
+    // partial is visible to every read path, not just to `ls`.
+    let linkers = {
+        let lg = manager.link_graph();
+        let graph = lg.read().await;
+        graph
+            .backlinks(&temp_dir.path().join("existing.md"))
+            .unwrap()
+            .into_iter()
+            .map(|(path, _links)| path)
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        linkers.contains(&temp_dir.path().join("va.md")),
+        "the landed op must be in the link graph, not only on disk: {linkers:?}"
+    );
+}
+
+/// (B) A SUCCESSFUL batch `MoveNote` rewrites every inbound wikilink in the
+/// same plan, so the linker it rewrote is a file this operation mutated —
+/// `affected_files` must name it. Pre-fix it was built from the operation's
+/// DECLARED paths (`BatchOperation::affected_files`), which cannot know about
+/// a linker the plan discovered from the link graph.
+#[tokio::test]
+async fn test_batch_move_reports_backlink_rewritten_linker_in_affected_files() {
+    let (temp_dir, manager) =
+        setup_vault_with_files(&[("bt.md", "# Target\n"), ("bl.md", "See [[bt]] here.\n")]).await;
+    let tools = BatchTools::new(manager.clone());
+
+    let ops = vec![BatchOperation::MoveNote {
+        from: "bt.md".to_string(),
+        to: "bt-renamed.md".to_string(),
+        expected_hash: None,
+        update_backlinks: None,
+    }];
+
+    let result = tools.batch_execute(ops, "tv-016 move").await.unwrap();
+
+    assert!(result.success, "errors: {:?}", result.errors);
+    assert_eq!(result.executed, 1);
+    let affected = &result.records[0].affected_files;
+    assert!(
+        affected.contains(&"bl.md".to_string()),
+        "the rewritten linker is a file this op mutated: {affected:?}"
+    );
+    assert!(affected.contains(&"bt.md".to_string()), "{affected:?}");
+    assert!(
+        affected.contains(&"bt-renamed.md".to_string()),
+        "{affected:?}"
+    );
+
+    // The linker really was rewritten on disk — affected_files is not a lie
+    // in the other direction either.
+    assert_eq!(
+        tokio::fs::read_to_string(temp_dir.path().join("bl.md"))
+            .await
+            .unwrap(),
+        "See [[bt-renamed]] here.\n"
     );
 }

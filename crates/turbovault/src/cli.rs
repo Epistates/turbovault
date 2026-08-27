@@ -8,9 +8,9 @@ use clap::Parser;
 use std::path::PathBuf;
 use turbomcp::telemetry::TelemetryConfig;
 use turbomcp::{McpServerExt, ProtocolConfig, VisibilityLayer};
-use turbovault_core::VaultConfig;
 use turbovault_core::cache::VaultCache;
-use turbovault_tools::OutputFormat;
+use turbovault_core::config::{VaultGitConfig, WriteBackend};
+use turbovault_tools::{OutputFormat, VaultLifecycleTools, direct_over_git_repo_warning};
 
 /// TurboVault Server - AI-powered vault management
 #[derive(Parser, Debug)]
@@ -19,6 +19,18 @@ pub struct Args {
     /// Path to the Obsidian vault directory
     #[arg(short, long, env = "OBSIDIAN_VAULT_PATH")]
     vault: Option<PathBuf>,
+
+    /// Write backend for the --vault shorthand: `direct` (default) or `git`
+    /// (turbovault-kdq). Vaults registered from --config carry their own
+    /// `write_backend` key and ignore this.
+    #[arg(long, env = "TURBOVAULT_VAULT_WRITE_BACKEND")]
+    vault_write_backend: Option<WriteBackend>,
+
+    /// Settings for the --vault shorthand's selected write backend, as JSON
+    /// (e.g. '{"branch":"main","require_commit_message":true}'). Only the git
+    /// backend has any, so this requires --vault-write-backend git.
+    #[arg(long, env = "TURBOVAULT_VAULT_BACKEND_OPTS")]
+    vault_backend_opts: Option<String>,
 
     /// Configuration profile to use (development, production, etc.)
     #[arg(short, long, default_value = "development", env = "TURBOVAULT_PROFILE")]
@@ -199,6 +211,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 // Add each cached vault to the multi-vault manager
                 for vault_config in cached_vaults {
+                    // turbovault-74p: a cached Direct vault over a git repo is
+                    // the same bypass, restored — warn on every recovery too.
+                    if let Some(warning) = direct_over_git_repo_warning(&vault_config) {
+                        log::warn!("{warning}");
+                    }
                     match server.multi_vault().add_vault(vault_config.clone()).await {
                         Ok(_) => {
                             log::info!(
@@ -268,8 +285,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(vault_path) = args.vault {
         // Expand tilde and environment variables in the path
         let vault_path = expand_vault_path(&vault_path)?;
+        let write_backend = args.vault_write_backend.unwrap_or_default();
+        let backend_opts = args
+            .vault_backend_opts
+            .as_deref()
+            .map(serde_json::from_str::<VaultGitConfig>)
+            .transpose()
+            .map_err(|error| format!("Invalid --vault-backend-opts JSON: {error}"))?;
         log::info!("Adding vault from CLI argument: {:?}", vault_path);
-        register_default_vault(&server, &vault_path).await?;
+        register_default_vault(&server, &vault_path, write_backend, backend_opts).await?;
     } else {
         log::info!("No vault path provided. Use add_vault MCP tool to register a vault.");
         log::info!("Available tools: add_vault, list_vaults, set_active_vault");
@@ -490,6 +514,11 @@ async fn register_configured_vaults(
             )
             .into());
         }
+        // turbovault-74p: the inverse mismatch — direct over a git repo — is a
+        // silent bypass rather than an error, so it warns and registers.
+        if let Some(warning) = direct_over_git_repo_warning(&vault) {
+            log::warn!("{warning}");
+        }
         log::info!(
             "Registering configured vault '{}' ({:?}) with write_backend={:?}",
             vault.name,
@@ -587,6 +616,8 @@ enum DefaultVaultRegistration {
 async fn register_default_vault(
     server: &ObsidianMcpServer,
     vault_path: &std::path::Path,
+    write_backend: WriteBackend,
+    backend_opts: Option<VaultGitConfig>,
 ) -> Result<DefaultVaultRegistration, Box<dyn std::error::Error>> {
     if server.multi_vault().vault_exists("default").await {
         return match server.multi_vault().get_vault_config("default").await {
@@ -616,9 +647,13 @@ async fn register_default_vault(
         };
     }
 
-    let vault_config = VaultConfig::builder("default", vault_path)
-        .build()
-        .map_err(|error| format!("Failed to create vault config: {error}"))?;
+    // Through the same funnel the MCP tools use, so the shorthand cannot drift
+    // on the backend selection — including the turbovault-74p footgun warning,
+    // which --vault over an existing git repo is the live case of, and the
+    // refusal of backend options for a backend that has none.
+    let vault_config =
+        VaultLifecycleTools::build_config("default", vault_path, write_backend, backend_opts)
+            .map_err(|error| format!("Failed to create vault config: {error}"))?;
     server
         .multi_vault()
         .add_vault(vault_config)
@@ -667,6 +702,24 @@ mod tests {
         assert_eq!(args.hidden_tools, ["audit_stats"]);
         assert_eq!(args.disabled_tags, ["write", "delete"]);
         assert!(args.require_read_only_tools);
+    }
+
+    /// The --vault shorthand's backend selection is a wire-visible name with no
+    /// golden catalog behind it, so pin the spelling here.
+    #[test]
+    fn parses_the_vault_backend_selection_flags() {
+        let args = args(&[
+            "--vault-write-backend",
+            "git",
+            "--vault-backend-opts",
+            r#"{"branch":"main"}"#,
+        ]);
+
+        assert_eq!(args.vault_write_backend, Some(WriteBackend::Git));
+        assert_eq!(
+            args.vault_backend_opts.as_deref(),
+            Some(r#"{"branch":"main"}"#)
+        );
     }
 
     #[test]
@@ -806,15 +859,19 @@ mod tests {
         let server = ObsidianMcpServer::new().unwrap();
 
         assert_eq!(
-            register_default_vault(&server, first.path()).await.unwrap(),
+            register_default_vault(&server, first.path(), WriteBackend::Direct, None)
+                .await
+                .unwrap(),
             DefaultVaultRegistration::Added
         );
         assert_eq!(
-            register_default_vault(&server, first.path()).await.unwrap(),
+            register_default_vault(&server, first.path(), WriteBackend::Direct, None)
+                .await
+                .unwrap(),
             DefaultVaultRegistration::AlreadyRegistered
         );
         assert_eq!(
-            register_default_vault(&server, second.path())
+            register_default_vault(&server, second.path(), WriteBackend::Direct, None)
                 .await
                 .unwrap(),
             DefaultVaultRegistration::KeptCached {
