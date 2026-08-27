@@ -28,6 +28,17 @@ use std::path::Path;
 use tracing::instrument;
 use turbovault_core::ChangePlan;
 
+/// What happened to one path between two commits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathChange {
+    /// The path exists in the later commit and not in the earlier one.
+    Added,
+    /// The path exists in both commits with different content.
+    Modified,
+    /// The path exists in the earlier commit and not in the later one.
+    Deleted,
+}
+
 impl VaultRepo {
     /// Read a path's bytes at a specific commit. `None` if the path is absent
     /// in that commit's tree. The bytes-level preview for the rollback UI.
@@ -63,18 +74,17 @@ impl VaultRepo {
         Ok(paths)
     }
 
-    /// Per-path change status between two commits, or between the empty tree
-    /// and `b` when `a` is `None` (the initial-commit case).
+    /// Per-path change between two commits, or between the empty tree and `b`
+    /// when `a` is `None` (the initial-commit case).
     ///
-    /// Each entry is `(path, present_in_b)`:
-    /// - `true`  → path was added or modified in `b` (re-index it).
-    /// - `false` → path was deleted in `b` (drop it from derived indexes).
+    /// Same walk as [`Self::diff_path_statuses`], but preserving whether a
+    /// path was added or modified.
     ///
-    /// Used by the GWS.14 reindex apply step, which needs to distinguish
-    /// "added/modified → parse + add to graph" from "deleted → remove from
-    /// graph". `paths_changed_between` collapses both into one bag, which
-    /// loses the information.
-    pub fn diff_path_statuses(&self, a: Option<Oid>, b: Oid) -> Result<Vec<(String, bool)>> {
+    /// Reindexing only needs "does this path exist in `b`", but a change feed
+    /// needs to tell a consumer which of the two happened, and the delta
+    /// status is already available here — collapsing it to a bool throws away
+    /// information that cannot be recovered downstream.
+    pub fn diff_path_changes(&self, a: Option<Oid>, b: Oid) -> Result<Vec<(String, PathChange)>> {
         let r = self.git();
         let b_tree = r.find_commit(b)?.tree()?;
         let a_tree = match a {
@@ -93,8 +103,15 @@ impl VaultRepo {
                     _ => delta.new_file().path().or_else(|| delta.old_file().path()),
                 };
                 if let Some(p) = path {
-                    let present_in_b = !matches!(status, git2::Delta::Deleted);
-                    out.push((p.to_string_lossy().to_string(), present_in_b));
+                    let change = match status {
+                        git2::Delta::Deleted => PathChange::Deleted,
+                        git2::Delta::Added | git2::Delta::Copied => PathChange::Added,
+                        // Renamed reports the new path here, which is a new
+                        // entry from the consumer's point of view.
+                        git2::Delta::Renamed => PathChange::Added,
+                        _ => PathChange::Modified,
+                    };
+                    out.push((p.to_string_lossy().to_string(), change));
                 }
                 true
             },
@@ -103,6 +120,18 @@ impl VaultRepo {
             None,
         )?;
         Ok(out)
+    }
+
+    /// Paths touched between two commits, as `(path, present_in_b)`.
+    ///
+    /// The reindex path only cares about presence; see
+    /// [`Self::diff_path_changes`] when the kind of change matters.
+    pub fn diff_path_statuses(&self, a: Option<Oid>, b: Oid) -> Result<Vec<(String, bool)>> {
+        Ok(self
+            .diff_path_changes(a, b)?
+            .into_iter()
+            .map(|(path, change)| (path, change != PathChange::Deleted))
+            .collect())
     }
 
     /// Build a changeset that restores `paths` to their state at

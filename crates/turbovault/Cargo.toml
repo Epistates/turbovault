@@ -42,7 +42,7 @@ sql = ["turbovault-tools/sql"]
 
 # Stable compiled-in plugin boundary. Individual plugin features added under
 # crates/plugins/ must include this feature and remain default-off.
-plugin-api = ["dep:async-trait", "dep:turbovault-plugin-api"]
+plugin-api = ["dep:async-trait", "dep:futures", "dep:turbomcp-protocol", "dep:turbovault-plugin-api"]
 
 # Convenience bundles
 http-full = ["http", "websocket"]            # HTTP + WebSocket
@@ -65,6 +65,7 @@ turbovault-plugin-api = { workspace = true, optional = true }
 # MCP server framework (features passed through from turbovault)
 turbomcp = { workspace = true, features = ["stdio", "telemetry"] }
 turbomcp-core = { workspace = true }
+turbomcp-protocol = { workspace = true, optional = true }
 turbomcp-server = { workspace = true }
 turbomcp-types = { workspace = true }
 
@@ -79,6 +80,7 @@ config = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 log = { workspace = true }
 simple_logger = "5.2"
 tracing = { workspace = true }
@@ -95,7 +97,7 @@ git2 = { workspace = true }
 # init + parallel ObsidianMcpServer setup is flaky (~25% failure rate
 # on a hot machine when tests run in parallel; isolating them removes
 # the flake entirely).
-serial_test = "3"
+serial_test = "4"
 # turbovault-3i5: wire-level MCP e2e — spawn the real `turbovault` binary
 # over stdio and drive it with the first-party turbomcp client, exercising
 # the JSON-RPC layer the in-process 6fo.18 suite skips and asserting derived
@@ -103,7 +105,8 @@ serial_test = "3"
 # no `flush_*_test` backdoor).
 turbomcp-client = "3.1.5"
 turbomcp-transport = "3.1.5"
-turbomcp-protocol = "3.1.5"
+# Also a plugin-api-gated runtime dependency; tests need it unconditionally.
+turbomcp-protocol = { workspace = true }
 
 [[bench]]
 name = "tool_benchmarks"

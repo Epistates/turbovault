@@ -30,7 +30,7 @@ description = "LLM-optimized Obsidian vault MCP server with advanced editing, se
 publish = true
 
 [workspace.dependencies]
-tokio = { version = "1.52", features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "fs"] }
+tokio = { version = "1.53", features = ["io-util", "macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 async-trait = "0.1"
@@ -57,7 +57,7 @@ walkdir = "2"
 
 # Parsing utilities
 regex = "1"
-winnow = "1.0.2"
+winnow = "1.0.4"
 
 # Error handling
 thiserror = "2.0"
@@ -65,8 +65,8 @@ anyhow = "1.0"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.23", features = ["v4", "serde"] }
-dashmap = "6.1"
+uuid = { version = "1.24", features = ["v4", "serde"] }
+dashmap = "6.2"
 
 # Configuration
 config = "0.15"
@@ -82,6 +82,7 @@ log = "0.4"
 # MCP server framework
 turbomcp = { version = "3.1.5", default-features = false }
 turbomcp-core = "3.1.5"
+turbomcp-protocol = "3.1.5"
 turbomcp-server = { version = "3.1.5", default-features = false }
 turbomcp-types = "3.1.5"
 
@@ -103,7 +104,6 @@ path_trav = "2"           # Path traversal detection - security-focused
 
 # Git write substrate (libgit2 bindings; vendored libgit2 -> needs cmake + cc at build)
 git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS via Transaction
-fs4 = "0.13"              # cross-process advisory lock for commit + materialize
 
 # DEFERRED (Phase 3+):
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization

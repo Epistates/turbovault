@@ -31,11 +31,69 @@ use turbomcp_types::ResourceTemplate;
 use turbovault_core::prelude::MultiVaultManager;
 
 #[cfg(feature = "plugin-api")]
+use turbovault_core::events::{VaultChange, VaultEventSink, WriteAttribution};
+#[cfg(feature = "plugin-api")]
 use turbovault_plugin_api::{
-    HookBus, Plugin, PluginContext, PluginError, PluginErrorCode, PluginProvider,
-    PluginRequestContext, ToolResult as PluginToolResult, VaultApi, namespaced_tool_name,
+    EventAttribution, HookBus, HookEvent, Plugin, PluginContext, PluginError, PluginErrorCode,
+    PluginIdentity, PluginProvider, PluginRequestContext, PluginStorage, ShutdownTrigger,
+    ToolResult as PluginToolResult, VaultApi, WriteProvenance, namespaced_prompt_name,
+    namespaced_resource_template, namespaced_resource_uri, namespaced_tool_name,
     validate_mcp_tool_name,
 };
+
+/// Wall-clock budget for a single plugin tool call.
+///
+/// A compiled-in plugin shares the host's runtime, so a call that never
+/// returns would hold its request open indefinitely. The budget is generous —
+/// it exists to convert a hang into a reportable failure, not to police
+/// legitimately slow work, which belongs in a task the plugin owns.
+#[cfg(feature = "plugin-api")]
+const PLUGIN_CALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Publishes host-observed vault changes onto the plugin hook bus.
+///
+/// This is the only adapter between TurboVault's internal change vocabulary
+/// and the plugin-facing event contract, so the two can evolve separately.
+#[cfg(feature = "plugin-api")]
+struct HookBusSink {
+    hooks: HookBus,
+}
+
+#[cfg(feature = "plugin-api")]
+impl VaultEventSink for HookBusSink {
+    fn publish(
+        &self,
+        vault: &str,
+        change: VaultChange,
+        content_hash: Option<String>,
+        attribution: WriteAttribution,
+    ) {
+        let event = match change {
+            VaultChange::Created { path } => HookEvent::FileCreated { path },
+            VaultChange::Modified { path } => HookEvent::FileModified { path },
+            VaultChange::Deleted { path } => HookEvent::FileDeleted { path },
+            VaultChange::Renamed { from, to } => HookEvent::FileRenamed { from, to },
+            VaultChange::ResyncRequired { reason } => HookEvent::ResyncRequired { reason },
+        };
+        let plugin_id = attribution.plugin_id.clone();
+        let event_attribution = match attribution.source {
+            Some(source) => {
+                let mut provenance = WriteProvenance::new(source);
+                provenance.correlation_id = attribution.correlation_id;
+                provenance.note = attribution.note;
+                EventAttribution::Attributed(provenance)
+            }
+            // Nothing known about the writer. Saying so is the point: a
+            // consumer must not treat an unattributed change as its own.
+            None => EventAttribution::ExternalOrUnknown,
+        };
+        // A closed bus (shutdown) or an absent subscriber is not a write
+        // failure; the feed is advisory by contract.
+        let _ = self
+            .hooks
+            .publish(vault, event, content_hash, plugin_id, event_attribution);
+    }
+}
 
 use self::analysis::AnalysisProvider;
 use self::audit::AuditProvider;
@@ -59,6 +117,9 @@ struct PluginProviderAdapter {
     descriptor: turbovault_plugin_api::PluginDescriptor,
     provider: Arc<dyn PluginProvider>,
     tools: Arc<Vec<Tool>>,
+    resources: Arc<Vec<Resource>>,
+    resource_templates: Arc<Vec<ResourceTemplate>>,
+    prompts: Arc<Vec<Prompt>>,
 }
 
 #[cfg(feature = "plugin-api")]
@@ -68,6 +129,12 @@ impl PluginProviderAdapter {
         provider: Arc<dyn PluginProvider>,
     ) -> Result<Self> {
         let tools = provider.tools();
+        let resources = provider.resources();
+        let resource_templates = provider.resource_templates();
+        let prompts = provider.prompts();
+        // Local names are validated and de-duplicated here; the corresponding
+        // public names are built and checked for cross-plugin collisions where
+        // the plugin is mounted.
         let mut names = std::collections::HashSet::new();
         for tool in &tools {
             validate_mcp_tool_name(&tool.name).map_err(|error| {
@@ -84,24 +151,141 @@ impl PluginProviderAdapter {
                 ));
             }
         }
+
+        let mut uris = std::collections::HashSet::new();
+        for resource in &resources {
+            if !uris.insert(resource.uri.clone()) {
+                return Err(anyhow!(
+                    "plugin {:?} advertises resource {:?} more than once",
+                    descriptor.id,
+                    resource.uri
+                ));
+            }
+        }
+
+        let mut prompt_names = std::collections::HashSet::new();
+        for prompt in &prompts {
+            if !prompt_names.insert(prompt.name.clone()) {
+                return Err(anyhow!(
+                    "plugin {:?} advertises prompt {:?} more than once",
+                    descriptor.id,
+                    prompt.name
+                ));
+            }
+        }
+
         Ok(Self {
             descriptor,
             provider,
             tools: Arc::new(tools),
+            resources: Arc::new(resources),
+            resource_templates: Arc::new(resource_templates),
+            prompts: Arc::new(prompts),
         })
+    }
+
+    /// Republish every content URI inside this plugin's namespace.
+    ///
+    /// A plugin works entirely in local paths — it never spells its own
+    /// namespace, just as it never spells its tool prefix — so the URIs it
+    /// returns have to be lifted back into the public space the client asked
+    /// against. Doing it here also means a plugin cannot serve content under a
+    /// URI belonging to the core vault or to another plugin.
+    fn namespace_contents(&self, mut result: ResourceResult) -> ResourceResult {
+        let scheme = format!("{}://", self.descriptor.id);
+        for contents in &mut result.contents {
+            let uri = match contents {
+                turbomcp_types::ResourceContents::Text(text) => &mut text.uri,
+                turbomcp_types::ResourceContents::Blob(blob) => &mut blob.uri,
+            };
+            if !uri.starts_with(&scheme) {
+                *uri = format!("{scheme}{uri}");
+            }
+        }
+        result
+    }
+}
+
+/// Run one plugin entry point under the host's failure budget.
+///
+/// A compiled-in plugin shares the process, so a panic or a hang in one is a
+/// panic or a hang in the server. Neither is contained here — this is a
+/// contract boundary, not a sandbox — but both are converted into a single
+/// failed request instead of a poisoned or stalled one.
+#[cfg(feature = "plugin-api")]
+async fn guarded<T>(
+    plugin_id: &str,
+    subject: &str,
+    call: impl std::future::Future<Output = turbovault_plugin_api::PluginResult<T>>,
+) -> turbovault_plugin_api::PluginResult<T> {
+    use futures::FutureExt;
+    let call = std::panic::AssertUnwindSafe(call);
+    match tokio::time::timeout(PLUGIN_CALL_BUDGET, call.catch_unwind()).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(panic)) => {
+            let detail = panic_message(&panic);
+            log::error!("plugin {plugin_id:?} panicked handling {subject}: {detail}");
+            Err(PluginError::internal(format!(
+                "plugin {plugin_id:?} panicked while handling {subject}: {detail}"
+            )))
+        }
+        Err(_elapsed) => {
+            log::error!(
+                "plugin {plugin_id:?} exceeded the {PLUGIN_CALL_BUDGET:?} budget handling {subject}"
+            );
+            Err(PluginError::timeout(format!(
+                "plugin {plugin_id:?} did not complete {subject} within {PLUGIN_CALL_BUDGET:?}"
+            )))
+        }
     }
 }
 
 #[cfg(feature = "plugin-api")]
 fn plugin_error(error: PluginError) -> McpError {
     match error.code {
-        PluginErrorCode::NotFound => McpError::resource_not_found(error.message),
-        PluginErrorCode::InvalidInput | PluginErrorCode::Conflict => {
-            McpError::invalid_request(error.message)
-        }
-        PluginErrorCode::Unavailable | PluginErrorCode::Internal => {
+        PluginErrorCode::InvalidInput
+        | PluginErrorCode::NotFound
+        | PluginErrorCode::Conflict
+        | PluginErrorCode::PermissionDenied => McpError::invalid_request(error.message),
+        // `_` covers codes added to the non-exhaustive contract after this
+        // build: an unknown category is a server-side problem, which is the
+        // safe default for a caller that cannot act on it.
+        PluginErrorCode::Unavailable | PluginErrorCode::Internal | PluginErrorCode::Timeout | _ => {
             McpError::internal(error.message)
         }
+    }
+}
+
+/// Map a plugin failure raised while reading a resource.
+///
+/// A missing resource is a resource error, not a bad request: a client that
+/// asked for a URI the plugin no longer serves needs `-32004` to recognize it.
+#[cfg(feature = "plugin-api")]
+fn plugin_resource_error(uri: &str, error: PluginError) -> McpError {
+    match error.code {
+        PluginErrorCode::NotFound => McpError::resource_not_found(uri),
+        _ => plugin_error(error),
+    }
+}
+
+/// Map a plugin failure raised while rendering a prompt.
+#[cfg(feature = "plugin-api")]
+fn plugin_prompt_error(name: &str, error: PluginError) -> McpError {
+    match error.code {
+        PluginErrorCode::NotFound => McpError::prompt_not_found(name),
+        _ => plugin_error(error),
+    }
+}
+
+/// Best-effort human-readable text from a caught panic payload.
+#[cfg(feature = "plugin-api")]
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic payload was not a string".to_string()
     }
 }
 
@@ -117,11 +301,15 @@ impl McpHandler for PluginProviderAdapter {
     }
 
     fn list_resources(&self) -> Vec<Resource> {
-        Vec::new()
+        self.resources.as_ref().clone()
+    }
+
+    fn list_resource_templates(&self) -> Vec<ResourceTemplate> {
+        self.resource_templates.as_ref().clone()
     }
 
     fn list_prompts(&self) -> Vec<Prompt> {
-        Vec::new()
+        self.prompts.as_ref().clone()
     }
 
     fn call_tool<'a>(
@@ -134,40 +322,85 @@ impl McpHandler for PluginProviderAdapter {
             if !self.tools.iter().any(|tool| tool.name == name) {
                 return Err(McpError::tool_not_found(name));
             }
-            let context = PluginRequestContext {
-                request_id: ctx.request_id.clone(),
-                user_id: ctx.user_id.clone(),
-                session_id: ctx.session_id.clone(),
-                client_id: ctx.client_id.clone(),
-                metadata: ctx
-                    .metadata
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            };
-            self.provider
-                .call_tool(name, args, context)
-                .await
-                .map_err(plugin_error)
+            let context = plugin_request_context(ctx);
+            guarded(
+                &self.descriptor.id,
+                &format!("tool {name:?}"),
+                self.provider.call_tool(name, args, context),
+            )
+            .await
+            .map_err(plugin_error)
         }
     }
 
     fn read_resource<'a>(
         &'a self,
         uri: &'a str,
-        _ctx: &'a RequestContext,
+        ctx: &'a RequestContext,
     ) -> impl std::future::Future<Output = McpResult<ResourceResult>> + MaybeSend + 'a {
-        async move { Err(McpError::resource_not_found(uri)) }
+        async move {
+            // No enumeration gate: the host routes this plugin's whole scheme,
+            // so a URI expanded from a template has to reach the plugin too.
+            // What exists inside the namespace is the plugin's to decide, and
+            // the default implementation answers not-found.
+            let context = plugin_request_context(ctx);
+            guarded(
+                &self.descriptor.id,
+                &format!("resource {uri:?}"),
+                self.provider.read_resource(uri, context),
+            )
+            .await
+            .map(|result| self.namespace_contents(result))
+            .map_err(|error| plugin_resource_error(uri, error))
+        }
     }
 
     fn get_prompt<'a>(
         &'a self,
         name: &'a str,
-        _args: Option<serde_json::Value>,
-        _ctx: &'a RequestContext,
+        args: Option<serde_json::Value>,
+        ctx: &'a RequestContext,
     ) -> impl std::future::Future<Output = McpResult<PromptResult>> + MaybeSend + 'a {
-        async move { Err(McpError::prompt_not_found(name)) }
+        async move {
+            if !self.prompts.iter().any(|prompt| prompt.name == name) {
+                return Err(McpError::prompt_not_found(name));
+            }
+            let context = plugin_request_context(ctx);
+            guarded(
+                &self.descriptor.id,
+                &format!("prompt {name:?}"),
+                self.provider.get_prompt(name, args, context),
+            )
+            .await
+            .map_err(|error| plugin_prompt_error(name, error))
+        }
     }
+}
+
+/// Copy the curated subset of request data that crosses the plugin boundary.
+#[cfg(feature = "plugin-api")]
+fn plugin_request_context(ctx: &RequestContext) -> PluginRequestContext {
+    PluginRequestContext::new(ctx.request_id.clone())
+        .with_user_id(ctx.user_id.clone())
+        .with_session_id(ctx.session_id.clone())
+        .with_client_id(ctx.client_id.clone())
+        .with_metadata(
+            ctx.metadata
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        )
+}
+
+/// A plugin the server has mounted, kept as one record.
+///
+/// The descriptor and the provider are always used together — to route, to
+/// start, to stop — and holding them in separate index-aligned vectors made
+/// their correspondence something the code had to maintain rather than state.
+#[cfg(feature = "plugin-api")]
+struct MountedPlugin {
+    descriptor: turbovault_plugin_api::PluginDescriptor,
+    provider: Arc<dyn PluginProvider>,
 }
 
 /// Obsidian MCP server with stable public names and focused internal providers.
@@ -184,8 +417,13 @@ pub struct ObsidianMcpServer {
     prompt_routes: Arc<HashMap<String, String>>,
     #[cfg(feature = "plugin-api")]
     hooks: HookBus,
+    /// Mounted plugins, retained so the server can start and stop each
+    /// plugin's background work and route what the composite does not.
     #[cfg(feature = "plugin-api")]
-    plugins: Arc<Vec<turbovault_plugin_api::PluginDescriptor>>,
+    plugins: Arc<Vec<MountedPlugin>>,
+    /// Fires the shutdown signal handed to every plugin's background work.
+    #[cfg(feature = "plugin-api")]
+    plugin_shutdown: turbovault_plugin_api::ShutdownTrigger,
 }
 
 impl ObsidianMcpServer {
@@ -294,11 +532,19 @@ impl ObsidianMcpServer {
         mount!(AuditProvider::new(core.clone()), "audit");
 
         #[cfg(feature = "plugin-api")]
-        let (hooks, plugin_descriptors) = {
+        let (hooks, shutdown, mounted_plugins) = {
             const DEFAULT_HOOK_CAPACITY: usize = 1_024;
+            // URI schemes the vault itself publishes under. A plugin mounted on
+            // one of these would capture every unlisted URI in it, since a
+            // plugin's whole scheme routes to the plugin.
+            let reserved_schemes = resources
+                .iter()
+                .filter_map(|resource| resource.uri.split_once("://"))
+                .map(|(scheme, _)| scheme.to_string())
+                .collect::<std::collections::HashSet<_>>();
             let hooks = HookBus::new(DEFAULT_HOOK_CAPACITY);
-            let vault = VaultApi::new(super::plugin_host::vault_host(core.clone(), hooks.clone()));
-            let mut plugin_descriptors = Vec::new();
+            let shutdown = ShutdownTrigger::new();
+            let mut mounted_plugins: Vec<MountedPlugin> = Vec::new();
 
             for plugin in plugins {
                 let descriptor = plugin.descriptor();
@@ -306,13 +552,40 @@ impl ObsidianMcpServer {
                     .validate()
                     .map_err(|error| anyhow!("invalid plugin descriptor: {error}"))?;
                 let prefix = descriptor.id.clone();
+                if reserved_schemes.contains(&prefix) {
+                    return Err(anyhow!(
+                        "plugin {prefix:?} would take over the {prefix}:// resource scheme, which TurboVault already publishes under"
+                    ));
+                }
+
+                // Capabilities are bound to THIS plugin's facade. Two plugins
+                // never share a `VaultApi`, so a config path granted to one is
+                // not reachable from the other, and a malformed declaration
+                // stops the server here rather than surfacing as a confusing
+                // denial at the first call.
+                let identity = PluginIdentity::new(prefix.clone(), plugin.capabilities()).map_err(
+                    |error| anyhow!("plugin {prefix:?} declared invalid capabilities: {error}"),
+                )?;
+                let vault = VaultApi::new(
+                    super::plugin_host::vault_host(core.clone(), &prefix),
+                    identity,
+                );
+                // Storage is namespaced by construction rather than declared:
+                // the plugin id is baked into the store, so there is no
+                // argument a plugin could pass to reach another's data.
+                let storage =
+                    PluginStorage::new(super::plugin_storage::plugin_store(core.clone(), &prefix));
+
                 let provider = plugin
-                    .build(PluginContext {
-                        vault: vault.clone(),
-                        hooks: hooks.clone(),
-                    })
+                    .build(PluginContext::new(
+                        vault,
+                        hooks.clone(),
+                        storage,
+                        shutdown.signal(),
+                    ))
                     .map_err(|error| anyhow!("plugin {prefix:?} failed to build: {error}"))?;
-                let adapter = PluginProviderAdapter::new(descriptor.clone(), provider)?;
+                let adapter =
+                    PluginProviderAdapter::new(descriptor.clone(), Arc::clone(&provider))?;
 
                 for mut tool in adapter.list_tools() {
                     let local_name = tool.name.clone();
@@ -334,12 +607,79 @@ impl ObsidianMcpServer {
                     tools.push(tool);
                 }
 
+                // Public URI and route are the same string: the composite
+                // splits `<prefix>://<local>` back apart when it routes a read,
+                // exactly as it splits `<prefix>_<local>` for a tool call.
+                for mut resource in adapter.list_resources() {
+                    let local_uri = resource.uri.clone();
+                    let public_uri =
+                        namespaced_resource_uri(&prefix, &local_uri).map_err(|error| {
+                            anyhow!(
+                                "plugin {prefix:?} resource {local_uri:?} has an invalid public URI: {error}"
+                            )
+                        })?;
+                    resource.uri = public_uri.clone();
+                    if resource_routes
+                        .insert(public_uri.clone(), public_uri.clone())
+                        .is_some()
+                    {
+                        return Err(anyhow!(
+                            "plugin resource {public_uri:?} collides with an existing public resource"
+                        ));
+                    }
+                    resources.push(resource);
+                }
+
+                // Templates need no route entry: reads fall through to the
+                // owning plugin by scheme, which is the point of a template.
+                for mut template in adapter.list_resource_templates() {
+                    let local_template = template.uri_template.clone();
+                    template.uri_template = namespaced_resource_template(&prefix, &local_template)
+                        .map_err(|error| {
+                        anyhow!(
+                            "plugin {prefix:?} resource template {local_template:?} is invalid: {error}"
+                        )
+                    })?;
+                    resource_templates.push(template);
+                }
+
+                for mut prompt in adapter.list_prompts() {
+                    let local_name = prompt.name.clone();
+                    let public_name =
+                        namespaced_prompt_name(&prefix, &local_name).map_err(|error| {
+                            anyhow!(
+                                "plugin {prefix:?} prompt {local_name:?} has an invalid public name: {error}"
+                            )
+                        })?;
+                    prompt.name = public_name.clone();
+                    if prompt_routes
+                        .insert(public_name.clone(), public_name.clone())
+                        .is_some()
+                    {
+                        return Err(anyhow!(
+                            "plugin prompt {public_name:?} collides with an existing public prompt"
+                        ));
+                    }
+                    prompts.push(prompt);
+                }
+
                 composite = composite
                     .try_mount(adapter, &prefix)
                     .map_err(|error| anyhow!("could not mount plugin {prefix:?}: {error}"))?;
-                plugin_descriptors.push(descriptor);
+                mounted_plugins.push(MountedPlugin {
+                    descriptor,
+                    provider,
+                });
             }
-            (hooks, plugin_descriptors)
+
+            // Every write path reports through the core handler; this is what
+            // turns those reports into plugin-visible events. Installed before
+            // the handler is used so no mutation can slip past unobserved.
+            core.set_event_sink(Arc::new(HookBusSink {
+                hooks: hooks.clone(),
+            }));
+
+            (hooks, shutdown, mounted_plugins)
         };
 
         Ok(Self {
@@ -355,7 +695,9 @@ impl ObsidianMcpServer {
             #[cfg(feature = "plugin-api")]
             hooks,
             #[cfg(feature = "plugin-api")]
-            plugins: Arc::new(plugin_descriptors),
+            plugins: Arc::new(mounted_plugins),
+            #[cfg(feature = "plugin-api")]
+            plugin_shutdown: shutdown,
         })
     }
 
@@ -363,6 +705,30 @@ impl ObsidianMcpServer {
     #[cfg(feature = "plugin-api")]
     pub fn hook_bus(&self) -> HookBus {
         self.hooks.clone()
+    }
+
+    /// Return the mounted plugin whose URI scheme owns `uri`, if any.
+    #[cfg(feature = "plugin-api")]
+    fn plugin_owning_scheme(&self, uri: &str) -> Option<&MountedPlugin> {
+        let (scheme, _) = uri.split_once("://")?;
+        self.plugins
+            .iter()
+            .find(|plugin| plugin.descriptor.id == scheme)
+    }
+
+    /// Return the mounted plugin whose namespace owns the public name `name`.
+    ///
+    /// Longest prefix wins, so a plugin named `tasks` does not capture a name
+    /// belonging to one named `tasks_beta`.
+    #[cfg(feature = "plugin-api")]
+    fn plugin_owning_name<'a>(&self, name: &'a str) -> Option<(&MountedPlugin, &'a str)> {
+        self.plugins
+            .iter()
+            .filter_map(|plugin| {
+                name.strip_prefix(&format!("{}_", plugin.descriptor.id))
+                    .map(|local| (plugin, local))
+            })
+            .max_by_key(|(plugin, _)| plugin.descriptor.id.len())
     }
 
     /// Initialize the persistent cache after server creation.
@@ -388,6 +754,48 @@ impl ObsidianMcpServer {
     /// Best-effort cleanup for fanout worktrees during graceful shutdown.
     pub async fn shutdown_fanouts_best_effort(&self) {
         self.core.shutdown_fanouts_best_effort().await;
+    }
+
+    /// Graceful shutdown. Idempotent, best-effort, and safe to call from a
+    /// signal handler as well as after the transport's `serve()` returns.
+    ///
+    /// Closes the plugin hook bus so subscribers observe
+    /// [`turbovault_plugin_api::HookRecvError::Closed`] instead of waiting
+    /// forever, then abandons fanout worktrees registered by this process.
+    pub async fn shutdown(&self) {
+        #[cfg(feature = "plugin-api")]
+        {
+            // Signal first, then await: a worker needs to be told to stop
+            // before `shutdown` can meaningfully wait for it to finish.
+            self.plugin_shutdown.shutdown();
+            // Plugins before the bus: a plugin draining work may still want to
+            // write, and it can only observe the bus closing after it has
+            // stopped.
+            for plugin in self.plugins.iter() {
+                plugin.provider.shutdown().await;
+            }
+            self.hooks.close();
+        }
+        self.core.shutdown_fanouts_best_effort().await;
+    }
+
+    /// Start every mounted plugin's background work.
+    ///
+    /// Call once, on the server's runtime, after vault registration and before
+    /// serving. Separate from construction because `Plugin::build` is
+    /// synchronous and may run outside a runtime, so a plugin cannot spawn
+    /// there.
+    ///
+    /// A plugin that fails to start aborts startup: it would otherwise serve
+    /// tools backed by state nothing is maintaining.
+    pub async fn start_plugins(&self) -> Result<()> {
+        #[cfg(feature = "plugin-api")]
+        for plugin in self.plugins.iter() {
+            plugin.provider.start().await.map_err(|error| {
+                anyhow!("plugin {:?} failed to start: {error}", plugin.descriptor.id)
+            })?;
+        }
+        Ok(())
     }
 
     #[doc(hidden)]
@@ -460,7 +868,7 @@ impl McpHandler for ObsidianMcpServer {
             let namespaces = self
                 .plugins
                 .iter()
-                .map(|plugin| plugin.id.as_str())
+                .map(|plugin| plugin.descriptor.id.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
             return info.with_description(format!(
@@ -470,8 +878,34 @@ impl McpHandler for ObsidianMcpServer {
         info
     }
 
+    /// Advertise only what TurboVault actually implements.
+    ///
+    /// TurboMCP derives `listChanged: true` from a non-empty listing, but the
+    /// catalog here is fixed when the server is assembled — plugins mount once
+    /// and nothing mutates the lists afterwards — and TurboVault emits no
+    /// `notifications/*/list_changed`. Repeating the derived claim would tell a
+    /// client it will be informed of changes it will never hear about; a client
+    /// that trusts that promise stops re-listing. A URI space that genuinely
+    /// varies is published as a resource template instead, which is stable.
     fn server_capabilities(&self) -> ServerCapabilities {
-        self.composite.server_capabilities()
+        let mut capabilities = self.composite.server_capabilities();
+        if let Some(tools) = capabilities.tools.as_mut() {
+            tools.list_changed = Some(false);
+        }
+        if let Some(resources) = capabilities.resources.as_mut() {
+            resources.list_changed = Some(false);
+        }
+        if let Some(prompts) = capabilities.prompts.as_mut() {
+            prompts.list_changed = Some(false);
+        }
+        // Completion is only meaningful for a prompt argument or a template
+        // expression, so advertise it exactly when something can be completed.
+        // The vault's own catalog has neither.
+        #[cfg(feature = "plugin-api")]
+        if !self.prompts.is_empty() || !self.resource_templates.is_empty() {
+            capabilities.completions = Some(turbomcp_types::CompletionCapabilities {});
+        }
+        capabilities
     }
 
     fn list_tools(&self) -> Vec<Tool> {
@@ -501,6 +935,17 @@ impl McpHandler for ObsidianMcpServer {
                 .tool_routes
                 .get(name)
                 .ok_or_else(|| McpError::tool_not_found(name))?;
+            // A plugin tool answers from the plugin's own derived state, which
+            // this process cannot see and therefore cannot gate at the point of
+            // use the way the vault's own tools gate at the manager accessors
+            // they call. Reconciling here is what advances the change feed that
+            // state is built from, so a plugin index is as current as the
+            // vault's own, on the same debounce, without the plugin having to
+            // arrange it.
+            #[cfg(feature = "plugin-api")]
+            if self.plugin_owning_name(name).is_some() {
+                self.core.ensure_active_vault_fresh().await;
+            }
             self.composite.call_tool(routed, args, ctx).await
         }
     }
@@ -511,10 +956,23 @@ impl McpHandler for ObsidianMcpServer {
         ctx: &'a RequestContext,
     ) -> impl std::future::Future<Output = McpResult<ResourceResult>> + MaybeSend + 'a {
         async move {
-            let routed = self
-                .resource_routes
-                .get(uri)
-                .ok_or_else(|| McpError::resource_not_found(uri))?;
+            let routed = match self.resource_routes.get(uri) {
+                Some(routed) => routed.as_str(),
+                // Not enumerated. A plugin owns its whole URI scheme, so a URI
+                // expanded from one of its templates routes to it even though
+                // no listing named it — otherwise a template could be
+                // advertised and never read. Confined to mounted plugin
+                // namespaces so internal provider prefixes stay private.
+                #[cfg(feature = "plugin-api")]
+                None => self
+                    .plugin_owning_scheme(uri)
+                    .map(|_| uri)
+                    .ok_or_else(|| McpError::resource_not_found(uri))?,
+                // Without plugins nothing owns a scheme, so nothing resolves
+                // beyond the enumerated catalog.
+                #[cfg(not(feature = "plugin-api"))]
+                None => return Err(McpError::resource_not_found(uri)),
+            };
             self.composite.read_resource(routed, ctx).await
         }
     }
@@ -532,6 +990,109 @@ impl McpHandler for ObsidianMcpServer {
                 .ok_or_else(|| McpError::prompt_not_found(name))?;
             self.composite.get_prompt(routed, args, ctx).await
         }
+    }
+
+    /// Suggest values for a prompt argument or resource-template expression.
+    ///
+    /// Routed here rather than through the composite, which does not implement
+    /// completion. The reference names a public identifier, so this strips the
+    /// namespace before asking the plugin, exactly as the composite does for
+    /// the primitives it does route.
+    fn complete<'a>(
+        &'a self,
+        params: serde_json::Value,
+        ctx: &'a RequestContext,
+    ) -> impl std::future::Future<Output = McpResult<serde_json::Value>> + MaybeSend + 'a {
+        async move {
+            #[cfg(feature = "plugin-api")]
+            {
+                self.complete_through_plugin(params, ctx).await
+            }
+            #[cfg(not(feature = "plugin-api"))]
+            {
+                let _ = (params, ctx);
+                Err(McpError::capability_not_supported("completion/complete"))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "plugin-api")]
+impl ObsidianMcpServer {
+    async fn complete_through_plugin(
+        &self,
+        params: serde_json::Value,
+        ctx: &RequestContext,
+    ) -> McpResult<serde_json::Value> {
+        use turbomcp_protocol::types::completion::{
+            CompleteRequestParams, CompleteResult, CompletionData, CompletionReference,
+            MAX_COMPLETION_VALUES,
+        };
+        use turbovault_plugin_api::CompletionTarget;
+
+        let request: CompleteRequestParams = serde_json::from_value(params).map_err(|error| {
+            McpError::invalid_params(format!("invalid completion request: {error}"))
+        })?;
+
+        // Resolve the public reference to the plugin that owns it, and to the
+        // local identifier that plugin knows the target by.
+        let (plugin, target) = match &request.reference {
+            CompletionReference::Prompt(prompt) => {
+                let (plugin, local) = self
+                    .plugin_owning_name(&prompt.name)
+                    .ok_or_else(|| McpError::prompt_not_found(&prompt.name))?;
+                (plugin, CompletionTarget::Prompt(local.to_string()))
+            }
+            CompletionReference::ResourceTemplate(resource) => {
+                let plugin = self
+                    .plugin_owning_scheme(&resource.uri)
+                    .ok_or_else(|| McpError::resource_not_found(&resource.uri))?;
+                let local = resource
+                    .uri
+                    .split_once("://")
+                    .map(|(_, local)| local.to_string())
+                    .unwrap_or_default();
+                (plugin, CompletionTarget::ResourceTemplate(local))
+            }
+        };
+
+        let resolved = request
+            .context
+            .and_then(|context| context.arguments)
+            .map(|arguments| arguments.into_iter().collect())
+            .unwrap_or_default();
+        let completion_request = turbovault_plugin_api::CompletionRequest::new(
+            target,
+            request.argument.name,
+            request.argument.value,
+        )
+        .with_resolved(resolved);
+
+        let mut completion = guarded(
+            &plugin.descriptor.id,
+            "completion",
+            plugin
+                .provider
+                .complete(completion_request, plugin_request_context(ctx)),
+        )
+        .await
+        .map_err(plugin_error)?;
+
+        // MCP caps a single completion response. Enforced here rather than
+        // trusted to each plugin: a plugin that returns everything it knows is
+        // behaving reasonably, and silently emitting an over-long list would
+        // put an invalid message on the wire.
+        let has_more = completion.values.len() > MAX_COMPLETION_VALUES;
+        if has_more {
+            completion.values.truncate(MAX_COMPLETION_VALUES);
+        }
+        let data = CompletionData {
+            values: completion.values,
+            total: completion.total,
+            has_more: has_more.then_some(true).or(completion.has_more),
+        };
+        serde_json::to_value(CompleteResult::new(data))
+            .map_err(|error| McpError::internal(format!("could not encode completion: {error}")))
     }
 }
 
@@ -551,12 +1112,17 @@ mod tests {
     #[cfg(feature = "plugin-api")]
     impl Plugin for ContractPlugin {
         fn descriptor(&self) -> turbovault_plugin_api::PluginDescriptor {
-            turbovault_plugin_api::PluginDescriptor {
-                id: "contract".to_string(),
-                name: "Contract Test Plugin".to_string(),
-                version: "1.0.0".to_string(),
-                description: "Exercises the stable plugin boundary".to_string(),
-            }
+            turbovault_plugin_api::PluginDescriptor::new(
+                "contract",
+                "Contract Test Plugin",
+                "1.0.0",
+                "Exercises the stable plugin boundary",
+            )
+        }
+
+        fn capabilities(&self) -> turbovault_plugin_api::PluginCapabilities {
+            turbovault_plugin_api::PluginCapabilities::none()
+                .with_config_read(".obsidian/plugins/example/data.json")
         }
 
         fn build(
@@ -575,12 +1141,12 @@ mod tests {
     #[cfg(feature = "plugin-api")]
     impl Plugin for OversizedNamespacePlugin {
         fn descriptor(&self) -> turbovault_plugin_api::PluginDescriptor {
-            turbovault_plugin_api::PluginDescriptor {
-                id: "p".repeat(turbovault_plugin_api::MCP_TOOL_NAME_MAX_LEN),
-                name: "Oversized Namespace".to_string(),
-                version: "1.0.0".to_string(),
-                description: "Exercises final public-name validation".to_string(),
-            }
+            turbovault_plugin_api::PluginDescriptor::new(
+                "p".repeat(turbovault_plugin_api::MCP_TOOL_NAME_MAX_LEN),
+                "Oversized Namespace",
+                "1.0.0",
+                "Exercises final public-name validation",
+            )
         }
 
         fn build(
@@ -633,25 +1199,39 @@ mod tests {
             let vault = self.vault.active_vault().await?;
             let receipt = self
                 .vault
-                .write_note(turbovault_plugin_api::WriteNoteRequest {
-                    path: path.to_string(),
-                    content: content.to_string(),
-                    precondition,
-                    commit_message: Some(format!("contract plugin creates {path}")),
-                    provenance: Some(turbovault_plugin_api::WriteProvenance {
-                        source: "contract-test".to_string(),
-                        correlation_id: Some(context.request_id),
-                        note: None,
-                    }),
-                })
+                .write_note(
+                    turbovault_plugin_api::WriteNoteRequest::new(
+                        &vault.name,
+                        path,
+                        content,
+                        precondition,
+                    )
+                    .with_commit_message(format!("contract plugin creates {path}"))
+                    .with_provenance(
+                        turbovault_plugin_api::WriteProvenance::new("contract-test")
+                            .with_correlation_id(context.request_id),
+                    ),
+                )
                 .await?;
-            let snapshot = self.vault.read_note(path).await?;
-            let notes = self.vault.list_notes().await?;
+            let snapshot = self.vault.read_note(&vault.name, path).await?;
+            let notes = self.vault.list_notes(&vault.name).await?;
+            let config = match arguments
+                .get("config_path")
+                .and_then(serde_json::Value::as_str)
+            {
+                Some(config_path) => self
+                    .vault
+                    .read_config(&vault.name, config_path)
+                    .await
+                    .map(|bytes| bytes.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))?,
+                None => None,
+            };
             ToolResult::json(&serde_json::json!({
                 "vault": vault,
                 "receipt": receipt,
                 "snapshot": snapshot,
                 "notes": notes,
+                "config": config,
             }))
             .map_err(|error| PluginError::internal(error.to_string()))
         }
@@ -820,6 +1400,19 @@ mod tests {
             serde_json::to_string_pretty(&server.list_tools()).expect("serialize tool catalog");
 
         assert_eq!(server.list_tools().len(), 74, "public tool count changed");
+        // The fixture is a deliberate tripwire on the public tool surface, so a
+        // real change to a tool signature has to be re-blessed on purpose:
+        // `UPDATE_TOOL_CATALOG=1 cargo test -p turbovault --lib`. Without this
+        // the only way to accept an intended change was to hand-edit ~5k lines
+        // of generated JSON.
+        if actual != expected && std::env::var_os("UPDATE_TOOL_CATALOG").is_some() {
+            let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/tools/providers/tool_catalog.json");
+            std::fs::write(&fixture, format!("{actual}\n")).expect("rewrite tool catalog fixture");
+            panic!(
+                "tool catalog fixture rewritten at {fixture:?}; re-run without UPDATE_TOOL_CATALOG"
+            );
+        }
         if actual != expected {
             let actual_bytes = actual.as_bytes();
             let expected_bytes = expected.as_bytes();
@@ -879,19 +1472,27 @@ mod tests {
         }
     }
 
+    /// Advertised capabilities are promises. TurboVault's catalog is fixed at
+    /// assembly and it sends no `list_changed` notifications, so claiming
+    /// otherwise would tell a client to stop re-listing and wait for a message
+    /// that never arrives.
     #[test]
-    fn composed_capabilities_match_the_public_catalog() {
+    fn composed_capabilities_promise_only_what_is_implemented() {
         let server = ObsidianMcpServer::new().expect("provider composition");
         let capabilities = server.server_capabilities();
 
         assert_eq!(
             capabilities.tools.expect("tools capability").list_changed,
-            Some(true)
+            Some(false)
         );
         let resources = capabilities.resources.expect("resources capability");
-        assert_eq!(resources.list_changed, Some(true));
+        assert_eq!(resources.list_changed, Some(false));
         assert_eq!(resources.subscribe, None);
         assert!(capabilities.prompts.is_none());
+        assert!(
+            capabilities.completions.is_none(),
+            "the vault's own catalog has no completable argument"
+        );
     }
 
     #[tokio::test]

@@ -16,7 +16,6 @@ documentation = "https://docs.rs/turbovault-git"
 # "self-contained for extraction" framing was never real (design §11.5).
 turbovault-core = { workspace = true }
 git2 = { workspace = true }
-fs4 = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

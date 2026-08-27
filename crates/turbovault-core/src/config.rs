@@ -137,7 +137,9 @@ pub struct VaultConfig {
     pub is_default: bool,
 
     // Optional overrides
-    pub watch_for_changes: Option<bool>,
+    /// See [`ServerConfig::reconcile_external_changes`].
+    #[serde(alias = "watch_for_changes")]
+    pub reconcile_external_changes: Option<bool>,
     pub max_file_size: Option<u64>,
     pub allowed_extensions: Option<HashSet<String>>,
     pub excluded_paths: Option<HashSet<String>>,
@@ -193,7 +195,7 @@ pub struct VaultConfigBuilder {
     name: String,
     path: PathBuf,
     is_default: bool,
-    watch_for_changes: Option<bool>,
+    reconcile_external_changes: Option<bool>,
     max_file_size: Option<u64>,
     allowed_extensions: Option<HashSet<String>>,
     excluded_paths: Option<HashSet<String>>,
@@ -212,7 +214,7 @@ impl VaultConfigBuilder {
             name: name.into(),
             path: path.into(),
             is_default: false,
-            watch_for_changes: None,
+            reconcile_external_changes: None,
             max_file_size: None,
             allowed_extensions: None,
             excluded_paths: None,
@@ -231,9 +233,9 @@ impl VaultConfigBuilder {
         self
     }
 
-    /// Set watch_for_changes
-    pub fn watch_for_changes(mut self, watch: bool) -> Self {
-        self.watch_for_changes = Some(watch);
+    /// Set reconcile_external_changes
+    pub fn reconcile_external_changes(mut self, watch: bool) -> Self {
+        self.reconcile_external_changes = Some(watch);
         self
     }
 
@@ -261,7 +263,7 @@ impl VaultConfigBuilder {
             name: self.name,
             path: expanded_path,
             is_default: self.is_default,
-            watch_for_changes: self.watch_for_changes,
+            reconcile_external_changes: self.reconcile_external_changes,
             max_file_size: self.max_file_size,
             allowed_extensions: self.allowed_extensions,
             excluded_paths: self.excluded_paths,
@@ -286,7 +288,22 @@ pub struct ServerConfig {
     pub profile: String,
 
     // Core settings
-    pub watch_for_changes: bool,
+    /// Keep derived state (link graph, note cache, search and similarity
+    /// indexes, and the plugin change feed) in agreement with edits made
+    /// outside this process, by comparing a `(size, mtime)` scan against what
+    /// was last observed before serving any of them.
+    ///
+    /// On by default, and it should stay on for any vault a human or another
+    /// tool also touches, which is nearly all of them. Turning it off is only
+    /// sensible for a vault nothing else writes, and it trades tool answers
+    /// that agree with each other for a scan that a debounce already keeps to a
+    /// few percent of wall clock.
+    ///
+    /// Renamed from `watch_for_changes`, which described a filesystem watcher
+    /// this never was (see `VaultManager::ensure_fresh` for why not). The old
+    /// spelling still deserializes.
+    #[serde(alias = "watch_for_changes")]
+    pub reconcile_external_changes: bool,
     pub max_file_size: u64,
     pub allowed_extensions: HashSet<String>,
     pub excluded_paths: HashSet<String>,
@@ -326,7 +343,7 @@ impl Default for ServerConfig {
         Self {
             vaults: vec![],
             profile: "default".to_string(),
-            watch_for_changes: true,
+            reconcile_external_changes: true,
             max_file_size: 10 * 1024 * 1024, // 10MB
             allowed_extensions: [".md", ".txt", ".canvas"]
                 .iter()
@@ -445,7 +462,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let vault = VaultConfig::builder("main", temp.path())
             .as_default()
-            .watch_for_changes(true)
+            .reconcile_external_changes(true)
             .build();
 
         assert!(vault.is_ok());

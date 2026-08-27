@@ -36,6 +36,7 @@ pub use fanout::{FanoutInfo, FanoutWorktree, MergeBackResult, MergeStrategy, Orp
 pub use locks::CommitLocks;
 pub use plumbing::TreeChange;
 pub use repo::{CommitHook, VaultRepo};
+pub use restore::PathChange;
 
 /// Re-exported so substrate consumers (e.g. `turbovault-tools`) can talk about
 /// blob/commit oids without taking a direct `git2` dep — preserves the

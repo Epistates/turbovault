@@ -53,21 +53,33 @@ vaults:
     # File watching - Monitor vault for external changes
     watch_for_changes: true
 
-    # File size limit (in bytes) - Prevent loading huge files
-    # Default: 5MB (5 * 1024 * 1024 = 5242880)
+    # File size limit (in bytes) - Prevent loading huge files.
+    # Enforced on reads and writes as well as directory scans.
+    # Default: 10MB (10 * 1024 * 1024 = 10485760)
     max_file_size: 5242880
 
-    # Allowed file extensions (only process these)
+    # Allowed file extensions - what counts as a note during discovery.
+    # NOT an access-control list: attachments beside notes stay readable and
+    # writable by path, since that is a normal thing to want.
     allowed_extensions:
       - .md
       - .markdown
 
-    # Excluded paths - Skip these during scanning
-    # (relative to vault root)
+    # Excluded paths - directory names the note APIs may never traverse
+    # (matched against every path component, relative to vault root).
+    #
+    # This is access control, not just a scan filter: these directories hold
+    # code other applications execute, so reaching them through read_note or
+    # write_note would turn note editing into code execution. TurboVault's own
+    # `.turbovault/` state directory is always protected and cannot be opened
+    # up here.
+    #
+    # A plugin that genuinely needs one config file declares that exact path
+    # as a capability; see the turbovault-plugin-api docs.
     excluded_paths:
-      - .obsidian      # Obsidian config folder
+      - .obsidian      # Obsidian config folder (plugin code lives here)
       - .trash         # Trash folder
-      - .git           # Git folder (if using version control)
+      - .git           # Git folder (hooks are executed on commit)
 
     # Caching configuration
     enable_caching: true

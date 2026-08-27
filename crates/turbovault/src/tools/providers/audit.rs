@@ -131,9 +131,16 @@ impl AuditProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        // Invalidate similarity engine cache since vault content changed
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        // A rollback restores prior content or removes a created note; either
+        // way the path must be re-read by anything tracking vault state.
+        self.after_write_one(
+            &vault_name,
+            VaultChange::Modified {
+                path: result.path.clone(),
+            },
+            WriteAttribution::host("rollback_note"),
+        )
+        .await;
 
         // Synchronize disk, parsed cache, and graph after either a restore or delete rollback.
         let restored_path = std::path::PathBuf::from(&result.path);
