@@ -28,7 +28,11 @@ htmlcov/
 !README.md
 !docs/**/*.md
 !CHANGELOG.md
+!CONTRIBUTORS.md
 !RELEASE*.md
 !PUBLISH*.md
+# Crate-level READMEs are packaged by Cargo (readme = "README.md"), so an
+# ignored one ships as a broken reference on crates.io.
+!crates/*/README.md
 !/LICENSE*
 !LICENSE
