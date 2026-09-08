@@ -209,6 +209,22 @@ impl VaultLifecycleTools {
             )));
         }
 
+        // The mirror of `direct_over_git_repo_warning`: asking for the git
+        // backend over a directory that is not a repository. Registration would
+        // succeed and then every write would fail, far enough from this call
+        // that the two are hard to connect. Checked here rather than in
+        // `build_config` because `create_vault` legitimately runs that before
+        // the directory exists.
+        if write_backend == WriteBackend::Git
+            && let Err(error) = VaultRepo::open(&expanded_path)
+        {
+            return Err(Error::config_error(format!(
+                "Vault '{name}' requested write_backend=git, but {} is not a git repository: {error}. \
+                 Run `git init` there, or register it with write_backend=direct.",
+                expanded_path.display()
+            )));
+        }
+
         // Create vault config
         let config = Self::build_config(name, &expanded_path, write_backend, backend_opts)?;
 

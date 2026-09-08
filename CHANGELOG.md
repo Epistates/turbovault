@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Registering a git-backed vault checks for a repository first.** `add_vault` with
+  `write_backend: "git"` against a directory that is not a git repository used to register
+  successfully and then fail on every write, far enough from the registration call that the two were
+  hard to connect. It now fails at registration and says to run `git init` or use `direct`. This is
+  the mirror of the existing warning for the opposite mistake, registering a real repository as a
+  `direct` vault.
+
 - **Tools no longer contradict each other after an external edit**: Search, the link graph, similarity, vault stats, and the plugin change feed are all derived state, and until now only writes TurboVault itself performed ever updated them. Anyone else touching the vault (Obsidian, an editor, `git pull`, a sync client, a second TurboVault) left them wrong indefinitely, while `read_note` and `list_notes` went to disk and stayed correct. An agent could read a note, see a phrase, search for that phrase, and be told it does not exist. The Git backend was no safer: its ref watcher only ever saw external *commits*, and an Obsidian save does not commit.
 
   `VaultManager::ensure_fresh` is now a single freshness gate that every derived read passes through. It compares a `(size, mtime)` scan against what the note cache recorded when it parsed each note, and applies whatever moved through the machinery that already existed for Git commits, so search, similarity, and the plugin feed are updated from one place. The comparison cannot miss a change, because it is comparing state rather than listening for events, which is also why this is not a filesystem watcher: inotify queues overflow and its watch budget is finite, FSEvents degrades to directory-granularity rescan hints under load, and network and cloud-synced vaults deliver nothing at all for a peer's changes. A watcher yields *mostly* fresh, and for an agent that is worse than plainly stale, because nothing marks the answers it should not have trusted.
