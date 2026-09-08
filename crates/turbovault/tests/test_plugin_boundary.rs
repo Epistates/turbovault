@@ -17,12 +17,27 @@ use turbovault_plugin_api::{
     HookEvent, HookRecvError, HookSubscription, Plugin, PluginCapabilities, PluginContext,
     PluginDescriptor, PluginError, PluginProvider, PluginRequestContext, PluginResult,
     PluginStorage, Prompt, PromptResult, Resource, ResourceResult, ResourceTemplate,
-    ShutdownSignal, Tool, ToolResult, VaultApi, WriteNoteRequest, WritePrecondition,
-    WriteProvenance,
+    ShutdownSignal, Tool, ToolResult, VaultApi, VaultEventEnvelope, WriteNoteRequest,
+    WritePrecondition, WriteProvenance,
 };
 
 /// Where the probe plugin persists its position in the event feed.
 const CURSOR_KEY: &str = "feed/cursor.json";
+
+/// Await the next event, failing rather than blocking if it never arrives.
+///
+/// A bare `recv().await` on a bus that publishes nothing waits forever, so a
+/// regression that stops core writes reaching subscribers presents as a CI
+/// timeout with no indication of which assertion was waiting. These publishes
+/// are synchronous with the write, so five seconds is orders of magnitude more
+/// than they need and still reads as a failure rather than a hang.
+async fn next_event(events: &mut HookSubscription, what: &str) -> VaultEventEnvelope {
+    match tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await {
+        Ok(Ok(envelope)) => envelope,
+        Ok(Err(e)) => panic!("expected {what}, but the feed errored: {e:?}"),
+        Err(_) => panic!("timed out waiting for {what}: nothing was published"),
+    }
+}
 
 /// A plugin that exercises the curated API and can be told to misbehave.
 struct ProbePlugin {
@@ -437,7 +452,7 @@ async fn core_mcp_writes_reach_plugin_subscribers() {
         .await
         .expect("core write");
 
-    let created = events.recv().await.expect("core write event");
+    let created = next_event(&mut events, "the core write event").await;
     assert_eq!(created.vault, "probe-vault");
     assert_eq!(
         created.event,
@@ -461,7 +476,7 @@ async fn core_mcp_writes_reach_plugin_subscribers() {
         .await
         .expect("core overwrite");
     assert_eq!(
-        events.recv().await.expect("core modify event").event,
+        next_event(&mut events, "the core modify event").await.event,
         HookEvent::FileModified {
             path: "agent.md".to_string()
         }
@@ -481,7 +496,7 @@ async fn core_mcp_writes_reach_plugin_subscribers() {
         .await
         .expect("core delete");
     assert_eq!(
-        events.recv().await.expect("core delete event").event,
+        next_event(&mut events, "the core delete event").await.event,
         HookEvent::FileDeleted {
             path: "agent.md".to_string()
         }
@@ -506,7 +521,7 @@ async fn plugin_writes_are_attributed_by_the_host_not_the_caller() {
         .await
         .expect("plugin write");
 
-    let event = events.recv().await.expect("plugin write event");
+    let event = next_event(&mut events, "the plugin write event").await;
     assert_eq!(
         event.plugin_id.as_deref(),
         Some("probe"),
