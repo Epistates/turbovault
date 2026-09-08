@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Operation audit trail, snapshot storage, and rollback for TurboVault"
+readme = "README.md"
 documentation = "https://docs.rs/turbovault-audit"
 
 [dependencies]

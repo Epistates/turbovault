@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Git-native write substrate for TurboVault: every mutation is a commit (blobs -> isolated index -> tree -> commit -> ref CAS -> materialize)"
+readme = "README.md"
 documentation = "https://docs.rs/turbovault-git"
 
 [dependencies]

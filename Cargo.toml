@@ -16,7 +16,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.6.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
@@ -109,18 +109,21 @@ git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS 
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "1.6.0", path = "crates/turbovault-core" }
-turbovault-parser = { version = "1.6.0", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "1.6.0", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "1.6.0", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "1.6.0", path = "crates/turbovault-batch" }
-turbovault-export = { version = "1.6.0", path = "crates/turbovault-export" }
-turbovault-audit = { version = "1.6.0", path = "crates/turbovault-audit" }
-turbovault-git = { version = "1.6.0", path = "crates/turbovault-git" }
-turbovault-sql = { version = "1.6.0", path = "crates/turbovault-sql" }
-turbovault-tools = { version = "1.6.0", path = "crates/turbovault-tools" }
-turbovault-plugin-api = { version = "1.6.0", path = "crates/turbovault-plugin-api" }
-turbovault = { version = "1.6.0", path = "crates/turbovault" }
+turbovault-core = { version = "2.0.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "2.0.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "2.0.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "2.0.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "2.0.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "2.0.0", path = "crates/turbovault-export" }
+turbovault-audit = { version = "2.0.0", path = "crates/turbovault-audit" }
+turbovault-git = { version = "2.0.0", path = "crates/turbovault-git" }
+turbovault-sql = { version = "2.0.0", path = "crates/turbovault-sql" }
+turbovault-tools = { version = "2.0.0", path = "crates/turbovault-tools" }
+# Versioned independently of the workspace: the plugin contract has no external
+# implementors yet and needs room to change without dragging every other crate
+# to a new major. Promote it to the workspace version once it is stable.
+turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-api" }
+turbovault = { version = "2.0.0", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3

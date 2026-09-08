@@ -1,6 +1,9 @@
 [package]
 name = "turbovault-plugin-api"
-version.workspace = true
+# Not `version.workspace`: the plugin contract is versioned on its own so it can
+# change shape without forcing a major on crates that do not depend on it. It
+# joins the workspace version once there is an external plugin to break.
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
