@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Most of this release came from outside the maintainers. The plugin architecture was argued into
+shape by [@ForrestThump](https://github.com/ForrestThump) across #33, #42 and #43 before a line of
+it was written; the write substrate and everything that now guarantees a write either lands or
+refuses is [@dlobue](https://github.com/dlobue)'s; partial reads are
+[@Helfrid](https://github.com/Helfrid)'s. See [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
 ### Fixed
 
 - **Tools no longer contradict each other after an external edit**: Search, the link graph, similarity, vault stats, and the plugin change feed are all derived state, and until now only writes TurboVault itself performed ever updated them. Anyone else touching the vault (Obsidian, an editor, `git pull`, a sync client, a second TurboVault) left them wrong indefinitely, while `read_note` and `list_notes` went to disk and stayed correct. An agent could read a note, see a phrase, search for that phrase, and be told it does not exist. The Git backend was no safer: its ref watcher only ever saw external *commits*, and an Obsidian save does not commit.
