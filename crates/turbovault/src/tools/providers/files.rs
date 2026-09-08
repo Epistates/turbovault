@@ -34,7 +34,7 @@ struct PartialReadPayload<'a> {
     slice: SliceResult,
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
+#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
 impl FileProvider {
     // ==================== File Operations ====================
 

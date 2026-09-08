@@ -1435,6 +1435,17 @@ mod tests {
             server.server_info().description.is_none(),
             "default server must not inject plugin guidance"
         );
+        // The version on the wire is derived from the crate, not from the
+        // `version = "..."` literal each provider passes to `#[turbomcp::server]`.
+        // Those literals are overridden by this impl and never reach a client,
+        // so they drift at every release without anyone noticing. This pins the
+        // one that matters, and fails if someone "fixes" the drift by
+        // hardcoding it here instead.
+        assert_eq!(
+            server.server_info().version,
+            env!("CARGO_PKG_VERSION"),
+            "served version must track the crate version"
+        );
         #[cfg(feature = "plugin-api")]
         for tool in server.list_tools() {
             validate_mcp_tool_name(&tool.name).expect("core tool name must conform to MCP SEP-986");

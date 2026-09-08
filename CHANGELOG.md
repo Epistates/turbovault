@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-28
+
+**If you use TurboVault as an MCP server, nothing you do changes.** No tool was removed or renamed,
+no argument changed meaning, and every new parameter is optional. Existing YAML config keeps working,
+`watch_for_changes` included. The major version is for the Rust crates, which have source-breaking
+changes; see Migration below.
+
 Most of this release came from outside the maintainers. The plugin architecture was argued into
 shape by [@ForrestThump](https://github.com/ForrestThump) across #33, #42 and #43 before a line of
 it was written; the write substrate and everything that now guarantees a write either lands or
@@ -78,14 +85,42 @@ refuses is [@dlobue](https://github.com/dlobue)'s; partial reads are
 - **Protected directories are enforced at the access boundary**: `excluded_paths` (`.obsidian`, `.git`, `node_modules`, `.DS_Store` by default) and the non-configurable `.turbovault/` state directory were previously applied only when scanning for notes, so `read_note`/`write_note` could reach them by path on both backends. Writing `.obsidian/plugins/*/main.js` or `.git/hooks/*` is code execution by another name, and `.turbovault/` holds the audit trail. Both backends now refuse; the plugin config capability is the only sanctioned exception and is per-plugin and path-scoped.
 - **`max_file_size` is enforced on reads and writes**, not only while scanning directories, so an explicit read can no longer pull an arbitrarily large file into memory.
 - **`WritePrecondition::CreateOnly` is atomic on both backends.** It used to be a check-then-write, which let two concurrent create-only writers both observe the path as free and both proceed, producing the blind overwrite the precondition exists to prevent. The single write chokepoint ([#44](https://github.com/Epistates/turbovault/pull/44)) now checks `ExpectAbsent` and applies under one lock on the direct backend, and through the commit's compare-and-swap on Git.
-
-### Security
-
 - **Cleared four advisories in the dependency lock**: `h2` 0.4.14 to 0.4.18 (RUSTSEC-2026-0258, unbounded empty DATA frames) and `rkyv` 0.8.16 to 0.8.17 (RUSTSEC-2026-0233, -0234 and -0235, use-after-free and out-of-bounds reads on crafted archives). `rust_decimal` moves to 1.42.1 alongside them.
 
   One advisory is left, and is now recorded in `.cargo/audit.toml` with the reason: `rkyv` 0.7.46 arrives through `rust_decimal` and GlueSQL, wants a major bump neither has made, and is only reachable under the default-off `sql` feature.
 
 - **CI audits on a schedule, not only on a diff**: advisories get published against code that has not changed, so a job wired to push and pull request alone kept reporting green on a `main` that had gone unaudited for weeks. All four of these landed in that window. CI now also runs weekly.
+
+### Migration
+
+Only affects code depending on the library crates. MCP clients and YAML config are unaffected.
+
+- **`VaultConfig::watch_for_changes` is now `reconcile_external_changes`.** Config files are covered
+  by a serde alias, so only Rust code touching the field needs updating. It also does something now:
+  before, nothing read it at all.
+
+- **`ApplyOutcome` no longer implements `Clone`.** It carries an `Error` (which wraps `io::Error`)
+  so a partially-applied plan can report what stopped it. Clone the fields you need instead. It also
+  gained `error`, and `atomic`/`failed_at` now carry real values rather than being hardcoded.
+
+- **`VaultLifecycleTools::create_vault` and `add_vault_from_path` take two more arguments**,
+  `write_backend: WriteBackend` and `backend_opts: Option<VaultGitConfig>`. Pass
+  `(WriteBackend::Direct, None)` to keep the old behaviour.
+
+- **`WriteBackend` parses through `FromStr`** rather than an inherent method, so use
+  `value.parse::<WriteBackend>()`.
+
+- **The vault change-listener reports `(path, present, origin)`** instead of `(path, present)`, and
+  returns a future the manager awaits rather than being spawned. A listener must never call back
+  into the manager's freshness gate, since it runs inside one.
+
+- **`ContentBlock::Blockquote::content` keeps its line breaks.** It used to concatenate body lines
+  with no separator. Anything that parsed the joined string, for example splitting a callout marker
+  from its body, wants revisiting; that code was almost certainly working around this bug.
+
+- **`turbovault-plugin-api` is published separately at `0.1.0`**, not at the workspace version. The
+  plugin contract has no external implementors yet and needs room to move without forcing a major on
+  everything else.
 
 ## [1.6.0] - 2026-07-17
 
