@@ -47,42 +47,67 @@ jobs:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --locked
 
-  # ── Publish Crates (manual for now) ──────────────────────────────────
-  # publish:
-  #   name: Publish Crates
-  #   runs-on: ubuntu-latest
-  #   needs: verify
-  #   if: startsWith(github.ref, 'refs/tags/v')
-  #   steps:
-  #     - uses: actions/checkout@v5
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - name: Publish crates to crates.io
-  #       env:
-  #         CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-  #       run: |
-  #         if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
-  #           echo "CARGO_REGISTRY_TOKEN not set; skipping publish step."
-  #           exit 0
-  #         fi
-  #         set -euo pipefail
-  #         publish() {
-  #           local crate=$1
-  #           echo "Publishing ${crate} to crates.io"
-  #           cargo publish --package "${crate}" --locked
-  #           sleep 30
-  #         }
-  #         publish turbovault-core
-  #         publish turbovault-git
-  #         publish turbovault-audit
-  #         publish turbovault-parser
-  #         publish turbovault-graph
-  #         publish turbovault-export
-  #         publish turbovault-vault
-  #         publish turbovault-batch
-  #         publish turbovault-sql
-  #         publish turbovault-tools
-  #         publish turbovault-plugin-api
-  #         publish turbovault
+  # ── Publish Crates ───────────────────────────────────────────────────
+  # Runs only on a `v*` tag, and only when CARGO_REGISTRY_TOKEN is present, so
+  # a fork or a repo without the secret builds a release without publishing.
+  publish:
+    name: Publish Crates
+    runs-on: ubuntu-latest
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish crates to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "CARGO_REGISTRY_TOKEN not set; skipping publish step."
+            exit 0
+          fi
+          set -euo pipefail
+          # A crates.io version can never be replaced, so a run that dies
+          # partway leaves the release half published. Skipping what is already
+          # up makes a re-run resume from the failure instead of dying on the
+          # first crate it already published.
+          publish() {
+            local crate=$1
+            local version status
+            version=$(cargo metadata --format-version 1 --no-deps \
+              | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
+            if [ -z "${version}" ]; then
+              echo "::error::${crate} is not in the workspace metadata"
+              exit 1
+            fi
+            status=$(curl -sS -o /dev/null -w '%{http_code}' \
+              -A "turbovault-release-workflow" \
+              "https://crates.io/api/v1/crates/${crate}/${version}")
+            if [ "${status}" = "200" ]; then
+              echo "${crate} ${version} is already published, skipping"
+              return 0
+            fi
+            echo "Publishing ${crate} ${version}"
+            cargo publish --package "${crate}" --locked
+            # The index has to serve this version before the next crate that
+            # depends on it can resolve.
+            sleep 30
+          }
+          # Dependency order: every crate publishes after everything it needs.
+          # `turbovault-plugin-api` is versioned independently (0.1.0) but still
+          # has to precede the binary that mounts plugins.
+          publish turbovault-core
+          publish turbovault-git
+          publish turbovault-audit
+          publish turbovault-parser
+          publish turbovault-graph
+          publish turbovault-export
+          publish turbovault-vault
+          publish turbovault-batch
+          publish turbovault-sql
+          publish turbovault-tools
+          publish turbovault-plugin-api
+          publish turbovault
 
   # ── Build Prebuilt Binaries ───────────────────────────────────────────
   build:
