@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.0] - 2026-08-28
+## [2.0.0] - 2026-09-09
 
 **If you use TurboVault as an MCP server, nothing you do changes.** No tool was removed or renamed,
 no argument changed meaning, and every new parameter is optional. Existing YAML config keeps working,
