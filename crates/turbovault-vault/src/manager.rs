@@ -791,8 +791,8 @@ impl VaultManager {
     /// one. The comparison is a scan of `(size, mtime)` against what the note
     /// cache recorded when it parsed each note, debounced so a burst of calls
     /// pays for one pass. What it costs is bounded by
-    /// [`RECONCILE_DUTY_DIVISOR`]; how stale an answer can be is bounded by
-    /// [`ReconcileState::interval`].
+    /// `RECONCILE_DUTY_DIVISOR`; how stale an answer can be is bounded by
+    /// `ReconcileState::interval`.
     ///
     /// The two halves run in this order on purpose. Draining first settles any
     /// commit this process has already been told about and records the
@@ -1164,7 +1164,7 @@ impl VaultManager {
     /// themselves (`Precondition::for_replace` for the historical "no hash =
     /// blind overwrite-or-create" default) and supply the plan's `message`.
     /// This method builds the one-change [`ChangePlan`]
-    /// and delegates to [`Self::substrate`]; the fs-write + precondition +
+    /// and delegates to `self.substrate`; the fs-write + precondition +
     /// audit work itself lives in `DirectSubstrate::apply`. This method only
     /// does path resolution and the post-apply link-graph/cache sync (R7).
     #[instrument(skip(self, content), fields(file = ?path, size = content.len()), name = "vault_write_file")]

@@ -53,7 +53,7 @@ pub struct NoteInfo {
 ///
 /// This mirrors the flat, all-optional shape the MCP tool layer receives, so
 /// every field is independently settable and some combinations are nonsense.
-/// [`SliceSpec::selector`] converts it into a [`Selector`], which can only
+/// `SliceSpec::selector` converts it into a `Selector`, which can only
 /// represent a valid request.
 ///
 /// A default (all-`None`) spec selects nothing, and [`slice_content`] reports

@@ -40,7 +40,7 @@ impl VaultRepo {
     /// Validate every `(path, Precondition)` against `base_tree` (the tree the
     /// changeset is building on; `None` = an empty/unborn base where nothing
     /// exists). Returns `Ok(())` only if **all** match; the first mismatch
-    /// aborts with a `ConcurrencyError` (via [`Error::concurrency`]; the whole
+    /// aborts with a `ConcurrencyError` (via `Error::concurrency`; the whole
     /// changeset fails, nothing applied).
     #[instrument(
         skip(self, preconditions),

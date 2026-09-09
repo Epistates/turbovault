@@ -238,7 +238,7 @@ impl BatchTools {
     /// Atomic move + inbound-wikilink rewrite through the manager (both
     /// substrates). Flushes the reindex queue first so the backlink resolution
     /// reads a coherent link graph (replaces the MCP layer's pre-move flush),
-    /// builds the one-plan rename+rewrite via [`Self::fold_move_with_links`],
+    /// builds the one-plan rename+rewrite via `Self::fold_move_with_links`,
     /// and applies it via [`VaultManager::apply_changes`]. Returns the
     /// vault-relative source paths whose wikilinks were rewritten. `message`
     /// is the git commit subject (ignored on direct).
