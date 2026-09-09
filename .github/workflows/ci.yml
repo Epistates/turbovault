@@ -37,7 +37,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-features --all-targets --locked
 
+      # Must match the release workflow's verify job, `-D warnings` included.
+      # Without it a broken intra-doc link is a warning here and an error
+      # there, so the first anyone hears of it is a tag failing to release.
       - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --locked
 
   coverage:
