@@ -22,8 +22,6 @@ mod vault;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::Value;
-
 use anyhow::{Result, anyhow};
 use turbomcp::ServerCapabilities;
 use turbomcp::prelude::*;
@@ -94,86 +92,6 @@ impl VaultEventSink for HookBusSink {
         let _ = self
             .hooks
             .publish(vault, event, content_hash, plugin_id, event_attribution);
-    }
-}
-
-/// Lift every `$defs` in a tool's input schema to the schema root, and strip
-/// the root-schema artifacts that come with it.
-///
-/// `turbomcp-macros` builds an input schema one parameter at a time, calling
-/// `schemars::schema_for!` per parameter and inserting the resulting *root*
-/// schema whole as the property value. A root schema carries `$schema`,
-/// `title`, and any `$defs` its type needs, and the `$ref`s schemars generates
-/// are root-relative because from its own point of view it *is* the root.
-/// Nesting that document under `properties.<name>` moves the definitions
-/// without rewriting the pointers, so `#/$defs/Foo` resolves against a
-/// document root that has no `$defs` at all.
-///
-/// Consumers that resolve `#/$defs/...` correctly then reject the tool.
-/// llama.cpp's `llama-server` fails the whole request with HTTP 400 as soon as
-/// one such tool is present, taking the entire catalog offline for that host
-/// (Epistates/turbovault#51). Hosts that do not validate lose grammar-
-/// constrained argument generation and start producing malformed arguments.
-///
-/// This is a workaround for the upstream defect, still present in
-/// turbomcp-macros 3.2.0, and should be deleted once a release generates the
-/// schema from a single args struct.
-fn hoist_schema_defs(tool: &mut Tool) {
-    /// Recursively take `$defs` out of a subschema, merging into `collected`.
-    /// Also drops `$schema` and `title`, which are meaningful on a root
-    /// document and noise on a property (a subschema may not redeclare the
-    /// dialect, and the title is a generated Rust type name).
-    fn strip(value: &mut serde_json::Value, collected: &mut serde_json::Map<String, Value>) {
-        match value {
-            Value::Object(map) => {
-                if let Some(Value::Object(defs)) = map.remove("$defs") {
-                    for (name, schema) in defs {
-                        // schemars names a definition after its type, so the
-                        // same name is the same type and merging is safe.
-                        // Two different shapes under one name would mean a
-                        // silently wrong schema, so refuse rather than guess.
-                        if let Some(existing) = collected.get(&name) {
-                            debug_assert_eq!(
-                                existing, &schema,
-                                "two different definitions named {name:?} in one tool schema"
-                            );
-                        } else {
-                            collected.insert(name, schema);
-                        }
-                    }
-                }
-                map.remove("$schema");
-                map.remove("title");
-                for nested in map.values_mut() {
-                    strip(nested, collected);
-                }
-            }
-            Value::Array(items) => {
-                for item in items {
-                    strip(item, collected);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let Some(properties) = tool.input_schema.properties.as_mut() else {
-        return;
-    };
-    let mut collected = serde_json::Map::new();
-    strip(properties, &mut collected);
-    if collected.is_empty() {
-        return;
-    }
-    // Merge rather than replace: a root `$defs` could already exist, and the
-    // definitions lifted out of the properties belong beside it.
-    match tool.input_schema.extra_keywords.get_mut("$defs") {
-        Some(Value::Object(root)) => root.extend(collected),
-        _ => {
-            tool.input_schema
-                .extra_keywords
-                .insert("$defs".to_string(), Value::Object(collected));
-        }
     }
 }
 
@@ -764,14 +682,6 @@ impl ObsidianMcpServer {
             (hooks, shutdown, mounted_plugins)
         };
 
-        // Applied once over the assembled catalog rather than at each push, so
-        // core and plugin tools get the same treatment and a future mount site
-        // cannot forget it.
-        let mut tools = tools;
-        for tool in &mut tools {
-            hoist_schema_defs(tool);
-        }
-
         Ok(Self {
             core,
             composite,
@@ -1189,6 +1099,9 @@ impl ObsidianMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Only the schema assertions below need the JSON value type by name.
+    use serde_json::Value;
 
     fn structured(result: ToolResult) -> serde_json::Value {
         result
