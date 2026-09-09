@@ -850,7 +850,7 @@ impl ObsidianMcpServer {
     /// signal handler as well as after the transport's `serve()` returns.
     ///
     /// Closes the plugin hook bus so subscribers observe
-    /// [`turbovault_plugin_api::HookRecvError::Closed`] instead of waiting
+    /// `turbovault_plugin_api::HookRecvError::Closed` instead of waiting
     /// forever, then abandons fanout worktrees registered by this process.
     pub async fn shutdown(&self) {
         #[cfg(feature = "plugin-api")]

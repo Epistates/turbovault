@@ -26,7 +26,7 @@ impl VaultRepo {
     ///
     /// `expected_old == None` means the ref must **not** yet exist (the
     /// initial-commit case). On any mismatch returns a `ConcurrencyError` (via
-    /// [`Error::concurrency`]) with **nothing applied** — the ref is untouched.
+    /// `Error::concurrency`) with **nothing applied** — the ref is untouched.
     #[instrument(
         skip(self),
         fields(refname = %refname, expected = ?expected_old, new = %new),
