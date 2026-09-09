@@ -22,6 +22,10 @@ refuses is [@dlobue](https://github.com/dlobue)'s; partial reads are
 
 ### Fixed
 
+- **Tool schemas are valid JSON Schema again** ([#51](https://github.com/Epistates/turbovault/issues/51)): every `$defs` now sits at the root of a tool's `inputSchema`, where its `#/$defs/...` pointers can resolve. They were emitted one level down, inside the property that referenced them, so a strict consumer could not resolve any of them. llama.cpp's `llama-server` rejects the whole request with HTTP 400 when one such tool is present, taking the entire catalog offline for that host, and clients that skip validation quietly lose grammar-constrained argument generation and start sending malformed arguments. `advanced_search` and `batch_execute` were affected, as would be any tool taking a struct or enum parameter.
+
+  The cause is upstream in `turbomcp-macros`, which builds the schema one parameter at a time and nests each parameter's whole root document under `properties`. Still present in 3.2.0, so TurboVault hoists them itself for now. Reported by [@tiborkiss](https://github.com/tiborkiss) with a minimal repro.
+
 - **Registering a git-backed vault checks for a repository first.** `add_vault` with
   `write_backend: "git"` against a directory that is not a git repository used to register
   successfully and then fail on every write, far enough from the registration call that the two were
