@@ -95,9 +95,9 @@ impl VaultRepo {
 
     /// Apply `plan` as a single commit (see the module docs for the pipeline).
     ///
-    /// Aborts with a `ConcurrencyError` (via [`Error::concurrency`]) if any
+    /// Aborts with a `ConcurrencyError` (via `Error::concurrency`) if any
     /// precondition is stale (nothing committed, working tree untouched) and
-    /// with [`Error::other`] for an empty plan or duplicate change paths.
+    /// with `Error::other` for an empty plan or duplicate change paths.
     #[instrument(
         skip(self, plan),
         fields(

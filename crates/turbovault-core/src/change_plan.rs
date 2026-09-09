@@ -74,7 +74,7 @@ pub struct ChangePlan {
     /// break that loop.
     ///
     /// Deliberately `serde_json::Value` rather than a typed provenance struct:
-    /// it lands verbatim in [`turbovault_audit::AuditEntry::metadata`], which
+    /// it lands verbatim in `turbovault_audit::AuditEntry::metadata`, which
     /// is already this type, so nothing here needs to know or agree on a
     /// schema. Callers put whatever they read back — provenance, correlation
     /// ids, trace context. A typed accessor can layer on top later without
@@ -221,7 +221,7 @@ impl ChangePlan {
     /// `Upsert`/`Remove`, both `from` and `to` for `Rename` (a rename removes
     /// bytes at `from` and adds them at `to`). The single source of truth for
     /// "which paths does this plan mutate" — used by the git substrate's
-    /// gitignore gate + materialize call ([`turbovault-git`]'s
+    /// gitignore gate + materialize call (`turbovault-git`'s
     /// `commit_changeset`) and by the tool layer's intra-batch path-collision
     /// check.
     pub fn touched_paths(&self) -> Vec<String> {
