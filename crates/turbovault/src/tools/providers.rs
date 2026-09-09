@@ -22,6 +22,8 @@ mod vault;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde_json::Value;
+
 use anyhow::{Result, anyhow};
 use turbomcp::ServerCapabilities;
 use turbomcp::prelude::*;
@@ -92,6 +94,86 @@ impl VaultEventSink for HookBusSink {
         let _ = self
             .hooks
             .publish(vault, event, content_hash, plugin_id, event_attribution);
+    }
+}
+
+/// Lift every `$defs` in a tool's input schema to the schema root, and strip
+/// the root-schema artifacts that come with it.
+///
+/// `turbomcp-macros` builds an input schema one parameter at a time, calling
+/// `schemars::schema_for!` per parameter and inserting the resulting *root*
+/// schema whole as the property value. A root schema carries `$schema`,
+/// `title`, and any `$defs` its type needs, and the `$ref`s schemars generates
+/// are root-relative because from its own point of view it *is* the root.
+/// Nesting that document under `properties.<name>` moves the definitions
+/// without rewriting the pointers, so `#/$defs/Foo` resolves against a
+/// document root that has no `$defs` at all.
+///
+/// Consumers that resolve `#/$defs/...` correctly then reject the tool.
+/// llama.cpp's `llama-server` fails the whole request with HTTP 400 as soon as
+/// one such tool is present, taking the entire catalog offline for that host
+/// (Epistates/turbovault#51). Hosts that do not validate lose grammar-
+/// constrained argument generation and start producing malformed arguments.
+///
+/// This is a workaround for the upstream defect, still present in
+/// turbomcp-macros 3.2.0, and should be deleted once a release generates the
+/// schema from a single args struct.
+fn hoist_schema_defs(tool: &mut Tool) {
+    /// Recursively take `$defs` out of a subschema, merging into `collected`.
+    /// Also drops `$schema` and `title`, which are meaningful on a root
+    /// document and noise on a property (a subschema may not redeclare the
+    /// dialect, and the title is a generated Rust type name).
+    fn strip(value: &mut serde_json::Value, collected: &mut serde_json::Map<String, Value>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(Value::Object(defs)) = map.remove("$defs") {
+                    for (name, schema) in defs {
+                        // schemars names a definition after its type, so the
+                        // same name is the same type and merging is safe.
+                        // Two different shapes under one name would mean a
+                        // silently wrong schema, so refuse rather than guess.
+                        if let Some(existing) = collected.get(&name) {
+                            debug_assert_eq!(
+                                existing, &schema,
+                                "two different definitions named {name:?} in one tool schema"
+                            );
+                        } else {
+                            collected.insert(name, schema);
+                        }
+                    }
+                }
+                map.remove("$schema");
+                map.remove("title");
+                for nested in map.values_mut() {
+                    strip(nested, collected);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    strip(item, collected);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(properties) = tool.input_schema.properties.as_mut() else {
+        return;
+    };
+    let mut collected = serde_json::Map::new();
+    strip(properties, &mut collected);
+    if collected.is_empty() {
+        return;
+    }
+    // Merge rather than replace: a root `$defs` could already exist, and the
+    // definitions lifted out of the properties belong beside it.
+    match tool.input_schema.extra_keywords.get_mut("$defs") {
+        Some(Value::Object(root)) => root.extend(collected),
+        _ => {
+            tool.input_schema
+                .extra_keywords
+                .insert("$defs".to_string(), Value::Object(collected));
+        }
     }
 }
 
@@ -681,6 +763,14 @@ impl ObsidianMcpServer {
 
             (hooks, shutdown, mounted_plugins)
         };
+
+        // Applied once over the assembled catalog rather than at each push, so
+        // core and plugin tools get the same treatment and a future mount site
+        // cannot forget it.
+        let mut tools = tools;
+        for tool in &mut tools {
+            hoist_schema_defs(tool);
+        }
 
         Ok(Self {
             core,
@@ -1392,12 +1482,122 @@ mod tests {
         );
     }
 
+    /// Rebuild `value` with every object's keys in sorted order.
+    ///
+    /// `ToolInputSchema::extra_keywords` is a `HashMap` serialized with
+    /// `#[serde(flatten)]`, so its keys come out in the map's iteration order,
+    /// which std randomizes per process. With one extra keyword that was
+    /// invisible; a schema carrying both `$schema` and a hoisted `$defs` makes
+    /// the byte comparison below fail on roughly two runs in three. Sorting
+    /// gives the fixture one spelling regardless of how the map iterated.
+    fn canonical_json(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut sorted: Vec<_> = map.iter().collect();
+                sorted.sort_by_key(|(key, _)| *key);
+                Value::Object(
+                    sorted
+                        .into_iter()
+                        .map(|(k, v)| (k.clone(), canonical_json(v)))
+                        .collect(),
+                )
+            }
+            Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
+            other => other.clone(),
+        }
+    }
+
+    /// Every `#/$defs/...` pointer a tool emits has to resolve against that
+    /// tool's own schema root, and no subschema may carry `$defs` or declare a
+    /// dialect.
+    ///
+    /// `turbomcp-macros` builds the schema per parameter and nests each
+    /// parameter's whole root document under `properties`, which strands the
+    /// definitions one level below the pointers that reference them
+    /// (Epistates/turbovault#51). A strict consumer then rejects the tool:
+    /// llama.cpp's `llama-server` fails the entire request with HTTP 400,
+    /// taking every other tool down with it.
+    ///
+    /// Asserted as a property rather than against the fixture, so it holds for
+    /// a tool nobody has added yet and for any parameter shape schemars
+    /// decides to generate a definition for.
+    #[test]
+    fn every_tool_schema_resolves_its_own_defs() {
+        let server = ObsidianMcpServer::new().expect("provider composition");
+
+        fn pointers(value: &Value, into: &mut Vec<String>) {
+            match value {
+                Value::Object(map) => {
+                    for (key, nested) in map {
+                        if key == "$ref"
+                            && let Some(target) = nested.as_str()
+                            && let Some(name) = target.strip_prefix("#/$defs/")
+                        {
+                            into.push(name.to_string());
+                        }
+                        pointers(nested, into);
+                    }
+                }
+                Value::Array(items) => items.iter().for_each(|item| pointers(item, into)),
+                _ => {}
+            }
+        }
+
+        fn nested_root_keywords(value: &Value, found: &mut Vec<&'static str>) {
+            if let Value::Object(map) = value {
+                if map.contains_key("$defs") {
+                    found.push("$defs");
+                }
+                if map.contains_key("$schema") {
+                    found.push("$schema");
+                }
+                map.values().for_each(|v| nested_root_keywords(v, found));
+            } else if let Value::Array(items) = value {
+                items.iter().for_each(|v| nested_root_keywords(v, found));
+            }
+        }
+
+        for tool in server.list_tools() {
+            let name = &tool.name;
+            let defined: Vec<String> = tool
+                .input_schema
+                .extra_keywords
+                .get("$defs")
+                .and_then(Value::as_object)
+                .map(|defs| defs.keys().cloned().collect())
+                .unwrap_or_default();
+
+            let mut referenced = Vec::new();
+            if let Some(properties) = tool.input_schema.properties.as_ref() {
+                pointers(properties, &mut referenced);
+            }
+            for target in &referenced {
+                assert!(
+                    defined.contains(target),
+                    "{name}: $ref #/$defs/{target} does not resolve; root defines {defined:?}"
+                );
+            }
+
+            // The properties are subschemas, so neither keyword belongs there.
+            let mut stray = Vec::new();
+            if let Some(properties) = tool.input_schema.properties.as_ref() {
+                nested_root_keywords(properties, &mut stray);
+            }
+            assert!(
+                stray.is_empty(),
+                "{name}: root-only keywords {stray:?} found inside properties"
+            );
+        }
+    }
+
     #[test]
     fn tools_list_is_byte_for_byte_equivalent_to_the_pre_split_catalog() {
         let server = ObsidianMcpServer::new().expect("provider composition");
         let expected = include_str!("providers/tool_catalog.json").trim_end();
-        let actual =
-            serde_json::to_string_pretty(&server.list_tools()).expect("serialize tool catalog");
+        let actual = serde_json::to_string_pretty(&canonical_json(
+            &serde_json::to_value(server.list_tools()).expect("tool catalog to json"),
+        ))
+        .expect("serialize tool catalog");
 
         assert_eq!(server.list_tools().len(), 74, "public tool count changed");
         // The fixture is a deliberate tripwire on the public tool surface, so a
