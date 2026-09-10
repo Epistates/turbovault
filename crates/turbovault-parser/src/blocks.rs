@@ -42,6 +42,28 @@ fn preprocess_wikilinks(markdown: &str) -> String {
 static LINK_WITH_SPACES_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)<>]+\s[^)<>]*)\)").unwrap());
 
+/// Render an image back to its markdown spelling.
+///
+/// Used when rebuilding a blockquote's raw text, which is re-parsed rather than
+/// carried through as structure, so anything not written here is lost.
+///
+/// A destination containing a space is wrapped in angle brackets, since bare
+/// `![a](my file.png)` is not a link at all to a strict parser and would come
+/// back as literal text. A title is re-quoted beside it.
+fn format_image(alt: &str, src: &str, title: Option<&str>) -> String {
+    let dest = if src.contains(char::is_whitespace) {
+        format!("<{src}>")
+    } else {
+        src.to_string()
+    };
+    match title {
+        // A title containing a double quote would terminate the title early,
+        // so fall back to the destination alone rather than emit a broken one.
+        Some(title) if !title.contains('"') => format!("![{alt}]({dest} \"{title}\")"),
+        _ => format!("![{alt}]({dest})"),
+    }
+}
+
 /// Split a link target into its destination and an optional CommonMark title.
 ///
 /// A title is a quoted run at the end, separated from the destination by
@@ -634,6 +656,31 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         Event::End(TagEnd::Link) => {
             state.in_link = false;
 
+            // Same as images: inside a quote only the buffer reaches the
+            // re-parse, so the destination has to be written back out. A link
+            // wrapping an image re-emits the image as its label, which is the
+            // one case where `link_text` is not the whole story.
+            if state.in_blockquote {
+                let label = if state.image_in_link {
+                    format_image(&state.link_text, &state.link_url, None)
+                } else {
+                    state.link_text.clone()
+                };
+                let url = if state.image_in_link {
+                    state.saved_link_url.clone()
+                } else {
+                    state.link_url.clone()
+                };
+                state
+                    .blockquote_buffer
+                    .push_str(&format!("[{label}]({url})"));
+                state.link_text.clear();
+                state.link_url.clear();
+                state.saved_link_url.clear();
+                state.image_in_link = false;
+                return;
+            }
+
             // Capture line_offset for nested list items
             let line_offset = if state.in_list && state.item_depth >= 1 {
                 Some(state.nested_line_offset)
@@ -698,6 +745,21 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 None
             };
 
+            // Inside a quote the buffer is the only thing that survives to the
+            // re-parse, so re-emit the whole element rather than the alt alone.
+            // A linked image writes nothing here; `TagEnd::Link` emits the
+            // wrapper with this image nested inside it.
+            if state.in_blockquote && !state.image_in_link {
+                state.blockquote_buffer.push_str(&format_image(
+                    &state.link_text,
+                    &state.link_url,
+                    title.as_deref(),
+                ));
+                state.link_text.clear();
+                state.link_url.clear();
+                return;
+            }
+
             if state.image_in_link {
                 // A linked image (`[![alt](img)](href)`) used to emit nothing
                 // at all, so a README badge row reported zero images. The
@@ -750,6 +812,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         Event::Text(text) => {
             if state.in_code {
                 state.code_buffer.push_str(&text);
+            } else if state.in_blockquote && (state.in_image || state.in_link) {
+                // An image's alt or a link's label, which is only half of the
+                // element. Held here so the end tag can re-emit the whole
+                // `![alt](src)` / `[text](url)` into the buffer. Appending it
+                // straight to `blockquote_buffer` is what dropped every
+                // destination inside a quote: the re-parse saw bare text.
+                state.link_text.push_str(&text);
             } else if state.in_blockquote {
                 state.blockquote_buffer.push_str(&text);
             } else if state.in_heading {
