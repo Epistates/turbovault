@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing here changes behaviour, and no crate version moved, so there is nothing to upgrade to yet.
+
+### Changed
+
+- **Off the yanked `chacha20`.** 0.10.0 and 0.10.1 are both yanked, so cargo warned on every package
+  step while publishing 2.0.0. It arrives through `rand` under turbomcp's transport and protocol
+  crates. `cargo audit` reports it as yanked with no advisory against it, so this is hygiene rather
+  than a security fix. Now on 0.10.2, and no yanked package remains in the lock.
+
+- **Every turbomcp crate resolves to one version.** `turbomcp-client` was still on 3.1.5 while the
+  rest moved to 3.3.0, so the wire-level end-to-end test drove a 3.3.0 server with a 3.1.5 client.
+  That is the shape of skew that hides a protocol regression, because both ends work on their own
+  and nothing asserts they agree on the same wire. It drifted because `turbomcp-client` and
+  `turbomcp-transport` were pinned inside `crates/turbovault/Cargo.toml` instead of
+  `[workspace.dependencies]`; both now sit with the others, so a future bump cannot leave one
+  behind.
+
+- **Releases publish with `cargo publish --workspace`.** The workflow kept a hand-written crate list
+  with its own dependency ordering, 30-second sleeps and an already-published probe. Cargo derives
+  the order from the graph, waits on the index itself, and warns rather than fails on a crate that
+  is already up, so a partial run still resumes. The hand-written version could only drift from the
+  real graph as crates are added.
+
+- **`.claude/` is ignored.** It holds local agent settings and session state, and was untracked but
+  not ignored, so it showed as a dirty tree and sat one `git add -A` away from committing someone's
+  personal configuration.
+
 ## [2.0.0] - 2026-09-09
 
 **If you use TurboVault as an MCP server, nothing you do changes.** No tool was removed or renamed,
