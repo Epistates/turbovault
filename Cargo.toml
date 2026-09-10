@@ -85,6 +85,11 @@ turbomcp-core = "3.3.0"
 turbomcp-protocol = "3.3.0"
 turbomcp-server = { version = "3.3.0", default-features = false }
 turbomcp-types = "3.3.0"
+# Used by the wire-level e2e test. Declared here with the rest so a turbomcp
+# bump cannot leave the client behind, which is how it ended up driving a
+# 3.3.0 server from a 3.1.5 client.
+turbomcp-client = "3.3.0"
+turbomcp-transport = "3.3.0"
 
 # SQL query engine (optional, for frontmatter SQL queries)
 gluesql = { version = "0.19", default-features = false, features = ["gluesql_memory_storage"] }
