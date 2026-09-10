@@ -265,3 +265,129 @@ fn a_single_line_blockquote_has_no_trailing_whitespace() {
 
     assert_eq!(content, "Just one line.");
 }
+
+// ---------------------------------------------------------------------------
+// Inline elements inside a blockquote (Epistates/turbovault#68)
+// ---------------------------------------------------------------------------
+
+/// A blockquote is rebuilt from raw text and re-parsed, and that pass used to
+/// see only the alt or label, so every destination inside a quote was lost.
+///
+/// 1.6.0 flattened these the same way, but also hoisted a copy of the image out
+/// of the quote as a top-level sibling, so a consumer scanning top-level blocks
+/// still found a source. 2.0.0 correctly stopped hoisting, which is what made
+/// the loss visible.
+#[test]
+fn a_blockquote_image_keeps_its_source() {
+    let images = collect_images(&parse_blocks("> ![a](a.png)\n"));
+
+    assert_eq!(
+        images,
+        vec![("a".to_string(), "a.png".to_string(), None)],
+        "an image in a quote must keep its source"
+    );
+}
+
+#[test]
+fn a_blockquote_link_keeps_its_destination() {
+    let blocks = parse_blocks("> [link](https://example.com)\n");
+    let (_, nested) = first_blockquote(&blocks);
+
+    let ContentBlock::Paragraph { inline, .. } = &nested[0] else {
+        panic!("expected a paragraph in the quote, got {:?}", nested[0]);
+    };
+    let link = inline
+        .iter()
+        .find_map(|e| match e {
+            InlineElement::Link { text, url, .. } => Some((text.clone(), url.clone())),
+            _ => None,
+        })
+        .expect("expected a link, not flattened text");
+
+    assert_eq!(
+        link,
+        ("link".to_string(), "https://example.com".to_string())
+    );
+}
+
+/// The title has to survive the round trip through raw text too.
+#[test]
+fn a_blockquote_image_keeps_its_title() {
+    let images = collect_images(&parse_blocks("> ![a](a.png \"Title\")\n"));
+
+    assert_eq!(
+        images,
+        vec![(
+            "a".to_string(),
+            "a.png".to_string(),
+            Some("Title".to_string())
+        )]
+    );
+}
+
+/// A destination with a space is not a link at all to a strict parser, so
+/// rebuilding it bare would come back as literal text.
+#[test]
+fn a_blockquote_image_survives_a_spaced_destination() {
+    let images = collect_images(&parse_blocks("> ![a](my file.png)\n"));
+
+    assert_eq!(
+        images,
+        vec![("a".to_string(), "my file.png".to_string(), None)]
+    );
+}
+
+/// The badge row case, inside a quote: the image and its wrapping link each
+/// keep their own destination.
+#[test]
+fn a_blockquote_linked_image_keeps_both_destinations() {
+    let blocks = parse_blocks("> [![badge](b.png)](https://ci.example)\n");
+    let (_, nested) = first_blockquote(&blocks);
+
+    let ContentBlock::Paragraph { inline, .. } = &nested[0] else {
+        panic!("expected a paragraph, got {:?}", nested[0]);
+    };
+    let image = inline.iter().find_map(|e| match e {
+        InlineElement::Image { src, .. } => Some(src.as_str()),
+        _ => None,
+    });
+    let link = inline.iter().find_map(|e| match e {
+        InlineElement::Link { url, .. } => Some(url.as_str()),
+        _ => None,
+    });
+
+    assert_eq!(image, Some("b.png"));
+    assert_eq!(link, Some("https://ci.example"));
+}
+
+/// Prose, inline code, a link and an image in one quoted line. Inline code
+/// already round-tripped; this pins that the new handling did not disturb it.
+#[test]
+fn a_blockquote_keeps_mixed_inline_elements_together() {
+    let blocks = parse_blocks("> text with `code` and [a](u) and ![i](s)\n");
+    let (content, nested) = first_blockquote(&blocks);
+
+    assert_eq!(content, "text with `code` and [a](u) and ![i](s)");
+
+    let ContentBlock::Paragraph { inline, .. } = &nested[0] else {
+        panic!("expected a paragraph, got {:?}", nested[0]);
+    };
+    assert!(
+        inline
+            .iter()
+            .any(|e| matches!(e, InlineElement::Code { value } if value == "code")),
+        "inline code must still round-trip, got {inline:?}"
+    );
+    assert!(
+        inline
+            .iter()
+            .any(|e| matches!(e, InlineElement::Link { url, .. } if url == "u")),
+        "link must survive, got {inline:?}"
+    );
+    assert!(
+        inline
+            .iter()
+            .any(|e| matches!(e, InlineElement::Image { src, .. } if src == "s")),
+        "image must survive, got {inline:?}"
+    );
+}

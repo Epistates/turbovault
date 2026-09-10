@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing here changes behaviour, and no crate version moved, so there is nothing to upgrade to yet.
+### Fixed
+
+- **Images and links inside a blockquote keep their destinations** ([#68](https://github.com/Epistates/turbovault/issues/68)): a quote is rebuilt from its raw text and re-parsed, and that pass only ever saw an image's alt or a link's label, so `> ![a](a.png)` came back as the bare text `a`. Every destination inside a quote was lost, while inline code round-tripped fine because it was already re-emitted with its delimiters. Images and links now are too, titles and spaced destinations included.
+
+  1.6.0 flattened these the same way. It also hoisted a copy of the image out of the quote as a top-level sibling, so anything scanning top-level blocks still found a source, which is why 2.0.0 looked like a regression: it correctly stopped hoisting, and that removed the thing masking the loss.
 
 ### Changed
 
