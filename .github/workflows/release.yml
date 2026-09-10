@@ -67,47 +67,13 @@ jobs:
             exit 0
           fi
           set -euo pipefail
-          # A crates.io version can never be replaced, so a run that dies
-          # partway leaves the release half published. Skipping what is already
-          # up makes a re-run resume from the failure instead of dying on the
-          # first crate it already published.
-          publish() {
-            local crate=$1
-            local version status
-            version=$(cargo metadata --format-version 1 --no-deps \
-              | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
-            if [ -z "${version}" ]; then
-              echo "::error::${crate} is not in the workspace metadata"
-              exit 1
-            fi
-            status=$(curl -sS -o /dev/null -w '%{http_code}' \
-              -A "turbovault-release-workflow" \
-              "https://crates.io/api/v1/crates/${crate}/${version}")
-            if [ "${status}" = "200" ]; then
-              echo "${crate} ${version} is already published, skipping"
-              return 0
-            fi
-            echo "Publishing ${crate} ${version}"
-            cargo publish --package "${crate}" --locked
-            # The index has to serve this version before the next crate that
-            # depends on it can resolve.
-            sleep 30
-          }
-          # Dependency order: every crate publishes after everything it needs.
-          # `turbovault-plugin-api` is versioned independently (0.1.0) but still
-          # has to precede the binary that mounts plugins.
-          publish turbovault-core
-          publish turbovault-git
-          publish turbovault-audit
-          publish turbovault-parser
-          publish turbovault-graph
-          publish turbovault-export
-          publish turbovault-vault
-          publish turbovault-batch
-          publish turbovault-sql
-          publish turbovault-tools
-          publish turbovault-plugin-api
-          publish turbovault
+          # Cargo resolves the publish order from the dependency graph itself,
+          # waits for the index between crates, and warns rather than fails on
+          # anything already on crates.io, so a run that died partway resumes.
+          # This replaced a hand-maintained crate list with its own ordering,
+          # sleeps and already-published probe, all of which cargo now does and
+          # any of which could drift from the real graph when a crate is added.
+          cargo publish --workspace --locked
 
   # ── Build Prebuilt Binaries ───────────────────────────────────────────
   build:
