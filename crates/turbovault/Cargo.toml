@@ -103,8 +103,8 @@ serial_test = "4"
 # the JSON-RPC layer the in-process 6fo.18 suite skips and asserting derived
 # graph/search state via MCP tool responses (the real flush-on-query path,
 # no `flush_*_test` backdoor).
-turbomcp-client = "3.1.5"
-turbomcp-transport = "3.1.5"
+turbomcp-client = { workspace = true }
+turbomcp-transport = { workspace = true }
 # Also a plugin-api-gated runtime dependency; tests need it unconditionally.
 turbomcp-protocol = { workspace = true }
 
