@@ -15,6 +15,12 @@ htmlcov/
 .env.*
 !.env.example
 
+# Agent tooling state. Local to whoever is running it: settings, session
+# scratch, and project state that means nothing in anyone else's checkout.
+# `CLAUDE.md` itself stays tracked-by-hand at the repo root, since that is
+# shared project instruction rather than local state.
+.claude/
+
 # Private strategy docs (keep untracked)
 .strategy/
 **/PRIVATE_*.md
