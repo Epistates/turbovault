@@ -23,6 +23,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`memmap2` 0.9.11 clears RUSTSEC-2026-0186.** An unchecked pointer offset, reached through
+  tantivy, which is how search memory-maps its index. The fix is a patch release, so this is a
+  lockfile bump with no API change. Tantivy itself moves 0.26.1 to 0.26.2 in the same update.
+
+  Six audit warnings remain and none is fixable from here. `lru` needs 0.18.2 and tantivy 0.26.2
+  still pins 0.16. `im`, `sized-chunks` and `bitmaps` arrive under GlueSQL behind the default-off
+  `sql` feature, and all three advisories list no patched version at all. That is the same dead end
+  as the `RUSTSEC-2026-0235` entry already in `audit.toml`, so it is worth re-checking whenever
+  GlueSQL releases.
+
 - **Off the yanked `chacha20`.** 0.10.0 and 0.10.1 are both yanked, so cargo warned on every package
   step while publishing 2.0.0. It arrives through `rand` under turbomcp's transport and protocol
   crates. `cargo audit` reports it as yanked with no advisory against it, so this is hygiene rather
