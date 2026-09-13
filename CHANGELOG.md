@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-13
+
+Every change here is in the parser, and all of it came from
+[treemd](https://github.com/Epistates/treemd) building against this repository's
+`main` and reporting what broke. Nothing in the MCP tool surface changed.
+
+### Added
+
+- **Fenced blocks report where they are.** `ContentBlock::Code` carries `start_line` and `end_line`, and both were the line the parse began at, which for `parse_blocks` meant a hard-coded 0 for every block in every document. The counter was set once at construction and never advanced, so this never worked in any released version. Positions now come from the source spans the markdown parser already produces.
+
+  Lines are 1-based, matching `line_of_offset` and the partial-read sections elsewhere in the workspace, and a fence spans from its opening line to its closing one. `parse_blocks_from_line` offsets every block by the line the fragment starts at, which is what the blockquote re-parse now uses. A `<details>` block is padded back to its original height when it is swapped for its placeholder, so it no longer shifts everything below it.
+
 ### Fixed
+
+- **A fenced block inside a blockquote reports its place in the document** ([#68](https://github.com/Epistates/turbovault/issues/68)): the quote is re-parsed as a detached fragment, so its blocks were numbered from zero. A consumer filtering on `start_line` saw every quoted block sitting before the document began. The fragment is now numbered from the line the quote itself starts on.
+
+- **An image in a heading keeps its alt, and stays in the heading** ([#68](https://github.com/Epistates/turbovault/issues/68)): `# Title ![h](h.png)` reported an image with an empty `alt` and a heading reading `Title h`. The end tag routed to the inline buffer only for a paragraph or a list item, so a heading fell through to the block arm and the image was emitted as a top-level sibling ahead of its own heading, while its alt had already been appended to the heading's text. Headings now collect inline elements the way paragraphs do, links included. This one predates 2.0.0.
 
 - **Lists inside a blockquote keep their markers, and a fence after one is still a code block** ([#71](https://github.com/Epistates/turbovault/issues/71)): a quote is rebuilt from its raw text, so everything inside one has to be written back into that buffer as markdown. Lists never were. They were flushed to the top level instead, which put an item-less list ahead of the quote and left the items' text bare in the quote's content, so `> - one` `> - two` came back as the single run `onetwo`.
 
