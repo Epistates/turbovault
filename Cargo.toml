@@ -16,7 +16,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.6.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
@@ -30,7 +30,7 @@ description = "LLM-optimized Obsidian vault MCP server with advanced editing, se
 publish = true
 
 [workspace.dependencies]
-tokio = { version = "1.52", features = ["io-util", "macros", "rt-multi-thread", "sync", "time", "fs"] }
+tokio = { version = "1.53", features = ["io-util", "macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 async-trait = "0.1"
@@ -57,7 +57,7 @@ walkdir = "2"
 
 # Parsing utilities
 regex = "1"
-winnow = "1.0.2"
+winnow = "1.0.4"
 
 # Error handling
 thiserror = "2.0"
@@ -65,8 +65,8 @@ anyhow = "1.0"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.23", features = ["v4", "serde"] }
-dashmap = "6.1"
+uuid = { version = "1.24", features = ["v4", "serde"] }
+dashmap = "6.2"
 
 # Configuration
 config = "0.15"
@@ -80,10 +80,16 @@ criterion = "0.8"
 log = "0.4"
 
 # MCP server framework
-turbomcp = { version = "3.1.5", default-features = false }
-turbomcp-core = "3.1.5"
-turbomcp-server = { version = "3.1.5", default-features = false }
-turbomcp-types = "3.1.5"
+turbomcp = { version = "3.3.0", default-features = false }
+turbomcp-core = "3.3.0"
+turbomcp-protocol = "3.3.0"
+turbomcp-server = { version = "3.3.0", default-features = false }
+turbomcp-types = "3.3.0"
+# Used by the wire-level e2e test. Declared here with the rest so a turbomcp
+# bump cannot leave the client behind, which is how it ended up driving a
+# 3.3.0 server from a 3.1.5 client.
+turbomcp-client = "3.3.0"
+turbomcp-transport = "3.3.0"
 
 # SQL query engine (optional, for frontmatter SQL queries)
 gluesql = { version = "0.19", default-features = false, features = ["gluesql_memory_storage"] }
@@ -103,24 +109,26 @@ path_trav = "2"           # Path traversal detection - security-focused
 
 # Git write substrate (libgit2 bindings; vendored libgit2 -> needs cmake + cc at build)
 git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS via Transaction
-fs4 = "0.13"              # cross-process advisory lock for commit + materialize
 
 # DEFERRED (Phase 3+):
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "1.6.0", path = "crates/turbovault-core" }
-turbovault-parser = { version = "1.6.0", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "1.6.0", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "1.6.0", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "1.6.0", path = "crates/turbovault-batch" }
-turbovault-export = { version = "1.6.0", path = "crates/turbovault-export" }
-turbovault-audit = { version = "1.6.0", path = "crates/turbovault-audit" }
-turbovault-git = { version = "1.6.0", path = "crates/turbovault-git" }
-turbovault-sql = { version = "1.6.0", path = "crates/turbovault-sql" }
-turbovault-tools = { version = "1.6.0", path = "crates/turbovault-tools" }
-turbovault-plugin-api = { version = "1.6.0", path = "crates/turbovault-plugin-api" }
-turbovault = { version = "1.6.0", path = "crates/turbovault" }
+turbovault-core = { version = "2.0.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "2.0.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "2.0.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "2.0.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "2.0.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "2.0.0", path = "crates/turbovault-export" }
+turbovault-audit = { version = "2.0.0", path = "crates/turbovault-audit" }
+turbovault-git = { version = "2.0.0", path = "crates/turbovault-git" }
+turbovault-sql = { version = "2.0.0", path = "crates/turbovault-sql" }
+turbovault-tools = { version = "2.0.0", path = "crates/turbovault-tools" }
+# Versioned independently of the workspace: the plugin contract has no external
+# implementors yet and needs room to change without dragging every other crate
+# to a new major. Promote it to the workspace version once it is stable.
+turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-api" }
+turbovault = { version = "2.0.0", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3

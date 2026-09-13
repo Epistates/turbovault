@@ -42,16 +42,79 @@ fn preprocess_wikilinks(markdown: &str) -> String {
 static LINK_WITH_SPACES_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)<>]+\s[^)<>]*)\)").unwrap());
 
+/// Render an image back to its markdown spelling.
+///
+/// Used when rebuilding a blockquote's raw text, which is re-parsed rather than
+/// carried through as structure, so anything not written here is lost.
+///
+/// A destination containing a space is wrapped in angle brackets, since bare
+/// `![a](my file.png)` is not a link at all to a strict parser and would come
+/// back as literal text. A title is re-quoted beside it.
+fn format_image(alt: &str, src: &str, title: Option<&str>) -> String {
+    let dest = if src.contains(char::is_whitespace) {
+        format!("<{src}>")
+    } else {
+        src.to_string()
+    };
+    match title {
+        // A title containing a double quote would terminate the title early,
+        // so fall back to the destination alone rather than emit a broken one.
+        Some(title) if !title.contains('"') => format!("![{alt}]({dest} \"{title}\")"),
+        _ => format!("![{alt}]({dest})"),
+    }
+}
+
+/// Split a link target into its destination and an optional CommonMark title.
+///
+/// A title is a quoted run at the end, separated from the destination by
+/// whitespace: `x.png "Title"` is a destination plus a title, not a
+/// destination containing a space. The returned title keeps its quotes, so a
+/// caller can re-emit it verbatim.
+///
+/// Only `"` and `'` are recognised. CommonMark also allows a `(…)` title, but
+/// [`LINK_WITH_SPACES_RE`] cannot capture one because its target class
+/// excludes `)`.
+fn split_link_title(target: &str) -> (&str, Option<&str>) {
+    let trimmed = target.trim_end();
+    let quote = match trimmed.chars().last() {
+        Some(c @ ('"' | '\'')) => c,
+        _ => return (target, None),
+    };
+    let body = &trimmed[..trimmed.len() - quote.len_utf8()];
+    let Some(open) = body.rfind(quote) else {
+        return (target, None);
+    };
+    // Without the separating whitespace this is one destination that happens
+    // to contain quotes, not a destination and a title.
+    if !body[..open].ends_with(char::is_whitespace) {
+        return (target, None);
+    }
+    let url = body[..open].trim_end();
+    if url.is_empty() {
+        return (target, None);
+    }
+    (url, Some(&trimmed[open..]))
+}
+
 /// Preprocess links with spaces to angle bracket syntax.
+///
+/// The title is split off first. Wrapping `x.png "Title"` whole would make the
+/// title part of the destination, which is how `![a](x.png "Title")` used to
+/// parse to `src: "x.png \"Title\""` with no title at all.
 fn preprocess_links_with_spaces(markdown: &str) -> String {
     LINK_WITH_SPACES_RE
         .replace_all(markdown, |caps: &regex::Captures| {
             let text = &caps[1];
-            let url = &caps[2];
-            if url.contains(' ') {
-                format!("[{}](<{}>)", text, url)
-            } else {
-                caps[0].to_string()
+            let (url, title) = split_link_title(&caps[2]);
+            // Only a destination that genuinely contains a space needs the
+            // angle brackets. Once the title is off, most do not, and leaving
+            // them alone lets pulldown-cmark parse them natively.
+            if !url.contains(' ') {
+                return caps[0].to_string();
+            }
+            match title {
+                Some(title) => format!("[{text}](<{url}> {title})"),
+                None => format!("[{text}](<{url}>)"),
             }
         })
         .to_string()
@@ -137,6 +200,18 @@ fn extract_summary(details_content: &str) -> String {
 // Parser state machine
 // ============================================================================
 
+/// One list level open inside a blockquote that is still buffering.
+///
+/// A quote is rebuilt by re-parsing its raw text, so a list inside one has to
+/// be written back out as markdown rather than flushed to `blocks`.
+struct QuotedList {
+    /// Next ordinal for an ordered list, `None` for a bullet list.
+    next_number: Option<u64>,
+    /// Column this list's markers start at, which is the content column of
+    /// whichever item encloses it.
+    indent: String,
+}
+
 struct BlockParserState {
     current_line: usize,
     paragraph_buffer: String,
@@ -151,7 +226,16 @@ struct BlockParserState {
     code_buffer: String,
     code_language: Option<String>,
     code_start_line: usize,
+    /// The current image's title, held here rather than borrowing
+    /// `paragraph_buffer`. Parking it there overwrote whatever the paragraph
+    /// had accumulated, so `- item ![a](a.png)` lost its "item " prefix.
+    image_title: String,
     blockquote_buffer: String,
+    /// Lists open inside the buffering blockquote, outermost first.
+    quoted_lists: Vec<QuotedList>,
+    /// Content column of each open item in `quoted_lists`, so a nested list
+    /// indents under its parent's marker instead of a fixed two spaces.
+    quoted_item_indents: Vec<String>,
     table_headers: Vec<String>,
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<String>>,
@@ -195,7 +279,10 @@ impl BlockParserState {
             code_buffer: String::new(),
             code_language: None,
             code_start_line: 0,
+            image_title: String::new(),
             blockquote_buffer: String::new(),
+            quoted_lists: Vec::new(),
+            quoted_item_indents: Vec::new(),
             table_headers: Vec::new(),
             table_alignments: Vec::new(),
             table_rows: Vec::new(),
@@ -270,13 +357,79 @@ impl BlockParserState {
 
     fn flush_blockquote(&mut self, blocks: &mut Vec<ContentBlock>) {
         if self.in_blockquote && !self.blockquote_buffer.is_empty() {
-            let nested_blocks = parse_blocks(&self.blockquote_buffer);
+            // Paragraph ends inside the quote append a blank-line separator,
+            // which leaves a trailing one on the last paragraph. It carries no
+            // meaning and would show up in every consumer's `content`.
+            let content = self.blockquote_buffer.trim_end().to_string();
+            let nested_blocks = parse_blocks(&content);
             blocks.push(ContentBlock::Blockquote {
-                content: self.blockquote_buffer.clone(),
+                content,
                 blocks: nested_blocks,
             });
             self.blockquote_buffer.clear();
             self.in_blockquote = false;
+        }
+    }
+
+    /// Starts a new block in the quote buffer on its own line, preceded by the
+    /// blank line that separates it from whatever came before. Without the
+    /// break, a fence written straight after a list ran onto the last item's
+    /// line and the re-parse read the whole thing as one paragraph.
+    fn break_quoted_block(&mut self) {
+        if self.blockquote_buffer.is_empty() || self.blockquote_buffer.ends_with("\n\n") {
+            return;
+        }
+        if !self.blockquote_buffer.ends_with('\n') {
+            self.blockquote_buffer.push('\n');
+        }
+        self.blockquote_buffer.push('\n');
+    }
+
+    fn open_quoted_list(&mut self, start_number: Option<u64>) {
+        let indent = self.quoted_item_indents.last().cloned().unwrap_or_default();
+        if self.quoted_lists.is_empty() {
+            self.break_quoted_block();
+        } else if !self.blockquote_buffer.ends_with('\n') {
+            // A nested list opens on the line below its parent's marker, and a
+            // blank line here would make the enclosing list loose.
+            self.blockquote_buffer.push('\n');
+        }
+        self.quoted_lists.push(QuotedList {
+            next_number: start_number,
+            indent,
+        });
+    }
+
+    fn close_quoted_list(&mut self) {
+        self.quoted_lists.pop();
+        if self.quoted_lists.is_empty() {
+            self.break_quoted_block();
+        }
+    }
+
+    fn open_quoted_item(&mut self) {
+        let Some(list) = self.quoted_lists.last_mut() else {
+            return;
+        };
+        let indent = list.indent.clone();
+        let marker = match &mut list.next_number {
+            Some(number) => {
+                let marker = format!("{number}. ");
+                *number += 1;
+                marker
+            }
+            None => "- ".to_string(),
+        };
+        self.quoted_item_indents
+            .push(" ".repeat(indent.len() + marker.len()));
+        self.blockquote_buffer.push_str(&indent);
+        self.blockquote_buffer.push_str(&marker);
+    }
+
+    fn close_quoted_item(&mut self) {
+        self.quoted_item_indents.pop();
+        if !self.blockquote_buffer.ends_with('\n') {
+            self.blockquote_buffer.push('\n');
         }
     }
 
@@ -340,7 +493,18 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             state.in_paragraph = true;
         }
         Event::End(TagEnd::Paragraph) => {
-            if state.item_depth >= 1 && state.in_paragraph && !state.paragraph_buffer.is_empty() {
+            if state.in_blockquote {
+                // The quote's text already went to `blockquote_buffer`, so
+                // there is nothing to emit here. Record the paragraph break so
+                // the re-parse still sees two paragraphs rather than one.
+                state.in_paragraph = false;
+                if !state.blockquote_buffer.is_empty() {
+                    state.blockquote_buffer.push_str("\n\n");
+                }
+            } else if state.item_depth >= 1
+                && state.in_paragraph
+                && !state.paragraph_buffer.is_empty()
+            {
                 state.item_blocks.push(ContentBlock::Paragraph {
                     content: state.paragraph_buffer.clone(),
                     inline: state.inline_buffer.clone(),
@@ -367,7 +531,25 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             };
         }
         Event::End(TagEnd::CodeBlock) => {
-            if state.item_depth >= 1 && state.in_code && !state.code_buffer.is_empty() {
+            if state.in_blockquote && state.in_code {
+                // Emitting the code block here would push it onto the
+                // top-level `blocks`, where it lands *ahead of* the blockquote
+                // that is still buffering, so a fenced block inside a callout
+                // rendered above the callout header. Re-fence it into the
+                // buffer instead and let the nested parse rebuild it in place.
+                let fence = match &state.code_language {
+                    Some(lang) => format!("```{lang}\n"),
+                    None => "```\n".to_string(),
+                };
+                state.blockquote_buffer.push_str(&fence);
+                state
+                    .blockquote_buffer
+                    .push_str(state.code_buffer.trim_end());
+                state.blockquote_buffer.push_str("\n```\n");
+                state.code_buffer.clear();
+                state.code_language = None;
+                state.in_code = false;
+            } else if state.item_depth >= 1 && state.in_code && !state.code_buffer.is_empty() {
                 state.item_blocks.push(ContentBlock::Code {
                     language: state.code_language.clone(),
                     content: state.code_buffer.trim_end().to_string(),
@@ -380,6 +562,28 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             } else {
                 state.flush_code(blocks);
             }
+        }
+        // A list inside a blockquote is written back into the buffer as
+        // markdown, the same as the fenced blocks above. Flushing it to
+        // `blocks` instead put an item-less list ahead of the quote and left
+        // the items' text bare in the quote's content, with no markers and no
+        // line breaks, so `> - one` `> - two` came back as "onetwo".
+        Event::Start(Tag::List(start_number)) if state.in_blockquote => {
+            state.open_quoted_list(start_number);
+        }
+        Event::End(TagEnd::List(_)) if state.in_blockquote => {
+            state.close_quoted_list();
+        }
+        Event::Start(Tag::Item) if state.in_blockquote => {
+            state.open_quoted_item();
+        }
+        Event::End(TagEnd::Item) if state.in_blockquote => {
+            state.close_quoted_item();
+        }
+        Event::TaskListMarker(checked) if state.in_blockquote => {
+            state
+                .blockquote_buffer
+                .push_str(if checked { "[x] " } else { "[ ] " });
         }
         Event::Start(Tag::List(start_number)) => {
             state.list_depth += 1;
@@ -416,7 +620,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             if state.item_depth == 1 {
                 let (content, mut inline, remaining_blocks) = if !state.paragraph_buffer.is_empty()
                 {
-                    let all_blocks: Vec<ContentBlock> = state.item_blocks.drain(..).collect();
+                    let all_blocks: Vec<ContentBlock> = std::mem::take(&mut state.item_blocks);
                     (
                         state.paragraph_buffer.clone(),
                         state.inline_buffer.clone(),
@@ -428,7 +632,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     let remaining: Vec<ContentBlock> = state.item_blocks.drain(1..).collect();
                     (content, inline, remaining)
                 } else {
-                    let all_blocks: Vec<ContentBlock> = state.item_blocks.drain(..).collect();
+                    let all_blocks: Vec<ContentBlock> = std::mem::take(&mut state.item_blocks);
                     (String::new(), Vec::new(), all_blocks)
                 };
 
@@ -456,6 +660,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         }
         Event::End(TagEnd::BlockQuote(_)) => {
             state.flush_blockquote(blocks);
+            // `flush_blockquote` only resets the flag when it had something to
+            // emit, so a quote that produced no text (`>` on a line by itself)
+            // left it set and every block after it was swallowed into a quote
+            // that had already closed.
+            state.in_blockquote = false;
+            state.quoted_lists.clear();
+            state.quoted_item_indents.clear();
         }
         Event::Start(Tag::Table(alignments)) => {
             state.in_table = true;
@@ -555,6 +766,31 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         Event::End(TagEnd::Link) => {
             state.in_link = false;
 
+            // Same as images: inside a quote only the buffer reaches the
+            // re-parse, so the destination has to be written back out. A link
+            // wrapping an image re-emits the image as its label, which is the
+            // one case where `link_text` is not the whole story.
+            if state.in_blockquote {
+                let label = if state.image_in_link {
+                    format_image(&state.link_text, &state.link_url, None)
+                } else {
+                    state.link_text.clone()
+                };
+                let url = if state.image_in_link {
+                    state.saved_link_url.clone()
+                } else {
+                    state.link_url.clone()
+                };
+                state
+                    .blockquote_buffer
+                    .push_str(&format!("[{label}]({url})"));
+                state.link_text.clear();
+                state.link_url.clear();
+                state.saved_link_url.clear();
+                state.image_in_link = false;
+                return;
+            }
+
             // Capture line_offset for nested list items
             let line_offset = if state.in_list && state.item_depth >= 1 {
                 Some(state.nested_line_offset)
@@ -599,56 +835,100 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             state.in_image = true;
             state.link_url = dest_url.to_string();
             state.link_text.clear();
-            state.paragraph_buffer = title.to_string();
+            // NOT `paragraph_buffer`: text already collected for the enclosing
+            // paragraph has to survive an image appearing partway through it.
+            state.image_title = title.to_string();
         }
         Event::End(TagEnd::Image) => {
             state.in_image = false;
 
-            if !state.image_in_link {
-                // Capture title before we modify paragraph_buffer
-                let title = if state.paragraph_buffer.is_empty() {
-                    None
-                } else {
-                    Some(state.paragraph_buffer.clone())
-                };
+            let title = if state.image_title.is_empty() {
+                None
+            } else {
+                Some(std::mem::take(&mut state.image_title))
+            };
 
-                // Capture line_offset for inline images in list items
-                let line_offset = if state.in_list && state.item_depth >= 1 {
-                    Some(state.nested_line_offset)
-                } else {
-                    None
-                };
+            // Capture line_offset for inline images in list items
+            let line_offset = if state.in_list && state.item_depth >= 1 {
+                Some(state.nested_line_offset)
+            } else {
+                None
+            };
 
-                if state.in_paragraph {
-                    // Reset paragraph_buffer for image representation
-                    state.paragraph_buffer.clear();
-                    state.inline_buffer.push(InlineElement::Image {
-                        alt: state.link_text.clone(),
-                        src: state.link_url.clone(),
-                        title,
-                        line_offset,
-                    });
-                    // Add image placeholder to paragraph content
-                    state
-                        .paragraph_buffer
-                        .push_str(&format!("![{}]({})", state.link_text, state.link_url));
-                } else {
-                    state.flush_paragraph(blocks);
-                    blocks.push(ContentBlock::Image {
-                        alt: state.link_text.clone(),
-                        src: state.link_url.clone(),
-                        title,
-                    });
-                    state.paragraph_buffer.clear();
-                }
-
+            // Inside a quote the buffer is the only thing that survives to the
+            // re-parse, so re-emit the whole element rather than the alt alone.
+            // A linked image writes nothing here; `TagEnd::Link` emits the
+            // wrapper with this image nested inside it.
+            if state.in_blockquote && !state.image_in_link {
+                state.blockquote_buffer.push_str(&format_image(
+                    &state.link_text,
+                    &state.link_url,
+                    title.as_deref(),
+                ));
                 state.link_text.clear();
                 state.link_url.clear();
+                return;
             }
+
+            if state.image_in_link {
+                // A linked image (`[![alt](img)](href)`) used to emit nothing
+                // at all, so a README badge row reported zero images. The
+                // enclosing link is still emitted when it ends; the two are
+                // siblings because `InlineElement::Link` carries no children.
+                // `link_url` currently holds the image destination and
+                // `saved_link_url` the link's own, which `TagEnd::Link` uses.
+                state.inline_buffer.push(InlineElement::Image {
+                    alt: state.link_text.clone(),
+                    src: state.link_url.clone(),
+                    title,
+                    line_offset,
+                });
+                // Deliberately keep `link_text` and `link_url`: the enclosing
+                // link still needs the text, and clearing the url would strand
+                // `TagEnd::Link`'s restore.
+                return;
+            }
+
+            // A tight list item produces no Paragraph events, so this used to
+            // fall through to the block arm and push the image onto the
+            // top-level blocks, hoisted clean out of the list, while
+            // `flush_paragraph` discarded the item's own text. An image in an
+            // item belongs to the item whether or not the list is loose.
+            if state.in_paragraph || state.item_depth >= 1 {
+                state.inline_buffer.push(InlineElement::Image {
+                    alt: state.link_text.clone(),
+                    src: state.link_url.clone(),
+                    title,
+                    line_offset,
+                });
+                // Append the image's source spelling to whatever the paragraph
+                // has so far, rather than replacing it.
+                state
+                    .paragraph_buffer
+                    .push_str(&format!("![{}]({})", state.link_text, state.link_url));
+            } else {
+                state.flush_paragraph(blocks);
+                blocks.push(ContentBlock::Image {
+                    alt: state.link_text.clone(),
+                    src: state.link_url.clone(),
+                    title,
+                });
+                state.paragraph_buffer.clear();
+            }
+
+            state.link_text.clear();
+            state.link_url.clear();
         }
         Event::Text(text) => {
             if state.in_code {
                 state.code_buffer.push_str(&text);
+            } else if state.in_blockquote && (state.in_image || state.in_link) {
+                // An image's alt or a link's label, which is only half of the
+                // element. Held here so the end tag can re-emit the whole
+                // `![alt](src)` / `[text](url)` into the buffer. Appending it
+                // straight to `blockquote_buffer` is what dropped every
+                // destination inside a quote: the re-parse saw bare text.
+                state.link_text.push_str(&text);
             } else if state.in_blockquote {
                 state.blockquote_buffer.push_str(&text);
             } else if state.in_heading {
@@ -690,6 +970,15 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 }
                 state.add_inline_text(&text);
             }
+        }
+        // A break inside a blockquote separates two source lines, and the
+        // blockquote is reconstructed from raw text, so the break has to reach
+        // that buffer. Sending it to `paragraph_buffer` instead is what joined
+        // `> a` and `> b` into "ab" and left a stray whitespace-only paragraph
+        // beside the blockquote. This arm must precede the `in_paragraph` ones,
+        // since pulldown-cmark opens a paragraph inside the quote too.
+        Event::SoftBreak | Event::HardBreak if state.in_blockquote => {
+            state.blockquote_buffer.push('\n');
         }
         Event::SoftBreak if state.in_paragraph => {
             state.paragraph_buffer.push(' ');

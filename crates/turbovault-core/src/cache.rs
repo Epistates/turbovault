@@ -352,7 +352,7 @@ mod tests {
             name: name.to_string(),
             path: path.to_path_buf(),
             is_default: false,
-            watch_for_changes: None,
+            reconcile_external_changes: None,
             max_file_size: None,
             allowed_extensions: None,
             excluded_paths: None,

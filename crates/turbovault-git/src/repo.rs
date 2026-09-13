@@ -11,7 +11,6 @@
 
 use crate::error::{Error, Result};
 use crate::locks::{CommitLocks, lock_recover};
-use fs4::fs_std::FileExt;
 use git2::{Oid, Repository};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -110,7 +109,9 @@ impl VaultRepo {
             .create(true)
             .truncate(false)
             .open(lock_path)?;
-        lock_file.lock_exclusive()?;
+        // `flock(2)` on Unix, `LockFileEx` on Windows — the same advisory lock
+        // the `fs4` crate provided before Rust 1.89 stabilized it in `std`.
+        lock_file.lock()?;
         let result = f();
         lock_file.unlock()?;
         result

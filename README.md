@@ -521,7 +521,8 @@ TurboVault fully understands Obsidian's syntax:
 - **Type-safe deserialization** — Rust's type system prevents injection
 - **Atomic writes** — Temp file → atomic rename (never corrupts on failure)
 - **Hash-based conflict detection** — `edit_note` detects concurrent modifications
-- **File size limits** — Default 5MB per file (configurable)
+- **File size limits** — Default 10MB per file (configurable), enforced on reads and writes
+- **Protected directories** — `.obsidian/`, `.git/`, `node_modules/`, and TurboVault's own `.turbovault/` state are unreachable through the note APIs on both write backends
 - **No shell execution** — Zero command injection risk
 - **Security auditing** — Detailed logs in production mode
 
@@ -613,10 +614,29 @@ M1 MacBook Pro, 10k notes, production build:
 - **Graph analysis**: <200ms
 - **Vault initialization**: ~500ms
 - **Memory usage**: ~80MB
+- **External-change reconciliation**: ~19ms per pass, at most once per 500ms
+
+## Keeping up with edits you did not make
+
+A vault is a shared directory. Obsidian is usually open on it, and an editor, a
+`git pull`, or a sync client may touch it while TurboVault is running. Search,
+the link graph, similarity, and vault stats are all derived from the notes, so
+none of that would reach them on its own.
+
+Before serving any of those, TurboVault compares a `(size, mtime)` scan against
+what it last recorded and applies whatever moved. Comparing state cannot miss a
+change the way filesystem notifications can, which matters most on exactly the
+setups where notifications are weakest: network shares, and iCloud, Dropbox, or
+Syncthing vaults, none of which report a peer's edits at all.
+
+The pass is debounced, so a burst of tool calls costs one scan and an idle
+server costs nothing. Worst-case staleness is the interval, at least 500ms and
+scaled up only on a vault large enough to need it. Set
+`reconcile_external_changes: false` to turn it off for a vault nothing else
+writes.
 
 ## Roadmap
 
-- [ ] Real-time vault watching (VaultWatcher framework ready)
 - [ ] Cross-vault link resolution
 - [ ] Encrypted vault support
 - [ ] Collaborative locking

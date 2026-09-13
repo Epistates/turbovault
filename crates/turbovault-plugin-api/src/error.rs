@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Stable, machine-readable categories returned across the plugin boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PluginErrorCode {
     /// A request was malformed or violated a contract precondition.
     InvalidInput,
@@ -10,8 +11,16 @@ pub enum PluginErrorCode {
     NotFound,
     /// An optimistic-concurrency precondition failed.
     Conflict,
+    /// The plugin did not declare the capability its request needs.
+    ///
+    /// Distinct from [`Self::InvalidInput`]: the request was well-formed and
+    /// the target may well exist — the plugin is simply not permitted to reach
+    /// it, and no retry or reformulation will change that.
+    PermissionDenied,
     /// A required host capability is temporarily unavailable.
     Unavailable,
+    /// The plugin exceeded the host's time budget for a single call.
+    Timeout,
     /// The host or plugin failed unexpectedly.
     Internal,
 }
@@ -50,9 +59,19 @@ impl PluginError {
         Self::new(PluginErrorCode::Conflict, message)
     }
 
+    /// Construct an undeclared-capability error.
+    pub fn permission_denied(message: impl Into<String>) -> Self {
+        Self::new(PluginErrorCode::PermissionDenied, message)
+    }
+
     /// Construct an unavailable error.
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::new(PluginErrorCode::Unavailable, message)
+    }
+
+    /// Construct a call-budget-exceeded error.
+    pub fn timeout(message: impl Into<String>) -> Self {
+        Self::new(PluginErrorCode::Timeout, message)
     }
 
     /// Construct an internal error.

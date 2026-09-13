@@ -7,14 +7,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Lists inside a blockquote keep their markers, and a fence after one is still a code block** ([#71](https://github.com/Epistates/turbovault/issues/71)): a quote is rebuilt from its raw text, so everything inside one has to be written back into that buffer as markdown. Lists never were. They were flushed to the top level instead, which put an item-less list ahead of the quote and left the items' text bare in the quote's content, so `> - one` `> - two` came back as the single run `onetwo`.
+
+  A fenced block after a list was the visible symptom, because the fence was appended straight onto the last item's line and stopped being a fence at all. That one is worse than a loss: the now-inert opening fence leaves its closing fence at the start of a line with nothing open, so the closing fence opens a block and swallows the prose until the next fence shuts it. On release-notes shaped documents this reported commentary as source code rather than leaving a gap a consumer could detect.
+
+  Lists in quotes now round-trip with bullet and ordinal markers, task checkboxes, non-1 ordinal starts, and nesting indented to the parent's content column.
+
+- **An empty blockquote no longer swallows the rest of the document.** The quote's open flag was only cleared when the quote had text to emit, so a `>` on a line by itself left it set and every block after it was pulled into a quote that had already closed. Found while fixing the above.
+
+- **Images and links inside a blockquote keep their destinations** ([#68](https://github.com/Epistates/turbovault/issues/68)): a quote is rebuilt from its raw text and re-parsed, and that pass only ever saw an image's alt or a link's label, so `> ![a](a.png)` came back as the bare text `a`. Every destination inside a quote was lost, while inline code round-tripped fine because it was already re-emitted with its delimiters. Images and links now are too, titles and spaced destinations included.
+
+  1.6.0 flattened these the same way. It also hoisted a copy of the image out of the quote as a top-level sibling, so anything scanning top-level blocks still found a source, which is why 2.0.0 looked like a regression: it correctly stopped hoisting, and that removed the thing masking the loss.
+
+### Changed
+
+- **Off the yanked `chacha20`.** 0.10.0 and 0.10.1 are both yanked, so cargo warned on every package
+  step while publishing 2.0.0. It arrives through `rand` under turbomcp's transport and protocol
+  crates. `cargo audit` reports it as yanked with no advisory against it, so this is hygiene rather
+  than a security fix. Now on 0.10.2, and no yanked package remains in the lock.
+
+- **Every turbomcp crate resolves to one version.** `turbomcp-client` was still on 3.1.5 while the
+  rest moved to 3.3.0, so the wire-level end-to-end test drove a 3.3.0 server with a 3.1.5 client.
+  That is the shape of skew that hides a protocol regression, because both ends work on their own
+  and nothing asserts they agree on the same wire. It drifted because `turbomcp-client` and
+  `turbomcp-transport` were pinned inside `crates/turbovault/Cargo.toml` instead of
+  `[workspace.dependencies]`; both now sit with the others, so a future bump cannot leave one
+  behind.
+
+- **Releases publish with `cargo publish --workspace`.** The workflow kept a hand-written crate list
+  with its own dependency ordering, 30-second sleeps and an already-published probe. Cargo derives
+  the order from the graph, waits on the index itself, and warns rather than fails on a crate that
+  is already up, so a partial run still resumes. The hand-written version could only drift from the
+  real graph as crates are added.
+
+- **`.claude/` is ignored.** It holds local agent settings and session state, and was untracked but
+  not ignored, so it showed as a dirty tree and sat one `git add -A` away from committing someone's
+  personal configuration.
+
+## [2.0.0] - 2026-09-09
+
+**If you use TurboVault as an MCP server, nothing you do changes.** No tool was removed or renamed,
+no argument changed meaning, and every new parameter is optional. Existing YAML config keeps working,
+`watch_for_changes` included. The major version is for the Rust crates, which have source-breaking
+changes; see Migration below.
+
+Most of this release came from outside the maintainers. The plugin architecture was argued into
+shape by [@ForrestThump](https://github.com/ForrestThump) across #33, #42 and #43 before a line of
+it was written; the write substrate and everything that now guarantees a write either lands or
+refuses is [@dlobue](https://github.com/dlobue)'s; partial reads are
+[@Helfrid](https://github.com/Helfrid)'s. See [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+### Fixed
+
+- **Tool schemas are valid JSON Schema again** ([#51](https://github.com/Epistates/turbovault/issues/51)): every `$defs` now sits at the root of a tool's `inputSchema`, where its `#/$defs/...` pointers can resolve. They were emitted one level down, inside the property that referenced them, so a strict consumer could not resolve any of them. llama.cpp's `llama-server` rejects the whole request with HTTP 400 when one such tool is present, taking the entire catalog offline for that host, and clients that skip validation quietly lose grammar-constrained argument generation and start sending malformed arguments. `advanced_search` and `batch_execute` were affected, as would be any tool taking a struct or enum parameter.
+
+  The cause was upstream in `turbomcp-macros`, which built the schema one parameter at a time and nested each parameter's whole root document under `properties`. Fixed in turbomcp 3.3.0, which renders every parameter through one shared `SchemaGenerator` so the definitions land at the root by construction. TurboVault now depends on 3.3.0 and no longer post-processes the schemas. Reported by [@tiborkiss](https://github.com/tiborkiss) with a minimal repro.
+
+- **Registering a git-backed vault checks for a repository first.** `add_vault` with
+  `write_backend: "git"` against a directory that is not a git repository used to register
+  successfully and then fail on every write, far enough from the registration call that the two were
+  hard to connect. It now fails at registration and says to run `git init` or use `direct`. This is
+  the mirror of the existing warning for the opposite mistake, registering a real repository as a
+  `direct` vault.
+
+- **Tools no longer contradict each other after an external edit**: Search, the link graph, similarity, vault stats, and the plugin change feed are all derived state, and until now only writes TurboVault itself performed ever updated them. Anyone else touching the vault (Obsidian, an editor, `git pull`, a sync client, a second TurboVault) left them wrong indefinitely, while `read_note` and `list_notes` went to disk and stayed correct. An agent could read a note, see a phrase, search for that phrase, and be told it does not exist. The Git backend was no safer: its ref watcher only ever saw external *commits*, and an Obsidian save does not commit.
+
+  `VaultManager::ensure_fresh` is now a single freshness gate that every derived read passes through. It compares a `(size, mtime)` scan against what the note cache recorded when it parsed each note, and applies whatever moved through the machinery that already existed for Git commits, so search, similarity, and the plugin feed are updated from one place. The comparison cannot miss a change, because it is comparing state rather than listening for events, which is also why this is not a filesystem watcher: inotify queues overflow and its watch budget is finite, FSEvents degrades to directory-granularity rescan hints under load, and network and cloud-synced vaults deliver nothing at all for a peer's changes. A watcher yields *mostly* fresh, and for an agent that is worse than plainly stale, because nothing marks the answers it should not have trusted.
+
+  The pass is debounced, so a burst of tool calls costs one scan and an idle server costs nothing. The interval is the greater of 500ms and twenty times the last pass, which caps reconciliation at 5% of wall clock without a knob to tune per vault. Measured on an M-series Mac: 0.8ms at 100 notes, 1.7ms at 1k, 19ms at 10k, so every vault up to roughly 13k notes sits at the floor. `VaultManager::reconcile_now` reconciles immediately when waiting is not acceptable.
+
+- **A note created outside the process is now discovered.** `vault_files_validated` re-checked only the entries it already held, so it could see an external modification or deletion but never a creation. It now shares the freshness gate, which also replaces its unconditional per-call stat sweep with the debounced one, making the ten tools built on it both more correct and cheaper.
+
+- **The vault scan no longer follows symlinks.** It used `Path::is_dir`, which follows them, with no visited set: a link pointing at an ancestor made the walk recurse until it exhausted memory, and one pointing outside the vault pulled content into the index that `resolve_path` refuses to hand back out. Both were reachable by anyone able to write a file into the vault. The scan also skips `.turbovault/` now, and matches extensions case-insensitively so `Note.MD` is discovered rather than quietly falling out of the link graph.
+
+- **A drain pass no longer returns before the search index has caught up.** The change-listener was spawned rather than awaited, so a search racing a Git reindex drain could read an index that was behind the link graph. The listener now hands back a future the manager awaits, which is also what makes the freshness gate a guarantee rather than a hint.
+- **Images inside links are reported again.** `[![badge](b.png)](https://ci.example)` emitted the link and dropped the image entirely, so a README badge row reported zero images. The image is now emitted alongside its enclosing link, and the two keep their own destinations rather than sharing one.
+
+- **An image title is no longer folded into its source.** `![a](x.png "Title")` parsed to `src: "x.png \"Title\""` with `title: None`. The preprocessor that rewrites genuinely spaced destinations into angle-bracket form was wrapping the title along with the destination. It now splits the title off first, so a spaced destination still gets its brackets and keeps its title.
+
+- **A list item keeps its own text and its images.** Text before an image in the same item was discarded, because an image parked its title in the buffer the paragraph was accumulating into. In a tight list it was worse: with no paragraph events to catch it, the image was hoisted out to a top-level block, so the same content reported differently depending only on whether a blank line sat between the items.
+
+- **Blockquote lines stay separable.** Body lines were concatenated with no separator, so `> [!NOTE] Heads up` followed by two lines became `[!NOTE] Heads upSome text.More text.`. Anything reading a GFM alert or an Obsidian callout takes the first line as the marker and the rest as the body, so the whole body was being swallowed into the title. Breaks inside a quote now reach the quote rather than the surrounding paragraph, which also removes the stray whitespace-only paragraph that was emitted beside every blockquote.
+
+- **A fenced block inside a blockquote stays inside it.** It was emitted as a top-level sibling *ahead of* the blockquote still being buffered, so code in a callout rendered above the callout header.
+
+  All five were reported from treemd ([#79](https://github.com/Epistates/treemd/issues/79), [#80](https://github.com/Epistates/treemd/issues/80)) and none could be worked around downstream, since the information was already gone by the time a consumer received the blocks.
+
 ### Added
 
 - **Compiled-in plugin boundary** ([#34](https://github.com/Epistates/turbovault/issues/34)): Added the default-off `plugin-api` feature and the publishable `turbovault-plugin-api` crate. Plugins receive a curated CAS-only `VaultApi`, an object-safe tool provider contract, redacted request context, strict MCP namespaces, and a bounded hook bus with explicit lag/resync and close semantics.
 - **Best-effort hook provenance** ([#33](https://github.com/Epistates/turbovault/issues/33)): Plugin writes can carry source and correlation metadata into advisory event envelopes. Attribution is explicitly not an authentication boundary, and uncorrelated events fail open as external-or-unknown.
+- **Vault change feed covers every mutation** ([#43](https://github.com/Epistates/turbovault/issues/43)): Core MCP writes (`write_note`, `edit_note`, `delete_note`, `move_note`, `move_file`, frontmatter/tag updates, templates, batches, index generation, rollback) now publish to the hook bus, as do commits that arrive on a Git-backed vault's ref from outside the process. Previously only plugin writes did, so a subscriber saw almost nothing.
+- **Per-plugin declared capabilities** ([#41](https://github.com/Epistates/turbovault/pull/41)): `Plugin::capabilities` declares the exact application-config paths a plugin reads, and `VaultApi::read_config` serves only those. The host builds one `VaultApi` per plugin, validates declarations at mount time, normalizes paths before matching, and rejects symlink escapes.
+- **Plugin-private persistent storage** ([#42](https://github.com/Epistates/turbovault/issues/42)): `PluginContext::storage` is durable per-vault key/value storage namespaced under `<vault>/.turbovault/plugins/<id>/`. Isolation is structural rather than declared — the plugin id is baked into the store, so no argument reaches another plugin's data — and the directory is unreachable through the note APIs, so an index cannot be read as a note. Individual writes are atomic.
+- **Affordable reconciliation** ([#43](https://github.com/Epistates/turbovault/issues/43)): `VaultApi::list_notes_detailed` returns each note's size and modification time from the stat the vault scan already performs, and `read_notes` batch-reads, resolving the vault once instead of once per note. Together these make the reconcile half of watch-and-reconcile cost one stat per note instead of one full read per note — without which a plugin maintaining an index would have to reach past the boundary to the filesystem.
+- **Plugins contribute all three MCP primitives**: `PluginProvider` gained `resources`/`resource_templates`/`read_resource` and `prompts`/`get_prompt` alongside tools. Previously a plugin could only be reached by a tool call the model chose to make, with no way to offer state a user attaches as context or a workflow a user invokes by name. Prompts are namespaced like tools (`tasks_review`) and resources under the plugin's own URI scheme (`tasks://index/stats.json`); the host republishes returned content URIs into that namespace, so no plugin can serve content under a URI it does not own. Resource reads and prompt renders share the wall-clock budget and panic isolation already applied to tool calls.
+- **Resource templates for URI spaces that track the vault**: a plugin's whole scheme routes to it, so a URI expanded from a template reaches `read_resource` without being enumerated. Template brace structure is validated when the plugin mounts, and a plugin may no longer claim a scheme the vault itself publishes under.
+- **Argument completion** (`completion/complete`): `PluginProvider::complete` suggests values for prompt arguments and resource-template expressions, so a client can offer the paths that exist instead of asking a person to guess one. TurboMCP's `CompositeHandler` does not route completion, so the server dispatches it directly, resolving the public reference to the owning plugin and stripping the namespace first. The host enforces MCP's cap on a single response and sets `hasMore`, rather than trusting each plugin to remember it, and the capability is advertised only when a plugin contributes a prompt or a template.
+- **Change origin reaches the change feed**: `VaultManager`'s change-listener now reports `(path, present, origin)` rather than `(path, present)`. A consumer that also reports writes where they happen, which is the only place a writer's identity is known, needs that distinction or it announces every mutation twice: once at the write and again when the reindex drain sees the commit. Commits arriving on a Git-backed vault's ref from outside the process are published from that one callback.
+- **Detectable event-feed discontinuity**: `HookBus::epoch` identifies a bus run and `VaultEventEnvelope` carries it, so the new `EventCursor` can answer whether a stored position still means anything. Sequence numbers restart with the process, so a consumer that persisted a bare sequence and compared it against the next run would silently skip everything that changed while it was down; `EventCursor::resumes_on` turns that into an explicit reconcile.
+- **Plugin lifecycle and call isolation**: `PluginProvider::start` spawns background work on the host's runtime after mounting and before serving (`Plugin::build` is synchronous and may run outside a runtime), with `PluginContext::shutdown` as the cooperative stop signal. `PluginProvider::shutdown` runs during graceful shutdown, after the signal fires. Each plugin tool call is bounded by a wall-clock budget and isolated from panics so a misbehaving plugin fails one call instead of a request or the server.
+- **Graceful shutdown is wired**: SIGTERM/SIGINT and normal transport exit now run fanout cleanup and close the hook bus. The cleanup path existed but nothing called it, so every interrupted session leaked its fanout worktrees.
+- **`add_vault` selects a write backend**: Pass `write_backend: "git"` (or `"direct"`) when registering a vault at runtime. Previously only startup configuration could choose a backend, so runtime-registered vaults could never use the Git substrate. Unknown values are refused rather than silently defaulting, and `git` without a repository fails at registration instead of at the first write.
 
 ### Changed
 
 - **Plugin contract review follow-up**: Plugin-local and fully namespaced tool names are centrally validated against MCP SEP-986, enabled namespaces are described during MCP initialization only when plugins are registered, feature-on tests are required for every vertical, and core/plugin complete-note writes share preparation and cache-finalization orchestration.
+- **Plugin contract shape (`turbovault-plugin-api`, first release)**: Every `VaultApi` operation names its vault, and `WriteNoteRequest` carries a required `vault` field, so a concurrent `set_active_vault` produces a refusal instead of a write landing in a vault the plugin never read. Public types are now `#[non_exhaustive]` with constructors and builder setters, `PluginErrorCode` gained `PermissionDenied` and `Timeout`, `VaultEventEnvelope` gained a host-stamped `plugin_id` and an `epoch`, and `VaultDescriptor::write_backend` reports `direct` instead of `legacy`. Construct types via their `new` functions rather than struct literals.
+- **Plugin write receipts read back the stored note** rather than hashing the request, so the returned CAS token always matches what a subsequent read returns.
+- **Capabilities advertise only what is implemented**: `listChanged` is now reported as `false` for tools, resources, and prompts. TurboMCP derives `true` from a non-empty listing, but TurboVault's catalog is fixed when the server is assembled and it emits no `notifications/*/list_changed` — a client that trusted the derived claim would stop re-listing and wait for a message that never arrives.
+- **Derived-cache invalidation is vault-scoped**: writes invalidate the caches of the vault that was written rather than whichever vault happens to be active, which could evict the wrong vault's caches — and always did for the background Git reindex drainer.
+- **`watch_for_changes` is now `reconcile_external_changes`**, since it describes reconciliation and never described a watcher. The old spelling still deserializes, so existing configuration keeps working. It also does something now: it was read by nothing at all. The `readonly` profile turns it on rather than off, because a vault this process never writes is the one most likely to be edited underneath it.
+- **The note cache holds notes only.** `initialize` cached everything `allowed_extensions` admitted, including `.txt` and `.canvas`, while every applier and index downstream is markdown-only. Beyond parsing non-notes as notes, the mismatch meant nothing ever recorded having seen them, so each freshness pass would have rediscovered and republished them forever.
+- **One vault scanner instead of two.** The two implementations disagreed about symlinks, protected directories, and syscall count, and the one used in production was the unsafe and slower of the pair. Unifying on the other halves the per-entry syscalls (`d_type` off the dirent rather than two `statx` calls), which is why a 10k-note scan measures 19ms rather than the 40ms it did before.
+
+### Security
+
+- **Protected directories are enforced at the access boundary**: `excluded_paths` (`.obsidian`, `.git`, `node_modules`, `.DS_Store` by default) and the non-configurable `.turbovault/` state directory were previously applied only when scanning for notes, so `read_note`/`write_note` could reach them by path on both backends. Writing `.obsidian/plugins/*/main.js` or `.git/hooks/*` is code execution by another name, and `.turbovault/` holds the audit trail. Both backends now refuse; the plugin config capability is the only sanctioned exception and is per-plugin and path-scoped.
+- **`max_file_size` is enforced on reads and writes**, not only while scanning directories, so an explicit read can no longer pull an arbitrarily large file into memory.
+- **`WritePrecondition::CreateOnly` is atomic on both backends.** It used to be a check-then-write, which let two concurrent create-only writers both observe the path as free and both proceed, producing the blind overwrite the precondition exists to prevent. The single write chokepoint ([#44](https://github.com/Epistates/turbovault/pull/44)) now checks `ExpectAbsent` and applies under one lock on the direct backend, and through the commit's compare-and-swap on Git.
+- **Cleared four advisories in the dependency lock**: `h2` 0.4.14 to 0.4.18 (RUSTSEC-2026-0258, unbounded empty DATA frames) and `rkyv` 0.8.16 to 0.8.17 (RUSTSEC-2026-0233, -0234 and -0235, use-after-free and out-of-bounds reads on crafted archives). `rust_decimal` moves to 1.42.1 alongside them.
+
+  One advisory is left, and is now recorded in `.cargo/audit.toml` with the reason: `rkyv` 0.7.46 arrives through `rust_decimal` and GlueSQL, wants a major bump neither has made, and is only reachable under the default-off `sql` feature.
+
+- **CI audits on a schedule, not only on a diff**: advisories get published against code that has not changed, so a job wired to push and pull request alone kept reporting green on a `main` that had gone unaudited for weeks. All four of these landed in that window. CI now also runs weekly.
+
+### Migration
+
+Only affects code depending on the library crates. MCP clients and YAML config are unaffected.
+
+- **`VaultConfig::watch_for_changes` is now `reconcile_external_changes`.** Config files are covered
+  by a serde alias, so only Rust code touching the field needs updating. It also does something now:
+  before, nothing read it at all.
+
+- **`ApplyOutcome` no longer implements `Clone`.** It carries an `Error` (which wraps `io::Error`)
+  so a partially-applied plan can report what stopped it. Clone the fields you need instead. It also
+  gained `error`, and `atomic`/`failed_at` now carry real values rather than being hardcoded.
+
+- **`VaultLifecycleTools::create_vault` and `add_vault_from_path` take two more arguments**,
+  `write_backend: WriteBackend` and `backend_opts: Option<VaultGitConfig>`. Pass
+  `(WriteBackend::Direct, None)` to keep the old behaviour.
+
+- **`WriteBackend` parses through `FromStr`** rather than an inherent method, so use
+  `value.parse::<WriteBackend>()`.
+
+- **The vault change-listener reports `(path, present, origin)`** instead of `(path, present)`, and
+  returns a future the manager awaits rather than being spawned. A listener must never call back
+  into the manager's freshness gate, since it runs inside one.
+
+- **`ContentBlock::Blockquote::content` keeps its line breaks.** It used to concatenate body lines
+  with no separator. Anything that parsed the joined string, for example splitting a callout marker
+  from its body, wants revisiting; that code was almost certainly working around this bug.
+
+- **`turbovault-plugin-api` is published separately at `0.1.0`**, not at the workspace version. The
+  plugin contract has no external implementors yet and needs room to move without forcing a major on
+  everything else.
 
 ## [1.6.0] - 2026-07-17
 

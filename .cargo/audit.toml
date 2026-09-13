@@ -1,0 +1,27 @@
+# cargo-audit configuration.
+#
+# Nothing is ignored lightly. An advisory belongs here only when it cannot be
+# fixed from this repository, and each entry says why and what would let us drop
+# it. A permanently red audit job is worse than no audit job, because people
+# stop reading it.
+
+[advisories]
+ignore = [
+    # rkyv 0.7.46, reached only as rust_decimal 1.42 -> gluesql-core 0.19 ->
+    # gluesql 0.19 -> turbovault-sql. The advisory asks for rkyv >= 0.8.17,
+    # which is a major bump that rust_decimal has not made, and gluesql 0.19.0
+    # is the newest release, so there is no version of this chain we can select
+    # that resolves it.
+    #
+    # Reachability: only under the `sql` feature, which is off by default, and
+    # only through GlueSQL's decimal handling. TurboVault never deserializes an
+    # rkyv archive, and the vulnerability requires a crafted archive as input.
+    #
+    # Note this suppresses the ID, not the version, so it would also hide the
+    # advisory if rkyv 0.8.x were downgraded below 0.8.17. Cargo.lock is
+    # committed and pins 0.8.17, so that takes a deliberate change to happen.
+    #
+    # Drop this entry when rust_decimal moves to rkyv 0.8, or when gluesql
+    # drops the dependency. Re-check on the next gluesql release.
+    "RUSTSEC-2026-0235",
+]

@@ -5,6 +5,11 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # New advisories are published against code that has not changed, so a job
+  # that only runs on push and pull_request reports "green" on a main nobody
+  # has audited in weeks. Monday morning, UTC.
+  schedule:
+    - cron: '0 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,7 +37,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-features --all-targets --locked
 
+      # Must match the release workflow's verify job, `-D warnings` included.
+      # Without it a broken intra-doc link is a warning here and an error
+      # there, so the first anyone hears of it is a tag failing to release.
       - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --locked
 
   coverage:

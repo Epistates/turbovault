@@ -22,7 +22,7 @@ impl Deref for AnalysisProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
+#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
 impl AnalysisProvider {
     // ─── DIFF TOOLS ──────────────────────────────────────────────────
 
@@ -307,10 +307,21 @@ impl AnalysisProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        let wrote_any = result.indexes.iter().any(|i| i.written);
-        if wrote_any {
-            self.invalidate_similarity_cache().await;
-            self.invalidate_search_cache().await;
+        let written = result
+            .indexes
+            .iter()
+            .filter(|index| index.written)
+            .map(|index| VaultChange::Modified {
+                path: index.path.clone(),
+            })
+            .collect::<Vec<_>>();
+        if !written.is_empty() {
+            self.after_write(
+                &vault_name,
+                written,
+                WriteAttribution::host("generate_index"),
+            )
+            .await;
         }
 
         let count = result.indexes.len();

@@ -29,7 +29,7 @@ pub enum Error {
     /// from parsing/validating a core `ChangePlan`/`Precondition`, without
     /// this crate re-declaring core's error variants. Also where this crate's
     /// own "changed underneath us" / io / free-form errors land — see
-    /// [`Error::concurrency`] / [`Error::other`] / `From<std::io::Error>`.
+    /// `Error::concurrency` / `Error::other` / `From<std::io::Error>`.
     #[error(transparent)]
     Core(#[from] turbovault_core::Error),
 }

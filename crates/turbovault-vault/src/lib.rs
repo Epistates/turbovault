@@ -103,8 +103,10 @@ pub mod watcher;
 
 pub use atomic::{AtomicFileOps, FileOp, TransactionResult};
 pub use edit::{EditEngine, EditResult, SearchReplaceBlock, compute_hash};
-pub use manager::{ChangeListener, VaultManager};
-pub use reindex::{ReindexQueue, apply_commit_diff, watch_ref_changes};
+pub use manager::{ChangeListener, ScannedNote, VaultManager};
+pub use reindex::{
+    CommitOrigin, PendingCommit, ReindexQueue, apply_commit_diff, watch_ref_changes,
+};
 pub use substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
 pub use turbovault_core::prelude::*;
 pub use watcher::{VaultEvent, VaultWatcher, WatcherConfig};

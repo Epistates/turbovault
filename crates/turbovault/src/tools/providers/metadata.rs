@@ -21,7 +21,7 @@ impl Deref for MetadataProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
+#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
 impl MetadataProvider {
     // ==================== Metadata Operations ====================
 
@@ -127,8 +127,12 @@ impl MetadataProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        self.after_write_one(
+            &vault_name,
+            VaultChange::Modified { path: path.clone() },
+            WriteAttribution::host("update_frontmatter"),
+        )
+        .await;
         StandardResponse::new(vault_name, "update_frontmatter", result)
             .with_next_steps(&["read_note", "query_metadata"])
             .to_json()
@@ -168,6 +172,9 @@ impl MetadataProvider {
             .await
             .map_err(to_mcp_error)?;
 
+        // `list` is a read; only add/remove produce content to store, so only
+        // those report a change.
+        let mutated = maybe_content.is_some();
         if let Some(content) = maybe_content {
             let message = self
                 .resolve_commit_message(commit_message, || {
@@ -187,8 +194,14 @@ impl MetadataProvider {
                 .map_err(to_mcp_error)?;
         }
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        if mutated {
+            self.after_write_one(
+                &vault_name,
+                VaultChange::Modified { path: path.clone() },
+                WriteAttribution::host("manage_tags"),
+            )
+            .await;
+        }
         StandardResponse::new(vault_name, "manage_tags", result)
             .with_next_steps(&["update_frontmatter", "query_metadata"])
             .to_json()
@@ -273,8 +286,15 @@ impl MetadataProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        self.after_write_one(
+            &vault_name,
+            VaultChange::Renamed {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            WriteAttribution::host("move_file"),
+        )
+        .await;
         StandardResponse::new(
             vault_name,
             "move_file",

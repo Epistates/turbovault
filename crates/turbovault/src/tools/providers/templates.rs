@@ -21,7 +21,7 @@ impl Deref for TemplateProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "1.6.0")]
+#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
 impl TemplateProvider {
     // ==================== Templates (LLM Note Creation) ====================
 
@@ -121,8 +121,14 @@ impl TemplateProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        self.invalidate_similarity_cache().await;
-        self.invalidate_search_cache().await;
+        self.after_write_one(
+            &vault_name,
+            VaultChange::Created {
+                path: file_path.clone(),
+            },
+            WriteAttribution::host("create_from_template"),
+        )
+        .await;
         let response = StandardResponse::new(
             vault_name,
             "create_from_template",

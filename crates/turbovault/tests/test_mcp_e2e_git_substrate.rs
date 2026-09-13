@@ -81,9 +81,11 @@ async fn setup_git_vault() -> (TempDir, &'static str, ObsidianMcpServer) {
     repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
         .unwrap();
 
-    // Registered directly through the multi-vault manager (not the
-    // `add_vault` MCP tool, which only exposes name+path = Direct;
-    // turbovault-xj8) so this suite can select `write_backend: git`.
+    // Registered directly through the multi-vault manager rather than the
+    // `add_vault` MCP tool. Since turbovault-kdq that tool *can* select
+    // `write_backend: git` (see test_vault_registration_backend.rs); this
+    // suite keeps the direct route so its subject stays the substrate, not
+    // the registration surface.
     let vault_config = VaultConfig::builder("e2e", tmp.path())
         .write_backend(WriteBackend::Git)
         .git(VaultGitConfig::default())
