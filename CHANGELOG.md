@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Lists inside a blockquote keep their markers, and a fence after one is still a code block** ([#71](https://github.com/Epistates/turbovault/issues/71)): a quote is rebuilt from its raw text, so everything inside one has to be written back into that buffer as markdown. Lists never were. They were flushed to the top level instead, which put an item-less list ahead of the quote and left the items' text bare in the quote's content, so `> - one` `> - two` came back as the single run `onetwo`.
+
+  A fenced block after a list was the visible symptom, because the fence was appended straight onto the last item's line and stopped being a fence at all. That one is worse than a loss: the now-inert opening fence leaves its closing fence at the start of a line with nothing open, so the closing fence opens a block and swallows the prose until the next fence shuts it. On release-notes shaped documents this reported commentary as source code rather than leaving a gap a consumer could detect.
+
+  Lists in quotes now round-trip with bullet and ordinal markers, task checkboxes, non-1 ordinal starts, and nesting indented to the parent's content column.
+
+- **An empty blockquote no longer swallows the rest of the document.** The quote's open flag was only cleared when the quote had text to emit, so a `>` on a line by itself left it set and every block after it was pulled into a quote that had already closed. Found while fixing the above.
+
 - **Images and links inside a blockquote keep their destinations** ([#68](https://github.com/Epistates/turbovault/issues/68)): a quote is rebuilt from its raw text and re-parsed, and that pass only ever saw an image's alt or a link's label, so `> ![a](a.png)` came back as the bare text `a`. Every destination inside a quote was lost, while inline code round-tripped fine because it was already re-emitted with its delimiters. Images and links now are too, titles and spaced destinations included.
 
   1.6.0 flattened these the same way. It also hoisted a copy of the image out of the quote as a top-level sibling, so anything scanning top-level blocks still found a source, which is why 2.0.0 looked like a regression: it correctly stopped hoisting, and that removed the thing masking the loss.

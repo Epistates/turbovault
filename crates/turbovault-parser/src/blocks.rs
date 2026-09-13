@@ -200,6 +200,18 @@ fn extract_summary(details_content: &str) -> String {
 // Parser state machine
 // ============================================================================
 
+/// One list level open inside a blockquote that is still buffering.
+///
+/// A quote is rebuilt by re-parsing its raw text, so a list inside one has to
+/// be written back out as markdown rather than flushed to `blocks`.
+struct QuotedList {
+    /// Next ordinal for an ordered list, `None` for a bullet list.
+    next_number: Option<u64>,
+    /// Column this list's markers start at, which is the content column of
+    /// whichever item encloses it.
+    indent: String,
+}
+
 struct BlockParserState {
     current_line: usize,
     paragraph_buffer: String,
@@ -219,6 +231,11 @@ struct BlockParserState {
     /// had accumulated, so `- item ![a](a.png)` lost its "item " prefix.
     image_title: String,
     blockquote_buffer: String,
+    /// Lists open inside the buffering blockquote, outermost first.
+    quoted_lists: Vec<QuotedList>,
+    /// Content column of each open item in `quoted_lists`, so a nested list
+    /// indents under its parent's marker instead of a fixed two spaces.
+    quoted_item_indents: Vec<String>,
     table_headers: Vec<String>,
     table_alignments: Vec<TableAlignment>,
     table_rows: Vec<Vec<String>>,
@@ -264,6 +281,8 @@ impl BlockParserState {
             code_start_line: 0,
             image_title: String::new(),
             blockquote_buffer: String::new(),
+            quoted_lists: Vec::new(),
+            quoted_item_indents: Vec::new(),
             table_headers: Vec::new(),
             table_alignments: Vec::new(),
             table_rows: Vec::new(),
@@ -349,6 +368,68 @@ impl BlockParserState {
             });
             self.blockquote_buffer.clear();
             self.in_blockquote = false;
+        }
+    }
+
+    /// Starts a new block in the quote buffer on its own line, preceded by the
+    /// blank line that separates it from whatever came before. Without the
+    /// break, a fence written straight after a list ran onto the last item's
+    /// line and the re-parse read the whole thing as one paragraph.
+    fn break_quoted_block(&mut self) {
+        if self.blockquote_buffer.is_empty() || self.blockquote_buffer.ends_with("\n\n") {
+            return;
+        }
+        if !self.blockquote_buffer.ends_with('\n') {
+            self.blockquote_buffer.push('\n');
+        }
+        self.blockquote_buffer.push('\n');
+    }
+
+    fn open_quoted_list(&mut self, start_number: Option<u64>) {
+        let indent = self.quoted_item_indents.last().cloned().unwrap_or_default();
+        if self.quoted_lists.is_empty() {
+            self.break_quoted_block();
+        } else if !self.blockquote_buffer.ends_with('\n') {
+            // A nested list opens on the line below its parent's marker, and a
+            // blank line here would make the enclosing list loose.
+            self.blockquote_buffer.push('\n');
+        }
+        self.quoted_lists.push(QuotedList {
+            next_number: start_number,
+            indent,
+        });
+    }
+
+    fn close_quoted_list(&mut self) {
+        self.quoted_lists.pop();
+        if self.quoted_lists.is_empty() {
+            self.break_quoted_block();
+        }
+    }
+
+    fn open_quoted_item(&mut self) {
+        let Some(list) = self.quoted_lists.last_mut() else {
+            return;
+        };
+        let indent = list.indent.clone();
+        let marker = match &mut list.next_number {
+            Some(number) => {
+                let marker = format!("{number}. ");
+                *number += 1;
+                marker
+            }
+            None => "- ".to_string(),
+        };
+        self.quoted_item_indents
+            .push(" ".repeat(indent.len() + marker.len()));
+        self.blockquote_buffer.push_str(&indent);
+        self.blockquote_buffer.push_str(&marker);
+    }
+
+    fn close_quoted_item(&mut self) {
+        self.quoted_item_indents.pop();
+        if !self.blockquote_buffer.ends_with('\n') {
+            self.blockquote_buffer.push('\n');
         }
     }
 
@@ -482,6 +563,28 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.flush_code(blocks);
             }
         }
+        // A list inside a blockquote is written back into the buffer as
+        // markdown, the same as the fenced blocks above. Flushing it to
+        // `blocks` instead put an item-less list ahead of the quote and left
+        // the items' text bare in the quote's content, with no markers and no
+        // line breaks, so `> - one` `> - two` came back as "onetwo".
+        Event::Start(Tag::List(start_number)) if state.in_blockquote => {
+            state.open_quoted_list(start_number);
+        }
+        Event::End(TagEnd::List(_)) if state.in_blockquote => {
+            state.close_quoted_list();
+        }
+        Event::Start(Tag::Item) if state.in_blockquote => {
+            state.open_quoted_item();
+        }
+        Event::End(TagEnd::Item) if state.in_blockquote => {
+            state.close_quoted_item();
+        }
+        Event::TaskListMarker(checked) if state.in_blockquote => {
+            state
+                .blockquote_buffer
+                .push_str(if checked { "[x] " } else { "[ ] " });
+        }
         Event::Start(Tag::List(start_number)) => {
             state.list_depth += 1;
             if state.list_depth == 1 {
@@ -557,6 +660,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         }
         Event::End(TagEnd::BlockQuote(_)) => {
             state.flush_blockquote(blocks);
+            // `flush_blockquote` only resets the flag when it had something to
+            // emit, so a quote that produced no text (`>` on a line by itself)
+            // left it set and every block after it was swallowed into a quote
+            // that had already closed.
+            state.in_blockquote = false;
+            state.quoted_lists.clear();
+            state.quoted_item_indents.clear();
         }
         Event::Start(Tag::Table(alignments)) => {
             state.in_table = true;
