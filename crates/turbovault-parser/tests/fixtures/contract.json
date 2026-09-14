@@ -1,0 +1,855 @@
+[
+  {
+    "anchor": "heading-with-alt-in-headingheadingpng-an-image",
+    "content": "Heading with ![alt-in-heading](heading.png) an image",
+    "inline": [
+      {
+        "type": "text",
+        "value": "Heading with "
+      },
+      {
+        "alt": "alt-in-heading",
+        "src": "heading.png",
+        "title": null,
+        "type": "image"
+      },
+      {
+        "type": "text",
+        "value": " an image"
+      }
+    ],
+    "level": 1,
+    "type": "heading"
+  },
+  {
+    "anchor": "heading-with-link-in-headinghttpsexamplecomheading-a-link",
+    "content": "Heading with [link-in-heading](https://example.com/heading) a link",
+    "inline": [
+      {
+        "type": "text",
+        "value": "Heading with "
+      },
+      {
+        "text": "link-in-heading",
+        "title": null,
+        "type": "link",
+        "url": "https://example.com/heading"
+      },
+      {
+        "type": "text",
+        "value": " a link"
+      }
+    ],
+    "level": 2,
+    "type": "heading"
+  },
+  {
+    "anchor": "heading-with-badge-in-headinghttpsciexample-a-linked-image",
+    "content": "Heading with [badge-in-heading](https://ci.example) a linked image",
+    "inline": [
+      {
+        "type": "text",
+        "value": "Heading with "
+      },
+      {
+        "alt": "badge-in-heading",
+        "src": "badge.png",
+        "title": null,
+        "type": "image"
+      },
+      {
+        "text": "badge-in-heading",
+        "title": null,
+        "type": "link",
+        "url": "https://ci.example"
+      },
+      {
+        "type": "text",
+        "value": " a linked image"
+      }
+    ],
+    "level": 3,
+    "type": "heading"
+  },
+  {
+    "content": "A plain paragraph with strong, emphasis, strikethrough and inline code.",
+    "inline": [
+      {
+        "type": "text",
+        "value": "A plain paragraph with "
+      },
+      {
+        "type": "strong",
+        "value": "strong"
+      },
+      {
+        "type": "text",
+        "value": ", "
+      },
+      {
+        "type": "emphasis",
+        "value": "emphasis"
+      },
+      {
+        "type": "text",
+        "value": ", "
+      },
+      {
+        "type": "strikethrough",
+        "value": "strikethrough"
+      },
+      {
+        "type": "text",
+        "value": " and "
+      },
+      {
+        "type": "code",
+        "value": "inline code"
+      },
+      {
+        "type": "text",
+        "value": "."
+      }
+    ],
+    "type": "paragraph"
+  },
+  {
+    "content": "A paragraph with ![bare-img](bare.png), [a link](https://example.com/one), a [linked-img](https://example.com/two) badge, an ![titled-img](titled.png) titled image and an ![spaced-img](spaced path.png) spaced destination.",
+    "inline": [
+      {
+        "type": "text",
+        "value": "A paragraph with "
+      },
+      {
+        "alt": "bare-img",
+        "src": "bare.png",
+        "title": null,
+        "type": "image"
+      },
+      {
+        "type": "text",
+        "value": ", "
+      },
+      {
+        "text": "a link",
+        "title": null,
+        "type": "link",
+        "url": "https://example.com/one"
+      },
+      {
+        "type": "text",
+        "value": ", a"
+      },
+      {
+        "type": "text",
+        "value": " "
+      },
+      {
+        "alt": "linked-img",
+        "src": "linked.png",
+        "title": null,
+        "type": "image"
+      },
+      {
+        "text": "linked-img",
+        "title": null,
+        "type": "link",
+        "url": "https://example.com/two"
+      },
+      {
+        "type": "text",
+        "value": " badge, an"
+      },
+      {
+        "type": "text",
+        "value": " "
+      },
+      {
+        "alt": "titled-img",
+        "src": "titled.png",
+        "title": "The Title",
+        "type": "image"
+      },
+      {
+        "type": "text",
+        "value": " titled image and an"
+      },
+      {
+        "type": "text",
+        "value": " "
+      },
+      {
+        "alt": "spaced-img",
+        "src": "spaced path.png",
+        "title": null,
+        "type": "image"
+      },
+      {
+        "type": "text",
+        "value": " spaced destination."
+      }
+    ],
+    "type": "paragraph"
+  },
+  {
+    "content": "A paragraph with a [wikilink](wikilink:wikilink) and a [piped alias](wikilink:wikilink).",
+    "inline": [
+      {
+        "type": "text",
+        "value": "A paragraph with a "
+      },
+      {
+        "text": "wikilink",
+        "title": null,
+        "type": "link",
+        "url": "wikilink:wikilink"
+      },
+      {
+        "type": "text",
+        "value": " and a "
+      },
+      {
+        "text": "piped alias",
+        "title": null,
+        "type": "link",
+        "url": "wikilink:wikilink"
+      },
+      {
+        "type": "text",
+        "value": "."
+      }
+    ],
+    "type": "paragraph"
+  },
+  {
+    "content": "fn top_level() {\n    println!(\"fence at the top level\");\n}",
+    "end_line": 29,
+    "language": "rust",
+    "start_line": 25,
+    "type": "code"
+  },
+  {
+    "content": "an indented code block",
+    "end_line": 31,
+    "language": null,
+    "start_line": 31,
+    "type": "code"
+  },
+  {
+    "items": [
+      {
+        "checked": null,
+        "content": "tight one",
+        "inline": [
+          {
+            "type": "text",
+            "value": "tight one"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "tight two",
+        "inline": [
+          {
+            "type": "text",
+            "value": "tight two"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "tight three",
+        "inline": [
+          {
+            "type": "text",
+            "value": "tight three"
+          }
+        ]
+      }
+    ],
+    "ordered": false,
+    "type": "list"
+  },
+  {
+    "items": [
+      {
+        "checked": null,
+        "content": "ordered one",
+        "inline": [
+          {
+            "type": "text",
+            "value": "ordered one"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "ordered two",
+        "inline": [
+          {
+            "type": "text",
+            "value": "ordered two"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "starting at five",
+        "inline": [
+          {
+            "type": "text",
+            "value": "starting at five"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "and six",
+        "inline": [
+          {
+            "type": "text",
+            "value": "and six"
+          }
+        ]
+      }
+    ],
+    "ordered": true,
+    "type": "list"
+  },
+  {
+    "items": [
+      {
+        "checked": true,
+        "content": "a finished task",
+        "inline": [
+          {
+            "type": "text",
+            "value": "a finished task"
+          }
+        ]
+      },
+      {
+        "checked": false,
+        "content": "an unfinished task",
+        "inline": [
+          {
+            "type": "text",
+            "value": "an unfinished task"
+          }
+        ]
+      },
+      {
+        "blocks": [
+          {
+            "content": "outer item",
+            "inline": [
+              {
+                "type": "text",
+                "value": "outer item"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "checked": null,
+        "content": "  nested item\n    deeper item",
+        "inline": [
+          {
+            "type": "text",
+            "value": "nested item"
+          },
+          {
+            "type": "text",
+            "value": "deeper item"
+          },
+          {
+            "type": "text",
+            "value": "outer item"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "second outer",
+        "inline": [
+          {
+            "type": "text",
+            "value": "second outer"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "loose one",
+        "inline": [
+          {
+            "type": "text",
+            "value": "loose one"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "loose two",
+        "inline": [
+          {
+            "type": "text",
+            "value": "loose two"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "item with an ![img-in-item](item.png) image",
+        "inline": [
+          {
+            "type": "text",
+            "value": "item with an "
+          },
+          {
+            "alt": "img-in-item",
+            "line_offset": 0,
+            "src": "item.png",
+            "title": null,
+            "type": "image"
+          },
+          {
+            "type": "text",
+            "value": " image"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "item with a [link-in-item](https://example.com/item) link",
+        "inline": [
+          {
+            "type": "text",
+            "value": "item with a "
+          },
+          {
+            "line_offset": 0,
+            "text": "link-in-item",
+            "title": null,
+            "type": "link",
+            "url": "https://example.com/item"
+          },
+          {
+            "type": "text",
+            "value": " link"
+          }
+        ]
+      },
+      {
+        "blocks": [
+          {
+            "content": "in_a_list_item()",
+            "end_line": 62,
+            "language": "py",
+            "start_line": 60,
+            "type": "code"
+          }
+        ],
+        "checked": null,
+        "content": "item with a fence",
+        "inline": [
+          {
+            "type": "text",
+            "value": "item with a fence"
+          }
+        ]
+      }
+    ],
+    "ordered": false,
+    "type": "list"
+  },
+  {
+    "blocks": [
+      {
+        "content": "A quote with ![img-in-quote](quoted.png), [link-in-quote](https://example.com/q), code in quote, strong in quote, and a [badge-in-quote](https://example.com/qb) badge.",
+        "inline": [
+          {
+            "type": "text",
+            "value": "A quote with "
+          },
+          {
+            "alt": "img-in-quote",
+            "src": "quoted.png",
+            "title": null,
+            "type": "image"
+          },
+          {
+            "type": "text",
+            "value": ", "
+          },
+          {
+            "text": "link-in-quote",
+            "title": null,
+            "type": "link",
+            "url": "https://example.com/q"
+          },
+          {
+            "type": "text",
+            "value": ","
+          },
+          {
+            "type": "text",
+            "value": " "
+          },
+          {
+            "type": "code",
+            "value": "code in quote"
+          },
+          {
+            "type": "text",
+            "value": ", strong in quote, and a"
+          },
+          {
+            "type": "text",
+            "value": " "
+          },
+          {
+            "alt": "badge-in-quote",
+            "src": "qbadge.png",
+            "title": null,
+            "type": "image"
+          },
+          {
+            "text": "badge-in-quote",
+            "title": null,
+            "type": "link",
+            "url": "https://example.com/qb"
+          },
+          {
+            "type": "text",
+            "value": " badge."
+          }
+        ],
+        "type": "paragraph"
+      }
+    ],
+    "content": "A quote with ![img-in-quote](quoted.png), [link-in-quote](https://example.com/q),\n`code in quote`, strong in quote, and a\n[![badge-in-quote](qbadge.png)](https://example.com/qb) badge.",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "content": "[!NOTE] A callout",
+        "inline": [
+          {
+            "type": "text",
+            "value": "["
+          },
+          {
+            "type": "text",
+            "value": "!NOTE"
+          },
+          {
+            "type": "text",
+            "value": "]"
+          },
+          {
+            "type": "text",
+            "value": " A callout"
+          }
+        ],
+        "type": "paragraph"
+      },
+      {
+        "items": [
+          {
+            "checked": null,
+            "content": "bullet in a callout",
+            "inline": [
+              {
+                "type": "text",
+                "value": "bullet in a callout"
+              }
+            ]
+          }
+        ],
+        "ordered": false,
+        "type": "list"
+      },
+      {
+        "content": "fence_after_a_list_in_a_callout();",
+        "end_line": 73,
+        "language": "rust",
+        "start_line": 71,
+        "type": "code"
+      }
+    ],
+    "content": "[!NOTE] A callout\n- bullet in a callout\n\n```rust\nfence_after_a_list_in_a_callout();\n```",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "items": [
+          {
+            "checked": null,
+            "content": "quoted tight one",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted tight one"
+              }
+            ]
+          },
+          {
+            "checked": null,
+            "content": "quoted tight two",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted tight two"
+              }
+            ]
+          }
+        ],
+        "ordered": false,
+        "type": "list"
+      }
+    ],
+    "content": "- quoted tight one\n- quoted tight two",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "items": [
+          {
+            "checked": null,
+            "content": "quoted ordered one",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted ordered one"
+              }
+            ]
+          },
+          {
+            "checked": null,
+            "content": "quoted ordered two",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted ordered two"
+              }
+            ]
+          }
+        ],
+        "ordered": true,
+        "type": "list"
+      }
+    ],
+    "content": "1. quoted ordered one\n2. quoted ordered two",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "items": [
+          {
+            "checked": true,
+            "content": "quoted done",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted done"
+              }
+            ]
+          },
+          {
+            "checked": false,
+            "content": "quoted todo",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted todo"
+              }
+            ]
+          }
+        ],
+        "ordered": false,
+        "type": "list"
+      }
+    ],
+    "content": "- [x] quoted done\n- [ ] quoted todo",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "items": [
+          {
+            "checked": null,
+            "content": "quoted outer\n  quoted nested",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted outer"
+              },
+              {
+                "type": "text",
+                "value": "quoted nested"
+              }
+            ]
+          }
+        ],
+        "ordered": false,
+        "type": "list"
+      }
+    ],
+    "content": "- quoted outer\n  - quoted nested",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "content": "quoted paragraph",
+        "inline": [
+          {
+            "type": "text",
+            "value": "quoted paragraph"
+          }
+        ],
+        "type": "paragraph"
+      },
+      {
+        "content": "fence_after_a_paragraph_in_a_quote",
+        "end_line": 91,
+        "language": "sh",
+        "start_line": 89,
+        "type": "code"
+      }
+    ],
+    "content": "quoted paragraph\n\n```sh\nfence_after_a_paragraph_in_a_quote\n```",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "content": "fence_first_in_a_quote",
+        "end_line": 95,
+        "language": "sh",
+        "start_line": 93,
+        "type": "code"
+      },
+      {
+        "items": [
+          {
+            "checked": null,
+            "content": "list after the fence",
+            "inline": [
+              {
+                "type": "text",
+                "value": "list after the fence"
+              }
+            ]
+          }
+        ],
+        "ordered": false,
+        "type": "list"
+      }
+    ],
+    "content": "```sh\nfence_first_in_a_quote\n```\n\n- list after the fence",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "content": "outer quote",
+        "inline": [
+          {
+            "type": "text",
+            "value": "outer quote"
+          }
+        ],
+        "type": "paragraph"
+      },
+      {
+        "content": "nested quote",
+        "inline": [
+          {
+            "type": "text",
+            "value": "nested quote"
+          }
+        ],
+        "type": "paragraph"
+      }
+    ],
+    "content": "outer quote\n\nnested quote",
+    "type": "blockquote"
+  },
+  {
+    "alignments": [
+      "left",
+      "center",
+      "right"
+    ],
+    "headers": [
+      "Column A",
+      "Column B",
+      "Column C"
+    ],
+    "rows": [
+      [
+        "left",
+        "center",
+        "right"
+      ],
+      [
+        "a",
+        "b",
+        "c"
+      ]
+    ],
+    "type": "table"
+  },
+  {
+    "blocks": [
+      {
+        "content": "Hidden body text with a ![img-in-details](details.png) image.",
+        "inline": [
+          {
+            "type": "text",
+            "value": "Hidden body text with a "
+          },
+          {
+            "alt": "img-in-details",
+            "src": "details.png",
+            "title": null,
+            "type": "image"
+          },
+          {
+            "type": "text",
+            "value": " image."
+          }
+        ],
+        "type": "paragraph"
+      }
+    ],
+    "content": "Hidden body text with a ![img-in-details](details.png) image.",
+    "summary": "A details block",
+    "type": "details"
+  },
+  {
+    "content": "fence with no language, after the details block",
+    "end_line": 117,
+    "language": null,
+    "start_line": 115,
+    "type": "code"
+  },
+  {
+    "content": "Final paragraph, so the last block is not a special case.",
+    "inline": [
+      {
+        "type": "text",
+        "value": "Final paragraph, so the last block is not a special case."
+      }
+    ],
+    "type": "paragraph"
+  }
+]

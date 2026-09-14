@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A contract snapshot over the whole parser surface.** One fixture covering every construct that has broken here, with the full extracted shape checked in as JSON. The narrow tests beside it each pin one defect and were each written after that defect shipped; three shipped while the suite was green ([#55](https://github.com/Epistates/turbovault/pull/55), [#68](https://github.com/Epistates/turbovault/issues/68), [#71](https://github.com/Epistates/turbovault/issues/71)), every time because the assertion was narrower than the failure.
+
+  A diff is reported as line multisets rather than positionally, so an inserted block is one entry instead of cascading through everything below it. Re-bless with `UPDATE_PARSER_SNAPSHOT=1`, matching the existing `UPDATE_TOOL_CATALOG` fixture. Alongside it, every reported code position is checked against the fixture itself: a line a block claims has to actually open or close a fence, which is an assertion about correctness rather than about not having changed.
+
 ### Fixed
+
+- **A block inside a blockquote reports the line it was written on.** 2.1.0 numbered a quote's blocks by re-parsing its reconstructed text from the quote's own line, which is only right when the reconstruction is the same height as the source. It was not: a paragraph followed by a list with no blank line between them, which is the ordinary callout shape, gained a separator the source never had and pushed everything below it one line down. The buffer now pads to each block's real source line instead of inserting a fixed separator, so the reconstruction matches the source line for line.
+
+  Found by the contract snapshot on its first run, against a callout whose fence claimed line 72 while sitting on 71.
 
 - **The release publish job skips members that are already on crates.io.** `cargo publish --workspace` refuses to run at all when any member's version is already up, aborting before it uploads anything, so publishing 2.1.0 failed on `turbovault-plugin-api@0.1.0`. That crate is versioned on its own and had not changed, which will be the normal case for it across a release. A retry after a partial run hits the same wall for the crates that already landed.
 
