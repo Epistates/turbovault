@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release publish job skips members that are already on crates.io.** `cargo publish --workspace` refuses to run at all when any member's version is already up, aborting before it uploads anything, so publishing 2.1.0 failed on `turbovault-plugin-api@0.1.0`. That crate is versioned on its own and had not changed, which will be the normal case for it across a release. A retry after a partial run hits the same wall for the crates that already landed.
+
+  The job now takes the list from a dry run, which reports those as warnings rather than failing, and passes each one as `--exclude`. No hand-maintained list, cargo still derives the order and waits on the index, and a partial run genuinely resumes now. The claim that it already did was checked against `--dry-run` output, where "already exists" is only a warning.
+
 ## [2.1.0] - 2026-09-13
 
 Every change here is in the parser, and all of it came from
@@ -64,9 +70,9 @@ Every change here is in the parser, and all of it came from
 
 - **Releases publish with `cargo publish --workspace`.** The workflow kept a hand-written crate list
   with its own dependency ordering, 30-second sleeps and an already-published probe. Cargo derives
-  the order from the graph, waits on the index itself, and warns rather than fails on a crate that
-  is already up, so a partial run still resumes. The hand-written version could only drift from the
-  real graph as crates are added.
+  the order from the graph and waits on the index itself, so neither needs scripting, and the
+  hand-written version could only drift from the real graph as crates are added. Selecting which
+  members still need publishing is the one part cargo does not do; see the Unreleased entry above.
 
 - **`.claude/` is ignored.** It holds local agent settings and session state, and was untracked but
   not ignored, so it showed as a dirty tree and sat one `git add -A` away from committing someone's
