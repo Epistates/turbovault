@@ -67,13 +67,33 @@ jobs:
             exit 0
           fi
           set -euo pipefail
-          # Cargo resolves the publish order from the dependency graph itself,
-          # waits for the index between crates, and warns rather than fails on
-          # anything already on crates.io, so a run that died partway resumes.
-          # This replaced a hand-maintained crate list with its own ordering,
-          # sleeps and already-published probe, all of which cargo now does and
-          # any of which could drift from the real graph when a crate is added.
-          cargo publish --workspace --locked
+          # Cargo resolves the publish order from the dependency graph and waits
+          # on the index between crates, so neither is scripted here. What it
+          # will NOT do is tolerate a member whose version is already up: that
+          # aborts the whole run before anything uploads. Two ways in. A crate
+          # versioned outside the workspace (`turbovault-plugin-api`) stays put
+          # across a release it did not change in, and a retry after a partial
+          # run finds the crates that already landed.
+          #
+          # A dry run reports exactly those as warnings rather than failing, so
+          # it is the pre-flight: read the names it names, exclude them, publish
+          # the rest. Nothing here is a hand-maintained list.
+          mapfile -t ALREADY < <(
+            cargo publish --workspace --locked --dry-run 2>&1 \
+              | sed -n 's/^warning: crate \([^@]*\)@.* already exists on crates.io index$/\1/p' \
+              | sort -u
+          )
+          TOTAL="$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')"
+          if [ "${#ALREADY[@]}" -eq "${TOTAL}" ]; then
+            echo "All ${TOTAL} crates are already on crates.io at this version; nothing to publish."
+            exit 0
+          fi
+          EXCLUDES=()
+          for crate in "${ALREADY[@]}"; do
+            echo "Already published, skipping: ${crate}"
+            EXCLUDES+=(--exclude "${crate}")
+          done
+          cargo publish --workspace --locked "${EXCLUDES[@]}"
 
   # ── Build Prebuilt Binaries ───────────────────────────────────────────
   build:
