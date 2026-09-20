@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The job now takes the list from a dry run, which reports those as warnings rather than failing, and passes each one as `--exclude`. No hand-maintained list, cargo still derives the order and waits on the index, and a partial run genuinely resumes now. The claim that it already did was checked against `--dry-run` output, where "already exists" is only a warning.
 
+### Changed
+
+- **`rustls` 0.23.45 clears RUSTSEC-2026-0285.** TLS 1.3 handshake messages were accepted across encryption level boundaries, rated medium. It arrives through two paths, `tokio-tungstenite` under the `websocket` feature and `reqwest` under `http`, so any build with a network transport is in scope. The advisory was published on 2026-09-14, hours after the last audit run on `main`, which is why a green CI and a red `cargo audit` were both true.
+
+  A plain `cargo update -p rustls` stops at 0.23.43, since 0.23.45 wants `aws-lc-rs` 1.18 and cargo will not move a package it was not asked about. Pinned with `--precise`, which pulls `aws-lc-rs` 1.18.1, `aws-lc-sys` 0.45.0 and `rustls-webpki` 0.103.15 with it. Lockfile only, no API change, and `cargo check` still passes on the 1.90.0 MSRV.
+
+  The same six audit warnings remain, all still unfixable from here.
+
 ## [2.1.0] - 2026-09-13
 
 Every change here is in the parser, and all of it came from
