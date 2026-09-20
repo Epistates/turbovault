@@ -1,7 +1,7 @@
 [
   {
-    "anchor": "heading-with-alt-in-headingheadingpng-an-image",
-    "content": "Heading with ![alt-in-heading](heading.png) an image",
+    "anchor": "heading-with-an-image",
+    "content": "Heading with an image",
     "inline": [
       {
         "type": "text",
@@ -22,8 +22,8 @@
     "type": "heading"
   },
   {
-    "anchor": "heading-with-link-in-headinghttpsexamplecomheading-a-link",
-    "content": "Heading with [link-in-heading](https://example.com/heading) a link",
+    "anchor": "heading-with-link-in-heading-a-link",
+    "content": "Heading with link-in-heading a link",
     "inline": [
       {
         "type": "text",
@@ -44,8 +44,8 @@
     "type": "heading"
   },
   {
-    "anchor": "heading-with-badge-in-headinghttpsciexample-a-linked-image",
-    "content": "Heading with [badge-in-heading](https://ci.example) a linked image",
+    "anchor": "heading-with-a-linked-image",
+    "content": "Heading with a linked image",
     "inline": [
       {
         "type": "text",
@@ -69,6 +69,20 @@
       }
     ],
     "level": 3,
+    "type": "heading"
+  },
+  {
+    "anchor": null,
+    "content": "",
+    "inline": [
+      {
+        "alt": "banner-only-heading",
+        "src": "banner.png",
+        "title": null,
+        "type": "image"
+      }
+    ],
+    "level": 4,
     "type": "heading"
   },
   {
@@ -223,16 +237,16 @@
   },
   {
     "content": "fn top_level() {\n    println!(\"fence at the top level\");\n}",
-    "end_line": 29,
+    "end_line": 31,
     "language": "rust",
-    "start_line": 25,
+    "start_line": 27,
     "type": "code"
   },
   {
     "content": "an indented code block",
-    "end_line": 31,
+    "end_line": 33,
     "language": null,
-    "start_line": 31,
+    "start_line": 33,
     "type": "code"
   },
   {
@@ -445,9 +459,9 @@
         "blocks": [
           {
             "content": "in_a_list_item()",
-            "end_line": 62,
+            "end_line": 64,
             "language": "py",
-            "start_line": 60,
+            "start_line": 62,
             "type": "code"
           }
         ],
@@ -574,9 +588,9 @@
       },
       {
         "content": "fence_after_a_list_in_a_callout();",
-        "end_line": 73,
+        "end_line": 75,
         "language": "rust",
-        "start_line": 71,
+        "start_line": 73,
         "type": "code"
       }
     ],
@@ -719,9 +733,9 @@
       },
       {
         "content": "fence_after_a_paragraph_in_a_quote",
-        "end_line": 91,
+        "end_line": 93,
         "language": "sh",
-        "start_line": 89,
+        "start_line": 91,
         "type": "code"
       }
     ],
@@ -732,9 +746,9 @@
     "blocks": [
       {
         "content": "fence_first_in_a_quote",
-        "end_line": 95,
+        "end_line": 97,
         "language": "sh",
-        "start_line": 93,
+        "start_line": 95,
         "type": "code"
       },
       {
@@ -755,6 +769,75 @@
       }
     ],
     "content": "```sh\nfence_first_in_a_quote\n```\n\n- list after the fence",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "items": [
+          {
+            "blocks": [
+              {
+                "content": "a continuation paragraph of the item above",
+                "inline": [
+                  {
+                    "type": "text",
+                    "value": "a continuation paragraph of the item above"
+                  }
+                ],
+                "type": "paragraph"
+              }
+            ],
+            "checked": null,
+            "content": "quoted step",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted step"
+              },
+              {
+                "type": "text",
+                "value": "a continuation paragraph of the item above"
+              }
+            ]
+          }
+        ],
+        "ordered": false,
+        "type": "list"
+      }
+    ],
+    "content": "- quoted step\n\n  a continuation paragraph of the item above",
+    "type": "blockquote"
+  },
+  {
+    "blocks": [
+      {
+        "items": [
+          {
+            "blocks": [
+              {
+                "content": "fence_inside_a_quoted_item",
+                "end_line": 109,
+                "language": "sh",
+                "start_line": 107,
+                "type": "code"
+              }
+            ],
+            "checked": null,
+            "content": "quoted step with a fence",
+            "inline": [
+              {
+                "type": "text",
+                "value": "quoted step with a fence"
+              }
+            ]
+          }
+        ],
+        "ordered": false,
+        "type": "list"
+      }
+    ],
+    "content": "- quoted step with a fence\n\n  ```sh\n  fence_inside_a_quoted_item\n  ```",
     "type": "blockquote"
   },
   {
@@ -837,9 +920,9 @@
   },
   {
     "content": "fence with no language, after the details block",
-    "end_line": 117,
+    "end_line": 129,
     "language": null,
-    "start_line": 115,
+    "start_line": 127,
     "type": "code"
   },
   {
