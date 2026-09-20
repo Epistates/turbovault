@@ -245,3 +245,141 @@ fn an_empty_quote_does_not_swallow_the_document_after_it() {
         "expected one paragraph, got {blocks:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Continuation blocks inside a quoted list item
+// <https://github.com/Epistates/turbovault/issues/77>
+// ---------------------------------------------------------------------------
+//
+// An item's second block is written to the quote buffer at the point the first
+// one stopped, so it needs both the line it was written on and the item's own
+// content column. It was getting neither: the continuation ran straight onto
+// the item's text with no separator at all, and a fence landed back at column
+// zero, which closed the list and made the fence the list's sibling.
+
+/// The item that owns a continuation paragraph, as `(item content, item
+/// blocks)`, from the first list in the first blockquote.
+fn first_quoted_item(markdown: &str) -> (String, Vec<ContentBlock>) {
+    let blocks = parse_blocks(markdown);
+    let (_, nested) = first_blockquote(&blocks);
+    let list = nested
+        .iter()
+        .find_map(|b| match b {
+            ContentBlock::List { items, .. } => Some(items),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("expected a list inside the quote, got {nested:?}"));
+    let item = list.first().expect("expected at least one item");
+    (item.content.clone(), item.blocks.clone())
+}
+
+/// The reported case. The blank line makes the list loose and the indent makes
+/// the text a second block of the item, and neither survived the round trip.
+#[test]
+fn a_quoted_item_keeps_its_continuation_paragraph_separate() {
+    let (content, blocks) = first_quoted_item("> - step\n>\n>   text\n");
+    assert_eq!(content, "step", "the continuation ran onto the item's text");
+    assert!(
+        matches!(&blocks[..], [ContentBlock::Paragraph { content, .. }] if content == "text"),
+        "expected the continuation as a nested paragraph, got {blocks:?}"
+    );
+}
+
+/// An ordered item's content column is wider than a bullet's, so the indent has
+/// to come from the marker that was actually written.
+#[test]
+fn a_quoted_ordered_item_keeps_its_continuation_paragraph_separate() {
+    let (content, blocks) = first_quoted_item("> 1. step\n>\n>    text\n");
+    assert_eq!(content, "step", "the continuation ran onto the item's text");
+    assert!(
+        matches!(&blocks[..], [ContentBlock::Paragraph { content, .. }] if content == "text"),
+        "expected the continuation as a nested paragraph, got {blocks:?}"
+    );
+}
+
+/// A nested item's content column is its parent's plus its own marker, so a
+/// continuation there is the case that catches an indent computed from depth
+/// rather than from the buffer it is actually being written into.
+///
+/// Asserted against the same input parsed outside a quote rather than against a
+/// literal, because the shape it produces is not the one you would design: the
+/// parser flattens a nested list into its parent item's text instead of nesting
+/// it, and hands the inner item's continuation to the outer item. That is
+/// [#79], which predates this and is not what this test is pinning. What it
+/// pins is that a quote does not make it any worse.
+///
+/// [#79]: https://github.com/Epistates/turbovault/issues/79
+#[test]
+fn a_nested_quoted_item_keeps_its_continuation_paragraph_separate() {
+    let quoted = parse_blocks("> - outer\n>   - inner\n>\n>     text\n");
+    let (_, nested) = first_blockquote(&quoted);
+    assert_eq!(
+        nested,
+        parse_blocks("- outer\n  - inner\n\n    text\n"),
+        "the quote reported a different shape than the same list outside one"
+    );
+    let ContentBlock::List { items, .. } = &nested[0] else {
+        panic!("expected a list inside the quote, got {nested:?}");
+    };
+    assert!(
+        !items[0].content.contains("innertext"),
+        "the continuation ran onto the nested item's text: {:?}",
+        items[0].content
+    );
+}
+
+/// The same shape with a fence, which is what a quoted step-with-a-command
+/// looks like. Written at column zero it ends the list, so the fence came back
+/// as the list's sibling instead of the item's own block.
+#[test]
+fn a_quoted_item_keeps_a_fenced_block_inside_it() {
+    let (content, blocks) = first_quoted_item("> - step\n>\n>   ```sh\n>   run()\n>   ```\n");
+    assert_eq!(content, "step");
+    assert!(
+        matches!(
+            &blocks[..],
+            [ContentBlock::Code { language, content, .. }]
+                if language.as_deref() == Some("sh") && content == "run()"
+        ),
+        "expected the fence inside the item, got {blocks:?}"
+    );
+}
+
+/// A quoted fence still reports the document line it was written on, which is
+/// the guarantee #76 added and the indent must not disturb.
+#[test]
+fn a_fence_inside_a_quoted_item_still_reports_its_own_line() {
+    let blocks = parse_blocks("intro\n\n> - step\n>\n>   ```sh\n>   run()\n>   ```\n");
+    let (_, nested) = first_blockquote(&blocks);
+    let ContentBlock::List { items, .. } = &nested[0] else {
+        panic!("expected a list inside the quote, got {nested:?}");
+    };
+    assert!(
+        matches!(
+            &items[0].blocks[..],
+            [ContentBlock::Code {
+                start_line: 5,
+                end_line: 7,
+                ..
+            }]
+        ),
+        "expected the fence on lines 5 to 7, got {:?}",
+        items[0].blocks
+    );
+}
+
+/// An unindented paragraph after a quoted list is a sibling of the list, not a
+/// continuation of its last item, and it was already right. It has to stay
+/// right once continuations start indenting themselves.
+#[test]
+fn an_unindented_paragraph_after_a_quoted_list_stays_a_sibling() {
+    let blocks = parse_blocks("> - step\n>\n> text\n");
+    let (_, nested) = first_blockquote(&blocks);
+    assert!(
+        matches!(
+            nested,
+            [ContentBlock::List { .. }, ContentBlock::Paragraph { content, .. }] if content == "text"
+        ),
+        "expected a list then a paragraph, got {nested:?}"
+    );
+}

@@ -482,3 +482,133 @@ fn a_linked_image_in_a_heading_keeps_both_destinations() {
         "link destination lost: {inline:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// A heading's text is text, not markup
+// <https://github.com/Epistates/turbovault/issues/78>
+// ---------------------------------------------------------------------------
+//
+// #74 gave headings their own inline sink so an image stopped being hoisted out
+// of one, but that sink also collects the source spelling a paragraph needs in
+// order to be re-serialized, and a heading is never re-serialized. So the whole
+// `![alt](src)` landed in the heading's own text and in the slug built from it.
+// A heading's content is a label: it is what an outline prints and what an
+// anchor is cut from, so an image contributes what it renders as, which is
+// nothing, and a link contributes its label.
+
+/// The reported case. `# Title ![a](a.png)` is a title with a badge in it, and
+/// the title is `Title`.
+#[test]
+fn an_image_in_a_heading_contributes_nothing_to_the_heading_text() {
+    let blocks = parse_blocks("# Title ![a](a.png)\n");
+    let ContentBlock::Heading {
+        content, anchor, ..
+    } = &blocks[0]
+    else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert_eq!(content, "Title");
+    assert_eq!(anchor.as_deref(), Some("title"));
+}
+
+/// A link renders as its label, so that is what it contributes. The
+/// destination never belonged in the text and least of all in the slug.
+#[test]
+fn a_link_in_a_heading_contributes_its_label_and_not_its_destination() {
+    let blocks = parse_blocks("# Title [a](https://example.com/x)\n");
+    let ContentBlock::Heading {
+        content, anchor, ..
+    } = &blocks[0]
+    else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert_eq!(content, "Title a");
+    assert_eq!(anchor.as_deref(), Some("title-a"));
+}
+
+/// A linked image is a link whose label is an image, so it contributes the
+/// image's contribution: nothing. This is the badge-in-a-title shape.
+#[test]
+fn a_linked_image_in_a_heading_contributes_nothing_to_the_heading_text() {
+    let blocks = parse_blocks("# Title [![b](b.png)](http://c)\n");
+    let ContentBlock::Heading {
+        content, anchor, ..
+    } = &blocks[0]
+    else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert_eq!(content, "Title");
+    assert_eq!(anchor.as_deref(), Some("title"));
+}
+
+/// Dropping the image leaves the spaces that were on either side of it, and two
+/// of them in an outline is a visible wart, so the text is normalized the same
+/// way the slug already was.
+#[test]
+fn a_heading_does_not_keep_the_gap_left_by_a_dropped_image() {
+    let blocks = parse_blocks("## A ![x](x.png) B\n");
+    let ContentBlock::Heading {
+        content, anchor, ..
+    } = &blocks[0]
+    else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert_eq!(content, "A B");
+    assert_eq!(anchor.as_deref(), Some("a-b"));
+}
+
+/// Dropping the markup must not drop the element. The inline list is what a
+/// renderer draws the heading from, and it still has to carry the image.
+#[test]
+fn a_heading_that_drops_image_markup_still_reports_the_image() {
+    let blocks = parse_blocks("# Title ![a](a.png)\n");
+    let ContentBlock::Heading { inline, .. } = &blocks[0] else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert!(
+        inline.iter().any(
+            |e| matches!(e, InlineElement::Image { alt, src, .. } if alt == "a" && src == "a.png")
+        ),
+        "the image is missing from the heading's inline elements: {inline:?}"
+    );
+}
+
+/// A banner heading is all image and no text. Emitting a heading only when it
+/// had text was safe while the markup counted as text, and once it stops
+/// counting that rule would delete the block outright.
+#[test]
+fn a_heading_that_is_only_an_image_is_still_reported() {
+    let blocks = parse_blocks("# ![a](a.png)\n");
+    let ContentBlock::Heading {
+        level,
+        content,
+        inline,
+        anchor,
+    } = &blocks[0]
+    else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert_eq!(*level, 1);
+    assert_eq!(content, "");
+    assert!(
+        anchor.is_none(),
+        "a heading with no text has no slug to offer, got {anchor:?}"
+    );
+    assert!(
+        inline
+            .iter()
+            .any(|e| matches!(e, InlineElement::Image { src, .. } if src == "a.png")),
+        "the image is missing from the heading: {inline:?}"
+    );
+}
+
+/// A paragraph is re-serialized by its consumers, so it keeps the source
+/// spelling. Only the heading changes.
+#[test]
+fn a_paragraph_still_keeps_the_source_spelling_of_its_image() {
+    let blocks = parse_blocks("Text with ![a](a.png) in it.\n");
+    let ContentBlock::Paragraph { content, .. } = &blocks[0] else {
+        panic!("expected a paragraph, got {blocks:?}");
+    };
+    assert_eq!(content, "Text with ![a](a.png) in it.");
+}

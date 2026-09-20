@@ -188,6 +188,10 @@ fn the_fixture_still_covers_every_construct_that_has_broken() {
         ("an image in a heading", "![alt-in-heading]"),
         ("a link in a heading", "[link-in-heading]"),
         ("a linked image in a heading", "[![badge-in-heading]"),
+        (
+            "a heading that is only an image",
+            "#### ![banner-only-heading]",
+        ),
         ("a titled image", "\"The Title\""),
         ("a spaced destination", "<spaced path.png>"),
         ("a wikilink", "[[wikilink]]"),
@@ -202,6 +206,11 @@ fn the_fixture_still_covers_every_construct_that_has_broken() {
             "fence_after_a_list_in_a_callout",
         ),
         ("a fence first in a quote", "fence_first_in_a_quote"),
+        (
+            "a continuation paragraph in a quoted item",
+            ">   a continuation paragraph",
+        ),
+        ("a fence in a quoted item", "fence_inside_a_quoted_item"),
         ("a nested blockquote", "> > nested quote"),
         ("a top-level fence", "fn top_level()"),
         ("an indented code block", "    an indented code block"),
