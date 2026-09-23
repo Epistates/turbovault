@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "MCP tools implementation using turbomcp"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 documentation = "https://docs.rs/turbovault-tools"
 
 [dependencies]

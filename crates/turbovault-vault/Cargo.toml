@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Vault management, file operations, and watching"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 documentation = "https://docs.rs/turbovault-vault"
 
 [dependencies]

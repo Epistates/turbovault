@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Obsidian Flavored Markdown (OFM) parser"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 documentation = "https://docs.rs/turbovault-parser"
 
 [features]
