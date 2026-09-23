@@ -1,0 +1,36 @@
+[package]
+name = "turbovault-plugin-vector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Not published yet, matching turbovault-vector: still-settling, no external
+# consumers, mounted only behind the default-off `vector-search` feature on
+# the turbovault binary.
+publish = false
+description = "Semantic vector search vertical for TurboVault, as a compiled-in plugin module"
+readme = "README.md"
+
+[dependencies]
+turbovault-plugin-api = { workspace = true }
+turbovault-vector = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# `test-util` exposes the deterministic, network-free fake embedder these
+# tests need; not enabled for the normal library build (see turbovault-vector's
+# Cargo.toml).
+turbovault-vector = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["full"] }
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
