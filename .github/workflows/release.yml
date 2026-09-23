@@ -42,6 +42,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-targets --all-features --locked
 
+      # Must match ci.yml's checks job: `--all-targets` does not build
+      # doctests, so this is the only place a `no_run` example failing to
+      # compile would otherwise be caught before it breaks a release.
+      - name: Run doctests
+        run: cargo test --workspace --all-features --doc --locked
+
       - name: Build documentation
         env:
           RUSTDOCFLAGS: -D warnings

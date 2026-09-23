@@ -37,6 +37,12 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-features --all-targets --locked
 
+      # `--all-targets` deliberately excludes doctests (they are not a
+      # "target" cargo builds that way), so without this step a doctest can
+      # fail to compile and CI stays green.
+      - name: Run doctests
+        run: cargo test --workspace --all-features --doc --locked
+
       # Must match the release workflow's verify job, `-D warnings` included.
       # Without it a broken intra-doc link is a warning here and an error
       # there, so the first anyone hears of it is a tag failing to release.
@@ -44,6 +50,66 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo doc --workspace --no-deps --locked
+
+  # Ubuntu covers the fast, all-features, all-targets sweep above. Real users
+  # install on all three OSes, and `unix` is Unix-only by design, so this job
+  # exercises the actual install surface: default features everywhere, plus
+  # the cross-platform `full` bundle on Windows specifically (the OS the
+  # `unix` feature would break on if it ever leaked into a shared feature set).
+  test-cross-platform:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: Run tests (default features)
+        run: cargo test --workspace --locked
+
+      - name: Run tests (full features)
+        if: matrix.os == 'windows-latest'
+        run: cargo test --workspace --locked --features full
+
+  # The feature flags in the install docs (README, crates/turbovault/Cargo.toml)
+  # are promises about what builds standalone. This job holds each one to that
+  # without paying for a full test run per combination.
+  feature-check:
+    name: Feature Check (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no-default-features
+            args: --no-default-features
+          - name: no-default-features+sql
+            args: --no-default-features --features sql
+          - name: http
+            args: --features http
+          - name: plugin-api
+            args: --features plugin-api
+          - name: full
+            args: --features full
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: cargo check -p turbovault ${{ matrix.args }}
+        run: cargo check -p turbovault ${{ matrix.args }} --locked
 
   coverage:
     name: Coverage
