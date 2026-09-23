@@ -104,6 +104,22 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
     run(Args::parse()).await
 }
 
+/// Compiled-in plugins to mount, based on which plugin Cargo features this
+/// binary was built with. Each plugin feature is default-off and responsible
+/// for pushing its own factory here; `plugin-api` compiled in on its own,
+/// with no individual plugin feature, mounts nothing. See
+/// `mounts_no_plugins_without_a_plugin_feature` below.
+#[cfg(feature = "plugin-api")]
+fn compiled_in_plugins() -> Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>> {
+    #[allow(unused_mut)]
+    let mut plugins: Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>> = Vec::new();
+    #[cfg(feature = "vector-search")]
+    plugins.push(std::sync::Arc::new(
+        turbovault_plugin_vector::VectorSearchPlugin::new(),
+    ));
+    plugins
+}
+
 /// Run TurboVault using already-parsed CLI arguments.
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let tool_visibility = load_tool_visibility(&args).await?;
@@ -174,6 +190,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create vault-agnostic server instance (no vault required at startup)
+    #[cfg(feature = "plugin-api")]
+    let server = ObsidianMcpServer::new_with_plugins(compiled_in_plugins())
+        .map_err(|e| format!("Failed to create MCP server: {}", e))?;
+    #[cfg(not(feature = "plugin-api"))]
     let server =
         ObsidianMcpServer::new().map_err(|e| format!("Failed to create MCP server: {}", e))?;
 
@@ -667,6 +687,23 @@ async fn register_default_vault(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `plugin-api` alone (no individual plugin feature such as
+    /// `vector-search`) must compile in and mount nothing; a plugin feature
+    /// being off is what a user asked for by not enabling it.
+    #[cfg(all(feature = "plugin-api", not(feature = "vector-search")))]
+    #[test]
+    fn mounts_no_plugins_without_a_plugin_feature() {
+        assert!(compiled_in_plugins().is_empty());
+    }
+
+    #[cfg(feature = "vector-search")]
+    #[test]
+    fn vector_search_feature_mounts_exactly_the_vector_search_plugin() {
+        let plugins = compiled_in_plugins();
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].descriptor().id, "vector_search");
+    }
 
     fn args(extra: &[&str]) -> Args {
         let mut argv = vec!["turbovault"];

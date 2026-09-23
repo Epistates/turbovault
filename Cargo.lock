@@ -5879,8 +5879,10 @@ dependencies = [
  "turbovault-audit",
  "turbovault-core",
  "turbovault-plugin-api",
+ "turbovault-plugin-vector",
  "turbovault-tools",
  "turbovault-vault",
+ "turbovault-vector",
  "uuid",
  "yaml_serde",
 ]
@@ -6013,6 +6015,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "turbomcp-types",
  "turbovault-plugin-api",
  "turbovault-vector",
 ]
