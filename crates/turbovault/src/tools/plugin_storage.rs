@@ -146,7 +146,7 @@ fn collect_keys<'a>(
                     continue;
                 }
                 if let Ok(relative) = path.strip_prefix(root) {
-                    keys.push(relative.to_string_lossy().replace('\\', "/"));
+                    keys.push(turbovault_core::path_to_slash(relative));
                 }
             }
         }

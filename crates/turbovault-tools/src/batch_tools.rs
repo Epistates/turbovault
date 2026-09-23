@@ -596,14 +596,7 @@ impl BatchTools {
         // sits in a code fence).
         let mut link_updates: Vec<(String, String, String)> = Vec::new();
         for full_src in &backlink_paths {
-            let rel = full_src
-                .strip_prefix(self.manager.vault_path())
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|_| full_src.clone());
-            let rel_str = rel
-                .to_str()
-                .ok_or_else(|| Error::config_error(format!("non-utf8 source path: {:?}", rel)))?
-                .to_string();
+            let rel_str = self.rel_backlink_path(full_src)?;
             let src_content = self.read_file(&rel_str).await?;
             let rewritten = rewrite_wikilinks(&src_content, from, to);
             if rewritten == src_content {
@@ -657,14 +650,7 @@ impl BatchTools {
 
         let mut link_updates: Vec<(String, String, String)> = Vec::new();
         for full_src in &backlink_paths {
-            let rel = full_src
-                .strip_prefix(self.manager.vault_path())
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|_| full_src.clone());
-            let rel_str = rel
-                .to_str()
-                .ok_or_else(|| Error::config_error(format!("non-utf8 source path: {:?}", rel)))?
-                .to_string();
+            let rel_str = self.rel_backlink_path(full_src)?;
             let src_content = self.read_file(&rel_str).await?;
             let rewritten = wrap_wikilinks_as_stale(&src_content, path);
             if rewritten == src_content {
@@ -709,17 +695,29 @@ impl BatchTools {
         };
         let mut out = Vec::new();
         for full_src in backlink_paths {
-            let rel = full_src
-                .strip_prefix(self.manager.vault_path())
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|_| full_src.clone());
-            let rel_str = rel
-                .to_str()
-                .ok_or_else(|| Error::config_error(format!("non-utf8 source path: {:?}", rel)))?
-                .to_string();
-            out.push(rel_str);
+            out.push(self.rel_backlink_path(&full_src)?);
         }
         Ok(out)
+    }
+
+    /// Vault-relative, `/`-separated form of a backlink source path the link
+    /// graph handed back (an absolute, natively-separated `PathBuf`).
+    ///
+    /// Errors loudly on non-UTF-8 rather than silently dropping the source —
+    /// shared by [`Self::fold_move_with_links`],
+    /// [`Self::fold_delete_with_stale_links`], and
+    /// [`Self::list_inbound_backlinks`], all of which fold the result into a
+    /// [`ChangePlan`] path or a refuse-by-default backlink count, where an
+    /// undercounted or `\`-separated path (mismatching the `/`-separated
+    /// keys the rest of the write path uses) would be a correctness bug, not
+    /// just a cosmetic one.
+    fn rel_backlink_path(&self, full_src: &std::path::Path) -> Result<String> {
+        let rel = full_src
+            .strip_prefix(self.manager.vault_path())
+            .unwrap_or(full_src);
+        rel.to_str()
+            .ok_or_else(|| Error::config_error(format!("non-utf8 source path: {:?}", rel)))?;
+        Ok(turbovault_core::path_to_slash(rel))
     }
 }
 

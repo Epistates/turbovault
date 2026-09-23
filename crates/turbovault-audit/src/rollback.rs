@@ -195,11 +195,15 @@ impl RollbackEngine {
 
         match entry.operation {
             OperationType::Create => {
-                // Undo create = delete
+                // Undo create = delete. The `exists()` check above already
+                // means a NotFound here is a race with something else
+                // removing the file between that check and this call —
+                // translate it the same way as any other missing-file
+                // operation rather than leaking the OS's raw NotFound text.
                 if file_path.exists() {
                     tokio::fs::remove_file(&file_path)
                         .await
-                        .map_err(Error::io)?;
+                        .map_err(|e| Error::io_at(entry.path.clone(), e))?;
                     action_taken = "Deleted file (undoing create)".to_string();
                 } else {
                     action_taken = "File already absent — no action taken".to_string();

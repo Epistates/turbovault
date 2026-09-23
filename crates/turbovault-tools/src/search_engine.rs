@@ -181,11 +181,7 @@ impl SearchEngine {
                     // git-diff relative path). Keying the initial build by the
                     // absolute path made `apply_changes`'s relative `delete_term`
                     // miss, leaving a stale duplicate doc on every edit.
-                    let path_str = file_path
-                        .strip_prefix(manager.vault_path())
-                        .unwrap_or(&file_path)
-                        .to_string_lossy()
-                        .to_string();
+                    let path_str = manager.relative_path(&file_path);
 
                     // Get title
                     let title = vault_file

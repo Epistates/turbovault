@@ -49,7 +49,6 @@ impl FrontmatterSqlEngine {
         .await?;
 
         let files = self.manager.scan_vault().await?;
-        let vault_path = self.manager.vault_path();
         let mut file_count = 0usize;
         let mut tag_count = 0usize;
 
@@ -65,10 +64,7 @@ impl FrontmatterSqlEngine {
 
             file_count += 1;
 
-            let rel_path = file_path
-                .strip_prefix(vault_path)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
+            let rel_path = self.manager.relative_path(file_path);
 
             // --- files table (schemaless JSON) ---
             let mut row = serde_json::Map::new();
@@ -107,7 +103,7 @@ impl FrontmatterSqlEngine {
         }
 
         // --- links table (from link graph) ---
-        let link_count = self.populate_links(&mut glue, vault_path).await;
+        let link_count = self.populate_links(&mut glue).await;
 
         Ok(SqlSession {
             glue,
@@ -128,7 +124,6 @@ impl FrontmatterSqlEngine {
     #[instrument(skip(self), name = "sql_inspect")]
     pub async fn inspect(&self) -> Result<Value> {
         let files = self.manager.scan_vault().await?;
-        let vault_path = self.manager.vault_path();
         let mut schema: HashMap<String, SchemaInfo> = HashMap::new();
         let mut file_count = 0usize;
         let mut sample_paths: Vec<String> = Vec::new();
@@ -146,11 +141,7 @@ impl FrontmatterSqlEngine {
             file_count += 1;
 
             if sample_paths.len() < 3 {
-                let rel = file_path
-                    .strip_prefix(vault_path)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
-                sample_paths.push(rel);
+                sample_paths.push(self.manager.relative_path(file_path));
             }
 
             if let Some(fm) = &vault_file.frontmatter {
@@ -206,21 +197,14 @@ impl FrontmatterSqlEngine {
     }
 
     /// Populate the `links` table from the vault link graph.
-    async fn populate_links(
-        &self,
-        glue: &mut Glue<MemoryStorage>,
-        vault_path: &std::path::Path,
-    ) -> usize {
+    async fn populate_links(&self, glue: &mut Glue<MemoryStorage>) -> usize {
         let graph = self.manager.link_graph();
         let graph_read = graph.read().await;
         let all_links = graph_read.all_links();
         let mut count = 0usize;
 
         for (source_path, links) in &all_links {
-            let source_rel = source_path
-                .strip_prefix(vault_path)
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| source_path.to_string_lossy().to_string());
+            let source_rel = self.manager.relative_path(source_path);
             let escaped_source = source_rel.replace('\'', "''");
 
             for link in links {

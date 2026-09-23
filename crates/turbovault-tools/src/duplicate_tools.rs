@@ -72,7 +72,6 @@ impl DuplicateTools {
         limit: usize,
     ) -> Result<Vec<DuplicateGroup>> {
         let files = self.manager.scan_vault().await?;
-        let vault_path = self.manager.vault_path().clone();
 
         // Build SimHash fingerprints for all files
         let mut fingerprints: Vec<DocFingerprint> = Vec::new();
@@ -82,11 +81,7 @@ impl DuplicateTools {
                 let plain = to_plain_text(&vault_file.content);
                 let fingerprint = compute_simhash(&plain);
 
-                let rel_path = file_path
-                    .strip_prefix(&vault_path)
-                    .unwrap_or(file_path)
-                    .to_string_lossy()
-                    .to_string();
+                let rel_path = self.manager.relative_path(file_path);
 
                 let title = vault_file
                     .headings

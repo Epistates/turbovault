@@ -126,7 +126,7 @@ pub fn reserved_file(path: &Path) -> Option<ReservedFile> {
 /// Falls back to the file stem when `path` is not under `bundle_root`.
 pub fn concept_id(bundle_root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(bundle_root).unwrap_or(path);
-    let s = rel.to_string_lossy().replace('\\', "/");
+    let s = crate::utils::path_to_slash(rel);
     let s = s.trim_start_matches('/');
     s.strip_suffix(".md").unwrap_or(s).to_string()
 }
