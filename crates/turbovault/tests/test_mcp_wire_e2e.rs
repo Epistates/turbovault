@@ -361,10 +361,12 @@ async fn wire_batch_execute_atomic_multi_file() {
 /// edit_note body changes should be reflected in the search index: the new
 /// term findable, the old term gone after the edit commit.
 ///
-/// IGNORED — executable repro for turbovault-2ag: edit (content modify)
-/// doesn't update the tantivy index on the git backend (delete→search does).
-/// The edit commits fine (content correct on disk). Remove `#[ignore]` once
-/// 2ag is fixed.
+/// This is also what keeps a write from costing a full index rebuild. The
+/// search index is updated in place by the manager's change-listener, and it
+/// used to be evicted again after every write as a precaution, which masked
+/// whether the listener alone was enough. Without that eviction the listener
+/// is the only thing keeping search current, so an edit that did not reach it
+/// would show up here as a stale hit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn wire_edit_note_updates_search_index() {
