@@ -135,7 +135,11 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
+# Unwind, not abort. The server answers every request in its own task and
+# converts a panic in a tool into an error for that one call. Under abort
+# there is nothing to catch, so one bad input ends the process, and with it
+# every other client's session.
+panic = "unwind"
 
 [profile.ci]
 inherits = "release"

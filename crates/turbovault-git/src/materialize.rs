@@ -17,7 +17,6 @@ use crate::repo::VaultRepo;
 use git2::Oid;
 use std::path::Path;
 use tracing::instrument;
-use uuid::Uuid;
 
 impl VaultRepo {
     /// Refuse a commit when any touched working-tree path does not currently
@@ -103,19 +102,7 @@ impl VaultRepo {
             match tree.get_path(Path::new(rel)) {
                 Ok(entry) => {
                     let blob = repo.find_blob(entry.id())?;
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    // Atomic per-file write: temp (unique suffix) + rename.
-                    let tmp = target.with_extension(format!("tmp.{}", Uuid::new_v4()));
-                    if let Err(e) = std::fs::write(&tmp, blob.content()) {
-                        let _ = std::fs::remove_file(&tmp);
-                        return Err(e.into());
-                    }
-                    if let Err(e) = std::fs::rename(&tmp, &target) {
-                        let _ = std::fs::remove_file(&tmp);
-                        return Err(e.into());
-                    }
+                    turbovault_core::write_atomic(&target, blob.content())?;
                 }
                 Err(e) if e.code() == git2::ErrorCode::NotFound => {
                     // Removed in this commit: delete the working-tree file if present.

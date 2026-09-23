@@ -79,22 +79,15 @@ impl PluginStore for FilePluginStore {
 
     async fn put(&self, vault: &str, key: &str, value: &[u8]) -> PluginResult<()> {
         let path = self.resolve(vault, key).await?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(io_error)?;
-        }
 
-        // Write-then-rename, matching how the vault itself writes: a reader
-        // concurrent with this call sees the old value or the new one, and an
-        // interrupted write leaves a stray temp file rather than a truncated
-        // index. The unique suffix keeps two writers of the same key from
-        // sharing a temp path.
-        let temp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
-        tokio::fs::write(&temp, value).await.map_err(io_error)?;
-        if let Err(error) = tokio::fs::rename(&temp, &path).await {
-            let _ = tokio::fs::remove_file(&temp).await;
-            return Err(io_error(error));
-        }
-        Ok(())
+        // The same atomic write the vault itself uses: a reader concurrent
+        // with this call sees the old value or the new one, never a truncated
+        // index.
+        let value = value.to_vec();
+        tokio::task::spawn_blocking(move || turbovault_core::write_atomic(&path, &value))
+            .await
+            .map_err(|error| PluginError::internal(format!("storage write task failed: {error}")))?
+            .map_err(io_error)
     }
 
     async fn delete(&self, vault: &str, key: &str) -> PluginResult<()> {

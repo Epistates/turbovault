@@ -339,10 +339,13 @@ impl EditEngine {
             return Ok((new_content, MatchType::FuzzyLevenshtein));
         }
 
+        // Quote a prefix by characters. A byte cut lands inside a character
+        // whenever byte 100 is not a boundary, which is ordinary in any text
+        // that is not ASCII, and panicked while reporting a plain miss.
+        let quoted: String = search.chars().take(100).collect();
         Err(Error::Other(format!(
-            "Could not find search text (tried {} strategies). Search: {:?}",
-            4,
-            &search[..search.len().min(100)]
+            "Could not find search text (tried {} strategies). Search: {quoted:?}",
+            4
         )))
     }
 
@@ -359,7 +362,8 @@ impl EditEngine {
     /// Compares lines after collapsing all whitespace runs to single spaces.
     fn fuzzy_find_whitespace(&self, content: &str, search: &str) -> Option<(usize, usize)> {
         let search_lines: Vec<&str> = search.lines().collect();
-        let content_lines: Vec<&str> = content.lines().collect();
+        let spans = line_spans(content);
+        let content_lines: Vec<&str> = spans.iter().map(|&(_, line)| line).collect();
 
         if search_lines.is_empty() {
             return None;
@@ -385,15 +389,7 @@ impl EditEngine {
             }
 
             if matches {
-                let start_pos: usize = content_lines[..start_idx].iter().map(|l| l.len() + 1).sum();
-
-                let match_len: usize = content_lines[start_idx..start_idx + search_lines.len()]
-                    .iter()
-                    .map(|l| l.len() + 1)
-                    .sum::<usize>()
-                    .saturating_sub(1);
-
-                return Some((start_pos, match_len));
+                return Some(match_span(&spans, start_idx, search_lines.len()));
             }
         }
 
@@ -404,7 +400,8 @@ impl EditEngine {
     fn fuzzy_find_indentation(&self, content: &str, search: &str) -> Option<(usize, usize)> {
         // Split into lines
         let search_lines: Vec<&str> = search.lines().collect();
-        let content_lines: Vec<&str> = content.lines().collect();
+        let spans = line_spans(content);
+        let content_lines: Vec<&str> = spans.iter().map(|&(_, line)| line).collect();
 
         if search_lines.is_empty() {
             return None;
@@ -426,19 +423,7 @@ impl EditEngine {
             }
 
             if matches {
-                // Calculate byte positions
-                let start_pos = content_lines[..start_idx]
-                    .iter()
-                    .map(|l| l.len() + 1) // +1 for newline
-                    .sum();
-
-                let match_len = content_lines[start_idx..start_idx + search_lines.len()]
-                    .iter()
-                    .map(|l| l.len() + 1)
-                    .sum::<usize>()
-                    .saturating_sub(1); // Last line doesn't have trailing newline in match
-
-                return Some((start_pos, match_len));
+                return Some(match_span(&spans, start_idx, search_lines.len()));
             }
         }
 
@@ -597,6 +582,37 @@ pub fn compute_hash(content: &str) -> String {
 }
 
 /// Normalize whitespace for comparison
+/// Each line of `content` without its terminator, with the byte offset the
+/// line starts at.
+///
+/// The offsets are measured rather than rebuilt from line lengths. Rebuilding
+/// them assumed every line ends in one byte, and a CRLF line ends in two, so
+/// every CRLF line above a match moved the splice point one byte early.
+fn line_spans(content: &str) -> Vec<(usize, &str)> {
+    let mut start = 0;
+    content
+        .split_inclusive('\n')
+        .map(|raw| {
+            let line = match raw.strip_suffix('\n') {
+                Some(line) => line.strip_suffix('\r').unwrap_or(line),
+                None => raw,
+            };
+            let span = (start, line);
+            start += raw.len();
+            span
+        })
+        .collect()
+}
+
+/// The `(start, len)` byte range covering `count` lines from `first`, from the
+/// start of the first line to the end of the last line's text. The last line's
+/// terminator is left out, so it survives the replacement.
+fn match_span(spans: &[(usize, &str)], first: usize, count: usize) -> (usize, usize) {
+    let start = spans[first].0;
+    let (last_start, last_line) = spans[first + count - 1];
+    (start, last_start + last_line.len() - start)
+}
+
 fn normalize_whitespace(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -1066,5 +1082,57 @@ second new
             "Non-matching SEARCH on 200KB content should return within 100ms, took {:?}",
             elapsed
         );
+    }
+
+    /// The line-based strategies rebuilt byte offsets as one byte per line
+    /// ending, and a CRLF line ends in two. Every CRLF line above the match
+    /// moved the splice one byte early, so the edit left a fragment of the old
+    /// text behind instead of replacing it.
+    #[test]
+    fn a_whitespace_insensitive_match_in_crlf_content_replaces_exactly_the_match() {
+        let engine = EditEngine::new();
+        let content = "one\r\ntwo\r\nhello    world\r\nfoo   bar\r\nafter\r\n";
+        let (result, match_type) = engine
+            .find_and_replace(content, "hello world\nfoo bar", "REPLACED")
+            .unwrap();
+        assert_eq!(match_type, MatchType::WhitespaceInsensitive);
+        assert_eq!(result, "one\r\ntwo\r\nREPLACED\r\nafter\r\n");
+    }
+
+    #[test]
+    fn an_indentation_match_in_crlf_content_replaces_exactly_the_match() {
+        let engine = EditEngine::new();
+        let content = "one\r\ntwo\r\n  indented line\r\n    more indented\r\nafter\r\n";
+        let (result, _) = engine
+            .find_and_replace(content, "indented line\nmore indented", "REPLACED")
+            .unwrap();
+        assert_eq!(result, "one\r\ntwo\r\nREPLACED\r\nafter\r\n");
+    }
+
+    /// With enough CRLF lines above it the early splice point lands inside a
+    /// multi-byte character, which panicked instead of editing.
+    #[test]
+    fn a_crlf_match_after_multibyte_text_does_not_panic() {
+        let engine = EditEngine::new();
+        let content = "é\r\né\r\nhello    world\r\n";
+        let (result, _) = engine
+            .find_and_replace(content, "hello world", "REPLACED")
+            .unwrap();
+        assert_eq!(result, "é\r\né\r\nREPLACED\r\n");
+    }
+
+    /// The error for a failed match quoted the first hundred bytes of the
+    /// search text, and cut a character in half when byte 100 fell inside
+    /// one, so an ordinary miss in non-English text panicked.
+    #[test]
+    fn a_failed_match_on_multibyte_search_text_is_an_error_not_a_panic() {
+        let engine = EditEngine::new();
+        let search = format!(
+            "{}é and more text that is nowhere in the note",
+            "a".repeat(99)
+        );
+        assert!(search.len() > 100 && !search.is_char_boundary(100));
+        let result = engine.find_and_replace("unrelated content", &search, "x");
+        assert!(result.is_err());
     }
 }

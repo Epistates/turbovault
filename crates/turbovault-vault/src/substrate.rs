@@ -19,10 +19,11 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 use turbovault_audit::{AuditEntry, AuditLog, OperationType, SnapshotStore};
-use turbovault_core::{Change, ChangePlan, Error, Precondition, Result, bytes_to_lower_hex};
+use turbovault_core::{
+    Change, ChangePlan, Error, Precondition, Result, bytes_to_lower_hex, write_atomic,
+};
 use turbovault_git::{CommitHook, CommitLocks, VaultRepo};
 
 use crate::edit::compute_hash;
@@ -124,6 +125,19 @@ fn changes_to_outcome(changes: &[Change]) -> Vec<(String, bool)> {
     out
 }
 
+/// A file's bytes, or `None` when it does not exist.
+///
+/// Any other failure is an error, not an absence. Reading "could not read" as
+/// "was not there" recorded an overwrite as a create and dropped the
+/// pre-image a rollback needs.
+async fn read_if_present(path: &std::path::Path) -> Result<Option<Vec<u8>>> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::io(e)),
+    }
+}
+
 /// sha256 hex of `bytes` — NFC-normalized (via [`compute_hash`]) when the
 /// bytes are valid UTF-8 text (matching every text CAS token in the
 /// codebase), raw sha256 otherwise (matching `move_file`'s pre-M3a fallback
@@ -191,14 +205,9 @@ impl DirectSubstrate {
         // nothing written (mirrors the git substrate's reconsideration
         // domino, design §6.1/§6.2).
         for (path, precondition) in &plan.preconditions {
-            let before = match tokio::fs::read(self.full_path(path)).await {
-                Ok(bytes) => Some(bytes),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                // Anything other than "absent" (e.g. EACCES) is a real I/O
-                // failure, not a precondition mismatch — propagate it as
-                // such instead of masking it as "file does not exist".
-                Err(e) => return Err(Error::io(e)),
-            };
+            // Anything other than "absent" (e.g. EACCES) is a real I/O
+            // failure, not a precondition mismatch.
+            let before = read_if_present(&self.full_path(path)).await?;
             Self::check_precondition(path, precondition, before.as_deref())?;
         }
 
@@ -299,17 +308,14 @@ impl DirectSubstrate {
         metadata: Option<&serde_json::Value>,
     ) -> Result<()> {
         let full = self.full_path(path);
-        let before = tokio::fs::read(&full).await.ok();
+        let before = read_if_present(&full).await?;
 
-        if let Some(parent) = full.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(Error::io)?;
-        }
-        let temp = full.with_extension(format!("tmp.{}", Uuid::new_v4()));
-        tokio::fs::write(&temp, content).await.map_err(Error::io)?;
-        if let Err(e) = tokio::fs::rename(&temp, &full).await {
-            let _ = tokio::fs::remove_file(&temp).await;
-            return Err(Error::io(e));
-        }
+        let bytes = content.to_vec();
+        let target = full.clone();
+        tokio::task::spawn_blocking(move || write_atomic(&target, &bytes))
+            .await
+            .map_err(|e| Error::other(format!("write task failed: {e}")))?
+            .map_err(Error::io)?;
 
         let operation = if before.is_some() {
             OperationType::Update
@@ -331,7 +337,7 @@ impl DirectSubstrate {
     /// The pre-M3a `VaultManager::delete_file` body.
     async fn remove(&self, path: &str, metadata: Option<&serde_json::Value>) -> Result<()> {
         let full = self.full_path(path);
-        let before = tokio::fs::read(&full).await.ok();
+        let before = read_if_present(&full).await?;
         tokio::fs::remove_file(&full).await.map_err(Error::io)?;
         self.record_audit(
             path,

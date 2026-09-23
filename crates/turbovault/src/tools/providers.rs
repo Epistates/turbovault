@@ -278,7 +278,6 @@ fn plugin_prompt_error(name: &str, error: PluginError) -> McpError {
 }
 
 /// Best-effort human-readable text from a caught panic payload.
-#[cfg(feature = "plugin-api")]
 fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -946,7 +945,18 @@ impl McpHandler for ObsidianMcpServer {
             if self.plugin_owning_name(name).is_some() {
                 self.core.ensure_active_vault_fresh().await;
             }
-            self.composite.call_tool(routed, args, ctx).await
+            // A panic is a bug in the tool, and the caller should hear about
+            // it as a failed call. Left alone it ends the task answering the
+            // request, and the client waits on a response that never comes.
+            use futures::FutureExt;
+            let call = std::panic::AssertUnwindSafe(self.composite.call_tool(routed, args, ctx));
+            call.catch_unwind().await.unwrap_or_else(|panic| {
+                let detail = panic_message(&panic);
+                log::error!("tool {name:?} panicked: {detail}");
+                Err(McpError::internal(format!(
+                    "tool {name:?} failed with an internal error: {detail}"
+                )))
+            })
         }
     }
 
