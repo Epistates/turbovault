@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Reporting and export utilities for TurboVault Server"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 documentation = "https://docs.rs/turbovault-export"
 
 [dependencies]

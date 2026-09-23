@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Coordinated multi-file batch operations for Obsidian vaults"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 documentation = "https://docs.rs/turbovault-batch"
 
 [dependencies]
