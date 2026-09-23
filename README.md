@@ -99,7 +99,7 @@ cargo install turbovault --features sql
 ```bash
 git clone https://github.com/epistates/turbovault.git
 cd turbovault
-make release
+just release
 # Binary: ./target/release/turbovault
 ```
 
@@ -549,13 +549,13 @@ cargo build --release
 cargo test --all
 ```
 
-Or use the Makefile:
+Or use `just` (see the `justfile`):
 
 ```bash
-make build       # Debug build
-make release     # Production build
-make test        # Run tests
-make clean       # Clean build artifacts
+just build       # Debug build
+just release     # Production build
+just test        # Run tests (fmt check, lint, full suite)
+just clean       # Clean build artifacts
 ```
 
 ## Documentation
