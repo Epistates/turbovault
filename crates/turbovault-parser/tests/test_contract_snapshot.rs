@@ -212,6 +212,8 @@ fn the_fixture_still_covers_every_construct_that_has_broken() {
         ),
         ("a fence in a quoted item", "fence_inside_a_quoted_item"),
         ("a nested blockquote", "> > nested quote"),
+        ("a nested task list", "  - [x] nested task"),
+        ("a nested ordered list", "   1. nested ordered"),
         ("a top-level fence", "fn top_level()"),
         ("an indented code block", "    an indented code block"),
         ("a fence in a list item", "in_a_list_item()"),

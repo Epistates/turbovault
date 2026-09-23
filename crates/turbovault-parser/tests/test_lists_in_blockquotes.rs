@@ -12,7 +12,7 @@
 //! the code block vanished, while a different paragraph elsewhere in the quote
 //! came back reported as source code.
 
-use turbovault_parser::{ContentBlock, parse_blocks};
+use turbovault_parser::{ContentBlock, InlineElement, parse_blocks};
 
 /// Every code block reachable from a set of blocks, including inside quotes
 /// and list items.
@@ -192,6 +192,11 @@ fn an_ordered_list_in_a_quote_keeps_its_numbering() {
 /// A nested list has to indent to its parent's content column, which is three
 /// characters under `1. ` and two under `- `. A fixed indent would leave the
 /// nested items as siblings under the wider marker.
+///
+/// <https://github.com/Epistates/turbovault/issues/79> tracked this the other
+/// way too: the parser used to recognise the nesting but have nowhere to put
+/// it, so it flattened the nested item's marker and text into the outer
+/// item's own `content` instead of giving it a nested list block.
 #[test]
 fn a_nested_list_in_a_quote_stays_nested() {
     for markdown in [
@@ -200,9 +205,20 @@ fn a_nested_list_in_a_quote_stays_nested() {
     ] {
         let (_, items) = quoted_list(markdown);
         assert_eq!(items.len(), 2, "nesting flattened for {markdown:?}");
-        assert!(
-            items[0].0.contains("deep"),
-            "nested item lost for {markdown:?}: {items:?}"
+        assert_eq!(
+            items[0].0, "one",
+            "the nested item leaked into the outer item's own text for {markdown:?}"
+        );
+
+        let (content, blocks) = first_quoted_item(markdown);
+        assert_eq!(content, "one");
+        let [ContentBlock::List { items: nested, .. }] = &blocks[..] else {
+            panic!("expected a nested list block for {markdown:?}, got {blocks:?}");
+        };
+        assert_eq!(nested.len(), 1);
+        assert_eq!(
+            nested[0].content, "deep",
+            "nested item lost for {markdown:?}: {nested:?}"
         );
     }
 }
@@ -301,12 +317,12 @@ fn a_quoted_ordered_item_keeps_its_continuation_paragraph_separate() {
 /// continuation there is the case that catches an indent computed from depth
 /// rather than from the buffer it is actually being written into.
 ///
-/// Asserted against the same input parsed outside a quote rather than against a
-/// literal, because the shape it produces is not the one you would design: the
-/// parser flattens a nested list into its parent item's text instead of nesting
-/// it, and hands the inner item's continuation to the outer item. That is
-/// [#79], which predates this and is not what this test is pinning. What it
-/// pins is that a quote does not make it any worse.
+/// Asserted against the same input parsed outside a quote rather than against
+/// a literal, so a future change to either path cannot drift the other one
+/// without this test noticing. [#79] was exactly that kind of drift: the
+/// continuation belongs to `inner`, the innermost item enclosing it, but the
+/// parser had only one blocks buffer shared by every depth, so it landed on
+/// `outer` instead, in and out of a quote alike.
 ///
 /// [#79]: https://github.com/Epistates/turbovault/issues/79
 #[test]
@@ -321,10 +337,24 @@ fn a_nested_quoted_item_keeps_its_continuation_paragraph_separate() {
     let ContentBlock::List { items, .. } = &nested[0] else {
         panic!("expected a list inside the quote, got {nested:?}");
     };
-    assert!(
-        !items[0].content.contains("innertext"),
-        "the continuation ran onto the nested item's text: {:?}",
-        items[0].content
+    assert_eq!(items[0].content, "outer");
+    let ContentBlock::List { items: inner, .. } = &items[0].blocks[0] else {
+        panic!(
+            "expected a nested list inside the outer item, got {:?}",
+            items[0].blocks
+        );
+    };
+    assert_eq!(inner[0].content, "inner");
+    assert_eq!(
+        inner[0].blocks,
+        vec![ContentBlock::Paragraph {
+            content: "text".to_string(),
+            inline: vec![InlineElement::Text {
+                value: "text".to_string()
+            }],
+        }],
+        "expected the continuation as the nested item's own block, got {:?}",
+        inner[0].blocks
     );
 }
 
