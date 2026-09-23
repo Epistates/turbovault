@@ -1,0 +1,54 @@
+[package]
+name = "turbovault-vector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+# Not published yet: a new, still-settling engine with no external consumers,
+# mounted only through crates/plugins/turbovault-plugin-vector behind the
+# default-off `vector-search` feature on the turbovault binary.
+publish = false
+description = "Optional hybrid (dense + lexical) semantic search engine for TurboVault, pure-Rust and CPU-only"
+readme = "README.md"
+
+[features]
+default = []
+# Exposes `testing::DeterministicEmbedder`, a hash-based `EmbeddingEngine`
+# with no model loading and no network access, for this crate's own tests and
+# for downstream crates (the plugin boundary tests need one that never
+# touches the network). Not part of the public API surface otherwise.
+test-util = []
+
+[dependencies]
+# Only turbovault-parser is used, for to_plain_text. This crate owns its own
+# config and has no dependency on turbovault-core, -vault, or -plugin-api, so
+# it stays usable outside the plugin boundary if a second host ever wants it.
+turbovault-parser = { workspace = true }
+
+# Tier 1 embedding backend: static (no transformer forward pass) embeddings,
+# pure Rust, CPU-only. See the crate README for why this is the default and
+# only backend implemented so far.
+model2vec-rs = { workspace = true }
+# Pure-Rust HNSW approximate nearest neighbour index for the dense side.
+hnsw_rs = { workspace = true }
+# Pure-Rust BM25 scorer for the lexical side.
+bm25 = { workspace = true }
+
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

@@ -44,6 +44,12 @@ sql = ["turbovault-tools/sql"]
 # crates/plugins/ must include this feature and remain default-off.
 plugin-api = ["dep:async-trait", "dep:futures", "dep:turbomcp-protocol", "dep:turbovault-plugin-api"]
 
+# Hybrid dense+lexical semantic search (see crates/turbovault-vector and
+# crates/plugins/turbovault-plugin-vector), mounted as the `vector_search`
+# compiled-in plugin. Default-off: it pulls model2vec-rs, hnsw_rs, and bm25,
+# none of which a build that doesn't ask for this needs.
+vector-search = ["plugin-api", "dep:turbovault-plugin-vector"]
+
 # Convenience bundles
 http-full = ["http", "websocket"]            # HTTP + WebSocket
 # Note: unix is excluded from all-transports on Windows (not supported)
@@ -61,6 +67,7 @@ turbovault-vault = { workspace = true }
 turbovault-audit = { workspace = true }
 turbovault-tools = { workspace = true }
 turbovault-plugin-api = { workspace = true, optional = true }
+turbovault-plugin-vector = { workspace = true, optional = true }
 
 # MCP server framework (features passed through from turbovault)
 turbomcp = { workspace = true, features = ["stdio", "telemetry"] }
@@ -107,6 +114,13 @@ turbomcp-client = { workspace = true }
 turbomcp-transport = { workspace = true }
 # Also a plugin-api-gated runtime dependency; tests need it unconditionally.
 turbomcp-protocol = { workspace = true }
+# vector-search-gated at runtime, but the e2e plugin-boundary test needs it
+# unconditionally, built with the fake, network-free embedder its test-util
+# feature exposes (never the real model2vec-rs loader).
+turbovault-plugin-vector = { workspace = true, features = ["test-util"] }
+# The e2e test builds that fake embedder directly (EmbeddingEngine,
+# testing::DeterministicEmbedder); test-util is what compiles it in.
+turbovault-vector = { workspace = true, features = ["test-util"] }
 
 [[bench]]
 name = "tool_benchmarks"
