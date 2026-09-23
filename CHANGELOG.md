@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A diff is reported as line multisets rather than positionally, so an inserted block is one entry instead of cascading through everything below it. Re-bless with `UPDATE_PARSER_SNAPSHOT=1`, matching the existing `UPDATE_TOOL_CATALOG` fixture. Alongside it, every reported code position is checked against the fixture itself: a line a block claims has to actually open or close a fence, which is an assertion about correctness rather than about not having changed.
 
+### Changed
+
+- **Dependencies brought current.** TurboMCP 3.4.0, GlueSQL 0.20, and the lockfile refreshed across the board. GlueSQL 0.20 drops rkyv 0.7, which was the one advisory `cargo audit` had to ignore (RUSTSEC-2026-0235), so the ignore list is empty again.
+
+- **The SQL tables are filled with bound parameters.** Note paths, tags, link targets and frontmatter reached GlueSQL spliced into `INSERT` text with quotes doubled by hand. GlueSQL 0.20 binds `$1`-style parameters, so every value from the vault now goes in as a value and none of it is ever parsed as SQL.
+
 ### Fixed
 
 - **A block inside a blockquote reports the line it was written on.** 2.1.0 numbered a quote's blocks by re-parsing its reconstructed text from the quote's own line, which is only right when the reconstruction is the same height as the source. It was not: a paragraph followed by a list with no blank line between them, which is the ordinary callout shape, gained a separator the source never had and pushed everything below it one line down. The buffer now pads to each block's real source line instead of inserting a fixed separator, so the reconstruction matches the source line for line.
