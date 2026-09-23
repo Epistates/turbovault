@@ -83,10 +83,7 @@ impl GroundingTools {
     }
 
     fn rel(&self, path: &std::path::Path) -> String {
-        path.strip_prefix(self.manager.vault_path())
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/")
+        self.manager.relative_path(path)
     }
 
     /// Analyze a single note's grounding.

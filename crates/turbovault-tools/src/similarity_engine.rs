@@ -48,7 +48,6 @@ impl SimilarityEngine {
     /// Build TF-IDF vectors for all vault documents
     pub async fn new(manager: Arc<VaultManager>) -> Result<Self> {
         let files = manager.scan_vault().await?;
-        let vault_path = manager.vault_path().clone();
         let doc_count = files.len().max(1);
 
         // Pass 1: compute document frequencies
@@ -70,7 +69,7 @@ impl SimilarityEngine {
                     *doc_freq.entry(term.clone()).or_insert(0) += 1;
                 }
 
-                let rel_path = file_path.strip_prefix(&vault_path).unwrap_or(file_path);
+                let rel_path = PathBuf::from(manager.relative_path(file_path));
                 let title = vault_file
                     .headings
                     .first()
@@ -91,7 +90,7 @@ impl SimilarityEngine {
                     .take(200)
                     .collect();
 
-                parsed_docs.push((rel_path.to_path_buf(), title, preview, term_counts));
+                parsed_docs.push((rel_path, title, preview, term_counts));
             }
         }
 

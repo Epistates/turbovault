@@ -447,7 +447,7 @@ impl TemplateEngine {
                     .unwrap_or(false);
 
                 if matches {
-                    results.push(file.to_string_lossy().to_string());
+                    results.push(turbovault_core::path_to_slash(&file));
                 }
             }
         }

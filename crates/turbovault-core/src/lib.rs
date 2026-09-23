@@ -101,7 +101,8 @@ pub use okf::{Citation, ConceptConformance, ReservedFile, check_concept, concept
 pub use precondition::Precondition;
 pub use profiles::ConfigProfile;
 pub use utils::{
-    CSVBuilder, PathValidator, TransactionBuilder, bytes_to_lower_hex, to_json_string,
+    CSVBuilder, PathValidator, TransactionBuilder, bytes_to_lower_hex, path_to_slash,
+    to_json_string,
 };
 pub use validation::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Severity,

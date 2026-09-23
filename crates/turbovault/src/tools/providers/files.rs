@@ -399,14 +399,8 @@ async fn inbound_backlinks(manager: &VaultManager, path: &str) -> McpResult<Vec<
         .get_backlinks(std::path::Path::new(path))
         .await
         .map_err(to_mcp_error)?;
-    let vault_root = manager.vault_path();
     Ok(full
         .into_iter()
-        .filter_map(|p| {
-            p.strip_prefix(vault_root)
-                .unwrap_or(&p)
-                .to_str()
-                .map(str::to_string)
-        })
+        .map(|p| manager.relative_path(&p))
         .collect())
 }

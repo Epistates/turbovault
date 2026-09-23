@@ -332,7 +332,17 @@ impl DirectSubstrate {
     async fn remove(&self, path: &str, metadata: Option<&serde_json::Value>) -> Result<()> {
         let full = self.full_path(path);
         let before = tokio::fs::read(&full).await.ok();
-        tokio::fs::remove_file(&full).await.map_err(Error::io)?;
+        // A caller that registered an `ExpectExists`/`ExpectBlob` precondition
+        // for `path` (VaultManager's delete_file does) already had the gate
+        // above confirm it exists, so a NotFound here is a race with
+        // something else removing it between that check and this call. A
+        // caller applying a raw plan with no precondition can land here with
+        // a path that was never confirmed to exist at all. Either way,
+        // translate it the same way a direct missing-file read would
+        // (Error::file_not_found), not the OS's raw NotFound text.
+        tokio::fs::remove_file(&full)
+            .await
+            .map_err(|e| Error::io_at(path, e))?;
         self.record_audit(
             path,
             OperationType::Delete,
@@ -355,7 +365,13 @@ impl DirectSubstrate {
     ) -> Result<()> {
         let from_full = self.full_path(from);
         let to_full = self.full_path(to);
-        let bytes = tokio::fs::read(&from_full).await.map_err(Error::io)?;
+        // Same NotFound translation as `remove`, and the same caveat: only a
+        // plan that registered a precondition for `from` (ChangePlan::rename
+        // does) had the gate above confirm it exists first, so this can be
+        // either that race or a `from` that was never confirmed at all.
+        let bytes = tokio::fs::read(&from_full)
+            .await
+            .map_err(|e| Error::io_at(from, e))?;
 
         if let Some(parent) = to_full.parent() {
             tokio::fs::create_dir_all(parent).await.map_err(Error::io)?;

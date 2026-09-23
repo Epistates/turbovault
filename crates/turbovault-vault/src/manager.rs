@@ -12,7 +12,9 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
-use turbovault_core::{Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend};
+use turbovault_core::{
+    Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend, path_to_slash,
+};
 use turbovault_git::{CommitHook, CommitLocks, Oid, VaultRepo};
 use turbovault_graph::LinkGraph;
 use turbovault_parser::Parser;
@@ -992,10 +994,7 @@ impl VaultManager {
     /// render consistently across platforms). Falls back to the lossy full path
     /// when `path` is not under the vault root.
     pub fn relative_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.vault_path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/")
+        path_to_slash(path.strip_prefix(&self.vault_path).unwrap_or(path))
     }
 
     /// Set the audit log and snapshot store for operation tracking.
@@ -1120,7 +1119,7 @@ impl VaultManager {
         // which would silently lose frontmatter for callers.
         let content = tokio::fs::read_to_string(&vault_path)
             .await
-            .map_err(Error::io)?;
+            .map_err(|e| Error::io_at(self.relative_path(&vault_path), e))?;
 
         Ok(content)
     }
@@ -1705,7 +1704,7 @@ impl VaultManager {
         let full_path = self.resolve_path(path)?;
         let content = tokio::fs::read_to_string(&full_path)
             .await
-            .map_err(Error::io)?;
+            .map_err(|e| Error::io_at(self.relative_path(&full_path), e))?;
         self.parser
             .parse_file(&full_path, &content)
             .map_err(|e| Error::parse_error(e.to_string()))
@@ -1957,9 +1956,9 @@ mod tests {
             "failed_at must name the change that stopped the loop"
         );
         assert!(
-            matches!(outcome.error, Some(Error::Io(_))),
+            matches!(outcome.error, Some(Error::FileNotFound { .. })),
             "the loop failure's typed error kind must survive to the manager \
-             boundary, got {:?}",
+             boundary as FileNotFound, not the OS's raw ENOENT text, got {:?}",
             outcome.error
         );
         assert_eq!(
