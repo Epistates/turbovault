@@ -118,6 +118,25 @@ impl IndexEngine {
         self.embedder.dimensions()
     }
 
+    /// The resolved configuration this engine was built with.
+    pub fn config(&self) -> &VectorConfig {
+        &self.config
+    }
+
+    /// The chunk-id allocator's next value, for a caller persisting just the
+    /// counter rather than a full [`Self::snapshot`].
+    pub fn next_chunk_id(&self) -> u64 {
+        self.next_chunk_id.load(Ordering::SeqCst)
+    }
+
+    /// Drop every indexed note and reset the chunk-id allocator, so the next
+    /// [`Self::update_note`] for any path re-embeds from scratch. For a
+    /// caller-forced full reindex (a changed model, or recovering from a
+    /// snapshot it no longer trusts) rather than the normal incremental path.
+    pub async fn clear(&self) -> Result<()> {
+        self.restore(Vec::new(), 1).await
+    }
+
     /// Rebuild engine state from a persisted snapshot. Calls the embedder for
     /// nothing: every vector comes from `notes`, which is the whole point of
     /// persisting them.

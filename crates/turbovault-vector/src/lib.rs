@@ -28,4 +28,4 @@ pub use engine::{IndexEngine, IndexStats, SearchHit};
 pub use error::{Result, VectorError};
 pub use lexical::LexicalIndex;
 pub use router::{FusedResult, reciprocal_rank_fusion};
-pub use store::{ChunkRecord, NoteRecord};
+pub use store::{ChunkRecord, IndexMeta, NoteRecord};

@@ -14,9 +14,20 @@ publish = false
 description = "Semantic vector search vertical for TurboVault, as a compiled-in plugin module"
 readme = "README.md"
 
+[features]
+default = []
+# Re-exposes turbovault-vector's deterministic, network-free fake embedder
+# (see turbovault_vector::embedding::testing) for downstream tests, notably
+# crates/turbovault's plugin-boundary e2e test. Not part of the public API
+# otherwise, and never enabled for the production binary.
+test-util = ["turbovault-vector/test-util"]
+
 [dependencies]
 turbovault-plugin-api = { workspace = true }
 turbovault-vector = { workspace = true }
+# turbovault-plugin-api re-exports Tool/ToolResult/etc from turbomcp-types but
+# not ToolInputSchema, which a plugin needs to attach a JSON Schema to a tool.
+turbomcp-types = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
