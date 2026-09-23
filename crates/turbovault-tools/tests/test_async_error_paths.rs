@@ -83,7 +83,13 @@ async fn test_file_tools_delete_locked_file() {
         .unwrap();
 
     // Attempt to delete while locked (behavior varies by OS)
-    let _result = tools.delete_file("locked.md").await;
+    let _result = tools
+        .delete_file(
+            "locked.md",
+            turbovault_core::Precondition::for_in_place(None),
+            "delete locked.md",
+        )
+        .await;
     // On Windows, this has been observed to succeed; on Unix, it might succeed
     #[cfg(windows)]
     assert!(_result.is_ok());

@@ -1,0 +1,14 @@
+batch_execute — ATOMICITY + intra-batch semantics,,
+PER-OP behavior = EXACTLY the standalone op (same precondition x state -> harness::Outcome; see gws-precondition-matrix.csv). This file specs only what batch ADDS on top: all-or-nothing atomicity + intra-batch interactions. The whole batch is ONE commit (1 transaction = 1 commit) — never a partial or interleaved apply.,,
+Each op's precondition is checked the same way as standalone (against the working tree). "applied" = materialized to the working tree.,,
+,,
+scenario,batch result,disk after
+empty batch (0 ops),loud failure (validation error; not a precondition Outcome),nothing
+all ops individually Ok (distinct paths),Ok,all N ops applied in ONE commit
+any op K refuses (its standalone outcome is ConcurrencyError / NoFile / OpError),= op K's Outcome,"NOTHING applied — 0 of N. Ops 1..K-1 that would individually have succeeded are rolled back too (atomicity)."
+two+ ops in the batch target the SAME path,ConcurrencyError,nothing (intra-batch same-path collision refused loudly; bead 0g4.5)
+ops on DISTINCT paths,each op = its standalone Outcome; batch = Ok iff ALL are Ok else the first refusal,all-or-nothing (see above)
+,,
+INVARIANTS / NOTES,,
+1 = the batch RESULT must reflect an abort (surface the refusing op's Outcome). NOT the current defect where batch_execute returns Ok on an aborted batch (7q7-adjacent; captured pending in the batch_execute adapter).,,
+2 = same-path collision is refused BEFORE execution, so cross-op dependencies within one batch (e.g. create X then edit X) never arise — every path in a batch is touched by exactly one op, so each op reads the pre-batch working tree and behaves exactly like its standalone self.,,

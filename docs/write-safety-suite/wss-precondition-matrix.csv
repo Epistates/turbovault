@@ -1,0 +1,99 @@
+backend,operation,precondition,-----,etc--,etcs-,etc-u,etcsu,et-s-,et--u,et-su,e---u
+git,write_note,Blind,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+git,write_note,Absent,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,write_note,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
+git,write_note,Index,N/A,N/A,Ok,N/A,ConcurrencyError,Ok,N/A,ConcurrencyError,N/A
+git,write_note,Workdir,N/A,SKIP:Head,SKIP:Index,Ok,Ok,SKIP:Index,Ok,Ok,Ok
+git,write_note,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,edit_note,Exists,NoFile,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,edit_note,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
+git,edit_note,Index,N/A,N/A,Ok,N/A,ConcurrencyError,Ok,N/A,ConcurrencyError,N/A
+git,edit_note,Workdir,N/A,SKIP:Head,SKIP:Index,Ok,Ok,SKIP:Index,Ok,Ok,Ok
+git,edit_note,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,delete_note,Exists,Ok,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,delete_note,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
+git,delete_note,Index,N/A,N/A,Ok,N/A,ConcurrencyError,Ok,N/A,ConcurrencyError,N/A
+git,delete_note,Workdir,N/A,SKIP:Head,SKIP:Index,Ok,Ok,SKIP:Index,Ok,Ok,Ok
+git,delete_note,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,update_frontmatter,Exists,NoFile,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,update_frontmatter,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
+git,update_frontmatter,Index,N/A,N/A,Ok,N/A,ConcurrencyError,Ok,N/A,ConcurrencyError,N/A
+git,update_frontmatter,Workdir,N/A,SKIP:Head,SKIP:Index,Ok,Ok,SKIP:Index,Ok,Ok,Ok
+git,update_frontmatter,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,manage_tags,Exists,NoFile,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,manage_tags,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
+git,manage_tags,Index,N/A,N/A,Ok,N/A,ConcurrencyError,Ok,N/A,ConcurrencyError,N/A
+git,manage_tags,Workdir,N/A,SKIP:Head,SKIP:Index,Ok,Ok,SKIP:Index,Ok,Ok,Ok
+git,manage_tags,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,create_from_template,Blind,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+git,create_from_template,Absent,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,move_note | src,Exists,NoFile,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,move_note | src,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
+git,move_note | src,Index,N/A,N/A,Ok,N/A,ConcurrencyError,Ok,N/A,ConcurrencyError,N/A
+git,move_note | src,Workdir,N/A,SKIP:Head,SKIP:Index,Ok,Ok,SKIP:Index,Ok,Ok,Ok
+git,move_note | src,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,move_note | dest,Blind,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+git,move_note | dest,Absent,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,move_note | dest,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
+git,move_note | dest,Index,N/A,N/A,Ok,N/A,ConcurrencyError,Ok,N/A,ConcurrencyError,N/A
+git,move_note | dest,Workdir,N/A,SKIP:Head,SKIP:Index,Ok,Ok,SKIP:Index,Ok,Ok,Ok
+git,move_note | dest,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,write_note,Blind,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,write_note,Absent,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,write_note,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,write_note,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,edit_note,Exists,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,edit_note,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,edit_note,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,delete_note,Exists,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,delete_note,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,delete_note,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,update_frontmatter,Exists,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,update_frontmatter,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,update_frontmatter,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,manage_tags,Exists,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,manage_tags,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,manage_tags,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,create_from_template,Blind,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,create_from_template,Absent,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,move_note | src,Exists,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,move_note | src,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,move_note | src,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,move_note | dest,Blind,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,move_note | dest,Absent,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,move_note | dest,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,move_note | dest,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+,,,,,,,,,,,
+,,,,,,,,,,,
+direct write substrate (write_backend=direct),,,,,,,,,,,
+direct is GIT-BLIND: plain fs::write + an optional SHA-256 CAS (VaultManager::write_file). It never inspects git — staged/unstaged/committed are INVISIBLE. So every EXISTS git-state behaves identically (direct sees only the working-tree file + its bytes). Columns kept as the 9 git-states for side-by-side comparison with the git matrix.,,,,,,,,,,,
+Version token = SHA-256 of the file bytes (NOT a git blob oid). read_note on direct returns SHA-256. So HEAD/INDEX preconditions have NO direct equivalent -> entirely N/A (rows omitted). The only blob precondition is Workdir = SHA-256(current file).,,,,,,,,,,,
+direct has NO dirty gate (it cannot see git dirtiness). Its only refusals are a SHA mismatch and the tool-layer 947 refuse (overwrite an existing file with no proof/force). So Blind clobbers; Workdir-proof passes; a stale/wrong SHA refuses.,,,,,,,,,,,
+"KEY CONTRASTS vs git (the upstream evidence): (1) direct Workdir is all-Ok — it does content-CAS against the CURRENT bytes, so it has NONE of git's precondition-vs-HEAD spurious refusals or dirty-clobber. (2) direct edit/delete on a dirty tree just proceed (Ok) — git-blindness, no dirty gate. (3) direct's real defect is a TOCTOU race (read -> SHA-check -> write is not atomic), not clobber-via-stale-token.",,,,,,,,,,,
+"note: this matrix specifies behavior for direct on different git states, however on direct all git states really just collapse down to 'exists, unstaged'. An argument could be made for using SKIP instead, but I've decided to explicitly state the expectation in the matrix, and rely upon the current WSS harness behavior of skipping testing these cells. feels needlessly redundant. i felt explicit was better than implicit if we later decide to create tests.",,,,,,,,,,,
+,,,,,,,,,,,
+OUTCOME CODES (harness::Outcome),,,,,,,,,,,
+Ok,write/edit/delete succeeds and materializes,,,,,,,,,,
+ConcurrencyError,refused with no disk change (the unified DIRTY_ERR + CAS_FAIL),,,,,,,,,,
+NoFile,in-place op on an absent target (FileNotFound),,,,,,,,,,
+OpError,op-specific refusal (e.g. edit SEARCH-not-found) with no disk change,,,,,,,,,,
+N/A,token undefined for this state; cell not constructible,,,,,,,,,,
+SKIP:X,duplicate of precondition X for this state (token resolves equal),,,,,,,,,,
+,,,,,,,,,,,
+PRECONDITION KINDS (harness::PreconditionKind),,,,,,,,,,,
+Blind,no precondition (was force=true / UNSET); last-writer-wins,,,,,,,,,,
+Absent,ExpectAbsent — create-only (was force=false / UNSET on a replace op),,,,,,,,,,
+Exists,ExpectExists — in-place default; content-agnostic; dirty-gated,,,,,,,,,,
+Head,ExpectBlob(HEAD_OID); defined iff committed,,,,,,,,,,
+Index,ExpectBlob(INDEX_OID); defined iff staged,,,,,,,,,,
+Workdir,ExpectBlob(WORKDIR_OID); defined iff exists,,,,,,,,,,
+Wrong,ExpectBlob(bogus oid); never matches the working tree,,,,,,,,,,
+,,,,,,,,,,,
+RULE,precondition checked against the WORKING TREE; a dirty tree is refused unless the caller proved current bytes (Workdir) or went Blind,,,,,,,,,,
+,,,,,,,,,,,
+COLUMN HEADER NOTATION  ·  [e]xists [t]racked [c]ommitted [s]taged [u]nstaged,,,,,,,,,,,
+e,exists     — file is present in the working tree,,,,,,,,,,
+t,tracked    — file is known to git,,,,,,,,,,
+c,committed  — file has content in the HEAD tree (at least one prior commit),,,,,,,,,,
+s,staged     — changes in the git index that differ from HEAD,,,,,,,,,,
+u,unstaged   — working tree content differs from the index,,,,,,,,,,

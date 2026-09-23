@@ -1656,11 +1656,12 @@ async fn audit_preview_diff_and_rollback_restore_the_previous_note() {
 
     write_note(&server, "release.md", original).await;
     // Overwriting an existing note is a create-by-default refusal since M4d
-    // (strict-create on both backends); pass force to make it a blind UPDATE.
+    // (strict-create on both backends); pass expected_hash="blind" to make it a
+    // blind UPDATE (the sentinel that replaced `force` at qae.6.4).
     call(
         &server,
         "write_note",
-        json!({"path": "release.md", "content": updated, "force": true}),
+        json!({"path": "release.md", "content": updated, "expected_hash": "blind"}),
     )
     .await;
 

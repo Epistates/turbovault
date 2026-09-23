@@ -89,7 +89,7 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash unless force=true. Git-backed vaults commit the mutation atomically.",
+    "description": "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash (or expected_hash=\"blind\" for an intentional blind overwrite). Git-backed vaults commit the mutation atomically.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -106,12 +106,6 @@
         "expected_hash": {
           "type": [
             "string",
-            "null"
-          ]
-        },
-        "force": {
-          "type": [
-            "boolean",
             "null"
           ]
         },
@@ -243,12 +237,18 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "Move or rename a note. Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
+    "description": "Move or rename a note. `expected_hash` guards the SOURCE, `dest_expected_hash` the DESTINATION (both accept a hash or a sentinel: \"absent\"|\"exists\"|\"blind\"; dest omitted = \"absent\", the no-clobber guard). Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dest_expected_hash": {
           "type": [
             "string",
             "null"
@@ -793,6 +793,12 @@
             "null"
           ]
         },
+        "expected_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "fields": {
           "type": "string"
         },
@@ -1135,10 +1141,17 @@
               "type": "object"
             },
             {
-              "description": "Move/rename a note. `expected_hash` guards the SOURCE against\nconcurrent modification (the destination always carries\n`expect_absent`, refusing to clobber).\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The direct backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
+              "description": "Move/rename a note. `expected_hash` guards the SOURCE against concurrent\nmodification; `dest_expected_hash` guards the DESTINATION. Both are\nsentinel-or-oid strings (`<oid> | \"absent\" | \"exists\" | \"blind\"`), the\nsame shape every other batch op's `expected_hash` uses. `dest_expected_hash`\nomitted = `\"absent\"` (the default clobber guard — refuse if the dest\nexists), preserving the pre-qae.6.4 behavior. (turbovault-qae.6.4)\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The direct backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
               "properties": {
+                "dest_expected_hash": {
+                  "description": "Optional optimistic-concurrency precondition on the destination\n(sentinel-or-oid string). Omitted = `\"absent\"` (clobber guard).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "expected_hash": {
-                  "description": "Optional optimistic-concurrency precondition on the source file.",
+                  "description": "Optional optimistic-concurrency precondition on the source file\n(sentinel-or-oid string).",
                   "type": [
                     "string",
                     "null"
@@ -1637,6 +1650,12 @@
             "null"
           ]
         },
+        "expected_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "frontmatter": {
           "additionalProperties": true,
           "type": "object"
@@ -1675,6 +1694,12 @@
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_hash": {
           "type": [
             "string",
             "null"

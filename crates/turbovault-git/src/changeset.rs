@@ -252,7 +252,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("differs from HEAD")
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
         assert_eq!(vr.head_oid(), None, "ref did not advance");
         assert_eq!(read_wt(&vr, "draft.md"), "local draft");
@@ -272,7 +272,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("differs from HEAD")
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
         assert_eq!(vr.head_oid(), head_before, "ref did not advance");
         assert_eq!(read_wt(&vr, "note.md"), "manual edit");
@@ -297,7 +297,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(Error::Core(turbovault_core::Error::Other(ref message))) if message.contains("staged changes")
+            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
         ));
         assert_eq!(vr.head_oid(), head_before);
         assert!(

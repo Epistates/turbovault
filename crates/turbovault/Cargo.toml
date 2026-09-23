@@ -108,6 +108,15 @@ turbomcp-transport = { workspace = true }
 # Also a plugin-api-gated runtime dependency; tests need it unconditionally.
 turbomcp-protocol = { workspace = true }
 
+# WSS write-safety matrix (wss_matrix): per-cell named trials via a custom
+# `harness = false` runner, so each matrix cell is its own named `cargo test`
+# entry and `pending` cells are `--ignored` (the burndown).
+libtest-mimic = "0.8"
+
+[[test]]
+name = "wss_matrix"
+harness = false
+
 [[bench]]
 name = "tool_benchmarks"
 harness = false

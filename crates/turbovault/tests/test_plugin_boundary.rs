@@ -470,7 +470,7 @@ async fn core_mcp_writes_reach_plugin_subscribers() {
         .server
         .call_tool(
             "write_note",
-            serde_json::json!({"path": "agent.md", "content": "# Agent v2", "force": true}),
+            serde_json::json!({"path": "agent.md", "content": "# Agent v2", "expected_hash": "blind"}),
             &ctx,
         )
         .await
