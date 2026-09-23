@@ -6,7 +6,7 @@ This crate is the engine only: it chunks note text, embeds and indexes it,
 fuses dense and lexical rankings, and hands back what to persist. It does not
 read notes, does not talk to a vault, and does not know what `PluginStore` is.
 `crates/plugins/turbovault-plugin-vector` is the host that wires it to
-TurboVault's compiled-in plugin boundary — reading notes through `VaultApi`,
+TurboVault's compiled-in plugin boundary, reading notes through `VaultApi`,
 persisting snapshots through `PluginStorage`, and advertising the
 `vector_search_*` MCP tools.
 
@@ -22,12 +22,12 @@ pulls a heavier dependency (ONNX, a GPU runtime) into a build that does not
 ask for it.
 
 - **Embeddings: [`model2vec-rs`](https://github.com/MinishLab/model2vec-rs)**,
-  static (lookup-table, mean-pooled) embeddings — no transformer forward pass,
+  static (lookup-table, mean-pooled) embeddings, no transformer forward pass,
   so encoding is fast enough on a CPU that a plugin can afford to do it inline
   rather than needing a separate always-on model server. Built with
   `default-features = false, features = ["local-only"]`: `local-only` compiles
   out the Hugging Face Hub client entirely, so this crate cannot reach the
-  network no matter what a caller passes to `Model2VecEmbedder::load` — it
+  network no matter what a caller passes to `Model2VecEmbedder::load`, it
   only ever reads a local model directory. Point it at a locally-downloaded
   copy of a [Potion model](https://huggingface.co/minishlab) such as
   `minishlab/potion-base-8M` or `minishlab/potion-retrieval-32M` (256-dim).
@@ -45,7 +45,7 @@ ask for it.
   TurboVault already has a full-text engine (Tantivy, behind the host's own
   `search` tool), but the compiled-in plugin boundary has no passthrough to
   it today, and adding one would be a separate, larger change to the plugin
-  contract itself — out of scope here. `bm25` gives genuine BM25 ranking
+  contract itself, out of scope here. `bm25` gives genuine BM25 ranking
   without that change and without hand-rolling the formula.
 - **Fusion:** Reciprocal Rank Fusion over the two sides' rankings
   (`src/router.rs`), the combination the issue asked for as the strongest
@@ -73,8 +73,8 @@ note cheap regardless of how large the rest of the note is.
 
 [`IndexEngine`] persists nothing itself. [`IndexEngine::snapshot`] and
 [`IndexEngine::snapshot_note`] hand back [`NoteRecord`]s (path, content hash,
-and every chunk's position, hash, text, and vector) for a caller to store —
-the plugin host stores one per note under its `PluginStore` namespace, plus a
+and every chunk's position, hash, text, and vector) for a caller to store.
+The plugin host stores one per note under its `PluginStore` namespace, plus a
 small metadata key for the chunk-id allocator's high-water mark.
 [`IndexEngine::restore`] rebuilds engine state, including the dense and
 lexical indices, from a set of `NoteRecord`s with no calls to the embedder:

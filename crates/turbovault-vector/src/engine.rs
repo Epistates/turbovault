@@ -5,7 +5,7 @@
 //! through [`IndexEngine::update_note`] and [`IndexEngine::remove_note`], and
 //! reads back what to persist through [`IndexEngine::snapshot`]. Deciding
 //! *which* notes are worth re-reading, and actually reading and writing
-//! anything, is the caller's job — for the compiled-in plugin, that is
+//! anything, is the caller's job. For the compiled-in plugin, that is
 //! `turbovault-plugin-vector`, driven by the change feed and
 //! `list_notes_detailed`.
 

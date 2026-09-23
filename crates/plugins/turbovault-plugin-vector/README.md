@@ -54,15 +54,15 @@ and `vector_search_reindex` load the model on first use.
 
 ## Tools
 
-- **`vector_search_search`** — `{ query: string, limit?: integer (default
+- **`vector_search_search`**: `{ query: string, limit?: integer (default
   10, max 100), hybrid?: boolean (default true) }`. Reconciles first, then
   searches; `hybrid` fuses BM25 lexical ranking in via Reciprocal Rank
   Fusion, `false` for dense-only.
-- **`vector_search_reindex`** — `{}`. Forces a full re-embed: drops every
+- **`vector_search_reindex`**: `{}`. Forces a full re-embed: drops every
   persisted chunk and the reconcile cursor, then walks the vault from
   scratch. Normal indexing is incremental and driven by edits; this is for
   a changed model or recovering from a snapshot you no longer trust.
-- **`vector_search_status`** — `{}`. Model, dimensions, indexed note/chunk
+- **`vector_search_status`**: `{}`. Model, dimensions, indexed note/chunk
   counts, and the resolved config. Safe to call before anything is
   configured.
 

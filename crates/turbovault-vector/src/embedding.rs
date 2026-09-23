@@ -20,10 +20,9 @@ pub trait EmbeddingEngine: Send + Sync {
 
 /// Static-embedding backend using [`model2vec_rs`] (Potion / Model2Vec
 /// models): a lookup table of per-token vectors, mean-pooled per input, with
-/// no transformer forward pass. Pure Rust, CPU-only, and — because this crate
-/// depends on it with `default-features = false, features = ["local-only"]`
-/// — incapable of reaching the network; it only ever reads a local model
-/// directory.
+/// no transformer forward pass. Pure Rust and CPU-only. This crate depends on
+/// it with `default-features = false, features = ["local-only"]`, so it
+/// cannot reach the network and only ever reads a local model directory.
 #[derive(Debug)]
 pub struct Model2VecEmbedder {
     model: model2vec_rs::model::StaticModel,

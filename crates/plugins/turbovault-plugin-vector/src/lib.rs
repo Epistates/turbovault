@@ -92,7 +92,7 @@ impl VectorSearchPlugin {
     /// Build with a caller-supplied embedder factory instead of loading a
     /// real model. For tests: this is how the plugin boundary (tool
     /// namespacing, storage, the change feed) gets exercised end to end
-    /// without a model file to hand and without any network access — see
+    /// without a model file to hand and without any network access. See
     /// `turbovault_vector::embedding::testing` for a ready-made fake.
     pub fn with_embedder_factory(
         factory: impl Fn(&VectorConfig) -> PluginResult<Arc<dyn EmbeddingEngine>>
@@ -239,7 +239,7 @@ impl EngineHandle {
     /// alongside it. Written in that order deliberately: if the process dies
     /// between the note write and the manifest write, the note is simply
     /// re-checked (and, via its own content hash, a no-op) on the next
-    /// reconcile — the other order could permanently skip a real change.
+    /// reconcile. The other order could permanently skip a real change.
     async fn persist_note(
         &self,
         vault: &str,

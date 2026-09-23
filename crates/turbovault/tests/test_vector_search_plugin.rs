@@ -9,8 +9,8 @@
 //! network fetch or a checked-in model file, and the project's own test
 //! policy is no network access and no downloaded models in tests. Every test
 //! here builds `VectorSearchPlugin::with_embedder_factory` with
-//! `turbovault_vector::embedding::testing::DeterministicEmbedder` instead —
-//! everything *around* the embedder (tool namespacing, storage, the change
+//! `turbovault_vector::embedding::testing::DeterministicEmbedder` instead.
+//! Everything *around* the embedder (tool namespacing, storage, the change
 //! feed, reconciliation) is real.
 
 #![cfg(feature = "vector-search")]
@@ -124,7 +124,7 @@ async fn vector_search_status_reflects_index_growth_without_forcing_a_build() {
     );
     assert_eq!(before["indexed_notes"], 0);
     // `configured` reflects VectorConfig::model_path specifically (a
-    // Model2Vec concept), not "will the embedder factory work" — the fake
+    // Model2Vec concept), not "will the embedder factory work". The fake
     // factory ignores config entirely, so this is correctly `false` even
     // though search works. See engine_for's lazy build for what actually
     // gates whether search succeeds.
@@ -240,8 +240,8 @@ async fn vector_search_reacts_to_writes_made_through_a_different_tool() {
 /// `crates/turbovault/src/cli.rs`'s `mounts_no_plugins_without_a_plugin_feature`,
 /// which proves the production wiring mounts nothing without the feature).
 /// This proves the complementary fact: even with the `vector-search` Cargo
-/// feature compiled in, `ObsidianMcpServer::new()` — what every other test
-/// in this crate builds against — mounts no plugins at all, so having the
+/// feature compiled in, `ObsidianMcpServer::new()`, what every other test
+/// in this crate builds against, mounts no plugins at all, so having the
 /// feature available does not by itself change any existing test's or
 /// caller's tool list. Only `new_with_plugins` (called from `cli.rs`, gated
 /// the same way) does.
