@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A contract snapshot over the whole parser surface.** One fixture covering every construct that has broken here, with the full extracted shape checked in as JSON. The narrow tests beside it each pin one defect and were each written after that defect shipped; three shipped while the suite was green ([#55](https://github.com/Epistates/turbovault/pull/55), [#68](https://github.com/Epistates/turbovault/issues/68), [#71](https://github.com/Epistates/turbovault/issues/71)), every time because the assertion was narrower than the failure.
+
+  A diff is reported as line multisets rather than positionally, so an inserted block is one entry instead of cascading through everything below it. Re-bless with `UPDATE_PARSER_SNAPSHOT=1`, matching the existing `UPDATE_TOOL_CATALOG` fixture. Alongside it, every reported code position is checked against the fixture itself: a line a block claims has to actually open or close a fence, which is an assertion about correctness rather than about not having changed.
+
 ### Fixed
+
+- **A block inside a blockquote reports the line it was written on.** 2.1.0 numbered a quote's blocks by re-parsing its reconstructed text from the quote's own line, which is only right when the reconstruction is the same height as the source. It was not: a paragraph followed by a list with no blank line between them, which is the ordinary callout shape, gained a separator the source never had and pushed everything below it one line down. The buffer now pads to each block's real source line instead of inserting a fixed separator, so the reconstruction matches the source line for line.
+
+  Found by the contract snapshot on its first run, against a callout whose fence claimed line 72 while sitting on 71.
+
+- **The release publish job skips members that are already on crates.io.** `cargo publish --workspace` refuses to run at all when any member's version is already up, aborting before it uploads anything, so publishing 2.1.0 failed on `turbovault-plugin-api@0.1.0`. That crate is versioned on its own and had not changed, which will be the normal case for it across a release. A retry after a partial run hits the same wall for the crates that already landed.
+
+  The job now takes the list from a dry run, which reports those as warnings rather than failing, and passes each one as `--exclude`. No hand-maintained list, cargo still derives the order and waits on the index, and a partial run genuinely resumes now. The claim that it already did was checked against `--dry-run` output, where "already exists" is only a warning.
+
+## [2.1.0] - 2026-09-13
+
+Every change here is in the parser, and all of it came from
+[treemd](https://github.com/Epistates/treemd) building against this repository's
+`main` and reporting what broke. Nothing in the MCP tool surface changed.
+
+### Added
+
+- **Fenced blocks report where they are.** `ContentBlock::Code` carries `start_line` and `end_line`, and both were the line the parse began at, which for `parse_blocks` meant a hard-coded 0 for every block in every document. The counter was set once at construction and never advanced, so this never worked in any released version. Positions now come from the source spans the markdown parser already produces.
+
+  Lines are 1-based, matching `line_of_offset` and the partial-read sections elsewhere in the workspace, and a fence spans from its opening line to its closing one. `parse_blocks_from_line` offsets every block by the line the fragment starts at, which is what the blockquote re-parse now uses. A `<details>` block is padded back to its original height when it is swapped for its placeholder, so it no longer shifts everything below it.
+
+### Fixed
+
+- **A fenced block inside a blockquote reports its place in the document** ([#68](https://github.com/Epistates/turbovault/issues/68)): the quote is re-parsed as a detached fragment, so its blocks were numbered from zero. A consumer filtering on `start_line` saw every quoted block sitting before the document began. The fragment is now numbered from the line the quote itself starts on.
+
+- **An image in a heading keeps its alt, and stays in the heading** ([#68](https://github.com/Epistates/turbovault/issues/68)): `# Title ![h](h.png)` reported an image with an empty `alt` and a heading reading `Title h`. The end tag routed to the inline buffer only for a paragraph or a list item, so a heading fell through to the block arm and the image was emitted as a top-level sibling ahead of its own heading, while its alt had already been appended to the heading's text. Headings now collect inline elements the way paragraphs do, links included. This one predates 2.0.0.
 
 - **Lists inside a blockquote keep their markers, and a fence after one is still a code block** ([#71](https://github.com/Epistates/turbovault/issues/71)): a quote is rebuilt from its raw text, so everything inside one has to be written back into that buffer as markdown. Lists never were. They were flushed to the top level instead, which put an item-less list ahead of the quote and left the items' text bare in the quote's content, so `> - one` `> - two` came back as the single run `onetwo`.
 
@@ -22,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.6.0 flattened these the same way. It also hoisted a copy of the image out of the quote as a top-level sibling, so anything scanning top-level blocks still found a source, which is why 2.0.0 looked like a regression: it correctly stopped hoisting, and that removed the thing masking the loss.
 
 ### Changed
+
+- **`memmap2` 0.9.11 clears RUSTSEC-2026-0186.** An unchecked pointer offset, reached through
+  tantivy, which is how search memory-maps its index. The fix is a patch release, so this is a
+  lockfile bump with no API change. Tantivy itself moves 0.26.1 to 0.26.2 in the same update.
+
+  Six audit warnings remain and none is fixable from here. `lru` needs 0.18.2 and tantivy 0.26.2
+  still pins 0.16. `im`, `sized-chunks` and `bitmaps` arrive under GlueSQL behind the default-off
+  `sql` feature, and all three advisories list no patched version at all. That is the same dead end
+  as the `RUSTSEC-2026-0235` entry already in `audit.toml`, so it is worth re-checking whenever
+  GlueSQL releases.
 
 - **Off the yanked `chacha20`.** 0.10.0 and 0.10.1 are both yanked, so cargo warned on every package
   step while publishing 2.0.0. It arrives through `rand` under turbomcp's transport and protocol
@@ -38,9 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Releases publish with `cargo publish --workspace`.** The workflow kept a hand-written crate list
   with its own dependency ordering, 30-second sleeps and an already-published probe. Cargo derives
-  the order from the graph, waits on the index itself, and warns rather than fails on a crate that
-  is already up, so a partial run still resumes. The hand-written version could only drift from the
-  real graph as crates are added.
+  the order from the graph and waits on the index itself, so neither needs scripting, and the
+  hand-written version could only drift from the real graph as crates are added. Selecting which
+  members still need publishing is the one part cargo does not do; see the Unreleased entry above.
 
 - **`.claude/` is ignored.** It holds local agent settings and session state, and was untracked but
   not ignored, so it showed as a dirty tree and sat one `git add -A` away from committing someone's

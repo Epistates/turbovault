@@ -165,8 +165,18 @@ fn extract_details_blocks(markdown: &str) -> (String, Vec<ContentBlock>) {
                 blocks: nested_blocks,
             });
 
-            result.push_str(&format!("\n[DETAILS_BLOCK_{}]\n", details_blocks.len() - 1));
-            current_pos = details_end + "</details>".len();
+            let consumed_end = details_end + "</details>".len();
+            let placeholder = format!("\n[DETAILS_BLOCK_{}]\n", details_blocks.len() - 1);
+            // Pad back to the height the block occupied. The placeholder is
+            // shorter than what it replaces, so without this every line after a
+            // `<details>` block reports a number from higher up the document.
+            let consumed_lines = markdown[current_pos..consumed_end].matches('\n').count();
+            let placeholder_lines = placeholder.matches('\n').count();
+            result.push_str(&placeholder);
+            for _ in 0..consumed_lines.saturating_sub(placeholder_lines) {
+                result.push('\n');
+            }
+            current_pos = consumed_end;
             continue;
         }
 
@@ -213,7 +223,15 @@ struct QuotedList {
 }
 
 struct BlockParserState {
+    /// Document line the event being processed starts on, 1-based.
     current_line: usize,
+    /// Document line the event being processed ends on. For a fenced block
+    /// that is the closing fence, since the event's span covers the whole
+    /// block.
+    current_end_line: usize,
+    /// Document line the buffering blockquote started on, so the re-parse of
+    /// its raw text can number its blocks from there instead of from zero.
+    blockquote_start_line: usize,
     paragraph_buffer: String,
     inline_buffer: Vec<InlineElement>,
     list_items: Vec<ListItem>,
@@ -267,6 +285,8 @@ impl BlockParserState {
     fn new(start_line: usize) -> Self {
         Self {
             current_line: start_line,
+            current_end_line: start_line,
+            blockquote_start_line: start_line,
             paragraph_buffer: String::new(),
             inline_buffer: Vec::new(),
             list_items: Vec::new(),
@@ -347,7 +367,7 @@ impl BlockParserState {
                 language: self.code_language.clone(),
                 content: self.code_buffer.trim_end().to_string(),
                 start_line: self.code_start_line,
-                end_line: self.current_line,
+                end_line: self.current_end_line,
             });
             self.code_buffer.clear();
             self.code_language = None;
@@ -361,7 +381,13 @@ impl BlockParserState {
             // which leaves a trailing one on the last paragraph. It carries no
             // meaning and would show up in every consumer's `content`.
             let content = self.blockquote_buffer.trim_end().to_string();
-            let nested_blocks = parse_blocks(&content);
+            // Numbered from the quote's own line, not from zero. The re-parse
+            // rebuilds the quote line for line, so a block inside it lands on
+            // the document line it was written on. Parsing the fragment cold
+            // reported every quoted fence as `start_line: 0`, which put it
+            // before the start of the document for any consumer filtering on
+            // position.
+            let nested_blocks = parse_blocks_from_line(&content, self.blockquote_start_line);
             blocks.push(ContentBlock::Blockquote {
                 content,
                 blocks: nested_blocks,
@@ -371,24 +397,35 @@ impl BlockParserState {
         }
     }
 
-    /// Starts a new block in the quote buffer on its own line, preceded by the
-    /// blank line that separates it from whatever came before. Without the
-    /// break, a fence written straight after a list ran onto the last item's
-    /// line and the re-parse read the whole thing as one paragraph.
-    fn break_quoted_block(&mut self) {
-        if self.blockquote_buffer.is_empty() || self.blockquote_buffer.ends_with("\n\n") {
-            return;
-        }
-        if !self.blockquote_buffer.ends_with('\n') {
-            self.blockquote_buffer.push('\n');
-        }
-        self.blockquote_buffer.push('\n');
+    /// Document line the next character written to the quote buffer lands on.
+    fn next_quoted_line(&self) -> usize {
+        self.blockquote_start_line + self.blockquote_buffer.matches('\n').count()
     }
 
-    fn open_quoted_list(&mut self, start_number: Option<u64>) {
+    /// Pads the quote buffer with newlines until its next write lands on
+    /// `source_line`, so the re-parse numbers each block at the line it was
+    /// actually written on and the separators match the source instead of
+    /// being invented.
+    ///
+    /// A fixed `\n\n` between blocks was both: it ran a fence onto the last
+    /// list item's line when the source had a blank line, and it inserted a
+    /// blank line when the source had none, which pushed every block below it
+    /// in the quote one line down.
+    fn sync_quoted_line(&mut self, source_line: usize) {
+        // A block always starts on a fresh line even where the source somehow
+        // reports the same one, so the buffer can never run two together.
+        if !self.blockquote_buffer.is_empty() && !self.blockquote_buffer.ends_with('\n') {
+            self.blockquote_buffer.push('\n');
+        }
+        while self.next_quoted_line() < source_line {
+            self.blockquote_buffer.push('\n');
+        }
+    }
+
+    fn open_quoted_list(&mut self, start_number: Option<u64>, source_line: usize) {
         let indent = self.quoted_item_indents.last().cloned().unwrap_or_default();
         if self.quoted_lists.is_empty() {
-            self.break_quoted_block();
+            self.sync_quoted_line(source_line);
         } else if !self.blockquote_buffer.ends_with('\n') {
             // A nested list opens on the line below its parent's marker, and a
             // blank line here would make the enclosing list loose.
@@ -402,12 +439,13 @@ impl BlockParserState {
 
     fn close_quoted_list(&mut self) {
         self.quoted_lists.pop();
-        if self.quoted_lists.is_empty() {
-            self.break_quoted_block();
-        }
     }
 
-    fn open_quoted_item(&mut self) {
+    fn open_quoted_item(&mut self, source_line: usize) {
+        if self.quoted_lists.is_empty() {
+            return;
+        }
+        self.sync_quoted_line(source_line);
         let Some(list) = self.quoted_lists.last_mut() else {
             return;
         };
@@ -447,6 +485,18 @@ impl BlockParserState {
             self.paragraph_buffer.clear();
             self.inline_buffer.clear();
             self.in_table = false;
+        }
+    }
+
+    /// The inline list and source-text buffer the enclosing container collects
+    /// into. A heading keeps its own pair, and routing a heading's image or
+    /// link to the paragraph pair is what hoisted them out of the heading and
+    /// left their label sitting in its text.
+    fn inline_sink(&mut self) -> (&mut Vec<InlineElement>, &mut String) {
+        if self.in_heading {
+            (&mut self.heading_inline, &mut self.heading_buffer)
+        } else {
+            (&mut self.inline_buffer, &mut self.paragraph_buffer)
         }
     }
 
@@ -490,17 +540,20 @@ impl BlockParserState {
 fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<ContentBlock>) {
     match event {
         Event::Start(Tag::Paragraph) => {
+            if state.in_blockquote && state.quoted_lists.is_empty() {
+                // Put the paragraph on the source line it came from. Inside a
+                // list item the marker has already been written to this line,
+                // so syncing there would split the item from its own text.
+                state.sync_quoted_line(state.current_line);
+            }
             state.in_paragraph = true;
         }
         Event::End(TagEnd::Paragraph) => {
             if state.in_blockquote {
-                // The quote's text already went to `blockquote_buffer`, so
-                // there is nothing to emit here. Record the paragraph break so
-                // the re-parse still sees two paragraphs rather than one.
+                // The quote's text already went to `blockquote_buffer`, and the
+                // next block syncs itself to its own source line, so there is
+                // no separator to invent here.
                 state.in_paragraph = false;
-                if !state.blockquote_buffer.is_empty() {
-                    state.blockquote_buffer.push_str("\n\n");
-                }
             } else if state.item_depth >= 1
                 && state.in_paragraph
                 && !state.paragraph_buffer.is_empty()
@@ -537,6 +590,9 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 // that is still buffering, so a fenced block inside a callout
                 // rendered above the callout header. Re-fence it into the
                 // buffer instead and let the nested parse rebuild it in place.
+                // The end event's span covers the whole block, so its start is
+                // the opening fence's own line.
+                state.sync_quoted_line(state.current_line);
                 let fence = match &state.code_language {
                     Some(lang) => format!("```{lang}\n"),
                     None => "```\n".to_string(),
@@ -554,7 +610,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     language: state.code_language.clone(),
                     content: state.code_buffer.trim_end().to_string(),
                     start_line: state.code_start_line,
-                    end_line: state.current_line,
+                    end_line: state.current_end_line,
                 });
                 state.code_buffer.clear();
                 state.code_language = None;
@@ -569,13 +625,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         // the items' text bare in the quote's content, with no markers and no
         // line breaks, so `> - one` `> - two` came back as "onetwo".
         Event::Start(Tag::List(start_number)) if state.in_blockquote => {
-            state.open_quoted_list(start_number);
+            state.open_quoted_list(start_number, state.current_line);
         }
         Event::End(TagEnd::List(_)) if state.in_blockquote => {
             state.close_quoted_list();
         }
         Event::Start(Tag::Item) if state.in_blockquote => {
-            state.open_quoted_item();
+            state.open_quoted_item(state.current_line);
         }
         Event::End(TagEnd::Item) if state.in_blockquote => {
             state.close_quoted_item();
@@ -656,6 +712,14 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             state.task_list_marker = Some(checked);
         }
         Event::Start(Tag::BlockQuote(_)) => {
+            // Anchor on the outermost quote only. A nested quote accumulates
+            // into the same buffer, so re-anchoring here would measure the
+            // buffer's height from the inner quote's line and leave every sync
+            // below it a no-op, which ran the nested quote's paragraph onto the
+            // outer quote's line.
+            if !state.in_blockquote {
+                state.blockquote_start_line = state.current_line;
+            }
             state.in_blockquote = true;
         }
         Event::End(TagEnd::BlockQuote(_)) => {
@@ -798,27 +862,23 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 None
             };
 
-            if state.image_in_link {
-                state.inline_buffer.push(InlineElement::Link {
-                    text: state.link_text.clone(),
-                    url: state.saved_link_url.clone(),
-                    title: None,
-                    line_offset,
-                });
-                state
-                    .paragraph_buffer
-                    .push_str(&format!("[{}]({})", state.link_text, state.saved_link_url));
+            // A linked image carries the image's own destination in `link_url`
+            // by this point, so the wrapper reads its href from `saved_link_url`.
+            let url = if state.image_in_link {
+                state.saved_link_url.clone()
             } else {
-                state.inline_buffer.push(InlineElement::Link {
-                    text: state.link_text.clone(),
-                    url: state.link_url.clone(),
-                    title: None,
-                    line_offset,
-                });
-                state
-                    .paragraph_buffer
-                    .push_str(&format!("[{}]({})", state.link_text, state.link_url));
-            }
+                state.link_url.clone()
+            };
+            let element = InlineElement::Link {
+                text: state.link_text.clone(),
+                url: url.clone(),
+                title: None,
+                line_offset,
+            };
+            let source = format!("[{}]({})", state.link_text, url);
+            let (inline, buffer) = state.inline_sink();
+            inline.push(element);
+            buffer.push_str(&source);
 
             state.link_text.clear();
             state.link_url.clear();
@@ -877,12 +937,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 // siblings because `InlineElement::Link` carries no children.
                 // `link_url` currently holds the image destination and
                 // `saved_link_url` the link's own, which `TagEnd::Link` uses.
-                state.inline_buffer.push(InlineElement::Image {
+                let element = InlineElement::Image {
                     alt: state.link_text.clone(),
                     src: state.link_url.clone(),
                     title,
                     line_offset,
-                });
+                };
+                state.inline_sink().0.push(element);
                 // Deliberately keep `link_text` and `link_url`: the enclosing
                 // link still needs the text, and clearing the url would strand
                 // `TagEnd::Link`'s restore.
@@ -894,18 +955,19 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             // top-level blocks, hoisted clean out of the list, while
             // `flush_paragraph` discarded the item's own text. An image in an
             // item belongs to the item whether or not the list is loose.
-            if state.in_paragraph || state.item_depth >= 1 {
-                state.inline_buffer.push(InlineElement::Image {
+            if state.in_heading || state.in_paragraph || state.item_depth >= 1 {
+                let element = InlineElement::Image {
                     alt: state.link_text.clone(),
                     src: state.link_url.clone(),
                     title,
                     line_offset,
-                });
-                // Append the image's source spelling to whatever the paragraph
+                };
+                // Append the image's source spelling to whatever the container
                 // has so far, rather than replacing it.
-                state
-                    .paragraph_buffer
-                    .push_str(&format!("![{}]({})", state.link_text, state.link_url));
+                let source = format!("![{}]({})", state.link_text, state.link_url);
+                let (inline, buffer) = state.inline_sink();
+                inline.push(element);
+                buffer.push_str(&source);
             } else {
                 state.flush_paragraph(blocks);
                 blocks.push(ContentBlock::Image {
@@ -931,6 +993,12 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.link_text.push_str(&text);
             } else if state.in_blockquote {
                 state.blockquote_buffer.push_str(&text);
+            } else if state.in_heading && (state.in_image || state.in_link) {
+                // An image's alt or a link's label inside a heading. Held for
+                // the end tag like everywhere else, because letting it fall
+                // into `heading_buffer` is what made `# Title ![h](h.png)`
+                // read as "Title h" with the image reporting an empty alt.
+                state.link_text.push_str(&text);
             } else if state.in_heading {
                 state.heading_buffer.push_str(&text);
                 let element = if state.in_code_inline {
@@ -1107,7 +1175,26 @@ fn collect_inline_elements(blocks: &[ContentBlock], output: &mut Vec<InlineEleme
 /// assert!(matches!(blocks[0], ContentBlock::Heading { level: 1, .. }));
 /// ```
 pub fn parse_blocks(markdown: &str) -> Vec<ContentBlock> {
-    parse_blocks_from_line(markdown, 0)
+    parse_blocks_from_line(markdown, 1)
+}
+
+/// Byte offset at which each line of `text` begins.
+fn line_start_offsets(text: &str) -> Vec<usize> {
+    let mut starts = Vec::with_capacity(text.len() / 32 + 1);
+    starts.push(0);
+    starts.extend(text.match_indices('\n').map(|(index, _)| index + 1));
+    starts
+}
+
+/// Index of the line containing `offset`, counting the first line as 0.
+///
+/// `starts` is sorted, so the search either lands on a line start or reports
+/// the insertion point, in which case the offset falls inside the line before.
+fn line_index_of(starts: &[usize], offset: usize) -> usize {
+    match starts.binary_search(&offset) {
+        Ok(index) => index,
+        Err(index) => index.saturating_sub(1),
+    }
 }
 
 /// Parse markdown content into structured blocks, starting from a specific line.
@@ -1129,11 +1216,22 @@ pub fn parse_blocks_from_line(markdown: &str, start_line: usize) -> Vec<ContentB
     options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
 
-    let parser = Parser::new_ext(&processed_markdown, options);
+    // `into_offset_iter` carries each event's source span, which is the only
+    // way a block learns where it sits. `current_line` was previously set once
+    // at construction and never advanced, so every `ContentBlock::Code` in
+    // every document reported the same line the parse started from, which for
+    // `parse_blocks` meant a hard-coded 0.
+    let line_starts = line_start_offsets(&processed_markdown);
+    let parser = Parser::new_ext(&processed_markdown, options).into_offset_iter();
     let mut blocks = Vec::new();
     let mut state = BlockParserState::new(start_line);
 
-    for event in parser {
+    for (event, span) in parser {
+        state.current_line = start_line + line_index_of(&line_starts, span.start);
+        // The span runs to just past the node's last byte, so step back one to
+        // land inside the closing line rather than on the one after it.
+        state.current_end_line =
+            start_line + line_index_of(&line_starts, span.end.saturating_sub(1));
         process_event(event, &mut state, &mut blocks);
     }
 

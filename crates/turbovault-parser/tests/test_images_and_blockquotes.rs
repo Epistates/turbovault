@@ -391,3 +391,94 @@ fn a_blockquote_keeps_mixed_inline_elements_together() {
         "image must survive, got {inline:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Images in headings
+// ---------------------------------------------------------------------------
+//
+// The fourth item on <https://github.com/Epistates/turbovault/issues/68>.
+// `TagEnd::Image` routed to the inline buffer only when `in_paragraph` or
+// `item_depth >= 1` held, and a heading sets neither, so the image fell through
+// to the block arm and was pushed as a top-level `ContentBlock::Image` ahead of
+// its own heading. Meanwhile the alt had already gone into `heading_buffer`,
+// which left the image reporting an empty alt and the heading reading the alt
+// as if it were prose. This predates 2.0.0.
+
+/// The heading keeps its own text and the image keeps its alt.
+#[test]
+fn an_image_in_a_heading_keeps_its_alt() {
+    let blocks = parse_blocks("# Title ![h](h.png)");
+    assert_eq!(
+        collect_images(&blocks),
+        vec![("h".to_string(), "h.png".to_string(), None)]
+    );
+    let ContentBlock::Heading { content, .. } = &blocks[0] else {
+        panic!("expected a heading first, got {blocks:?}");
+    };
+    assert!(
+        !content.contains("Title h"),
+        "the alt leaked into the heading text: {content:?}"
+    );
+}
+
+/// The image used to be emitted as a sibling block before its own heading, so a
+/// document outline saw an image where it expected the first heading.
+#[test]
+fn an_image_in_a_heading_is_not_hoisted_out_of_it() {
+    let blocks = parse_blocks("# Title ![h](h.png)");
+    assert!(
+        matches!(blocks[0], ContentBlock::Heading { .. }),
+        "the heading must come first, got {blocks:?}"
+    );
+    assert!(
+        !blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Image { .. })),
+        "the image was hoisted to the top level: {blocks:?}"
+    );
+}
+
+/// Text on both sides of the image has to survive, the same way it does when a
+/// paragraph carries an image partway through.
+#[test]
+fn a_heading_keeps_the_text_around_its_image() {
+    let blocks = parse_blocks("## A ![x](x.png) B\n");
+    let ContentBlock::Heading {
+        content, inline, ..
+    } = &blocks[0]
+    else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert!(
+        content.starts_with("A ") && content.ends_with(" B"),
+        "surrounding text lost: {content:?}"
+    );
+    assert!(
+        inline.iter().any(
+            |e| matches!(e, InlineElement::Image { alt, src, .. } if alt == "x" && src == "x.png")
+        ),
+        "the image is missing from the heading's inline elements: {inline:?}"
+    );
+}
+
+/// A linked image in a heading, which is the badge shape one level up. Both the
+/// image and its wrapping link have to reach the heading.
+#[test]
+fn a_linked_image_in_a_heading_keeps_both_destinations() {
+    let blocks = parse_blocks("# T [![b](b.png)](http://c)\n");
+    let ContentBlock::Heading { inline, .. } = &blocks[0] else {
+        panic!("expected a heading, got {blocks:?}");
+    };
+    assert!(
+        inline
+            .iter()
+            .any(|e| matches!(e, InlineElement::Image { src, .. } if src == "b.png")),
+        "image destination lost: {inline:?}"
+    );
+    assert!(
+        inline
+            .iter()
+            .any(|e| matches!(e, InlineElement::Link { url, .. } if url == "http://c")),
+        "link destination lost: {inline:?}"
+    );
+}
