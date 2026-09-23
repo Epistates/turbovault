@@ -81,8 +81,8 @@ impl Error {
     ///
     /// `io::Error`'s `Display` text for `ErrorKind::NotFound` is the OS's own
     /// message ("No such file or directory (os error 2)" on Unix, "The
-    /// system cannot find the file specified. (os error 2)" on Windows) —
-    /// fine for a log, not fine for a client that has to recognize "missing
+    /// system cannot find the file specified. (os error 2)" on Windows).
+    /// That's fine for a log, not for for a client that has to recognize "missing
     /// file" from the text. Every other `ErrorKind` still wraps as
     /// [`Error::io`]. `path` should already be vault-relative and
     /// `/`-separated (see [`crate::path_to_slash`]) so the message matches

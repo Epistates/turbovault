@@ -370,7 +370,7 @@ impl GraphProvider {
             {
                 let file_str = manager.relative_path(file);
                 // `file_str` is already `/`-separated (manager.relative_path),
-                // so `parent` is too — Windows path parsing accepts `/` as a
+                // so `parent` is too. Windows path parsing accepts `/` as a
                 // separator, and `Path::parent` slices rather than
                 // re-renders, so no further conversion is needed here.
                 let folder = std::path::Path::new(&file_str)

@@ -14,7 +14,7 @@ use std::time::Instant;
 /// (and this server's MCP surface) always use.
 ///
 /// Only touches [`std::path::MAIN_SEPARATOR`], and only when it is not
-/// already `/`. On Unix that separator IS `/`, so this is a no-op — which
+/// already `/`. On Unix that separator IS `/`, so this is a no-op, which
 /// matters because a backslash is a legal filename character there; an
 /// unconditional `.replace('\\', "/")` would corrupt a component that
 /// legitimately contains one. On Windows it rewrites the `\` the platform

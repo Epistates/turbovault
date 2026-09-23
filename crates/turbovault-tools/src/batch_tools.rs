@@ -703,8 +703,8 @@ impl BatchTools {
     /// Vault-relative, `/`-separated form of a backlink source path the link
     /// graph handed back (an absolute, natively-separated `PathBuf`).
     ///
-    /// Errors loudly on non-UTF-8 rather than silently dropping the source —
-    /// shared by [`Self::fold_move_with_links`],
+    /// Errors loudly on non-UTF-8 rather than silently dropping the source.
+    /// Shared by [`Self::fold_move_with_links`],
     /// [`Self::fold_delete_with_stale_links`], and
     /// [`Self::list_inbound_backlinks`], all of which fold the result into a
     /// [`ChangePlan`] path or a refuse-by-default backlink count, where an

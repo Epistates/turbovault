@@ -197,7 +197,7 @@ impl RollbackEngine {
             OperationType::Create => {
                 // Undo create = delete. The `exists()` check above already
                 // means a NotFound here is a race with something else
-                // removing the file between that check and this call —
+                // removing the file between that check and this call, so
                 // translate it the same way as any other missing-file
                 // operation rather than leaking the OS's raw NotFound text.
                 if file_path.exists() {
