@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A diff is reported as line multisets rather than positionally, so an inserted block is one entry instead of cascading through everything below it. Re-bless with `UPDATE_PARSER_SNAPSHOT=1`, matching the existing `UPDATE_TOOL_CATALOG` fixture. Alongside it, every reported code position is checked against the fixture itself: a line a block claims has to actually open or close a fence, which is an assertion about correctness rather than about not having changed.
 
+### Performance
+
+- **A write no longer costs the next search a full index rebuild.** Every write updated the search index in place through the manager's change-listener, and then evicted it anyway, so the next `search` rebuilt it by parsing every note in the vault. The eviction dated from before the listener ran on the direct backend. It is gone, and new tests search immediately after a write, edit, move and delete on the direct backend to hold the listener to it.
+
+- **`find_duplicates` scores a candidate pair directly.** It ranked the entire vault from one note to read off a single other note's score, once per candidate pair, which is quadratic in the vault on top of the pairwise fingerprint pass. The similarity engine now scores one pair from the two notes' own vectors, and finds a note by path through an index rather than a scan.
+
+- **`quick_health_check` suggests fixes once per missing target.** Every broken link re-listed and re-lowercased every note to suggest replacements, so the check meant to be quick grew with broken links times notes. Note names are prepared once per report and each missing target is looked up once.
+
+- **Startup reads notes concurrently.** `initialize` awaited every note's read in turn. Up to 64 are now in flight, returned in scan order so the cache and graph are built exactly as before.
+
 ### Fixed
 
 - **A block inside a blockquote reports the line it was written on.** 2.1.0 numbered a quote's blocks by re-parsing its reconstructed text from the quote's own line, which is only right when the reconstruction is the same height as the source. It was not: a paragraph followed by a list with no blank line between them, which is the ordinary callout shape, gained a separator the source never had and pushed everything below it one line down. The buffer now pads to each block's real source line instead of inserting a fixed separator, so the reconstruction matches the source line for line.

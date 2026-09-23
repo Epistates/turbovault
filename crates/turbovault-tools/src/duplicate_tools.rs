@@ -146,12 +146,11 @@ impl DuplicateTools {
             let path_i = fingerprints[*i].path.to_string_lossy().to_string();
             let path_j = fingerprints[*j].path.to_string_lossy().to_string();
 
-            // Use similarity engine for precise score
-            let results = sim_engine.find_similar_notes(&path_i, fingerprints.len());
-            let precise_score = results
-                .iter()
-                .find(|r| r.path == path_j)
-                .map(|r| r.score)
+            // Score this one pair. Ranking the whole vault from `path_i` to read
+            // off `path_j` made every candidate pair cost a pass over every
+            // note.
+            let precise_score = sim_engine
+                .pair_similarity(&path_i, &path_j)
                 .unwrap_or_else(|| {
                     // Fallback: compute from hamming distance
                     let hamming =
