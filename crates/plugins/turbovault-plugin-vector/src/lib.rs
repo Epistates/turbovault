@@ -26,7 +26,9 @@ use turbovault_plugin_api::{
     PluginProvider, PluginRequestContext, PluginResult, PluginStorage, ShutdownSignal, Tool,
     ToolResult, VaultApi, VaultDescriptor,
 };
-use turbovault_vector::{EmbeddingEngine, IndexEngine, Model2VecEmbedder, NoteRecord, VectorConfig, VectorError};
+use turbovault_vector::{
+    EmbeddingEngine, IndexEngine, Model2VecEmbedder, NoteRecord, VectorConfig, VectorError,
+};
 
 /// Key holding a JSON-encoded, partial [`VectorConfig`] override. Missing
 /// fields fall back to the built-in defaults; the file itself is optional.
@@ -55,19 +57,22 @@ fn verr(error: VectorError) -> PluginError {
         // A config problem (e.g. no model_path set) is the caller's to fix,
         // not a server failure.
         VectorError::Config(message) => PluginError::invalid_input(message),
-        VectorError::Embedding(message) | VectorError::Index(message) | VectorError::Snapshot(message) => {
-            PluginError::internal(message)
-        }
+        VectorError::Embedding(message)
+        | VectorError::Index(message)
+        | VectorError::Snapshot(message) => PluginError::internal(message),
     }
 }
 
 /// Builds the embedder an [`EngineHandle`] embeds with, from the resolved
 /// [`VectorConfig`]. A trait rather than a bare function pointer so a test
 /// factory can close over state (a call counter, say) if it needs to.
-type EmbedderFactory = Arc<dyn Fn(&VectorConfig) -> PluginResult<Arc<dyn EmbeddingEngine>> + Send + Sync>;
+type EmbedderFactory =
+    Arc<dyn Fn(&VectorConfig) -> PluginResult<Arc<dyn EmbeddingEngine>> + Send + Sync>;
 
 fn model2vec_embedder_factory(config: &VectorConfig) -> PluginResult<Arc<dyn EmbeddingEngine>> {
-    Ok(Arc::new(Model2VecEmbedder::load(&config.model_path).map_err(verr)?))
+    Ok(Arc::new(
+        Model2VecEmbedder::load(&config.model_path).map_err(verr)?,
+    ))
 }
 
 /// Compiled-in factory for the `vector_search` plugin.
@@ -90,7 +95,10 @@ impl VectorSearchPlugin {
     /// without a model file to hand and without any network access — see
     /// `turbovault_vector::embedding::testing` for a ready-made fake.
     pub fn with_embedder_factory(
-        factory: impl Fn(&VectorConfig) -> PluginResult<Arc<dyn EmbeddingEngine>> + Send + Sync + 'static,
+        factory: impl Fn(&VectorConfig) -> PluginResult<Arc<dyn EmbeddingEngine>>
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self {
             embedder_factory: Arc::new(factory),
@@ -213,7 +221,10 @@ impl EngineHandle {
                 .unwrap_or(1),
             None => 1,
         };
-        index_engine.restore(notes, next_chunk_id).await.map_err(verr)?;
+        index_engine
+            .restore(notes, next_chunk_id)
+            .await
+            .map_err(verr)?;
 
         if let Some(bytes) = self.storage.get(vault, MANIFEST_KEY).await?
             && let Ok(manifest) = serde_json::from_slice::<HashMap<String, NoteListing>>(&bytes)
@@ -229,7 +240,12 @@ impl EngineHandle {
     /// between the note write and the manifest write, the note is simply
     /// re-checked (and, via its own content hash, a no-op) on the next
     /// reconcile — the other order could permanently skip a real change.
-    async fn persist_note(&self, vault: &str, path: &str, index_engine: &IndexEngine) -> PluginResult<()> {
+    async fn persist_note(
+        &self,
+        vault: &str,
+        path: &str,
+        index_engine: &IndexEngine,
+    ) -> PluginResult<()> {
         match index_engine.snapshot_note(path).await {
             Some(record) => {
                 let bytes = serde_json::to_vec(&record)
@@ -243,7 +259,8 @@ impl EngineHandle {
 
     async fn persist_manifest(&self, vault: &str) -> PluginResult<()> {
         let seen = self.seen.lock().await;
-        let bytes = serde_json::to_vec(&*seen).map_err(|error| PluginError::internal(error.to_string()))?;
+        let bytes =
+            serde_json::to_vec(&*seen).map_err(|error| PluginError::internal(error.to_string()))?;
         drop(seen);
         self.storage.put(vault, MANIFEST_KEY, &bytes).await
     }
@@ -254,7 +271,8 @@ impl EngineHandle {
             dims: index_engine.dims(),
             next_chunk_id: index_engine.next_chunk_id(),
         };
-        let bytes = serde_json::to_vec(&meta).map_err(|error| PluginError::internal(error.to_string()))?;
+        let bytes =
+            serde_json::to_vec(&meta).map_err(|error| PluginError::internal(error.to_string()))?;
         self.storage.put(vault, META_KEY, &bytes).await
     }
 
@@ -269,16 +287,26 @@ impl EngineHandle {
         let active = self.vault.active_vault().await?;
         let index_engine = self.engine_for(&active).await?;
         let current = self.vault.list_notes_detailed(&active.name).await?;
-        let current: HashMap<String, NoteListing> =
-            current.into_iter().map(|listing| (listing.path.clone(), listing)).collect();
+        let current: HashMap<String, NoteListing> = current
+            .into_iter()
+            .map(|listing| (listing.path.clone(), listing))
+            .collect();
 
         let seen = self.seen.lock().await;
         let to_check: Vec<String> = current
             .iter()
-            .filter(|(path, listing)| !seen.get(*path).is_some_and(|previous| listing.looks_unchanged_from(previous)))
+            .filter(|(path, listing)| {
+                !seen
+                    .get(*path)
+                    .is_some_and(|previous| listing.looks_unchanged_from(previous))
+            })
             .map(|(path, _)| path.clone())
             .collect();
-        let gone: Vec<String> = seen.keys().filter(|path| !current.contains_key(*path)).cloned().collect();
+        let gone: Vec<String> = seen
+            .keys()
+            .filter(|path| !current.contains_key(*path))
+            .cloned()
+            .collect();
         drop(seen);
 
         if to_check.is_empty() && gone.is_empty() {
@@ -294,10 +322,14 @@ impl EngineHandle {
                     .map_err(verr)?;
                 if did_change {
                     changed += 1;
-                    self.persist_note(&active.name, &snapshot.path, index_engine).await?;
+                    self.persist_note(&active.name, &snapshot.path, index_engine)
+                        .await?;
                 }
                 if let Some(listing) = current.get(&snapshot.path) {
-                    self.seen.lock().await.insert(snapshot.path.clone(), listing.clone());
+                    self.seen
+                        .lock()
+                        .await
+                        .insert(snapshot.path.clone(), listing.clone());
                 }
             }
         }
@@ -357,7 +389,10 @@ impl VectorSearchProvider {
             .and_then(Value::as_u64)
             .map(|limit| limit.clamp(1, 100) as usize)
             .unwrap_or(10);
-        let hybrid = arguments.get("hybrid").and_then(Value::as_bool).unwrap_or(true);
+        let hybrid = arguments
+            .get("hybrid")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
 
         // Reconcile before serving, the same contract the host's own derived
         // reads follow: a search answers from state at least as fresh as the
@@ -365,7 +400,10 @@ impl VectorSearchProvider {
         // happened to have applied already.
         self.handle.reconcile().await?;
         let index_engine = self.handle.engine().await?;
-        let results = index_engine.search(query, limit, hybrid).await.map_err(verr)?;
+        let results = index_engine
+            .search(query, limit, hybrid)
+            .await
+            .map_err(verr)?;
         ok_json(json!({
             "query": query,
             "hybrid": hybrid,
@@ -549,7 +587,12 @@ mod tests {
     #[async_trait]
     impl PluginStore for FakeStore {
         async fn get(&self, vault: &str, key: &str) -> PluginResult<Option<Vec<u8>>> {
-            Ok(self.data.lock().unwrap().get(&(vault.to_string(), key.to_string())).cloned())
+            Ok(self
+                .data
+                .lock()
+                .unwrap()
+                .get(&(vault.to_string(), key.to_string()))
+                .cloned())
         }
 
         async fn put(&self, vault: &str, key: &str, value: &[u8]) -> PluginResult<()> {
@@ -561,7 +604,10 @@ mod tests {
         }
 
         async fn delete(&self, vault: &str, key: &str) -> PluginResult<()> {
-            self.data.lock().unwrap().remove(&(vault.to_string(), key.to_string()));
+            self.data
+                .lock()
+                .unwrap()
+                .remove(&(vault.to_string(), key.to_string()));
             Ok(())
         }
 
@@ -589,7 +635,10 @@ mod tests {
     impl FakeVault {
         fn put_note(&self, path: &str, content: &str) {
             let observed_at = self.clock.fetch_add(1, Ordering::SeqCst);
-            self.notes.lock().unwrap().insert(path.to_string(), (content.to_string(), observed_at));
+            self.notes
+                .lock()
+                .unwrap()
+                .insert(path.to_string(), (content.to_string(), observed_at));
         }
 
         fn remove_note(&self, path: &str) {
@@ -621,15 +670,25 @@ mod tests {
 
         async fn read_note(&self, _vault: &str, path: &str) -> PluginResult<NoteSnapshot> {
             let notes = self.notes.lock().unwrap();
-            let (content, _) = notes.get(path).ok_or_else(|| PluginError::not_found(path.to_string()))?;
+            let (content, _) = notes
+                .get(path)
+                .ok_or_else(|| PluginError::not_found(path.to_string()))?;
             Ok(NoteSnapshot::new(VAULT, path, content.clone(), "v1"))
         }
 
-        async fn read_notes(&self, _vault: &str, paths: &[String]) -> PluginResult<Vec<NoteSnapshot>> {
+        async fn read_notes(
+            &self,
+            _vault: &str,
+            paths: &[String],
+        ) -> PluginResult<Vec<NoteSnapshot>> {
             let notes = self.notes.lock().unwrap();
             Ok(paths
                 .iter()
-                .filter_map(|path| notes.get(path).map(|(content, _)| NoteSnapshot::new(VAULT, path, content.clone(), "v1")))
+                .filter_map(|path| {
+                    notes
+                        .get(path)
+                        .map(|(content, _)| NoteSnapshot::new(VAULT, path, content.clone(), "v1"))
+                })
                 .collect())
         }
 
@@ -637,7 +696,11 @@ mod tests {
             Err(PluginError::unavailable("FakeVault is read-only"))
         }
 
-        async fn read_config(&self, _vault: &str, _relative_path: &str) -> PluginResult<Option<Vec<u8>>> {
+        async fn read_config(
+            &self,
+            _vault: &str,
+            _relative_path: &str,
+        ) -> PluginResult<Option<Vec<u8>>> {
             Ok(None)
         }
     }
@@ -647,11 +710,17 @@ mod tests {
         VaultApi::new(host, identity)
     }
 
-    fn handle_with(store: Arc<FakeStore>, vault: Arc<FakeVault>, embedder_calls: Arc<CountingEmbedder>) -> EngineHandle {
+    fn handle_with(
+        store: Arc<FakeStore>,
+        vault: Arc<FakeVault>,
+        embedder_calls: Arc<CountingEmbedder>,
+    ) -> EngineHandle {
         EngineHandle {
             vault: vault_api(vault),
             storage: PluginStorage::new(store),
-            embedder_factory: Arc::new(move |_config: &VectorConfig| Ok(Arc::clone(&embedder_calls) as Arc<dyn EmbeddingEngine>)),
+            embedder_factory: Arc::new(move |_config: &VectorConfig| {
+                Ok(Arc::clone(&embedder_calls) as Arc<dyn EmbeddingEngine>)
+            }),
             engine: OnceCell::new(),
             seen: Mutex::new(HashMap::new()),
         }
@@ -692,7 +761,11 @@ mod tests {
         vault.put_note("note.md", NOTE_CONTENT);
 
         let embedder = Arc::new(CountingEmbedder::new(DIMS));
-        let handle = handle_with(Arc::clone(&store), Arc::clone(&vault), Arc::clone(&embedder));
+        let handle = handle_with(
+            Arc::clone(&store),
+            Arc::clone(&vault),
+            Arc::clone(&embedder),
+        );
         handle.reconcile().await.expect("initial reconcile");
         let embedded_before_restart = embedder.count();
         assert!(embedded_before_restart > 0);
@@ -706,9 +779,16 @@ mod tests {
         let stats = index_engine.stats().await;
         assert_eq!(stats.indexed_notes, 1);
         assert_eq!(stats.indexed_chunks, 1);
-        assert_eq!(restarted_embedder.count(), 0, "restore must not call the embedder");
+        assert_eq!(
+            restarted_embedder.count(),
+            0,
+            "restore must not call the embedder"
+        );
 
-        let hits = index_engine.search(NOTE_CONTENT, 5, false).await.expect("search");
+        let hits = index_engine
+            .search(NOTE_CONTENT, 5, false)
+            .await
+            .expect("search");
         assert_eq!(hits[0].path, "note.md");
     }
 
@@ -720,12 +800,24 @@ mod tests {
         let embedder = Arc::new(CountingEmbedder::new(DIMS));
         let handle = handle_with(Arc::clone(&store), Arc::clone(&vault), embedder);
         handle.reconcile().await.expect("index it first");
-        assert!(store.get(VAULT, &note_key("note.md")).await.unwrap().is_some());
+        assert!(
+            store
+                .get(VAULT, &note_key("note.md"))
+                .await
+                .unwrap()
+                .is_some()
+        );
 
         vault.remove_note("note.md");
         let changed = handle.reconcile().await.expect("reconcile after removal");
         assert_eq!(changed, 1);
-        assert!(store.get(VAULT, &note_key("note.md")).await.unwrap().is_none());
+        assert!(
+            store
+                .get(VAULT, &note_key("note.md"))
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         let active = handle.vault.active_vault().await.unwrap();
         let index_engine = handle.engine_for(&active).await.unwrap();
@@ -764,10 +856,17 @@ mod tests {
             worker: Mutex::new(None),
         };
         let error = provider
-            .call_tool("search", json!({"query": "   "}), PluginRequestContext::new("req"))
+            .call_tool(
+                "search",
+                json!({"query": "   "}),
+                PluginRequestContext::new("req"),
+            )
             .await
             .expect_err("empty query must be rejected");
-        assert_eq!(error.code, turbovault_plugin_api::PluginErrorCode::InvalidInput);
+        assert_eq!(
+            error.code,
+            turbovault_plugin_api::PluginErrorCode::InvalidInput
+        );
     }
 
     #[tokio::test]
@@ -793,7 +892,11 @@ mod tests {
         assert_eq!(before["indexed_notes"], 0);
 
         provider
-            .call_tool("search", json!({"query": "content"}), PluginRequestContext::new("req"))
+            .call_tool(
+                "search",
+                json!({"query": "content"}),
+                PluginRequestContext::new("req"),
+            )
             .await
             .expect("search builds the engine");
 
@@ -828,7 +931,9 @@ mod tests {
         hooks
             .publish(
                 VAULT,
-                turbovault_plugin_api::HookEvent::FileCreated { path: "second.md".to_string() },
+                turbovault_plugin_api::HookEvent::FileCreated {
+                    path: "second.md".to_string(),
+                },
                 None,
                 None,
                 turbovault_plugin_api::EventAttribution::ExternalOrUnknown,

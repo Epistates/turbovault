@@ -45,7 +45,11 @@ async fn harness() -> (tempfile::TempDir, ObsidianMcpServer) {
     let config = VaultConfig::builder("vector-e2e", temp.path())
         .build()
         .expect("vault config");
-    server.multi_vault().add_vault(config).await.expect("register vault");
+    server
+        .multi_vault()
+        .add_vault(config)
+        .await
+        .expect("register vault");
     server
         .multi_vault()
         .set_active_vault("vector-e2e")
@@ -60,8 +64,15 @@ async fn vector_search_tools_are_namespaced_and_searchable() {
     let ctx = RequestContext::new();
 
     let advertised = server.list_tools();
-    for name in ["vector_search_search", "vector_search_reindex", "vector_search_status"] {
-        assert!(advertised.iter().any(|tool| tool.name == name), "missing {name}");
+    for name in [
+        "vector_search_search",
+        "vector_search_reindex",
+        "vector_search_status",
+    ] {
+        assert!(
+            advertised.iter().any(|tool| tool.name == name),
+            "missing {name}"
+        );
     }
 
     server
@@ -130,7 +141,11 @@ async fn vector_search_status_reflects_index_growth_without_forcing_a_build() {
     // vector_search_search reconciles before answering, so this alone builds
     // and populates the engine; no explicit reindex needed.
     server
-        .call_tool("vector_search_search", serde_json::json!({"query": "content"}), &ctx)
+        .call_tool(
+            "vector_search_search",
+            serde_json::json!({"query": "content"}),
+            &ctx,
+        )
         .await
         .expect("search triggers reconcile");
 
@@ -158,7 +173,11 @@ async fn vector_search_reindex_forces_a_full_rebuild() {
         .await
         .expect("write");
     server
-        .call_tool("vector_search_search", serde_json::json!({"query": "content"}), &ctx)
+        .call_tool(
+            "vector_search_search",
+            serde_json::json!({"query": "content"}),
+            &ctx,
+        )
         .await
         .expect("initial index");
 
@@ -229,5 +248,10 @@ async fn vector_search_reacts_to_writes_made_through_a_different_tool() {
 #[tokio::test]
 async fn compiling_in_the_feature_does_not_by_itself_advertise_the_tools() {
     let server = ObsidianMcpServer::new().expect("provider composition");
-    assert!(!server.list_tools().iter().any(|tool| tool.name.starts_with("vector_search_")));
+    assert!(
+        !server
+            .list_tools()
+            .iter()
+            .any(|tool| tool.name.starts_with("vector_search_"))
+    );
 }

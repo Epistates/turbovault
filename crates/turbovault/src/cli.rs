@@ -110,6 +110,11 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
 /// with no individual plugin feature, mounts nothing. See
 /// `mounts_no_plugins_without_a_plugin_feature` below.
 #[cfg(feature = "plugin-api")]
+#[allow(
+    clippy::vec_init_then_push,
+    reason = "each plugin feature conditionally pushes its own entry; with none enabled this \
+              is legitimately Vec::new() and nothing else, which vec![] cannot express"
+)]
 fn compiled_in_plugins() -> Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>> {
     #[allow(unused_mut)]
     let mut plugins: Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>> = Vec::new();
