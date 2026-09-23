@@ -356,19 +356,51 @@
       {
         "blocks": [
           {
-            "content": "outer item",
-            "inline": [
+            "items": [
               {
-                "type": "text",
-                "value": "outer item"
+                "blocks": [
+                  {
+                    "items": [
+                      {
+                        "checked": null,
+                        "content": "deeper item",
+                        "inline": [
+                          {
+                            "type": "text",
+                            "value": "deeper item"
+                          }
+                        ]
+                      }
+                    ],
+                    "ordered": false,
+                    "type": "list"
+                  }
+                ],
+                "checked": null,
+                "content": "nested item",
+                "inline": [
+                  {
+                    "type": "text",
+                    "value": "nested item"
+                  },
+                  {
+                    "type": "text",
+                    "value": "deeper item"
+                  }
+                ]
               }
             ],
-            "type": "paragraph"
+            "ordered": false,
+            "type": "list"
           }
         ],
         "checked": null,
-        "content": "  nested item\n    deeper item",
+        "content": "outer item",
         "inline": [
+          {
+            "type": "text",
+            "value": "outer item"
+          },
           {
             "type": "text",
             "value": "nested item"
@@ -376,10 +408,6 @@
           {
             "type": "text",
             "value": "deeper item"
-          },
-          {
-            "type": "text",
-            "value": "outer item"
           }
         ]
       },
@@ -393,6 +421,82 @@
           }
         ]
       },
+      {
+        "blocks": [
+          {
+            "items": [
+              {
+                "checked": true,
+                "content": "nested task",
+                "inline": [
+                  {
+                    "type": "text",
+                    "value": "nested task"
+                  }
+                ]
+              }
+            ],
+            "ordered": false,
+            "type": "list"
+          }
+        ],
+        "checked": false,
+        "content": "outer task",
+        "inline": [
+          {
+            "type": "text",
+            "value": "outer task"
+          },
+          {
+            "type": "text",
+            "value": "nested task"
+          }
+        ]
+      }
+    ],
+    "ordered": false,
+    "type": "list"
+  },
+  {
+    "items": [
+      {
+        "blocks": [
+          {
+            "items": [
+              {
+                "checked": null,
+                "content": "nested ordered",
+                "inline": [
+                  {
+                    "type": "text",
+                    "value": "nested ordered"
+                  }
+                ]
+              }
+            ],
+            "ordered": true,
+            "type": "list"
+          }
+        ],
+        "checked": null,
+        "content": "outer ordered",
+        "inline": [
+          {
+            "type": "text",
+            "value": "outer ordered"
+          },
+          {
+            "type": "text",
+            "value": "nested ordered"
+          }
+        ]
+      }
+    ],
+    "ordered": true,
+    "type": "list"
+  },
+  {
+    "items": [
       {
         "checked": null,
         "content": "loose one",
@@ -459,9 +563,9 @@
         "blocks": [
           {
             "content": "in_a_list_item()",
-            "end_line": 64,
+            "end_line": 70,
             "language": "py",
-            "start_line": 62,
+            "start_line": 68,
             "type": "code"
           }
         ],
@@ -588,9 +692,9 @@
       },
       {
         "content": "fence_after_a_list_in_a_callout();",
-        "end_line": 75,
+        "end_line": 81,
         "language": "rust",
-        "start_line": 73,
+        "start_line": 79,
         "type": "code"
       }
     ],
@@ -698,8 +802,26 @@
       {
         "items": [
           {
+            "blocks": [
+              {
+                "items": [
+                  {
+                    "checked": null,
+                    "content": "quoted nested",
+                    "inline": [
+                      {
+                        "type": "text",
+                        "value": "quoted nested"
+                      }
+                    ]
+                  }
+                ],
+                "ordered": false,
+                "type": "list"
+              }
+            ],
             "checked": null,
-            "content": "quoted outer\n  quoted nested",
+            "content": "quoted outer",
             "inline": [
               {
                 "type": "text",
@@ -733,9 +855,9 @@
       },
       {
         "content": "fence_after_a_paragraph_in_a_quote",
-        "end_line": 93,
+        "end_line": 99,
         "language": "sh",
-        "start_line": 91,
+        "start_line": 97,
         "type": "code"
       }
     ],
@@ -746,9 +868,9 @@
     "blocks": [
       {
         "content": "fence_first_in_a_quote",
-        "end_line": 97,
+        "end_line": 103,
         "language": "sh",
-        "start_line": 95,
+        "start_line": 101,
         "type": "code"
       },
       {
@@ -817,9 +939,9 @@
             "blocks": [
               {
                 "content": "fence_inside_a_quoted_item",
-                "end_line": 109,
+                "end_line": 115,
                 "language": "sh",
-                "start_line": 107,
+                "start_line": 113,
                 "type": "code"
               }
             ],
@@ -920,9 +1042,9 @@
   },
   {
     "content": "fence with no language, after the details block",
-    "end_line": 129,
+    "end_line": 135,
     "language": null,
-    "start_line": 127,
+    "start_line": 133,
     "type": "code"
   },
   {
