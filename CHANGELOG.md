@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The SQL tables are filled with bound parameters.** Note paths, tags, link targets and frontmatter reached GlueSQL spliced into `INSERT` text with quotes doubled by hand. GlueSQL 0.20 binds `$1`-style parameters, so every value from the vault now goes in as a value and none of it is ever parsed as SQL.
 
+### Performance
+
+- **A write no longer costs the next search a full index rebuild.** Every write updated the search index in place through the manager's change-listener, and then evicted it anyway, so the next `search` rebuilt it by parsing every note in the vault. The eviction dated from before the listener ran on the direct backend. It is gone, and new tests search immediately after a write, edit, move and delete on the direct backend to hold the listener to it.
+
+- **`find_duplicates` scores a candidate pair directly.** It ranked the entire vault from one note to read off a single other note's score, once per candidate pair, which is quadratic in the vault on top of the pairwise fingerprint pass. The similarity engine now scores one pair from the two notes' own vectors, and finds a note by path through an index rather than a scan.
+
+- **`quick_health_check` suggests fixes once per missing target.** Every broken link re-listed and re-lowercased every note to suggest replacements, so the check meant to be quick grew with broken links times notes. Note names are prepared once per report and each missing target is looked up once.
+
+- **Startup reads notes concurrently.** `initialize` awaited every note's read in turn. Up to 64 are now in flight, returned in scan order so the cache and graph are built exactly as before.
+
 ### Fixed
 
 - **A panic in a tool fails that call instead of the whole server.** Release builds set `panic = "abort"`, so the one `catch_unwind` in the codebase, around plugin calls, could never catch anything in a shipped binary, and a panic anywhere in a tool ended the process and every client's session with it. Release now unwinds, and the server converts a panic in any tool, core or plugin, into an error for that one request.
