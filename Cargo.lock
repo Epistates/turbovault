@@ -5127,7 +5127,6 @@ dependencies = [
  "turbovault-graph",
  "turbovault-parser",
  "unicode-normalization",
- "uuid",
  "walkdir",
 ]
 
