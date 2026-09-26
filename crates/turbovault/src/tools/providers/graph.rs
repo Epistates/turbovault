@@ -369,12 +369,16 @@ impl GraphProvider {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
             {
                 let file_str = manager.relative_path(file);
+                // `file_str` is already `/`-separated (manager.relative_path),
+                // so `parent` is too. Windows path parsing accepts `/` as a
+                // separator, and `Path::parent` slices rather than
+                // re-renders, so no further conversion is needed here.
                 let folder = std::path::Path::new(&file_str)
                     .parent()
                     .filter(|parent| !parent.as_os_str().is_empty())
                     .map_or_else(
                         || "root".to_string(),
-                        |parent| parent.to_string_lossy().replace('\\', "/"),
+                        |parent| parent.to_string_lossy().into_owned(),
                     );
                 folders.entry(folder).or_default().push(file_str);
             }

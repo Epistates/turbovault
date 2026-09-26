@@ -13,6 +13,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A diff is reported as line multisets rather than positionally, so an inserted block is one entry instead of cascading through everything below it. Re-bless with `UPDATE_PARSER_SNAPSHOT=1`, matching the existing `UPDATE_TOOL_CATALOG` fixture. Alongside it, every reported code position is checked against the fixture itself: a line a block claims has to actually open or close a fence, which is an assertion about correctness rather than about not having changed.
 
+### Changed
+
+- **Dependencies brought current.** TurboMCP 3.4.0, GlueSQL 0.20, and the lockfile refreshed across the board. GlueSQL 0.20 drops rkyv 0.7, which was the one advisory `cargo audit` had to ignore (RUSTSEC-2026-0235), so the ignore list is empty again.
+
+- **The SQL tables are filled with bound parameters.** Note paths, tags, link targets and frontmatter reached GlueSQL spliced into `INSERT` text with quotes doubled by hand. GlueSQL 0.20 binds `$1`-style parameters, so every value from the vault now goes in as a value and none of it is ever parsed as SQL.
+
+### Performance
+
+- **A write no longer costs the next search a full index rebuild.** Every write updated the search index in place through the manager's change-listener, and then evicted it anyway, so the next `search` rebuilt it by parsing every note in the vault. The eviction dated from before the listener ran on the direct backend. It is gone, and new tests search immediately after a write, edit, move and delete on the direct backend to hold the listener to it.
+
+- **`find_duplicates` scores a candidate pair directly.** It ranked the entire vault from one note to read off a single other note's score, once per candidate pair, which is quadratic in the vault on top of the pairwise fingerprint pass. The similarity engine now scores one pair from the two notes' own vectors, and finds a note by path through an index rather than a scan.
+
+- **`quick_health_check` suggests fixes once per missing target.** Every broken link re-listed and re-lowercased every note to suggest replacements, so the check meant to be quick grew with broken links times notes. Note names are prepared once per report and each missing target is looked up once.
+
+- **Startup reads notes concurrently.** `initialize` awaited every note's read in turn. Up to 64 are now in flight, returned in scan order so the cache and graph are built exactly as before.
+
 ### Fixed
 
 - **A nested list is nested, not flattened into the parent item's text** ([#79](https://github.com/Epistates/turbovault/issues/79)). `- [ ] outer` / `  - [x] inner` reported one item, `ListItem { checked: Some(false), content: "outer\n  [x] inner", blocks: [] }`, with no `ContentBlock::List` anywhere to hold the inner item. The parser tracked how deep inside a list it was, but every item still landed in one shared top-level buffer, so a nested item's marker and text were hand-flattened into indented text and appended to the *parent* item's own `content`. That lost the inner marker (a nested bullet and a nested ordered item both just became indentation, so they were indistinguishable), the source indent (always rewritten to two spaces a level regardless of what was written), and a nested item's own continuation paragraph, which had nowhere to go but the outer item's blocks.
@@ -27,6 +43,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Introduced in `main` by the line-accounting fix below and never released. The contract snapshot did not catch it because the fixture had no continuation block inside a quoted item; it does now, along with a fence in one and a heading that is only an image.
 
+- **A panic in a tool fails that call instead of the whole server.** Release builds set `panic = "abort"`, so the one `catch_unwind` in the codebase, around plugin calls, could never catch anything in a shipped binary, and a panic anywhere in a tool ended the process and every client's session with it. Release now unwinds, and the server converts a panic in any tool, core or plugin, into an error for that one request.
+
+- **Two tool inputs no longer panic.** `query_metadata` with an unterminated quote (`status: "`, or `tags: contains(")`) sliced past the end of its own input. `edit_note` quoted the first hundred bytes of an unmatched SEARCH block in its error, and cut a character in half whenever byte 100 fell inside one, so an ordinary miss in any non-English note panicked while reporting itself.
+
+- **A fuzzy edit in a CRLF file replaces exactly what it matched.** The whitespace-tolerant and indentation-tolerant matchers rebuilt byte offsets assuming every line ends in one byte. A CRLF line ends in two, so each one above the match moved the splice point a byte early and left a fragment of the old text behind, or landed inside a character and panicked. Offsets are now measured from the text.
+
+- **Writes are durable, and keep the file's permissions.** There were four temp-then-rename implementations (the direct backend, git materialization, rollback, plugin storage), none of which synced to disk, so a crash just after a reported write could lose it, and none of which kept the replaced file's mode. Rollback also wrote through `note.tmp` for every `note.md`, overwriting and then removing a real note of that name. All four now share one `write_atomic` that writes a unique sibling, keeps the original's permissions, syncs the file and its directory, and cleans up after any failure.
+
+- **An unreadable file is an error, not a new one.** The direct backend read a file's previous contents for the audit log with `.ok()`, so any read failure looked like absence: an overwrite was recorded as a create and the pre-image a rollback needs was lost.
+
 - **A block inside a blockquote reports the line it was written on.** 2.1.0 numbered a quote's blocks by re-parsing its reconstructed text from the quote's own line, which is only right when the reconstruction is the same height as the source. It was not: a paragraph followed by a list with no blank line between them, which is the ordinary callout shape, gained a separator the source never had and pushed everything below it one line down. The buffer now pads to each block's real source line instead of inserting a fixed separator, so the reconstruction matches the source line for line.
 
   Found by the contract snapshot on its first run, against a callout whose fence claimed line 72 while sitting on 71.
@@ -34,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The release publish job skips members that are already on crates.io.** `cargo publish --workspace` refuses to run at all when any member's version is already up, aborting before it uploads anything, so publishing 2.1.0 failed on `turbovault-plugin-api@0.1.0`. That crate is versioned on its own and had not changed, which will be the normal case for it across a release. A retry after a partial run hits the same wall for the crates that already landed.
 
   The job now takes the list from a dry run, which reports those as warnings rather than failing, and passes each one as `--exclude`. No hand-maintained list, cargo still derives the order and waits on the index, and a partial run genuinely resumes now. The claim that it already did was checked against `--dry-run` output, where "already exists" is only a warning.
+
+- **Vault paths render with `/` on every platform, not just the one that produced them.** Every list-position and lookup path across the tool surface (backlinks, broken links, hub/dead-end/cycle/component/isolated-cluster detection, duplicate and template lookups, the SQL engine's session and inspect paths, search and similarity indexing, batch backlink rewrites) was built by handing a `Path` straight to `to_string_lossy()`, or in a couple of places replacing `'\\'` unconditionally. On Windows that returns backslash-separated text, which does not match the `/`-separated paths a client sends over MCP; an unconditional backslash replace also corrupts a Unix filename that legitimately contains one, since `\` is a legal character there. The search index's own key was built one of those ways while `apply_changes`'s lookup used the other, so on Windows every edit reindexed the same note as a stale duplicate instead of updating it in place. `find_similar_notes`'s self-exclusion compared the two spellings directly, so on Windows a note never matched its own path and always ranked itself as its own most-similar result.
+
+  A single `path_to_slash` helper (`turbovault-core::utils`) now handles this everywhere: it replaces `MAIN_SEPARATOR` only when that separator is not already `/`, so Unix is a true no-op and Windows gets the rewrite it always needed. `VaultManager::relative_path` is the vault-facing entry point and now delegates to it; call sites building their own relative paths route through one or the other.
+
+- **A missing file reported the OS's own error text instead of TurboVault's "not found" message.** `read_file`, `parse_file`, both write backends' delete and rename, and rollback's undo-create path all mapped `tokio::fs`'s `io::Error` straight through `Error::io`, so a `NotFound` came back as "No such file or directory (os error 2)" on Unix, or the Windows equivalent: OS- and locale-specific text with nothing stable for a client to match against. `Error::io_at(path, err)` now translates `ErrorKind::NotFound` into the existing `Error::FileNotFound`, so callers get the same message as every other missing-file case, and passes every other error kind through unchanged.
 
 ## [2.1.0] - 2026-09-13
 

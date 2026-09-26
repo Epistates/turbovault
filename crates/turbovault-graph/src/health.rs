@@ -172,6 +172,16 @@ impl<'a> HealthAnalyzer<'a> {
     /// Find all broken links in the vault
     fn find_broken_links(&self) -> Result<Vec<BrokenLink>> {
         let mut broken = Vec::new();
+        let stems = self.note_stems();
+        // Broken links cluster on a few missing targets, so each target's
+        // suggestions are worked out once.
+        let mut suggested: HashMap<String, Vec<String>> = HashMap::new();
+        let mut suggest = |target: &str| {
+            suggested
+                .entry(target.to_string())
+                .or_insert_with(|| Self::suggest_targets(&stems, target))
+                .clone()
+        };
 
         // If we have access to raw file links, use those (more accurate)
         if let Some(files) = self.files {
@@ -179,7 +189,7 @@ impl<'a> HealthAnalyzer<'a> {
                 for link in links {
                     if !link.is_valid {
                         // Try to find similar targets for suggestions
-                        let suggestions = self.suggest_targets(&link.target);
+                        let suggestions = suggest(&link.target);
 
                         broken.push(BrokenLink {
                             source_file: source.clone(),
@@ -194,7 +204,7 @@ impl<'a> HealthAnalyzer<'a> {
             // Fall back to graph's unresolved links (links that couldn't be resolved)
             for (source, links) in self.graph.all_unresolved_links() {
                 for link in links {
-                    let suggestions = self.suggest_targets(&link.target);
+                    let suggestions = suggest(&link.target);
 
                     broken.push(BrokenLink {
                         source_file: source.clone(),
@@ -270,28 +280,29 @@ impl<'a> HealthAnalyzer<'a> {
         Ok(components.into_iter().filter(|c| c.len() > 1).collect())
     }
 
-    /// Suggest similar targets for a broken link
-    fn suggest_targets(&self, target: &str) -> Vec<String> {
-        let mut suggestions = Vec::new();
+    /// Every note's stem, as written and lowercased, for [`Self::suggest_targets`].
+    ///
+    /// Built once per report. Suggesting used to re-list and re-lowercase every
+    /// note for every broken link, so a check that is meant to be quick grew
+    /// with broken links times notes.
+    fn note_stems(&self) -> Vec<(String, String)> {
+        self.graph
+            .all_files()
+            .iter()
+            .filter_map(|path| path.file_stem().and_then(|s| s.to_str()))
+            .map(|stem| (stem.to_string(), stem.to_lowercase()))
+            .collect()
+    }
+
+    /// Suggest similar targets for a broken link, at most five.
+    fn suggest_targets(stems: &[(String, String)], target: &str) -> Vec<String> {
         let target_lower = target.to_lowercase();
-
-        for path in self.graph.all_files() {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let stem_lower = stem.to_lowercase();
-
-                // Check for similar names using basic string similarity
-                if stem_lower.contains(&target_lower) || target_lower.contains(&stem_lower) {
-                    suggestions.push(stem.to_string());
-                }
-
-                // Limit suggestions
-                if suggestions.len() >= 5 {
-                    break;
-                }
-            }
-        }
-
-        suggestions
+        stems
+            .iter()
+            .filter(|(_, lower)| lower.contains(&target_lower) || target_lower.contains(lower))
+            .map(|(stem, _)| stem.clone())
+            .take(5)
+            .collect()
     }
 
     /// Quick health check (just broken links and orphans)
@@ -520,7 +531,7 @@ mod tests {
         graph.add_file(&file2).unwrap();
 
         let analyzer = HealthAnalyzer::new(&graph);
-        let suggestions = analyzer.suggest_targets("similar");
+        let suggestions = HealthAnalyzer::suggest_targets(&analyzer.note_stems(), "similar");
 
         // Should find both files
         assert!(!suggestions.is_empty());

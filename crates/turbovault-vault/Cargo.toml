@@ -31,7 +31,6 @@ anyhow = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
-uuid = { workspace = true }
 futures = { workspace = true }
 
 # File editing & diff

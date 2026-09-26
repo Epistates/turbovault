@@ -23,7 +23,7 @@ impl SearchTools {
 
         Ok(backlinks
             .into_iter()
-            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+            .map(|p| turbovault_core::path_to_slash(&p))
             .collect())
     }
 
@@ -34,7 +34,7 @@ impl SearchTools {
 
         Ok(forward_links
             .into_iter()
-            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+            .map(|p| turbovault_core::path_to_slash(&p))
             .collect())
     }
 
@@ -45,7 +45,7 @@ impl SearchTools {
 
         Ok(related
             .into_iter()
-            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+            .map(|p| turbovault_core::path_to_slash(&p))
             .collect())
     }
 
@@ -65,10 +65,8 @@ impl SearchTools {
                         stack.push(path);
                     } else if let Some(name) = path.file_name().and_then(|n| n.to_str())
                         && name.contains(pattern)
-                        && let Ok(rel_path) = path.strip_prefix(vault_path)
-                        && let Some(rel_str) = rel_path.to_str()
                     {
-                        results.push(rel_str.to_string());
+                        results.push(self.manager.relative_path(&path));
                     }
                 }
             }

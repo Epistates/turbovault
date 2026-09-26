@@ -195,11 +195,15 @@ impl RollbackEngine {
 
         match entry.operation {
             OperationType::Create => {
-                // Undo create = delete
+                // Undo create = delete. The `exists()` check above already
+                // means a NotFound here is a race with something else
+                // removing the file between that check and this call, so
+                // translate it the same way as any other missing-file
+                // operation rather than leaking the OS's raw NotFound text.
                 if file_path.exists() {
                     tokio::fs::remove_file(&file_path)
                         .await
-                        .map_err(Error::io)?;
+                        .map_err(|e| Error::io_at(entry.path.clone(), e))?;
                     action_taken = "Deleted file (undoing create)".to_string();
                 } else {
                     action_taken = "File already absent — no action taken".to_string();
@@ -213,19 +217,16 @@ impl RollbackEngine {
 
                 let before_content = self.snapshot_store.retrieve(before_id).await?;
 
-                // Ensure parent directory exists
-                if let Some(parent) = file_path.parent() {
-                    tokio::fs::create_dir_all(parent).await.map_err(Error::io)?;
-                }
-
-                // Atomic write
-                let temp_path = file_path.with_extension("tmp");
-                tokio::fs::write(&temp_path, &before_content)
-                    .await
-                    .map_err(Error::io)?;
-                tokio::fs::rename(&temp_path, &file_path)
-                    .await
-                    .map_err(Error::io)?;
+                // Through the shared atomic write. This used to write through
+                // `note.tmp` for `note.md`, overwriting a real note of that
+                // name and then renaming it away.
+                let target = file_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    turbovault_core::write_atomic(&target, before_content.as_bytes())
+                })
+                .await
+                .map_err(|e| Error::Other(format!("rollback write task failed: {e}")))?
+                .map_err(Error::io)?;
 
                 action_taken = format!(
                     "Restored content from snapshot {} (undoing {})",

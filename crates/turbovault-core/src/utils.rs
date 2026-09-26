@@ -10,6 +10,29 @@ use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// Render `path` as a `/`-separated string, the spelling Obsidian vault paths
+/// (and this server's MCP surface) always use.
+///
+/// Only touches [`std::path::MAIN_SEPARATOR`], and only when it is not
+/// already `/`. On Unix that separator IS `/`, so this is a no-op, which
+/// matters because a backslash is a legal filename character there; an
+/// unconditional `.replace('\\', "/")` would corrupt a component that
+/// legitimately contains one. On Windows it rewrites the `\` the platform
+/// APIs return so a path looks identical regardless of which OS produced it.
+///
+/// A hand-rolled helper rather than the `path-slash` crate: the conversion
+/// is exactly this one conditional replace, small enough that a dependency
+/// (plus its `Path`/`PathBuf` extension-trait surface we would not use) buys
+/// nothing a doc comment doesn't already cover.
+pub fn path_to_slash(path: &Path) -> String {
+    let rendered = path.to_string_lossy();
+    if std::path::MAIN_SEPARATOR == '/' {
+        rendered.into_owned()
+    } else {
+        rendered.replace(std::path::MAIN_SEPARATOR, "/")
+    }
+}
+
 /// Encode bytes as lowercase hexadecimal.
 pub fn bytes_to_lower_hex(bytes: impl AsRef<[u8]>) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -199,6 +222,36 @@ mod tests {
     #[test]
     fn test_bytes_to_lower_hex() {
         assert_eq!(bytes_to_lower_hex([0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+    }
+
+    #[test]
+    fn path_to_slash_leaves_an_already_slashed_path_untouched() {
+        assert_eq!(path_to_slash(Path::new("a/b")), "a/b");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn path_to_slash_preserves_a_literal_backslash_in_a_unix_filename() {
+        // A backslash is a legal filename character on Unix. MAIN_SEPARATOR
+        // there is '/', so the conditional replace must be a no-op and leave
+        // this real filename intact rather than corrupt it.
+        assert_eq!(path_to_slash(Path::new(r"weird\name.md")), r"weird\name.md");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_to_slash_converts_backslashes_on_windows() {
+        assert_eq!(path_to_slash(Path::new(r"islands\a.md")), "islands/a.md");
+        assert_eq!(
+            path_to_slash(Path::new(r"C:\vault\guides\authentication.md")),
+            "C:/vault/guides/authentication.md"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_to_slash_leaves_an_already_slashed_windows_path_untouched() {
+        assert_eq!(path_to_slash(Path::new("a/b")), "a/b");
     }
 
     #[test]
