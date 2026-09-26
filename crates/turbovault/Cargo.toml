@@ -11,7 +11,8 @@ publish = true
 description = "Production-grade MCP server for Obsidian vault management - Transform your vault into an intelligent knowledge system for AI agents"
 documentation = "https://docs.rs/turbovault"
 readme = "README.md"
-keywords = ["mcp", "obsidian", "vault", "llm", "agent"]
+keywords.workspace = true
+categories.workspace = true
 include = [
   "src/",
   "tests/",

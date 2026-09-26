@@ -171,7 +171,7 @@ status:
 info:
     @echo "TurboVault - Rust TurboVault Server"
     @grep '^version' Cargo.toml | head -1 | sed 's/.*= *"/Version: /' | sed 's/"//'
-    @echo "Crates: 9 (core, audit, parser, graph, vault, batch, export, tools, binary)"
+    @echo "Crates: 12 (core, audit, git, parser, graph, vault, batch, export, sql, tools, plugin-api, binary)"
     @echo ""
     @echo "Rust version:"
     @rustc --version

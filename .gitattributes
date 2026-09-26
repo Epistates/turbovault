@@ -1,0 +1,4 @@
+# Check text out with LF on every platform. The snapshot fixtures (the tool
+# catalog, the parser contract) are compared byte for byte, and a Windows
+# checkout converting them to CRLF fails those tests on the line endings alone.
+* text=auto eol=lf

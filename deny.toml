@@ -1,0 +1,42 @@
+# cargo-deny configuration for TurboVault.
+#
+# CI runs `cargo deny check licenses bans sources`. Advisories are covered by
+# the existing `cargo audit` job in ci.yml, so the [advisories] section here
+# is left at its defaults rather than duplicating that gate.
+#
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    # webpki-root-certs ships Mozilla's CA bundle under this data license.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+# A "*" version requirement, not path dependencies (workspace members always
+# pin an explicit version alongside their path).
+wildcards = "deny"
+allow-workspace = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
