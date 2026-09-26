@@ -72,7 +72,6 @@ impl DuplicateTools {
         limit: usize,
     ) -> Result<Vec<DuplicateGroup>> {
         let files = self.manager.scan_vault().await?;
-        let vault_path = self.manager.vault_path().clone();
 
         // Build SimHash fingerprints for all files
         let mut fingerprints: Vec<DocFingerprint> = Vec::new();
@@ -82,11 +81,7 @@ impl DuplicateTools {
                 let plain = to_plain_text(&vault_file.content);
                 let fingerprint = compute_simhash(&plain);
 
-                let rel_path = file_path
-                    .strip_prefix(&vault_path)
-                    .unwrap_or(file_path)
-                    .to_string_lossy()
-                    .to_string();
+                let rel_path = self.manager.relative_path(file_path);
 
                 let title = vault_file
                     .headings
@@ -146,12 +141,11 @@ impl DuplicateTools {
             let path_i = fingerprints[*i].path.to_string_lossy().to_string();
             let path_j = fingerprints[*j].path.to_string_lossy().to_string();
 
-            // Use similarity engine for precise score
-            let results = sim_engine.find_similar_notes(&path_i, fingerprints.len());
-            let precise_score = results
-                .iter()
-                .find(|r| r.path == path_j)
-                .map(|r| r.score)
+            // Score this one pair. Ranking the whole vault from `path_i` to read
+            // off `path_j` made every candidate pair cost a pass over every
+            // note.
+            let precise_score = sim_engine
+                .pair_similarity(&path_i, &path_j)
                 .unwrap_or_else(|| {
                     // Fallback: compute from hamming distance
                     let hamming =

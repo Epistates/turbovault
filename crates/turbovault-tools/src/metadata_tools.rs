@@ -68,19 +68,26 @@ fn parse_query(pattern: &str) -> Result<QueryFilter> {
         let key = pattern[..colon_pos].trim();
         let rest = pattern[colon_pos + 1..].trim();
 
-        // Check for string literal
-        if rest.starts_with('"') && rest.ends_with('"') {
-            let value = rest[1..rest.len() - 1].to_string();
-            return Ok(QueryFilter::Equals(key.to_string(), Value::String(value)));
+        // Check for string literal. Strip the quotes one after the other: a
+        // lone `"` both starts and ends with one, and slicing both off at once
+        // panicked on it.
+        if let Some(value) = strip_quotes(rest) {
+            return Ok(QueryFilter::Equals(
+                key.to_string(),
+                Value::String(value.to_string()),
+            ));
         }
 
         // Check for contains()
-        if rest.starts_with("contains(") && rest.ends_with(")") {
-            let inner = &rest[9..rest.len() - 1];
-            if inner.starts_with('"') && inner.ends_with('"') {
-                let substring = inner[1..inner.len() - 1].to_string();
-                return Ok(QueryFilter::Contains(key.to_string(), substring));
-            }
+        if let Some(inner) = rest
+            .strip_prefix("contains(")
+            .and_then(|r| r.strip_suffix(')'))
+            && let Some(substring) = strip_quotes(inner)
+        {
+            return Ok(QueryFilter::Contains(
+                key.to_string(),
+                substring.to_string(),
+            ));
         }
     }
 
@@ -106,6 +113,12 @@ fn parse_query(pattern: &str) -> Result<QueryFilter> {
         "Unable to parse query pattern: {}",
         pattern
     )))
+}
+
+/// The text between a pair of double quotes, if `s` is exactly one quoted
+/// string.
+fn strip_quotes(s: &str) -> Option<&str> {
+    s.strip_prefix('"')?.strip_suffix('"')
 }
 
 /// Metadata tools for querying and extracting file metadata
@@ -465,6 +478,26 @@ fn extract_tags_from_value(value: Option<&Value>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lone `"` both starts and ends with a quote, so stripping one from
+    /// each end sliced `[1..0]` and panicked on the client's own input.
+    #[test]
+    fn an_unterminated_quote_is_a_parse_error_not_a_panic() {
+        for pattern in [r#"status:""#, r#"status: ""#, r#"tags: contains(")"#] {
+            assert!(
+                parse_query(pattern).is_err(),
+                "{pattern:?} should not parse"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_quoted_value_still_parses() {
+        let filter = parse_query(r#"status: """#).unwrap();
+        assert!(matches!(filter, QueryFilter::Equals(_, Value::String(ref s)) if s.is_empty()));
+        let filter = parse_query(r#"tags: contains("")"#).unwrap();
+        assert!(matches!(filter, QueryFilter::Contains(_, ref s) if s.is_empty()));
+    }
 
     #[test]
     fn test_parse_query_equals_string() {

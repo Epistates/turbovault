@@ -52,7 +52,7 @@ impl GraphTools {
             .broken_links
             .into_iter()
             .map(|bl| BrokenLinkInfo {
-                source_file: bl.source_file.to_string_lossy().to_string(),
+                source_file: turbovault_core::path_to_slash(&bl.source_file),
                 target: bl.target,
                 line: bl.line,
                 suggestions: bl.suggestions,
@@ -118,7 +118,7 @@ impl GraphTools {
         Ok(report
             .hub_notes
             .into_iter()
-            .map(|(path, count)| (path.to_string_lossy().to_string(), count))
+            .map(|(path, count)| (turbovault_core::path_to_slash(&path), count))
             .collect())
     }
 
@@ -133,7 +133,7 @@ impl GraphTools {
         Ok(report
             .dead_end_notes
             .into_iter()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| turbovault_core::path_to_slash(&p))
             .collect())
     }
 
@@ -148,7 +148,7 @@ impl GraphTools {
             .map(|cycle| {
                 cycle
                     .into_iter()
-                    .map(|p| p.to_string_lossy().to_string())
+                    .map(|p| turbovault_core::path_to_slash(&p))
                     .collect()
             })
             .collect())
@@ -165,7 +165,7 @@ impl GraphTools {
             .map(|component| {
                 component
                     .into_iter()
-                    .map(|p| p.to_string_lossy().to_string())
+                    .map(|p| turbovault_core::path_to_slash(&p))
                     .collect()
             })
             .collect())
@@ -185,7 +185,7 @@ impl GraphTools {
             .map(|cluster| {
                 cluster
                     .into_iter()
-                    .map(|p| p.to_string_lossy().to_string())
+                    .map(|p| turbovault_core::path_to_slash(&p))
                     .collect()
             })
             .collect())
