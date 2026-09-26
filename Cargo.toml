@@ -38,7 +38,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value", "preserve_order"] }
-yaml_serde = "0.10.4"  # Maintained serde_yaml fork from The YAML Organization
+yaml_serde = "0.10.7"  # Maintained serde_yaml fork from The YAML Organization
 schemars = "1.2"
 
 # Markdown Parsing (2025 diligence: see DEPENDENCY_DILIGENCE_2025.md)
@@ -65,7 +65,7 @@ anyhow = "1.0"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.24", features = ["v4", "serde"] }
+uuid = { version = "1.26", features = ["v4", "serde"] }
 dashmap = "6.2"
 
 # Configuration
@@ -80,25 +80,25 @@ criterion = "0.8"
 log = "0.4"
 
 # MCP server framework
-turbomcp = { version = "3.3.0", default-features = false }
-turbomcp-core = "3.3.0"
-turbomcp-protocol = "3.3.0"
-turbomcp-server = { version = "3.3.0", default-features = false }
-turbomcp-types = "3.3.0"
+turbomcp = { version = "3.4.0", default-features = false }
+turbomcp-core = "3.4.0"
+turbomcp-protocol = "3.4.0"
+turbomcp-server = { version = "3.4.0", default-features = false }
+turbomcp-types = "3.4.0"
 # Used by the wire-level e2e test. Declared here with the rest so a turbomcp
 # bump cannot leave the client behind, which is how it ended up driving a
 # 3.3.0 server from a 3.1.5 client.
-turbomcp-client = "3.3.0"
-turbomcp-transport = "3.3.0"
+turbomcp-client = "3.4.0"
+turbomcp-transport = "3.4.0"
 
 # SQL query engine (optional, for frontmatter SQL queries)
-gluesql = { version = "0.19", default-features = false, features = ["gluesql_memory_storage"] }
+gluesql = { version = "0.20", default-features = false, features = ["gluesql_memory_storage"] }
 
 # Search and Matching (Tier 1d: Replace hand-rolled implementations)
 tantivy = "0.26"           # Full-text search engine (Apache Lucene-inspired, production-grade)
 
 # File Editing & Diff (World-class fuzzy matching for LLM-generated edits)
-similar = { version = "3.1", features = ["inline"] }  # mitsuhiko's diff lib (used by insta)
+similar = { version = "3.2", features = ["inline"] }  # mitsuhiko's diff lib (used by insta)
 strsim = "0.11"           # Levenshtein distance for fuzzy matching (if similar insufficient)
 sha2 = "0.11"             # SHA-256 hashing for content validation
 unicode-normalization = "0.1.25"  # Unicode NFC normalization

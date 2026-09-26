@@ -1,7 +1,8 @@
 //! Core SQL engine: session management, table building, query execution
 
 use crate::convert::{json_type_name, payload_to_json};
-use gluesql::prelude::{Glue, MemoryStorage, Payload};
+use gluesql::params;
+use gluesql::prelude::{Glue, MemoryStorage, ParamLiteral, Payload};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,13 +41,12 @@ impl FrontmatterSqlEngine {
         let mut glue = Glue::new(storage);
 
         // Create all three tables
-        exec(&mut glue, "CREATE TABLE files").await?;
-        exec(&mut glue, "CREATE TABLE tags (path TEXT, tag TEXT)").await?;
+        exec(&mut glue, "CREATE TABLE files")?;
+        exec(&mut glue, "CREATE TABLE tags (path TEXT, tag TEXT)")?;
         exec(
             &mut glue,
             "CREATE TABLE links (source TEXT, target TEXT, link_type TEXT, is_valid BOOLEAN)",
-        )
-        .await?;
+        )?;
 
         let files = self.manager.scan_vault().await?;
         let vault_path = self.manager.vault_path();
@@ -83,11 +83,12 @@ impl FrontmatterSqlEngine {
                 if let Some(tags_val) = fm.data.get("tags") {
                     let tag_strings = extract_tag_strings(tags_val);
                     for tag in &tag_strings {
-                        let escaped_path = rel_path.replace('\'', "''");
-                        let escaped_tag = tag.replace('\'', "''");
-                        let sql =
-                            format!("INSERT INTO tags VALUES ('{escaped_path}', '{escaped_tag}')");
-                        if let Err(e) = exec(&mut glue, &sql).await {
+                        let inserted = exec_with(
+                            &mut glue,
+                            "INSERT INTO tags VALUES ($1, $2)",
+                            params![rel_path.as_str(), tag.as_str()],
+                        );
+                        if let Err(e) = inserted {
                             log::warn!("Tag insert error for {rel_path}: {e}");
                         } else {
                             tag_count += 1;
@@ -98,10 +99,12 @@ impl FrontmatterSqlEngine {
 
             let json_str = serde_json::to_string(&Value::Object(row))
                 .map_err(|e| Error::config_error(format!("JSON serialization error: {e}")))?;
-            let escaped = json_str.replace('\'', "''");
-            let insert_sql = format!("INSERT INTO files VALUES ('{escaped}')");
-
-            if let Err(e) = exec(&mut glue, &insert_sql).await {
+            let inserted = exec_with(
+                &mut glue,
+                "INSERT INTO files VALUES ($1)",
+                params![json_str],
+            );
+            if let Err(e) = inserted {
                 log::warn!("Skipping {rel_path}: insert error: {e}");
             }
         }
@@ -221,17 +224,19 @@ impl FrontmatterSqlEngine {
                 .strip_prefix(vault_path)
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| source_path.to_string_lossy().to_string());
-            let escaped_source = source_rel.replace('\'', "''");
 
             for link in links {
-                let escaped_target = link.target.replace('\'', "''");
-                let link_type = format!("{:?}", link.type_);
-                let is_valid = link.is_valid;
-
-                let sql = format!(
-                    "INSERT INTO links VALUES ('{escaped_source}', '{escaped_target}', '{link_type}', {is_valid})"
+                let inserted = exec_with(
+                    glue,
+                    "INSERT INTO links VALUES ($1, $2, $3, $4)",
+                    params![
+                        source_rel.as_str(),
+                        link.target.as_str(),
+                        format!("{:?}", link.type_),
+                        link.is_valid
+                    ],
                 );
-                if exec(glue, &sql).await.is_ok() {
+                if inserted.is_ok() {
                     count += 1;
                 }
             }
@@ -244,11 +249,7 @@ impl FrontmatterSqlEngine {
 impl SqlSession {
     /// Execute a SQL query against the pre-built tables.
     pub async fn query(&mut self, sql: &str) -> Result<Value> {
-        let payloads = self
-            .glue
-            .execute(sql)
-            .await
-            .map_err(|e| Error::config_error(format!("SQL error: {e}")))?;
+        let payloads = exec(&mut self.glue, sql)?;
 
         let result = if payloads.len() == 1 {
             payload_to_json(payloads.into_iter().next().unwrap())
@@ -292,9 +293,22 @@ fn extract_tag_strings(value: &Value) -> Vec<String> {
 }
 
 /// Execute a SQL statement, mapping errors to `turbovault_core::Error`.
-async fn exec(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>> {
-    glue.execute(sql)
-        .await
+fn exec(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>> {
+    exec_with(glue, sql, Vec::new())
+}
+
+/// Execute a SQL statement with `$1`, `$2`, ... bound to `params`.
+///
+/// Every value that comes from the vault goes through here rather than being
+/// spliced into the SQL text. A note path, tag, or link target is arbitrary
+/// text, and quoting it by hand is one missed character away from being read
+/// as SQL.
+fn exec_with(
+    glue: &mut Glue<MemoryStorage>,
+    sql: &str,
+    params: Vec<ParamLiteral>,
+) -> Result<Vec<Payload>> {
+    glue.execute_with_params(sql, params)
         .map_err(|e| Error::config_error(format!("SQL error: {e}")))
 }
 
@@ -302,28 +316,25 @@ async fn exec(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>>
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_schemaless_roundtrip() {
+    #[test]
+    fn test_schemaless_roundtrip() {
         let storage = MemoryStorage::default();
         let mut glue = Glue::new(storage);
 
-        exec(&mut glue, "CREATE TABLE test").await.unwrap();
+        exec(&mut glue, "CREATE TABLE test").unwrap();
         exec(
             &mut glue,
             r#"INSERT INTO test VALUES ('{"path": "note.md", "status": "active", "priority": 3}')"#,
         )
-        .await
         .unwrap();
         exec(
             &mut glue,
             r#"INSERT INTO test VALUES ('{"path": "other.md", "status": "draft"}')"#,
         )
-        .await
         .unwrap();
 
         let payloads = glue
             .execute("SELECT path, status FROM test WHERE status = 'active'")
-            .await
             .unwrap();
 
         assert_eq!(payloads.len(), 1);
@@ -335,34 +346,30 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_aggregation() {
+    #[test]
+    fn test_aggregation() {
         let storage = MemoryStorage::default();
         let mut glue = Glue::new(storage);
 
-        exec(&mut glue, "CREATE TABLE test").await.unwrap();
+        exec(&mut glue, "CREATE TABLE test").unwrap();
         exec(
             &mut glue,
             r#"INSERT INTO test VALUES ('{"status": "active"}')"#,
         )
-        .await
         .unwrap();
         exec(
             &mut glue,
             r#"INSERT INTO test VALUES ('{"status": "active"}')"#,
         )
-        .await
         .unwrap();
         exec(
             &mut glue,
             r#"INSERT INTO test VALUES ('{"status": "draft"}')"#,
         )
-        .await
         .unwrap();
 
         let payloads = glue
             .execute("SELECT status, COUNT(*) as cnt FROM test GROUP BY status ORDER BY cnt DESC")
-            .await
             .unwrap();
 
         if let Payload::Select { rows, .. } = &payloads[0] {
@@ -372,30 +379,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_structured_tags_table() {
+    #[test]
+    fn test_structured_tags_table() {
         let storage = MemoryStorage::default();
         let mut glue = Glue::new(storage);
 
-        exec(&mut glue, "CREATE TABLE tags (path TEXT, tag TEXT)")
-            .await
-            .unwrap();
-        exec(&mut glue, "INSERT INTO tags VALUES ('note.md', 'work')")
-            .await
-            .unwrap();
+        exec(&mut glue, "CREATE TABLE tags (path TEXT, tag TEXT)").unwrap();
+        exec(&mut glue, "INSERT INTO tags VALUES ('note.md', 'work')").unwrap();
         exec(
             &mut glue,
             "INSERT INTO tags VALUES ('note.md', 'important')",
         )
-        .await
         .unwrap();
-        exec(&mut glue, "INSERT INTO tags VALUES ('other.md', 'work')")
-            .await
-            .unwrap();
+        exec(&mut glue, "INSERT INTO tags VALUES ('other.md', 'work')").unwrap();
 
         let payloads = glue
             .execute("SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag ORDER BY cnt DESC")
-            .await
             .unwrap();
 
         if let Payload::Select { labels, rows } = &payloads[0] {
@@ -406,37 +405,30 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_join_files_and_tags() {
+    #[test]
+    fn test_join_files_and_tags() {
         let storage = MemoryStorage::default();
         let mut glue = Glue::new(storage);
 
-        exec(&mut glue, "CREATE TABLE files").await.unwrap();
-        exec(&mut glue, "CREATE TABLE tags (path TEXT, tag TEXT)")
-            .await
-            .unwrap();
+        exec(&mut glue, "CREATE TABLE files").unwrap();
+        exec(&mut glue, "CREATE TABLE tags (path TEXT, tag TEXT)").unwrap();
 
         exec(
             &mut glue,
             r#"INSERT INTO files VALUES ('{"path": "note.md", "status": "active"}')"#,
         )
-        .await
         .unwrap();
         exec(
             &mut glue,
             r#"INSERT INTO files VALUES ('{"path": "other.md", "status": "draft"}')"#,
         )
-        .await
         .unwrap();
-        exec(&mut glue, "INSERT INTO tags VALUES ('note.md', 'work')")
-            .await
-            .unwrap();
+        exec(&mut glue, "INSERT INTO tags VALUES ('note.md', 'work')").unwrap();
 
         let payloads = glue
             .execute(
                 "SELECT f.path, f.status FROM files f JOIN tags t ON f.path = t.path WHERE t.tag = 'work'",
             )
-            .await
             .unwrap();
 
         if let Payload::Select { rows, .. } = &payloads[0] {
@@ -446,8 +438,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_links_table() {
+    #[test]
+    fn test_links_table() {
         let storage = MemoryStorage::default();
         let mut glue = Glue::new(storage);
 
@@ -455,24 +447,20 @@ mod tests {
             &mut glue,
             "CREATE TABLE links (source TEXT, target TEXT, link_type TEXT, is_valid BOOLEAN)",
         )
-        .await
         .unwrap();
         exec(
             &mut glue,
             "INSERT INTO links VALUES ('note.md', 'other.md', 'WikiLink', true)",
         )
-        .await
         .unwrap();
         exec(
             &mut glue,
             "INSERT INTO links VALUES ('note.md', 'missing.md', 'WikiLink', false)",
         )
-        .await
         .unwrap();
 
         let payloads = glue
             .execute("SELECT source, target FROM links WHERE is_valid = false")
-            .await
             .unwrap();
 
         if let Payload::Select { rows, .. } = &payloads[0] {
@@ -480,6 +468,37 @@ mod tests {
         } else {
             panic!("Expected Select payload");
         }
+    }
+
+    /// Vault text reaches every table as a bound value, so a quote in a note's
+    /// path or SQL in a tag comes back as the text it was, not as a statement.
+    #[test]
+    fn test_bound_values_are_stored_as_text() {
+        let mut glue = Glue::new(MemoryStorage::default());
+        exec(&mut glue, "CREATE TABLE files").unwrap();
+        exec(&mut glue, "CREATE TABLE tags (path TEXT, tag TEXT)").unwrap();
+
+        let path = "it's a note.md";
+        let tag = "x'); DROP TABLE files; --";
+        let row = serde_json::to_string(&json!({ "path": path, "status": "o'k" })).unwrap();
+        exec_with(&mut glue, "INSERT INTO files VALUES ($1)", params![row]).unwrap();
+        exec_with(
+            &mut glue,
+            "INSERT INTO tags VALUES ($1, $2)",
+            params![path, tag],
+        )
+        .unwrap();
+
+        let files = exec(&mut glue, "SELECT path, status FROM files").unwrap();
+        assert_eq!(
+            payload_to_json(files.into_iter().next().unwrap())["rows"],
+            json!([{ "path": path, "status": "o'k" }])
+        );
+        let tags = exec(&mut glue, "SELECT path, tag FROM tags").unwrap();
+        assert_eq!(
+            payload_to_json(tags.into_iter().next().unwrap())["rows"],
+            json!([{ "path": path, "tag": tag }])
+        );
     }
 
     #[test]
