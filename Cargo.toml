@@ -11,6 +11,8 @@ members = [
     "crates/turbovault-sql",
     "crates/turbovault-tools",
     "crates/turbovault-plugin-api",
+    "crates/turbovault-vector",
+    "crates/plugins/turbovault-plugin-vector",
     "crates/turbovault",
 ]
 resolver = "2"
@@ -110,6 +112,13 @@ path_trav = "2"           # Path traversal detection - security-focused
 # Git write substrate (libgit2 bindings; vendored libgit2 -> needs cmake + cc at build)
 git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS via Transaction
 
+# Vector search (optional, feature-gated Tier 1 stack: pure Rust, CPU-only, no
+# bundled C libraries, no network access at runtime unless a caller points
+# `from_pretrained` at a Hugging Face repo id instead of a local path).
+model2vec-rs = { version = "0.3", default-features = false, features = ["local-only", "fancy-regex"] }
+hnsw_rs = "0.3"           # Pure-Rust HNSW ANN index (jean-pierreBoth/hnswlib-rs)
+bm25 = "2.3"              # Pure-Rust BM25 scorer/search engine (Michael-JB/bm25)
+
 # DEFERRED (Phase 3+):
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
@@ -128,6 +137,11 @@ turbovault-tools = { version = "2.1.0", path = "crates/turbovault-tools" }
 # implementors yet and needs room to change without dragging every other crate
 # to a new major. Promote it to the workspace version once it is stable.
 turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-api" }
+# Not published (see each crate's `publish = false`): the engine and its
+# compiled-in plugin are still settling, mounted only behind the default-off
+# `vector-search` feature on turbovault.
+turbovault-vector = { version = "2.1.0", path = "crates/turbovault-vector" }
+turbovault-plugin-vector = { version = "2.1.0", path = "crates/plugins/turbovault-plugin-vector" }
 turbovault = { version = "2.1.0", path = "crates/turbovault" }
 
 [profile.release]
