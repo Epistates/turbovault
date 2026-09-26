@@ -1,6 +1,7 @@
 //! Vault manager implementation with file watching and caching
 
 use crate::reindex::CommitOrigin;
+use futures::StreamExt;
 use path_trav::PathTrav;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -12,7 +13,9 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
-use turbovault_core::{Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend};
+use turbovault_core::{
+    Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend, path_to_slash,
+};
 use turbovault_git::{CommitHook, CommitLocks, Oid, VaultRepo};
 use turbovault_graph::LinkGraph;
 use turbovault_parser::Parser;
@@ -165,6 +168,11 @@ const RECONCILE_MAX_INTERVAL: Duration = Duration::from_secs(30);
 /// roughly 13k notes sits at the floor and the duty cycle never binds; past
 /// that it stretches the interval rather than the pass.
 const RECONCILE_DUTY_DIVISOR: u32 = 20;
+
+/// How many note reads `initialize` keeps in flight. Enough to hide per-file
+/// latency on a slow or network disk, few enough to stay well inside the open
+/// file limit.
+const INITIAL_READ_CONCURRENCY: usize = 64;
 
 /// The reconcile schedule.
 #[derive(Debug)]
@@ -992,10 +1000,7 @@ impl VaultManager {
     /// render consistently across platforms). Falls back to the lossy full path
     /// when `path` is not under the vault root.
     pub fn relative_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.vault_path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/")
+        path_to_slash(path.strip_prefix(&self.vault_path).unwrap_or(path))
     }
 
     /// Set the audit log and snapshot store for operation tracking.
@@ -1041,19 +1046,31 @@ impl VaultManager {
         // resolving wikilink targets, regardless of scan order.
         let mut parsed_files = Vec::with_capacity(scanned.len());
 
-        // Pass 1: parse all files, populate cache and graph nodes
-        for note in scanned {
-            // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
-            // note file here (a `.txt`, a `.canvas`) would put it somewhere no
-            // applier ever updates it, so every freshness sweep would report it
-            // changed again.
-            if !is_note(&note.path) {
-                continue;
-            }
-            let scanned_fingerprint = note.fingerprint();
-            let file_path = note.path;
+        // Pass 1: parse all files, populate cache and graph nodes.
+        //
+        // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
+        // note file here (a `.txt`, a `.canvas`) would put it somewhere no
+        // applier ever updates it, so every freshness sweep would report it
+        // changed again.
+        //
+        // The reads overlap, since each one is independent and waiting on them
+        // one at a time is most of what startup costs on a large vault or a
+        // slow disk. `buffered` hands them back in scan order, so the cache and
+        // graph are built in the same order as before.
+        let notes = scanned.into_iter().filter(|note| is_note(&note.path));
+        let reads: Vec<_> = futures::stream::iter(notes)
+            .map(|note| async move {
+                let fingerprint = note.fingerprint();
+                let read = read_note_with_fingerprint(&note.path, Some(fingerprint)).await;
+                (note.path, read)
+            })
+            .buffered(INITIAL_READ_CONCURRENCY)
+            .collect()
+            .await;
+
+        for (file_path, read) in reads {
             log::debug!("Processing file: {:?}", file_path);
-            match read_note_with_fingerprint(&file_path, Some(scanned_fingerprint)).await {
+            match read {
                 Ok((content, observed)) => match self.parser.parse_file(&file_path, &content) {
                     Ok(vault_file) => {
                         log::debug!(
@@ -1120,7 +1137,7 @@ impl VaultManager {
         // which would silently lose frontmatter for callers.
         let content = tokio::fs::read_to_string(&vault_path)
             .await
-            .map_err(Error::io)?;
+            .map_err(|e| Error::io_at(self.relative_path(&vault_path), e))?;
 
         Ok(content)
     }
@@ -1705,7 +1722,7 @@ impl VaultManager {
         let full_path = self.resolve_path(path)?;
         let content = tokio::fs::read_to_string(&full_path)
             .await
-            .map_err(Error::io)?;
+            .map_err(|e| Error::io_at(self.relative_path(&full_path), e))?;
         self.parser
             .parse_file(&full_path, &content)
             .map_err(|e| Error::parse_error(e.to_string()))
@@ -1957,9 +1974,9 @@ mod tests {
             "failed_at must name the change that stopped the loop"
         );
         assert!(
-            matches!(outcome.error, Some(Error::Io(_))),
+            matches!(outcome.error, Some(Error::FileNotFound { .. })),
             "the loop failure's typed error kind must survive to the manager \
-             boundary, got {:?}",
+             boundary as FileNotFound, not the OS's raw ENOENT text, got {:?}",
             outcome.error
         );
         assert_eq!(
