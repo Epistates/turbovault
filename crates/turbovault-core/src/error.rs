@@ -75,6 +75,26 @@ impl Error {
         Error::Io(err)
     }
 
+    /// Create an IO error for an operation on `path`, translating a missing
+    /// file into [`Error::file_not_found`] instead of wrapping the raw I/O
+    /// error.
+    ///
+    /// `io::Error`'s `Display` text for `ErrorKind::NotFound` is the OS's own
+    /// message ("No such file or directory (os error 2)" on Unix, "The
+    /// system cannot find the file specified. (os error 2)" on Windows).
+    /// That's fine for a log, not for for a client that has to recognize "missing
+    /// file" from the text. Every other `ErrorKind` still wraps as
+    /// [`Error::io`]. `path` should already be vault-relative and
+    /// `/`-separated (see [`crate::path_to_slash`]) so the message matches
+    /// every other path this server returns.
+    pub fn io_at(path: impl Into<PathBuf>, err: io::Error) -> Self {
+        if err.kind() == io::ErrorKind::NotFound {
+            Error::file_not_found(path)
+        } else {
+            Error::Io(err)
+        }
+    }
+
     /// Create a file not found error
     pub fn file_not_found(path: impl Into<PathBuf>) -> Self {
         Error::FileNotFound { path: path.into() }
@@ -159,5 +179,26 @@ mod tests {
 
         let err = Error::invalid_path("contains .. traversal");
         assert!(err.to_string().contains("Invalid file path"));
+    }
+
+    #[test]
+    fn io_at_translates_not_found_into_file_not_found() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "os-specific text");
+        let err = Error::io_at("notes/missing.md", io_err);
+
+        assert!(matches!(err, Error::FileNotFound { .. }));
+        let message = err.to_string();
+        assert!(message.contains("not found"));
+        assert!(message.contains("notes/missing.md"));
+        assert!(!message.contains("os-specific text"));
+    }
+
+    #[test]
+    fn io_at_leaves_other_error_kinds_as_io() {
+        let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
+        let err = Error::io_at("notes/locked.md", io_err);
+
+        assert!(matches!(err, Error::Io(_)));
+        assert!(err.to_string().contains("denied"));
     }
 }
