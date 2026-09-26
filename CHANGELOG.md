@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A diff is reported as line multisets rather than positionally, so an inserted block is one entry instead of cascading through everything below it. Re-bless with `UPDATE_PARSER_SNAPSHOT=1`, matching the existing `UPDATE_TOOL_CATALOG` fixture. Alongside it, every reported code position is checked against the fixture itself: a line a block claims has to actually open or close a fence, which is an assertion about correctness rather than about not having changed.
 
+### Changed
+
+- **Dependencies brought current.** TurboMCP 3.4.0, GlueSQL 0.20, and the lockfile refreshed across the board. GlueSQL 0.20 drops rkyv 0.7, which was the one advisory `cargo audit` had to ignore (RUSTSEC-2026-0235), so the ignore list is empty again.
+
+- **The SQL tables are filled with bound parameters.** Note paths, tags, link targets and frontmatter reached GlueSQL spliced into `INSERT` text with quotes doubled by hand. GlueSQL 0.20 binds `$1`-style parameters, so every value from the vault now goes in as a value and none of it is ever parsed as SQL.
+
 ### Fixed
 
 - **A panic in a tool fails that call instead of the whole server.** Release builds set `panic = "abort"`, so the one `catch_unwind` in the codebase, around plugin calls, could never catch anything in a shipped binary, and a panic anywhere in a tool ended the process and every client's session with it. Release now unwinds, and the server converts a panic in any tool, core or plugin, into an error for that one request.
