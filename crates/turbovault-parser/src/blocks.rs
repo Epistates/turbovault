@@ -222,6 +222,42 @@ struct QuotedList {
     indent: String,
 }
 
+/// One list open in the main document tree, at whatever depth.
+///
+/// A nested list used to have no home of its own: the parser tracked how deep
+/// it was, but every item still landed in one shared top-level buffer. A
+/// stack gives each open list its own items, so a list nested inside an item
+/// closes into *that* item's blocks instead of merging into whichever list
+/// happens to be flushed next.
+struct ListFrame {
+    /// Whether this specific list is ordered. A nested list's marker kind is
+    /// independent of its parent's, so it cannot be read off any outer state.
+    ordered: bool,
+    items: Vec<ListItem>,
+}
+
+/// One list item open in the main document tree, at whatever depth.
+///
+/// Its own text accumulates in `state.paragraph_buffer`/`inline_buffer` while
+/// it is the innermost open item, the same fields a top-level item already
+/// used. `saved_paragraph_buffer` and friends hold what the enclosing item
+/// (or the top-level document, if there is none) had pending there, so
+/// opening a nested item doesn't overwrite a tight parent item's own
+/// text-so-far, and closing the nested item hands that text back instead of
+/// losing it.
+struct ItemFrame {
+    checked: Option<bool>,
+    blocks: Vec<ContentBlock>,
+    /// Real source line the item's marker starts on. Used to give a nested
+    /// inline element's `line_offset` a real line number, the same source of
+    /// truth `current_line` gives every other block, rather than a count of
+    /// characters written into some reconstructed buffer.
+    start_line: usize,
+    saved_paragraph_buffer: String,
+    saved_inline_buffer: Vec<InlineElement>,
+    saved_in_paragraph: bool,
+}
+
 struct BlockParserState {
     /// Document line the event being processed starts on, 1-based.
     current_line: usize,
@@ -234,13 +270,10 @@ struct BlockParserState {
     blockquote_start_line: usize,
     paragraph_buffer: String,
     inline_buffer: Vec<InlineElement>,
-    list_items: Vec<ListItem>,
-    list_ordered: bool,
-    list_depth: usize,
-    item_depth: usize,
-    task_list_marker: Option<bool>,
-    saved_task_markers: Vec<Option<bool>>,
-    item_blocks: Vec<ContentBlock>,
+    /// Lists open in the main document tree, outermost first.
+    list_stack: Vec<ListFrame>,
+    /// List items open in the main document tree, outermost first.
+    item_stack: Vec<ItemFrame>,
     code_buffer: String,
     code_language: Option<String>,
     code_start_line: usize,
@@ -262,7 +295,6 @@ struct BlockParserState {
     heading_buffer: String,
     heading_inline: Vec<InlineElement>,
     in_paragraph: bool,
-    in_list: bool,
     in_code: bool,
     in_blockquote: bool,
     in_table: bool,
@@ -277,8 +309,6 @@ struct BlockParserState {
     image_in_link: bool,
     in_image: bool,
     saved_link_url: String,
-    /// Tracks relative line offset within current list item (for nested items)
-    nested_line_offset: usize,
 }
 
 impl BlockParserState {
@@ -289,13 +319,8 @@ impl BlockParserState {
             blockquote_start_line: start_line,
             paragraph_buffer: String::new(),
             inline_buffer: Vec::new(),
-            list_items: Vec::new(),
-            list_ordered: false,
-            list_depth: 0,
-            item_depth: 0,
-            task_list_marker: None,
-            saved_task_markers: Vec::new(),
-            item_blocks: Vec::new(),
+            list_stack: Vec::new(),
+            item_stack: Vec::new(),
             code_buffer: String::new(),
             code_language: None,
             code_start_line: 0,
@@ -311,7 +336,6 @@ impl BlockParserState {
             heading_buffer: String::new(),
             heading_inline: Vec::new(),
             in_paragraph: false,
-            in_list: false,
             in_code: false,
             in_blockquote: false,
             in_table: false,
@@ -326,7 +350,6 @@ impl BlockParserState {
             image_in_link: false,
             in_image: false,
             saved_link_url: String::new(),
-            nested_line_offset: 0,
         }
     }
 
@@ -350,14 +373,29 @@ impl BlockParserState {
         }
     }
 
+    /// Pops the innermost open list, if any, and attaches it to whatever
+    /// encloses it: the current item's own blocks when the list was nested
+    /// inside one, the top-level `blocks` otherwise.
+    fn close_list(&mut self, blocks: &mut Vec<ContentBlock>) {
+        let Some(frame) = self.list_stack.pop() else {
+            return;
+        };
+        if frame.items.is_empty() {
+            return;
+        }
+        let list_block = ContentBlock::List {
+            ordered: frame.ordered,
+            items: frame.items,
+        };
+        match self.item_stack.last_mut() {
+            Some(item) => item.blocks.push(list_block),
+            None => blocks.push(list_block),
+        }
+    }
+
     fn flush_list(&mut self, blocks: &mut Vec<ContentBlock>) {
-        if self.in_list && !self.list_items.is_empty() {
-            blocks.push(ContentBlock::List {
-                ordered: self.list_ordered,
-                items: self.list_items.clone(),
-            });
-            self.list_items.clear();
-            self.in_list = false;
+        while !self.list_stack.is_empty() {
+            self.close_list(blocks);
         }
     }
 
@@ -519,6 +557,21 @@ impl BlockParserState {
         }
     }
 
+    /// A nested inline element's line, relative to the real source line the
+    /// outermost enclosing list item's own marker starts on. `None` outside a
+    /// list.
+    ///
+    /// Anchored on the outermost item rather than the innermost one still
+    /// open: a link three levels deep and a link one level deep report on the
+    /// same scale, which is what lets a consumer that only sees the outer
+    /// item's aggregated `inline` (see `collect_inline_elements`) tell how far
+    /// into the source a given element actually is.
+    fn item_line_offset(&self) -> Option<usize> {
+        self.item_stack
+            .first()
+            .map(|frame| self.current_line.saturating_sub(frame.start_line))
+    }
+
     /// The inline list the enclosing container collects into. A heading keeps
     /// its own, and routing a heading's image or link to the paragraph list is
     /// what hoisted them out of the heading.
@@ -602,11 +655,11 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 // next block syncs itself to its own source line, so there is
                 // no separator to invent here.
                 state.in_paragraph = false;
-            } else if state.item_depth >= 1
+            } else if let Some(item) = state.item_stack.last_mut()
                 && state.in_paragraph
                 && !state.paragraph_buffer.is_empty()
             {
-                state.item_blocks.push(ContentBlock::Paragraph {
+                item.blocks.push(ContentBlock::Paragraph {
                     content: state.paragraph_buffer.clone(),
                     inline: state.inline_buffer.clone(),
                 });
@@ -659,8 +712,11 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.blockquote_buffer.push_str("```\n");
                 state.code_language = None;
                 state.in_code = false;
-            } else if state.item_depth >= 1 && state.in_code && !state.code_buffer.is_empty() {
-                state.item_blocks.push(ContentBlock::Code {
+            } else if let Some(item) = state.item_stack.last_mut()
+                && state.in_code
+                && !state.code_buffer.is_empty()
+            {
+                item.blocks.push(ContentBlock::Code {
                     language: state.code_language.clone(),
                     content: state.code_buffer.trim_end().to_string(),
                     start_line: state.code_start_line,
@@ -696,74 +752,73 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 .push_str(if checked { "[x] " } else { "[ ] " });
         }
         Event::Start(Tag::List(start_number)) => {
-            state.list_depth += 1;
-            if state.list_depth == 1 {
-                state.in_list = true;
-                state.list_ordered = start_number.is_some();
-            }
+            state.list_stack.push(ListFrame {
+                ordered: start_number.is_some(),
+                items: Vec::new(),
+            });
         }
         Event::End(TagEnd::List(_)) => {
-            state.list_depth = state.list_depth.saturating_sub(1);
-            if state.list_depth == 0 {
-                state.flush_list(blocks);
-            }
+            state.close_list(blocks);
         }
         Event::Start(Tag::Item) => {
-            state.item_depth += 1;
-            if state.item_depth > 1 {
-                state.saved_task_markers.push(state.task_list_marker);
-                state.task_list_marker = None;
-            }
-            if state.item_depth == 1 {
-                state.paragraph_buffer.clear();
-                state.inline_buffer.clear();
-                state.item_blocks.clear();
-                state.nested_line_offset = 0;
-            }
+            // Whatever the enclosing item (or the top-level document) had
+            // pending has to survive this item's own accumulation: a tight
+            // outer item's text is sitting in `paragraph_buffer` right now,
+            // and starting this item fresh must not overwrite it.
+            state.item_stack.push(ItemFrame {
+                checked: None,
+                blocks: Vec::new(),
+                start_line: state.current_line,
+                saved_paragraph_buffer: std::mem::take(&mut state.paragraph_buffer),
+                saved_inline_buffer: std::mem::take(&mut state.inline_buffer),
+                saved_in_paragraph: state.in_paragraph,
+            });
+            state.in_paragraph = false;
         }
         Event::End(TagEnd::Item) => {
-            if state.item_depth > 1
-                && let Some(saved) = state.saved_task_markers.pop()
+            let Some(frame) = state.item_stack.pop() else {
+                return;
+            };
+            let mut item_blocks = frame.blocks;
+            let (content, mut inline, remaining_blocks) = if !state.paragraph_buffer.is_empty() {
+                (
+                    std::mem::take(&mut state.paragraph_buffer),
+                    std::mem::take(&mut state.inline_buffer),
+                    item_blocks,
+                )
+            } else if let Some(ContentBlock::Paragraph { content, inline }) =
+                item_blocks.first().cloned()
             {
-                state.task_list_marker = saved;
-            }
-            if state.item_depth == 1 {
-                let (content, mut inline, remaining_blocks) = if !state.paragraph_buffer.is_empty()
-                {
-                    let all_blocks: Vec<ContentBlock> = std::mem::take(&mut state.item_blocks);
-                    (
-                        state.paragraph_buffer.clone(),
-                        state.inline_buffer.clone(),
-                        all_blocks,
-                    )
-                } else if let Some(ContentBlock::Paragraph { content, inline }) =
-                    state.item_blocks.first().cloned()
-                {
-                    let remaining: Vec<ContentBlock> = state.item_blocks.drain(1..).collect();
-                    (content, inline, remaining)
-                } else {
-                    let all_blocks: Vec<ContentBlock> = std::mem::take(&mut state.item_blocks);
-                    (String::new(), Vec::new(), all_blocks)
-                };
+                let remaining: Vec<ContentBlock> = item_blocks.drain(1..).collect();
+                (content, inline, remaining)
+            } else {
+                (String::new(), Vec::new(), std::mem::take(&mut item_blocks))
+            };
 
-                // Collect inline elements from all nested blocks (paragraphs, lists, etc.)
-                collect_inline_elements(&remaining_blocks, &mut inline);
+            // Collect inline elements from all nested blocks (paragraphs, lists, etc.)
+            collect_inline_elements(&remaining_blocks, &mut inline);
 
-                state.list_items.push(ListItem {
-                    checked: state.task_list_marker,
-                    content,
-                    inline,
-                    blocks: remaining_blocks,
-                });
-                state.paragraph_buffer.clear();
-                state.inline_buffer.clear();
-                state.item_blocks.clear();
-                state.task_list_marker = None;
+            let item = ListItem {
+                checked: frame.checked,
+                content,
+                inline,
+                blocks: remaining_blocks,
+            };
+            if let Some(list) = state.list_stack.last_mut() {
+                list.items.push(item);
             }
-            state.item_depth = state.item_depth.saturating_sub(1);
+
+            // Hand the enclosing item's own pending text back so it can keep
+            // accumulating, the same as it would have if this item had never
+            // opened.
+            state.paragraph_buffer = frame.saved_paragraph_buffer;
+            state.inline_buffer = frame.saved_inline_buffer;
+            state.in_paragraph = frame.saved_in_paragraph;
         }
         Event::TaskListMarker(checked) => {
-            state.task_list_marker = Some(checked);
+            if let Some(item) = state.item_stack.last_mut() {
+                item.checked = Some(checked);
+            }
         }
         Event::Start(Tag::BlockQuote(_)) => {
             // Anchor on the outermost quote only. A nested quote accumulates
@@ -861,22 +916,6 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             }
         }
         Event::Start(Tag::Link { dest_url, .. }) => {
-            // For nested list items, add newline and indent before the link
-            // (same logic as in Event::Text for nested items)
-            if state.in_list && state.item_depth > 1 {
-                if !state.paragraph_buffer.is_empty() && !state.paragraph_buffer.ends_with('\n') {
-                    state.paragraph_buffer.push('\n');
-                    state.nested_line_offset += 1;
-                }
-                let indent = "  ".repeat(state.item_depth - 1);
-                state.paragraph_buffer.push_str(&indent);
-
-                if let Some(checked) = state.task_list_marker {
-                    let marker = if checked { "[x] " } else { "[ ] " };
-                    state.paragraph_buffer.push_str(marker);
-                    state.task_list_marker = None;
-                }
-            }
             state.in_link = true;
             state.link_url = dest_url.to_string();
             state.link_text.clear();
@@ -909,12 +948,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 return;
             }
 
-            // Capture line_offset for nested list items
-            let line_offset = if state.in_list && state.item_depth >= 1 {
-                Some(state.nested_line_offset)
-            } else {
-                None
-            };
+            let line_offset = state.item_line_offset();
 
             // A linked image carries the image's own destination in `link_url`
             // by this point, so the wrapper reads its href from `saved_link_url`.
@@ -967,12 +1001,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 Some(std::mem::take(&mut state.image_title))
             };
 
-            // Capture line_offset for inline images in list items
-            let line_offset = if state.in_list && state.item_depth >= 1 {
-                Some(state.nested_line_offset)
-            } else {
-                None
-            };
+            let line_offset = state.item_line_offset();
 
             // Inside a quote the buffer is the only thing that survives to the
             // re-parse, so re-emit the whole element rather than the alt alone.
@@ -1014,7 +1043,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             // top-level blocks, hoisted clean out of the list, while
             // `flush_paragraph` discarded the item's own text. An image in an
             // item belongs to the item whether or not the list is loose.
-            if state.in_heading || state.in_paragraph || state.item_depth >= 1 {
+            if state.in_heading || state.in_paragraph || !state.item_stack.is_empty() {
                 let element = InlineElement::Image {
                     alt: state.link_text.clone(),
                     src: state.link_url.clone(),
@@ -1080,20 +1109,6 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             } else if state.in_link || state.in_image {
                 state.link_text.push_str(&text);
             } else {
-                if state.in_list && state.item_depth > 1 {
-                    if !state.paragraph_buffer.is_empty() && !state.paragraph_buffer.ends_with('\n')
-                    {
-                        state.paragraph_buffer.push('\n');
-                    }
-                    let indent = "  ".repeat(state.item_depth - 1);
-                    state.paragraph_buffer.push_str(&indent);
-
-                    if let Some(checked) = state.task_list_marker {
-                        let marker = if checked { "[x] " } else { "[ ] " };
-                        state.paragraph_buffer.push_str(marker);
-                        state.task_list_marker = None;
-                    }
-                }
                 state.add_inline_text(&text);
             }
         }
@@ -1204,10 +1219,13 @@ fn collect_inline_elements(blocks: &[ContentBlock], output: &mut Vec<InlineEleme
             ContentBlock::Paragraph { inline, .. } => {
                 output.extend(inline.iter().cloned());
             }
+            // A list item's own `inline` is already this recursive collection
+            // applied to it, gathered when the item itself was closed (see the
+            // `Event::End(TagEnd::Item)` handler). Walking `item.blocks` here
+            // too would gather a nested item's links twice.
             ContentBlock::List { items, .. } => {
                 for item in items {
                     output.extend(item.inline.iter().cloned());
-                    collect_inline_elements(&item.blocks, output);
                 }
             }
             ContentBlock::Blockquote { blocks, .. } => {

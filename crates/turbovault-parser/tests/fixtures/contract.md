@@ -50,6 +50,12 @@ fn top_level() {
     - deeper item
 - second outer
 
+- [ ] outer task
+  - [x] nested task
+
+1. outer ordered
+   1. nested ordered
+
 - loose one
 
 - loose two
