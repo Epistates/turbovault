@@ -422,6 +422,37 @@ impl BlockParserState {
         }
     }
 
+    /// Column the open quoted list item's own blocks start at, empty when no
+    /// item is open.
+    fn quoted_item_indent(&self) -> String {
+        self.quoted_item_indents.last().cloned().unwrap_or_default()
+    }
+
+    /// Opens a block in the quote buffer at `source_line`, indented to the open
+    /// list item's content column.
+    ///
+    /// Written at column zero a block inside an item is not a continuation at
+    /// all: it ends the list and comes back as the list's sibling. That is how
+    /// a fence inside a quoted item landed beside the list, and with no
+    /// separator at all a continuation paragraph was joined onto the item's own
+    /// text, so `> - step` `>` `>   text` came back as one item reading
+    /// `steptext`.
+    ///
+    /// The item's *first* block is the exception: it sits on the marker's own
+    /// line, the marker has already been written there, and the column it
+    /// starts at is the content column. Breaking the line or indenting again
+    /// would split the item from its own text.
+    fn open_quoted_block(&mut self, source_line: usize) {
+        if !self.quoted_lists.is_empty() && source_line <= self.next_quoted_line() {
+            return;
+        }
+        self.sync_quoted_line(source_line);
+        if !self.quoted_lists.is_empty() {
+            let indent = self.quoted_item_indent();
+            self.blockquote_buffer.push_str(&indent);
+        }
+    }
+
     fn open_quoted_list(&mut self, start_number: Option<u64>, source_line: usize) {
         let indent = self.quoted_item_indents.last().cloned().unwrap_or_default();
         if self.quoted_lists.is_empty() {
@@ -488,15 +519,33 @@ impl BlockParserState {
         }
     }
 
-    /// The inline list and source-text buffer the enclosing container collects
-    /// into. A heading keeps its own pair, and routing a heading's image or
-    /// link to the paragraph pair is what hoisted them out of the heading and
-    /// left their label sitting in its text.
-    fn inline_sink(&mut self) -> (&mut Vec<InlineElement>, &mut String) {
+    /// The inline list the enclosing container collects into. A heading keeps
+    /// its own, and routing a heading's image or link to the paragraph list is
+    /// what hoisted them out of the heading.
+    fn inline_elements(&mut self) -> &mut Vec<InlineElement> {
         if self.in_heading {
-            (&mut self.heading_inline, &mut self.heading_buffer)
+            &mut self.heading_inline
         } else {
-            (&mut self.inline_buffer, &mut self.paragraph_buffer)
+            &mut self.inline_buffer
+        }
+    }
+
+    /// Records an inline element against the enclosing container, along with
+    /// the text it contributes to that container's own `content`.
+    ///
+    /// The two differ. A paragraph's `content` is re-serialized by its
+    /// consumers, so an image contributes its source spelling. A heading's is a
+    /// label: it is what an outline prints and what its anchor is cut from, so
+    /// an element contributes what it renders as, which for an image is
+    /// nothing. Giving a heading the source spelling put the whole
+    /// `![alt](src)` in its text and `title-aapng` in its slug.
+    fn push_inline(&mut self, element: InlineElement, source: &str, rendered: &str) {
+        if self.in_heading {
+            self.heading_inline.push(element);
+            self.heading_buffer.push_str(rendered);
+        } else {
+            self.inline_buffer.push(element);
+            self.paragraph_buffer.push_str(source);
         }
     }
 
@@ -540,11 +589,10 @@ impl BlockParserState {
 fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<ContentBlock>) {
     match event {
         Event::Start(Tag::Paragraph) => {
-            if state.in_blockquote && state.quoted_lists.is_empty() {
-                // Put the paragraph on the source line it came from. Inside a
-                // list item the marker has already been written to this line,
-                // so syncing there would split the item from its own text.
-                state.sync_quoted_line(state.current_line);
+            if state.in_blockquote {
+                // Put the paragraph on the source line it came from, and at the
+                // content column of whichever item encloses it.
+                state.open_quoted_block(state.current_line);
             }
             state.in_paragraph = true;
         }
@@ -592,17 +640,23 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 // buffer instead and let the nested parse rebuild it in place.
                 // The end event's span covers the whole block, so its start is
                 // the opening fence's own line.
-                state.sync_quoted_line(state.current_line);
-                let fence = match &state.code_language {
-                    Some(lang) => format!("```{lang}\n"),
-                    None => "```\n".to_string(),
-                };
-                state.blockquote_buffer.push_str(&fence);
-                state
-                    .blockquote_buffer
-                    .push_str(state.code_buffer.trim_end());
-                state.blockquote_buffer.push_str("\n```\n");
-                state.code_buffer.clear();
+                state.open_quoted_block(state.current_line);
+                // Every line of the block carries the item's indent, not just
+                // the opening fence: an indented fence whose body sits back at
+                // column zero closes the item at its first body line.
+                let indent = state.quoted_item_indent();
+                match &state.code_language {
+                    Some(lang) => state.blockquote_buffer.push_str(&format!("```{lang}\n")),
+                    None => state.blockquote_buffer.push_str("```\n"),
+                }
+                let body = std::mem::take(&mut state.code_buffer);
+                for line in body.trim_end().lines() {
+                    state.blockquote_buffer.push_str(&indent);
+                    state.blockquote_buffer.push_str(line);
+                    state.blockquote_buffer.push('\n');
+                }
+                state.blockquote_buffer.push_str(&indent);
+                state.blockquote_buffer.push_str("```\n");
                 state.code_language = None;
                 state.in_code = false;
             } else if state.item_depth >= 1 && state.in_code && !state.code_buffer.is_empty() {
@@ -876,9 +930,14 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 line_offset,
             };
             let source = format!("[{}]({})", state.link_text, url);
-            let (inline, buffer) = state.inline_sink();
-            inline.push(element);
-            buffer.push_str(&source);
+            // A link renders as its label, except when its label is an image,
+            // which renders as nothing.
+            let rendered = if state.image_in_link {
+                String::new()
+            } else {
+                state.link_text.clone()
+            };
+            state.push_inline(element, &source, &rendered);
 
             state.link_text.clear();
             state.link_url.clear();
@@ -943,7 +1002,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     title,
                     line_offset,
                 };
-                state.inline_sink().0.push(element);
+                state.inline_elements().push(element);
                 // Deliberately keep `link_text` and `link_url`: the enclosing
                 // link still needs the text, and clearing the url would strand
                 // `TagEnd::Link`'s restore.
@@ -963,11 +1022,10 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                     line_offset,
                 };
                 // Append the image's source spelling to whatever the container
-                // has so far, rather than replacing it.
+                // has so far, rather than replacing it. An image renders as
+                // itself and contributes no text, so a heading gets nothing.
                 let source = format!("![{}]({})", state.link_text, state.link_url);
-                let (inline, buffer) = state.inline_sink();
-                inline.push(element);
-                buffer.push_str(&source);
+                state.push_inline(element, &source, "");
             } else {
                 state.flush_paragraph(blocks);
                 blocks.push(ContentBlock::Image {
@@ -1072,16 +1130,22 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             state.heading_inline.clear();
         }
         Event::End(TagEnd::Heading(_)) => {
+            // A banner heading is all image and no text. Requiring text was
+            // safe only while an image's markup counted as text; now that it
+            // does not, that rule would delete the block outright.
             if state.in_heading
-                && !state.heading_buffer.is_empty()
+                && !(state.heading_buffer.is_empty() && state.heading_inline.is_empty())
                 && let Some(level) = state.heading_level
             {
-                let anchor = Some(slugify(&state.heading_buffer));
+                let content = normalize_heading_text(&state.heading_buffer);
+                let slug = slugify(&content);
                 blocks.push(ContentBlock::Heading {
                     level,
-                    content: state.heading_buffer.clone(),
+                    content,
                     inline: state.heading_inline.clone(),
-                    anchor,
+                    // A heading with no text has no slug to offer, and one cut
+                    // from its markup is worse than none.
+                    anchor: (!slug.is_empty()).then_some(slug),
                 });
             }
             state.in_heading = false;
@@ -1098,6 +1162,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
 // ============================================================================
 
 /// Generate URL-friendly slug from heading text.
+/// A heading's text as a label: no leading or trailing space, and no doubled
+/// run of whitespace where an element that renders as nothing was dropped out
+/// from between two words.
+fn normalize_heading_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub fn slugify(text: &str) -> String {
     text.to_lowercase()
         .chars()

@@ -13,6 +13,8 @@ read the delimiter as a horizontal rule and the keys as a setext heading.
 
 ### Heading with [![badge-in-heading](badge.png)](https://ci.example) a linked image
 
+#### ![banner-only-heading](banner.png)
+
 A plain paragraph with **strong**, *emphasis*, ~~strikethrough~~ and `inline code`.
 
 A paragraph with ![bare-img](bare.png), [a link](https://example.com/one), a
@@ -95,6 +97,16 @@ fn top_level() {
 > ```
 >
 > - list after the fence
+
+> - quoted step
+>
+>   a continuation paragraph of the item above
+
+> - quoted step with a fence
+>
+>   ```sh
+>   fence_inside_a_quoted_item
+>   ```
 
 > outer quote
 >
