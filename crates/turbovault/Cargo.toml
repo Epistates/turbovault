@@ -42,7 +42,7 @@ sql = ["turbovault-tools/sql"]
 
 # Stable compiled-in plugin boundary. Individual plugin features added under
 # crates/plugins/ must include this feature and remain default-off.
-plugin-api = ["dep:async-trait", "dep:futures", "dep:turbomcp-protocol", "dep:turbovault-plugin-api"]
+plugin-api = ["dep:async-trait", "dep:turbomcp-protocol", "dep:turbovault-plugin-api"]
 
 # Convenience bundles
 http-full = ["http", "websocket"]            # HTTP + WebSocket
@@ -80,7 +80,7 @@ config = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true, optional = true }
-futures = { workspace = true, optional = true }
+futures = { workspace = true }
 log = { workspace = true }
 simple_logger = "5.2"
 tracing = { workspace = true }

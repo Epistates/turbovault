@@ -843,34 +843,6 @@ impl CoreToolHandler {
         Ok(AuditTools::new(audit_log, snapshot_store))
     }
 
-    /// Invalidate the cached similarity engine for `vault_name` (call after any
-    /// write operation).
-    ///
-    /// Takes the written vault explicitly rather than re-resolving the active
-    /// vault: background callers such as the reindex drainer have no active
-    /// vault at all, and a concurrent `set_active_vault` would otherwise evict
-    /// the wrong vault and leave the written one stale.
-    async fn invalidate_similarity_cache(&self, vault_name: &str) {
-        let mut cache = self.similarity_engines.write().await;
-        cache.remove(vault_name);
-    }
-
-    /// Invalidate the cached search engine for `vault_name` (call after any
-    /// write operation).
-    ///
-    /// write-substrate-layering M4e: the GWS.14c git-backend skip is gone.
-    /// `VaultManager`'s own change-listener (`wire_manager_indexes`) now feeds
-    /// the cached search engine incrementally on every git-backend apply or
-    /// drain, so this hammer eviction is redundant but harmless there. On the
-    /// direct backend, where no change-listener is wired, it remains the only
-    /// path that keeps the cache coherent.
-    ///
-    /// See [`Self::invalidate_similarity_cache`] for why the vault is passed in.
-    async fn invalidate_search_cache(&self, vault_name: &str) {
-        let mut cache = self.search_engines.write().await;
-        cache.remove(vault_name);
-    }
-
     /// Get or build search engine for a given vault (cached, lazy-initialized)
     async fn get_search_engine(
         &self,
@@ -1060,27 +1032,26 @@ impl CoreToolHandler {
         })
     }
 
-    /// Everything a completed mutation owes the rest of the server: evict the
-    /// derived caches of the vault that was written, then report the change.
+    /// Everything a completed mutation owes the rest of the server: report the
+    /// change, with the attribution only the write site knows.
     ///
-    /// Every write tool ends here. That is deliberate — it is the one place a
-    /// mutation is known to have succeeded and to know what it changed, so it
-    /// is the one place that can keep derived state and the change feed honest
-    /// without each tool re-deriving the bookkeeping. `VaultManager` is now the
-    /// single mutation chokepoint, so a later change can move this reporting
-    /// down beside its change-listener once that listener carries attribution.
+    /// Every write tool ends here. Derived state is not kept here: every write
+    /// goes through `VaultManager`, whose change-listener (wired for every
+    /// backend in `wire_manager_indexes`) has already applied the change to the
+    /// search index and dropped the similarity engine before the write
+    /// returns. This used to evict both caches again as well, which threw away
+    /// the search index the listener had just updated and made the next search
+    /// rebuild it from every note in the vault.
     ///
     /// `vault_name` is the vault that was WRITTEN, which is not necessarily the
     /// active vault by the time this runs — `set_active_vault` may land between
-    /// the mutation and the invalidation.
+    /// the mutation and the report.
     async fn after_write(
         &self,
         vault_name: &str,
         changes: impl IntoIterator<Item = VaultChange>,
         attribution: WriteAttribution,
     ) {
-        self.invalidate_similarity_cache(vault_name).await;
-        self.invalidate_search_cache(vault_name).await;
         let Some(sink) = self.event_sink.get() else {
             // No consumer configured; skip building envelopes nobody reads.
             return;

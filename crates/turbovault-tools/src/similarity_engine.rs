@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use turbovault_core::prelude::*;
 use turbovault_parser::to_plain_text;
@@ -39,6 +39,9 @@ pub struct SimilarityEngine {
     #[allow(dead_code)]
     manager: Arc<VaultManager>,
     documents: Vec<DocumentVector>,
+    /// Index into `documents` by path, so looking up one note does not scan
+    /// all of them.
+    by_path: HashMap<PathBuf, usize>,
     idf: HashMap<String, f64>,
     #[allow(dead_code)]
     doc_count: usize,
@@ -138,12 +141,45 @@ impl SimilarityEngine {
             });
         }
 
+        let by_path = documents
+            .iter()
+            .enumerate()
+            .map(|(i, doc)| (doc.path.clone(), i))
+            .collect();
+
         Ok(Self {
             manager,
             documents,
+            by_path,
             idf,
             doc_count,
         })
+    }
+
+    fn document(&self, path: &str) -> Option<&DocumentVector> {
+        self.by_path
+            .get(Path::new(path))
+            .map(|&i| &self.documents[i])
+    }
+
+    /// Cosine similarity between two notes, or `None` when a ranking from
+    /// either one would not list the other: one is missing or has no terms,
+    /// or they share no term at all.
+    ///
+    /// This is one note's score against one other. Getting it from
+    /// [`Self::find_similar_notes`] means ranking the whole vault to read off a
+    /// single entry.
+    pub fn pair_similarity(&self, a: &str, b: &str) -> Option<f64> {
+        let (a, b) = (self.document(a)?, self.document(b)?);
+        if a.norm < f64::EPSILON || b.norm < f64::EPSILON {
+            return None;
+        }
+        let dot: f64 = a
+            .tfidf
+            .iter()
+            .filter_map(|(term, weight)| b.tfidf.get(term).map(|other| weight * other))
+            .sum();
+        (dot > 0.0).then(|| dot / (a.norm * b.norm))
     }
 
     /// Find notes similar to a query string
@@ -183,10 +219,7 @@ impl SimilarityEngine {
 
     /// Find notes most similar to a given note
     pub fn find_similar_notes(&self, path: &str, limit: usize) -> Vec<SimilarityResult> {
-        let target_path = PathBuf::from(path);
-        let target = self.documents.iter().find(|d| d.path == target_path);
-
-        match target {
+        match self.document(path) {
             Some(doc) => self.rank_by_similarity(&doc.tfidf, doc.norm, Some(path), limit),
             None => vec![],
         }

@@ -213,19 +213,16 @@ impl RollbackEngine {
 
                 let before_content = self.snapshot_store.retrieve(before_id).await?;
 
-                // Ensure parent directory exists
-                if let Some(parent) = file_path.parent() {
-                    tokio::fs::create_dir_all(parent).await.map_err(Error::io)?;
-                }
-
-                // Atomic write
-                let temp_path = file_path.with_extension("tmp");
-                tokio::fs::write(&temp_path, &before_content)
-                    .await
-                    .map_err(Error::io)?;
-                tokio::fs::rename(&temp_path, &file_path)
-                    .await
-                    .map_err(Error::io)?;
+                // Through the shared atomic write. This used to write through
+                // `note.tmp` for `note.md`, overwriting a real note of that
+                // name and then renaming it away.
+                let target = file_path.clone();
+                tokio::task::spawn_blocking(move || {
+                    turbovault_core::write_atomic(&target, before_content.as_bytes())
+                })
+                .await
+                .map_err(|e| Error::Other(format!("rollback write task failed: {e}")))?
+                .map_err(Error::io)?;
 
                 action_taken = format!(
                     "Restored content from snapshot {} (undoing {})",
