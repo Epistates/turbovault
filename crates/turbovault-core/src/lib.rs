@@ -74,6 +74,7 @@
 //! - [`Severity`] - Validation issue severity levels
 //! - [`models`] - Rich data models with position tracking
 
+pub mod atomic_write;
 pub mod cache;
 pub mod change_plan;
 pub mod config;
@@ -90,6 +91,7 @@ pub mod task_parser;
 pub mod utils;
 pub mod validation;
 
+pub use atomic_write::write_atomic;
 pub use change_plan::{Change, ChangePlan};
 pub use config::*;
 pub use error::{Error, Result};
