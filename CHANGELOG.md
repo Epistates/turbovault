@@ -13,7 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   A diff is reported as line multisets rather than positionally, so an inserted block is one entry instead of cascading through everything below it. Re-bless with `UPDATE_PARSER_SNAPSHOT=1`, matching the existing `UPDATE_TOOL_CATALOG` fixture. Alongside it, every reported code position is checked against the fixture itself: a line a block claims has to actually open or close a fence, which is an assertion about correctness rather than about not having changed.
 
+### Changed
+
+- **Dependencies brought current.** TurboMCP 3.4.0, GlueSQL 0.20, and the lockfile refreshed across the board. GlueSQL 0.20 drops rkyv 0.7, which was the one advisory `cargo audit` had to ignore (RUSTSEC-2026-0235), so the ignore list is empty again.
+
+- **The SQL tables are filled with bound parameters.** Note paths, tags, link targets and frontmatter reached GlueSQL spliced into `INSERT` text with quotes doubled by hand. GlueSQL 0.20 binds `$1`-style parameters, so every value from the vault now goes in as a value and none of it is ever parsed as SQL.
+
 ### Fixed
+
+- **A panic in a tool fails that call instead of the whole server.** Release builds set `panic = "abort"`, so the one `catch_unwind` in the codebase, around plugin calls, could never catch anything in a shipped binary, and a panic anywhere in a tool ended the process and every client's session with it. Release now unwinds, and the server converts a panic in any tool, core or plugin, into an error for that one request.
+
+- **Two tool inputs no longer panic.** `query_metadata` with an unterminated quote (`status: "`, or `tags: contains(")`) sliced past the end of its own input. `edit_note` quoted the first hundred bytes of an unmatched SEARCH block in its error, and cut a character in half whenever byte 100 fell inside one, so an ordinary miss in any non-English note panicked while reporting itself.
+
+- **A fuzzy edit in a CRLF file replaces exactly what it matched.** The whitespace-tolerant and indentation-tolerant matchers rebuilt byte offsets assuming every line ends in one byte. A CRLF line ends in two, so each one above the match moved the splice point a byte early and left a fragment of the old text behind, or landed inside a character and panicked. Offsets are now measured from the text.
+
+- **Writes are durable, and keep the file's permissions.** There were four temp-then-rename implementations (the direct backend, git materialization, rollback, plugin storage), none of which synced to disk, so a crash just after a reported write could lose it, and none of which kept the replaced file's mode. Rollback also wrote through `note.tmp` for every `note.md`, overwriting and then removing a real note of that name. All four now share one `write_atomic` that writes a unique sibling, keeps the original's permissions, syncs the file and its directory, and cleans up after any failure.
+
+- **An unreadable file is an error, not a new one.** The direct backend read a file's previous contents for the audit log with `.ok()`, so any read failure looked like absence: an overwrite was recorded as a create and the pre-image a rollback needs was lost.
 
 - **A block inside a blockquote reports the line it was written on.** 2.1.0 numbered a quote's blocks by re-parsing its reconstructed text from the quote's own line, which is only right when the reconstruction is the same height as the source. It was not: a paragraph followed by a list with no blank line between them, which is the ordinary callout shape, gained a separator the source never had and pushed everything below it one line down. The buffer now pads to each block's real source line instead of inserting a fixed separator, so the reconstruction matches the source line for line.
 
