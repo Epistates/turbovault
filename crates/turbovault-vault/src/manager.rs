@@ -1286,7 +1286,7 @@ impl VaultManager {
         // Read current content
         let current_content = tokio::fs::read_to_string(&vault_path)
             .await
-            .map_err(Error::io)?;
+            .map_err(|e| Error::io_at(self.relative_path(&vault_path), e))?;
 
         // Preserve the exact pre-image that the edit was calculated from. The
         // write below revalidates this hash after releasing the cache lock.
