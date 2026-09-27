@@ -3,7 +3,7 @@ name = "turbovault-vector"
 # Not `version.workspace`: a new, still-settling engine, versioned on its own
 # like turbovault-plugin-api. Published only because turbovault's default-off
 # `vector-search` feature depends on it through turbovault-plugin-vector.
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
