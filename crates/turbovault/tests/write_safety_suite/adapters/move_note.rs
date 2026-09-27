@@ -1,0 +1,395 @@
+//! `move_note` adapter — **dual-path** (design doc §4: source `ExpectExists`,
+//! destination `ExpectAbsent` = the clobber protection), expressed as **two
+//! ordinary [`Op`] ops** so it rides the same mold as every other op:
+//!
+//! - [`MoveSrc`] — the varied path (`REL`) is the **source**; the destination is
+//!   held absent (`to = ExpectAbsent`). Same shape as delete/edit's in-place rows.
+//! - [`MoveDest`] — the varied path (`REL`) is the **destination**; the source is
+//!   held present (`from = ExpectExists`). `ExpectAbsent` on the dest is the
+//!   clobber guard.
+//!
+//! Each op implements `Op<W>` for **every** world (Tools, Manager, Batch, Wire)
+//! over ONE shared `Case` table per op (its identity/`ok_effect` stated once in
+//! [`OpAdapterMeta`]) — the required behavior is layer-invariant, so all worlds run
+//! the exact same cells. A world that can't meet a cell FAILS it (that divergence
+//! is the finding); we never fork a per-world table.
+//!
+//! The batch arm was written against the API we NEEDED rather than the one we had —
+//! a one-op `MoveNote` carrying first-class source AND destination preconditions —
+//! so it deliberately did **not compile** until that surface existed. It does now:
+//! `BatchOperation::MoveNote` gained `dest_expected_hash` in turbovault-qae.6.4,
+//! which is what the non-compiling test was there to force.
+
+use std::sync::Arc;
+
+use crate::harness::backend::{
+    Backend, BatchWorld, Layer, MSG, ManagerWorld, ToolsWorld, WireWorld, observe, observe_outcome,
+};
+use crate::harness::op::{Case, Op, OpAdapterMeta, present_state};
+use crate::harness::outcome::{Observed, ObservedError, Outcome as O};
+use crate::harness::precondition::{Precondition, PreconditionKind as P, sentinel};
+use crate::harness::state::GitState as S;
+use turbovault_tools::{BatchOperation, BatchTools, FileTools};
+use turbovault_vault::VaultManager;
+
+/// The path held fixed while `REL` is the varied path: the destination for the
+/// [`MoveSrc`] sweep, the source for the [`MoveDest`] sweep.
+const OTHER: &str = "other.md";
+
+// ── The per-layer move call (the only layer-specific part) ───────────────────
+// Each is `move(from, to, from_pc, to_pc)`. Tools/Manager drive the real
+// `move_file`; Batch drives a one-op `MoveNote` batch through `plan`/
+// `apply_changes` (never `batch_execute`, whose soft envelope would stringify
+// the error kind the Outcome assertions need).
+
+async fn move_tools(
+    mgr: Arc<VaultManager>,
+    from: &str,
+    to: &str,
+    from_pc: Precondition,
+    to_pc: Precondition,
+) -> Result<(), turbovault_core::Error> {
+    FileTools::new(mgr)
+        .move_file(from, to, from_pc, to_pc, MSG)
+        .await
+}
+
+async fn move_manager(
+    mgr: Arc<VaultManager>,
+    from: &str,
+    to: &str,
+    from_pc: Precondition,
+    to_pc: Precondition,
+) -> Result<(), turbovault_core::Error> {
+    mgr.move_file(
+        std::path::Path::new(from),
+        std::path::Path::new(to),
+        from_pc,
+        to_pc,
+        MSG,
+    )
+    .await
+}
+
+async fn move_batch(
+    mgr: Arc<VaultManager>,
+    from: &str,
+    to: &str,
+    from_pc: Precondition,
+    to_pc: Precondition,
+) -> Result<(), turbovault_core::Error> {
+    // `dest_expected_hash` runs parallel to the source `expected_hash`, both
+    // `Option<String>` (sentinel|oid), matching every other batch op's shape. The
+    // source keeps the `blob_token` idiom; the destination is sentinel-encoded so it
+    // can express the full dest axis (absent/exists/blind/oid), replacing what used
+    // to be a hardcoded `expect_absent(to)`. This adapter named that field before it
+    // existed — the resulting compile failure is what drove qae.6.4 to add it.
+    let op = BatchOperation::MoveNote {
+        from: from.to_string(),
+        to: to.to_string(),
+        expected_hash: BatchWorld::blob_token(&from_pc),
+        dest_expected_hash: sentinel(&to_pc),
+        update_backlinks: None,
+    };
+    let mut plan = BatchTools::new(mgr.clone()).plan(&[op]).await?;
+    plan.message = MSG.to_string();
+    mgr.apply_changes(&plan).await.map(|_| ())
+}
+
+/// The wire move: drive the real `move_note` MCP handler in-process, encoding
+/// BOTH preconditions as sentinel strings. `dest_expected_hash` is the NEEDED
+/// wire param (the handler has only a source `expected_hash` today), so the dest
+/// sweep is aspirational until the wire-decode commit adds it. `update_backlinks:
+/// false` uses the plain move path (note.md has no linkers either way).
+async fn move_wire(
+    w: &WireWorld,
+    from: &str,
+    to: &str,
+    from_pc: Precondition,
+    to_pc: Precondition,
+) -> Result<(), ObservedError> {
+    let params = serde_json::json!({
+        "from": from,
+        "to": to,
+        "expected_hash": sentinel(&from_pc),
+        "dest_expected_hash": sentinel(&to_pc),
+        "update_backlinks": false,
+    });
+    w.call_tool("move_note", params).await
+}
+
+// ── MoveSrc: vary the source (REL), destination held absent ──────────────────
+
+#[derive(Clone, Copy)]
+pub struct MoveSrc;
+
+/// OK effect for a source-sweep move: the source (the varied path) is **gone**.
+fn src_ok(observed: &Observed) -> Result<(), String> {
+    if observed.after_content.is_none() {
+        Ok(())
+    } else {
+        Err(format!(
+            "OK move: source still present after move: {:?}",
+            observed.after_content
+        ))
+    }
+}
+
+impl OpAdapterMeta for MoveSrc {
+    fn name(&self) -> &'static str {
+        "move_note::src"
+    }
+    fn cases(&self) -> &'static [Case] {
+        SRC_CASES
+    }
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        src_ok(observed)
+    }
+}
+
+impl Op<ToolsWorld> for MoveSrc {
+    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = move_tools(
+            w.vault().manager().clone(),
+            rel,
+            OTHER,
+            pc,
+            Precondition::ExpectAbsent,
+        )
+        .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<ManagerWorld> for MoveSrc {
+    async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = move_manager(
+            w.vault().manager().clone(),
+            rel,
+            OTHER,
+            pc,
+            Precondition::ExpectAbsent,
+        )
+        .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<BatchWorld> for MoveSrc {
+    async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = move_batch(
+            w.vault().manager().clone(),
+            rel,
+            OTHER,
+            pc,
+            Precondition::ExpectAbsent,
+        )
+        .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<WireWorld> for MoveSrc {
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        let res = move_wire(w, rel, OTHER, pc, Precondition::ExpectAbsent).await;
+        observe_outcome(res, w.vault().read(rel))
+    }
+}
+
+// ── MoveDest: vary the destination (REL), source held present ────────────────
+
+#[derive(Clone, Copy)]
+pub struct MoveDest;
+
+/// OK effect for a dest-sweep move: the destination (the varied path) is
+/// **present** after the move.
+fn dest_ok(observed: &Observed) -> Result<(), String> {
+    if observed.after_content.is_some() {
+        Ok(())
+    } else {
+        Err("OK move: destination missing after move".into())
+    }
+}
+
+impl OpAdapterMeta for MoveDest {
+    fn name(&self) -> &'static str {
+        "move_note::dest"
+    }
+    fn cases(&self) -> &'static [Case] {
+        DEST_CASES
+    }
+    fn ok_effect(&self, observed: &Observed) -> Result<(), String> {
+        dest_ok(observed)
+    }
+}
+
+impl Op<ToolsWorld> for MoveDest {
+    async fn invoke(&self, w: &ToolsWorld, rel: &str, pc: Precondition) -> Observed {
+        w.vault()
+            .build_state(OTHER, present_state(w.vault().backend()));
+        let res = move_tools(
+            w.vault().manager().clone(),
+            OTHER,
+            rel,
+            Precondition::ExpectExists,
+            pc,
+        )
+        .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<ManagerWorld> for MoveDest {
+    async fn invoke(&self, w: &ManagerWorld, rel: &str, pc: Precondition) -> Observed {
+        w.vault()
+            .build_state(OTHER, present_state(w.vault().backend()));
+        let res = move_manager(
+            w.vault().manager().clone(),
+            OTHER,
+            rel,
+            Precondition::ExpectExists,
+            pc,
+        )
+        .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<BatchWorld> for MoveDest {
+    async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
+        w.vault()
+            .build_state(OTHER, present_state(w.vault().backend()));
+        let res = move_batch(
+            w.vault().manager().clone(),
+            OTHER,
+            rel,
+            Precondition::ExpectExists,
+            pc,
+        )
+        .await;
+        observe(res, w.vault().read(rel))
+    }
+}
+
+impl Op<WireWorld> for MoveDest {
+    async fn invoke(&self, w: &WireWorld, rel: &str, pc: Precondition) -> Observed {
+        w.vault()
+            .build_state(OTHER, present_state(w.vault().backend()));
+        let res = move_wire(w, OTHER, rel, Precondition::ExpectExists, pc).await;
+        observe_outcome(res, w.vault().read(rel))
+    }
+}
+
+// ── SOURCE sweep — destination held absent (`to = ExpectAbsent`) ─────────────
+// Same shape as delete/edit's in-place rows: the source must exist and match.
+// The desired outcome is layer-invariant; `pending` marks a cell the current
+// code gets wrong (the nbl.8 / 9n6 burndown), shared across all worlds. The
+// `e---u`/Untracked cells split the two backends via `.on()` with DIFFERENT
+// `expected`: on git it is a dirty untracked tree (refuse), on direct it is merely
+// a present source, so `ExpectExists` is satisfied and the move proceeds. Both
+// values come from the CSV's `backend` column; `just wss-audit` enforces them.
+const SRC_CASES: &[Case] = &[
+    // ExpectExists (in-place default, dirty-gated) — the source is the removed
+    // target; NoFile-on-absent must precede the precondition check.
+    Case::pending(P::Exists, S::Absent, O::NoFile),
+    Case::new(P::Exists, S::CleanCommitted, O::Ok),
+    Case::new(P::Exists, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Exists, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Exists, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Exists, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Exists, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Exists, S::NewStagedUnstaged, O::ConcurrencyError),
+    // DIFFERENT `expected` per backend, straight from the CSV's `backend` column:
+    // on git `e---u` is a dirty untracked tree, so the move refuses; on direct it is
+    // merely a present source (direct is git-blind), so `ExpectExists` is satisfied
+    // and the move proceeds. Not a backend lag — do not unify them.
+    Case::new(P::Exists, S::Untracked, O::ConcurrencyError).on(Backend::Git),
+    Case::new(P::Exists, S::Untracked, O::Ok).on(Backend::Direct),
+    // ExpectBlob(HEAD) — defined iff committed
+    Case::new(P::Head, S::CleanCommitted, O::Ok),
+    Case::new(P::Head, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    // ExpectBlob(INDEX) — defined iff staged
+    Case::pending(P::Index, S::CommittedStaged, O::Ok),
+    Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::pending(P::Index, S::NewStaged, O::Ok),
+    Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
+    // ExpectBlob(WORKDIR) — SKIP where == HEAD/INDEX
+    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
+    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
+    // ExpectBlob(WRONG) → refuse everywhere; NoFile on absent
+    Case::pending(P::Wrong, S::Absent, O::NoFile),
+    Case::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
+    Case::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Wrong, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Git),
+    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
+];
+
+// ── DEST sweep — source held clean present (`from = ExpectExists`) ───────────
+// The destination is the write target; `ExpectAbsent` on it is the clobber
+// guard. Today's `move_file` doesn't honor an arbitrary dest precondition (it
+// hardcodes `expect_absent(to)`), so cells whose desired outcome diverges from
+// that are `pending` on the dual-path move burndown (turbovault-9n6) — shared
+// across all worlds; a world that can't meet an active cell FAILS it.
+const DEST_CASES: &[Case] = &[
+    // Blind → overwrite the destination unconditionally.
+    Case::new(P::Blind, S::Absent, O::Ok),
+    Case::new(P::Blind, S::CleanCommitted, O::Ok),
+    Case::pending(P::Blind, S::CommittedStaged, O::Ok),
+    Case::pending(P::Blind, S::CommittedUnstaged, O::Ok),
+    Case::pending(P::Blind, S::CommittedStagedUnstaged, O::Ok),
+    Case::pending(P::Blind, S::NewStaged, O::Ok),
+    Case::pending(P::Blind, S::IntentToAdd, O::Ok),
+    Case::pending(P::Blind, S::NewStagedUnstaged, O::Ok),
+    Case::pending(P::Blind, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Blind, S::Untracked, O::Ok).on(Backend::Direct),
+    // ExpectAbsent (clobber protection) → OK on absent dest, else refuse.
+    Case::new(P::Absent, S::Absent, O::Ok),
+    Case::new(P::Absent, S::CleanCommitted, O::ConcurrencyError),
+    Case::new(P::Absent, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Absent, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Absent, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Absent, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Absent, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Absent, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Absent, S::Untracked, O::ConcurrencyError).on(Backend::Git),
+    Case::new(P::Absent, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
+    // ExpectBlob(HEAD) on the dest — defined iff dest committed
+    Case::new(P::Head, S::CleanCommitted, O::Ok),
+    Case::new(P::Head, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    // ExpectBlob(INDEX) on the dest — defined iff dest staged
+    Case::pending(P::Index, S::CommittedStaged, O::Ok),
+    Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::pending(P::Index, S::NewStaged, O::Ok),
+    Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
+    // ExpectBlob(WORKDIR) on the dest — SKIP where == HEAD/INDEX
+    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
+    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
+    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
+    // ExpectBlob(WRONG) on the dest → refuse everywhere (incl. absent)
+    Case::new(P::Wrong, S::Absent, O::ConcurrencyError),
+    Case::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
+    Case::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Wrong, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Git),
+    Case::new(P::Wrong, S::Untracked, O::ConcurrencyError).on(Backend::Direct),
+];

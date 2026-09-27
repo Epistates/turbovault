@@ -90,6 +90,7 @@ impl TemplateProvider {
         template_id: String,
         file_path: String,
         fields: String, // JSON string
+        expected_hash: Option<String>,
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -105,7 +106,18 @@ impl TemplateProvider {
             })
             .await?;
         let result = engine
-            .create_from_template(&template_id, &file_path, field_values, &message)
+            .create_from_template(
+                &template_id,
+                &file_path,
+                field_values,
+                // Sentinel-or-oid `expected_hash` (qae.6.4); omitted → the
+                // strict-create default `ExpectAbsent`.
+                turbovault_core::Precondition::from_wire(
+                    expected_hash.as_deref(),
+                    turbovault_core::Precondition::ExpectAbsent,
+                ),
+                &message,
+            )
             .await
             .map_err(to_mcp_error)?;
 
