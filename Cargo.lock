@@ -5559,7 +5559,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5599,7 +5599,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-audit"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "log",
@@ -5616,7 +5616,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-batch"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "schemars",
@@ -5631,7 +5631,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-core"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "log",
@@ -5650,7 +5650,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-export"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -5661,7 +5661,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-git"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "criterion",
  "git2",
@@ -5675,7 +5675,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-graph"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "dashmap",
@@ -5690,7 +5690,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-parser"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "log",
  "pulldown-cmark",
@@ -5717,7 +5717,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-plugin-vector"
-version = "2.1.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -5732,7 +5732,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-sql"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "gluesql",
  "log",
@@ -5746,7 +5746,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-tools"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5780,7 +5780,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "2.1.0"
+version = "2.2.0"
 dependencies = [
  "anyhow",
  "dashmap",
@@ -5809,7 +5809,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vector"
-version = "2.1.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bm25",

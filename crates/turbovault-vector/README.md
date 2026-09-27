@@ -10,8 +10,8 @@ TurboVault's compiled-in plugin boundary, reading notes through `VaultApi`,
 persisting snapshots through `PluginStorage`, and advertising the
 `vector_search_*` MCP tools.
 
-Not published to crates.io yet (`publish = false`): this is a new, still-settling
-engine with no external consumers.
+Versioned on its own at 0.x, separately from the rest of the workspace: this is
+a new, still-settling engine, and its API may change between minor versions.
 
 ## Stack
 

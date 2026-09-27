@@ -1,17 +1,18 @@
 [package]
 name = "turbovault-vector"
-version.workspace = true
+# Not `version.workspace`: a new, still-settling engine, versioned on its own
+# like turbovault-plugin-api. Published only because turbovault's default-off
+# `vector-search` feature depends on it through turbovault-plugin-vector.
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Not published yet: a new, still-settling engine with no external consumers,
-# mounted only through crates/plugins/turbovault-plugin-vector behind the
-# default-off `vector-search` feature on the turbovault binary.
-publish = false
+publish = true
 description = "Optional hybrid (dense + lexical) semantic search engine for TurboVault, pure-Rust and CPU-only"
+documentation = "https://docs.rs/turbovault-vector"
 readme = "README.md"
 
 [features]
