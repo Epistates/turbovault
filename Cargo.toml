@@ -107,7 +107,7 @@ unicode-normalization = "0.1.25"  # Unicode NFC normalization
 
 # Path handling & Security
 shellexpand = "3.1"       # Shell-like expansions (tilde, env vars) - battle-tested
-path_trav = "2"           # Path traversal detection - security-focused
+soft-canonicalize = "0.5" # Follows symlinks through paths that do not exist yet
 
 # Git write substrate (libgit2 bindings; vendored libgit2 -> needs cmake + cc at build)
 git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS via Transaction

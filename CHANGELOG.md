@@ -34,7 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`quick_health_check` suggests fixes once per missing target.** Every broken link re-listed and re-lowercased every note to suggest replacements, so the check meant to be quick grew with broken links times notes. Note names are prepared once per report and each missing target is looked up once.
 
 - **Startup reads notes concurrently.** `initialize` awaited every note's read in turn. Up to 64 are now in flight, returned in scan order so the cache and graph are built exactly as before.
-
 ### Fixed
 
 - **A nested list is nested, not flattened into the parent item's text** ([#79](https://github.com/Epistates/turbovault/issues/79)). `- [ ] outer` / `  - [x] inner` reported one item, `ListItem { checked: Some(false), content: "outer\n  [x] inner", blocks: [] }`, with no `ContentBlock::List` anywhere to hold the inner item. The parser tracked how deep inside a list it was, but every item still landed in one shared top-level buffer, so a nested item's marker and text were hand-flattened into indented text and appended to the *parent* item's own `content`. That lost the inner marker (a nested bullet and a nested ordered item both just became indentation, so they were indistinguishable), the source indent (always rewritten to two spaces a level regardless of what was written), and a nested item's own continuation paragraph, which had nowhere to go but the outer item's blocks.
@@ -72,6 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A single `path_to_slash` helper (`turbovault-core::utils`) now handles this everywhere: it replaces `MAIN_SEPARATOR` only when that separator is not already `/`, so Unix is a true no-op and Windows gets the rewrite it always needed. `VaultManager::relative_path` is the vault-facing entry point and now delegates to it; call sites building their own relative paths route through one or the other.
 
 - **A missing file reported the OS's own error text instead of TurboVault's "not found" message.** `read_file`, `parse_file`, both write backends' delete and rename, and rollback's undo-create path all mapped `tokio::fs`'s `io::Error` straight through `Error::io`, so a `NotFound` came back as "No such file or directory (os error 2)" on Unix, or the Windows equivalent: OS- and locale-specific text with nothing stable for a client to match against. `Error::io_at(path, err)` now translates `ErrorKind::NotFound` into the existing `Error::FileNotFound`, so callers get the same message as every other missing-file case, and passes every other error kind through unchanged.
+
+### Security
+
+Both entries below are [GHSA-j5fp-g36h-6547](https://github.com/Epistates/turbovault/security/advisories/GHSA-j5fp-g36h-6547). Every version through 2.1.0 is affected.
+
+- **A note path is judged by where it lands on disk, not by its text.** The resolver behind every note API checked a path's text and then handed the text back to be opened. For a note that did not exist yet it never consulted the filesystem at all, so a symlink anywhere inside the vault turned creating a note into writing a file anywhere the server could write: `Attachments/authorized_keys` with `Attachments` linked to `~/.ssh`. Every write path shared the resolver, including edits, moves, batches, templates and exports. Paths are now resolved by following every symlink along them as far as they exist, a dangling one included, and refused unless that real location is inside the vault's real location.
+
+- **Protected directories are protected in any spelling.** `.turbovault`, `.git`, `.obsidian` and the rest of `excluded_paths` were matched byte for byte, but the default macOS and Windows filesystems ignore case and Windows drops trailing dots and spaces. `.Git/hooks/post-commit` or `.TurboVault/audit/operations.jsonl` passed the check and reached the real directory. Components are now compared case-insensitively with trailing dots and spaces removed, and the check also runs on the path's real location, since a symlink inside the vault can reach `.git` without the path ever naming it.
+
+  `path_trav` is replaced by `soft-canonicalize`, and the rollback path validator shares the same resolver instead of keeping its own copy.
 
 ## [2.1.0] - 2026-09-13
 
