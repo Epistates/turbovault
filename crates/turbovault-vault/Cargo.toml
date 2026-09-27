@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Vault management, file operations, and watching"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 documentation = "https://docs.rs/turbovault-vault"
 
 [dependencies]
@@ -31,16 +34,12 @@ anyhow = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
-uuid = { workspace = true }
 futures = { workspace = true }
 
 # File editing & diff
 similar = { workspace = true }
 sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
-
-# Path security
-path_trav = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -11,12 +11,14 @@ members = [
     "crates/turbovault-sql",
     "crates/turbovault-tools",
     "crates/turbovault-plugin-api",
+    "crates/turbovault-vector",
+    "crates/plugins/turbovault-plugin-vector",
     "crates/turbovault",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "2.1.0"
+version = "2.2.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
@@ -38,7 +40,7 @@ async-trait = "0.1"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value", "preserve_order"] }
-yaml_serde = "0.10.4"  # Maintained serde_yaml fork from The YAML Organization
+yaml_serde = "0.10.7"  # Maintained serde_yaml fork from The YAML Organization
 schemars = "1.2"
 
 # Markdown Parsing (2025 diligence: see DEPENDENCY_DILIGENCE_2025.md)
@@ -65,7 +67,7 @@ anyhow = "1.0"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.24", features = ["v4", "serde"] }
+uuid = { version = "1.26", features = ["v4", "serde"] }
 dashmap = "6.2"
 
 # Configuration
@@ -80,62 +82,79 @@ criterion = "0.8"
 log = "0.4"
 
 # MCP server framework
-turbomcp = { version = "3.3.0", default-features = false }
-turbomcp-core = "3.3.0"
-turbomcp-protocol = "3.3.0"
-turbomcp-server = { version = "3.3.0", default-features = false }
-turbomcp-types = "3.3.0"
+turbomcp = { version = "3.4.0", default-features = false }
+turbomcp-core = "3.4.0"
+turbomcp-protocol = "3.4.0"
+turbomcp-server = { version = "3.4.0", default-features = false }
+turbomcp-types = "3.4.0"
 # Used by the wire-level e2e test. Declared here with the rest so a turbomcp
 # bump cannot leave the client behind, which is how it ended up driving a
 # 3.3.0 server from a 3.1.5 client.
-turbomcp-client = "3.3.0"
-turbomcp-transport = "3.3.0"
+turbomcp-client = "3.4.0"
+turbomcp-transport = "3.4.0"
 
 # SQL query engine (optional, for frontmatter SQL queries)
-gluesql = { version = "0.19", default-features = false, features = ["gluesql_memory_storage"] }
+gluesql = { version = "0.20", default-features = false, features = ["gluesql_memory_storage"] }
 
 # Search and Matching (Tier 1d: Replace hand-rolled implementations)
 tantivy = "0.26"           # Full-text search engine (Apache Lucene-inspired, production-grade)
 
 # File Editing & Diff (World-class fuzzy matching for LLM-generated edits)
-similar = { version = "3.1", features = ["inline"] }  # mitsuhiko's diff lib (used by insta)
+similar = { version = "3.2", features = ["inline"] }  # mitsuhiko's diff lib (used by insta)
 strsim = "0.11"           # Levenshtein distance for fuzzy matching (if similar insufficient)
 sha2 = "0.11"             # SHA-256 hashing for content validation
 unicode-normalization = "0.1.25"  # Unicode NFC normalization
 
 # Path handling & Security
 shellexpand = "3.1"       # Shell-like expansions (tilde, env vars) - battle-tested
-path_trav = "2"           # Path traversal detection - security-focused
+soft-canonicalize = "0.5" # Follows symlinks through paths that do not exist yet
 
 # Git write substrate (libgit2 bindings; vendored libgit2 -> needs cmake + cc at build)
 git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS via Transaction
+
+# Vector search (optional, feature-gated Tier 1 stack: pure Rust, CPU-only, no
+# bundled C libraries, no network access at runtime unless a caller points
+# `from_pretrained` at a Hugging Face repo id instead of a local path).
+model2vec-rs = { version = "0.3", default-features = false, features = ["local-only", "fancy-regex"] }
+hnsw_rs = "0.3"           # Pure-Rust HNSW ANN index (jean-pierreBoth/hnswlib-rs)
+bm25 = "2.3"              # Pure-Rust BM25 scorer/search engine (Michael-JB/bm25)
 
 # DEFERRED (Phase 3+):
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "2.1.0", path = "crates/turbovault-core" }
-turbovault-parser = { version = "2.1.0", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "2.1.0", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "2.1.0", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "2.1.0", path = "crates/turbovault-batch" }
-turbovault-export = { version = "2.1.0", path = "crates/turbovault-export" }
-turbovault-audit = { version = "2.1.0", path = "crates/turbovault-audit" }
-turbovault-git = { version = "2.1.0", path = "crates/turbovault-git" }
-turbovault-sql = { version = "2.1.0", path = "crates/turbovault-sql" }
-turbovault-tools = { version = "2.1.0", path = "crates/turbovault-tools" }
+turbovault-core = { version = "2.2.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "2.2.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "2.2.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "2.2.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "2.2.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "2.2.0", path = "crates/turbovault-export" }
+turbovault-audit = { version = "2.2.0", path = "crates/turbovault-audit" }
+turbovault-git = { version = "2.2.0", path = "crates/turbovault-git" }
+turbovault-sql = { version = "2.2.0", path = "crates/turbovault-sql" }
+turbovault-tools = { version = "2.2.0", path = "crates/turbovault-tools" }
 # Versioned independently of the workspace: the plugin contract has no external
 # implementors yet and needs room to change without dragging every other crate
 # to a new major. Promote it to the workspace version once it is stable.
 turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-api" }
-turbovault = { version = "2.1.0", path = "crates/turbovault" }
+# Versioned independently for the same reason: the engine and its compiled-in
+# plugin are still settling. They are published only because turbovault's
+# default-off `vector-search` feature depends on them, and crates.io requires
+# every dependency of a published crate to be published, optional ones included.
+turbovault-vector = { version = "0.1.0", path = "crates/turbovault-vector" }
+turbovault-plugin-vector = { version = "0.1.0", path = "crates/plugins/turbovault-plugin-vector" }
+turbovault = { version = "2.2.0", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = true
-panic = "abort"
+# Unwind, not abort. The server answers every request in its own task and
+# converts a panic in a tool into an error for that one call. Under abort
+# there is nothing to catch, so one bad input ends the process, and with it
+# every other client's session.
+panic = "unwind"
 
 [profile.ci]
 inherits = "release"

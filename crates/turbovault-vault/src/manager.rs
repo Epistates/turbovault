@@ -1,7 +1,7 @@
 //! Vault manager implementation with file watching and caching
 
 use crate::reindex::CommitOrigin;
-use path_trav::PathTrav;
+use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,9 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
-use turbovault_core::{Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend};
+use turbovault_core::{
+    Change, ChangePlan, PathValidator, Precondition, VaultGitConfig, WriteBackend, path_to_slash,
+};
 use turbovault_git::{CommitHook, CommitLocks, Oid, VaultRepo};
 use turbovault_graph::LinkGraph;
 use turbovault_parser::Parser;
@@ -165,6 +167,11 @@ const RECONCILE_MAX_INTERVAL: Duration = Duration::from_secs(30);
 /// roughly 13k notes sits at the floor and the duty cycle never binds; past
 /// that it stretches the interval rather than the pass.
 const RECONCILE_DUTY_DIVISOR: u32 = 20;
+
+/// How many note reads `initialize` keeps in flight. Enough to hide per-file
+/// latency on a slow or network disk, few enough to stay well inside the open
+/// file limit.
+const INITIAL_READ_CONCURRENCY: usize = 64;
 
 /// The reconcile schedule.
 #[derive(Debug)]
@@ -992,10 +999,7 @@ impl VaultManager {
     /// render consistently across platforms). Falls back to the lossy full path
     /// when `path` is not under the vault root.
     pub fn relative_path(&self, path: &Path) -> String {
-        path.strip_prefix(&self.vault_path)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/")
+        path_to_slash(path.strip_prefix(&self.vault_path).unwrap_or(path))
     }
 
     /// Set the audit log and snapshot store for operation tracking.
@@ -1041,19 +1045,31 @@ impl VaultManager {
         // resolving wikilink targets, regardless of scan order.
         let mut parsed_files = Vec::with_capacity(scanned.len());
 
-        // Pass 1: parse all files, populate cache and graph nodes
-        for note in scanned {
-            // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
-            // note file here (a `.txt`, a `.canvas`) would put it somewhere no
-            // applier ever updates it, so every freshness sweep would report it
-            // changed again.
-            if !is_note(&note.path) {
-                continue;
-            }
-            let scanned_fingerprint = note.fingerprint();
-            let file_path = note.path;
+        // Pass 1: parse all files, populate cache and graph nodes.
+        //
+        // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
+        // note file here (a `.txt`, a `.canvas`) would put it somewhere no
+        // applier ever updates it, so every freshness sweep would report it
+        // changed again.
+        //
+        // The reads overlap, since each one is independent and waiting on them
+        // one at a time is most of what startup costs on a large vault or a
+        // slow disk. `buffered` hands them back in scan order, so the cache and
+        // graph are built in the same order as before.
+        let notes = scanned.into_iter().filter(|note| is_note(&note.path));
+        let reads: Vec<_> = futures::stream::iter(notes)
+            .map(|note| async move {
+                let fingerprint = note.fingerprint();
+                let read = read_note_with_fingerprint(&note.path, Some(fingerprint)).await;
+                (note.path, read)
+            })
+            .buffered(INITIAL_READ_CONCURRENCY)
+            .collect()
+            .await;
+
+        for (file_path, read) in reads {
             log::debug!("Processing file: {:?}", file_path);
-            match read_note_with_fingerprint(&file_path, Some(scanned_fingerprint)).await {
+            match read {
                 Ok((content, observed)) => match self.parser.parse_file(&file_path, &content) {
                     Ok(vault_file) => {
                         log::debug!(
@@ -1120,7 +1136,7 @@ impl VaultManager {
         // which would silently lose frontmatter for callers.
         let content = tokio::fs::read_to_string(&vault_path)
             .await
-            .map_err(Error::io)?;
+            .map_err(|e| Error::io_at(self.relative_path(&vault_path), e))?;
 
         Ok(content)
     }
@@ -1435,41 +1451,24 @@ impl VaultManager {
         Ok(graph.stats())
     }
 
-    /// Normalize a path by resolving `.` and `..` components
-    /// This is used as a fallback when path_trav can't check non-existent paths
-    fn normalize_path(path: &Path) -> PathBuf {
-        let mut components = Vec::new();
-
-        for component in path.components() {
-            match component {
-                std::path::Component::CurDir => {
-                    // Skip `.` components
-                }
-                std::path::Component::ParentDir => {
-                    // Pop the last component for `..`
-                    components.pop();
-                }
-                comp => {
-                    components.push(comp);
-                }
-            }
-        }
-
-        components.iter().collect()
-    }
-
-    /// Resolve a relative path to vault-root-relative path with path traversal protection
-    /// Uses the battle-tested path_trav crate for security, with fallback normalization.
+    /// Resolve a path against the vault, with traversal protection.
     ///
     /// This is the note-API resolver: it enforces BOTH the vault boundary and
     /// the in-vault protected-directory policy (see
     /// [`Self::ensure_path_is_not_protected`]). Callers holding an explicit
     /// capability grant for protected state use
     /// [`Self::resolve_path_bypassing_policy`] instead.
+    ///
+    /// The protected-directory policy is applied to the path as written and
+    /// again to where it really lands, since a symlink inside the vault can
+    /// reach `.git` without the path ever naming it.
     pub fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
-        let full_path = self.resolve_path_bypassing_policy(path)?;
-        self.ensure_path_is_not_protected(&full_path)?;
-        Ok(full_path)
+        let resolved = PathValidator::resolve_in_vault(&self.vault_path, path)?;
+        self.ensure_path_is_not_protected(&resolved.path)?;
+        if let Some(component) = self.protected_component(&resolved.real_relative) {
+            return Err(Error::protected_path(resolved.path, component));
+        }
+        Ok(resolved.path)
     }
 
     /// Resolve a path with vault-boundary (traversal) protection ONLY.
@@ -1479,37 +1478,7 @@ impl VaultManager {
     /// that is the plugin host's config-read capability. Prefer
     /// [`Self::resolve_path`] everywhere else.
     pub fn resolve_path_bypassing_policy(&self, path: &Path) -> Result<PathBuf> {
-        // Resolve relative paths to absolute
-        let full_path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.vault_path.join(path)
-        };
-
-        // Use path_trav to detect traversal attempts (battle-tested library)
-        // is_path_trav returns Ok(true) if traversal detected, Ok(false) if safe
-        match self.vault_path.is_path_trav(&full_path) {
-            Ok(true) => {
-                // Path traversal detected by path_trav
-                Err(Error::path_traversal(full_path))
-            }
-            Ok(false) => {
-                // Path is safe according to path_trav
-                Ok(full_path)
-            }
-            Err(_) => {
-                // path_trav couldn't check (usually means file doesn't exist)
-                // Use fallback normalization to detect traversal attempts
-                let normalized = Self::normalize_path(&full_path);
-
-                // Check if normalized path is still under vault
-                if normalized.starts_with(&self.vault_path) {
-                    Ok(full_path)
-                } else {
-                    Err(Error::path_traversal(full_path))
-                }
-            }
-        }
+        Ok(PathValidator::resolve_in_vault(&self.vault_path, path)?.path)
     }
 
     /// Refuse a path that lies inside the vault but under a protected
@@ -1537,18 +1506,36 @@ impl VaultManager {
         let Ok(relative) = resolved.strip_prefix(&self.vault_path) else {
             return Ok(());
         };
-        for component in relative.components() {
+        match self.protected_component(relative) {
+            Some(component) => Err(Error::protected_path(resolved, component)),
+            None => Ok(()),
+        }
+    }
+
+    /// The first component of a vault-relative path that names a protected
+    /// directory, if any.
+    ///
+    /// Names are compared the way the filesystems vaults live on compare them,
+    /// not byte for byte. The default macOS and Windows filesystems ignore
+    /// case, so `.Git` is `.git` there, and Windows drops trailing dots and
+    /// spaces, so `.git.` is too. A byte comparison let every one of those
+    /// through to the directory it was meant to keep out. Refusing them on a
+    /// case-sensitive filesystem as well costs only the ability to name a
+    /// note folder `.GIT`.
+    fn protected_component(&self, relative: &Path) -> Option<String> {
+        relative.components().find_map(|component| {
             let std::path::Component::Normal(raw) = component else {
-                continue;
+                return None;
             };
             let name = raw.to_string_lossy();
-            if PROTECTED_COMPONENTS.contains(&name.as_ref())
-                || self.config.excluded_paths.contains(name.as_ref())
-            {
-                return Err(Error::protected_path(resolved, name.into_owned()));
-            }
-        }
-        Ok(())
+            let folded = name.trim_end_matches(['.', ' ']).to_lowercase();
+            let protected = PROTECTED_COMPONENTS
+                .iter()
+                .copied()
+                .chain(self.config.excluded_paths.iter().map(String::as_str))
+                .any(|p| p.to_lowercase() == folded);
+            protected.then(|| name.into_owned())
+        })
     }
 
     /// Scan for markdown files in vault
@@ -1705,7 +1692,7 @@ impl VaultManager {
         let full_path = self.resolve_path(path)?;
         let content = tokio::fs::read_to_string(&full_path)
             .await
-            .map_err(Error::io)?;
+            .map_err(|e| Error::io_at(self.relative_path(&full_path), e))?;
         self.parser
             .parse_file(&full_path, &content)
             .map_err(|e| Error::parse_error(e.to_string()))
@@ -1957,9 +1944,9 @@ mod tests {
             "failed_at must name the change that stopped the loop"
         );
         assert!(
-            matches!(outcome.error, Some(Error::Io(_))),
+            matches!(outcome.error, Some(Error::FileNotFound { .. })),
             "the loop failure's typed error kind must survive to the manager \
-             boundary, got {:?}",
+             boundary as FileNotFound, not the OS's raw ENOENT text, got {:?}",
             outcome.error
         );
         assert_eq!(

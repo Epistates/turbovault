@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Core data models and types for TurboVault Server"
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
 documentation = "https://docs.rs/turbovault-core"
 
 [dependencies]
@@ -22,6 +25,7 @@ tokio = { workspace = true, features = ["sync"] }
 parking_lot = "0.12"  # For efficient RwLock in metrics
 sha2 = { workspace = true }
 shellexpand = { workspace = true }
+soft-canonicalize = { workspace = true }
 winnow = { workspace = true }
 
 [dev-dependencies]

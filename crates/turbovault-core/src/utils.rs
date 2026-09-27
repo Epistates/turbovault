@@ -10,6 +10,29 @@ use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// Render `path` as a `/`-separated string, the spelling Obsidian vault paths
+/// (and this server's MCP surface) always use.
+///
+/// Only touches [`std::path::MAIN_SEPARATOR`], and only when it is not
+/// already `/`. On Unix that separator IS `/`, so this is a no-op, which
+/// matters because a backslash is a legal filename character there; an
+/// unconditional `.replace('\\', "/")` would corrupt a component that
+/// legitimately contains one. On Windows it rewrites the `\` the platform
+/// APIs return so a path looks identical regardless of which OS produced it.
+///
+/// A hand-rolled helper rather than the `path-slash` crate: the conversion
+/// is exactly this one conditional replace, small enough that a dependency
+/// (plus its `Path`/`PathBuf` extension-trait surface we would not use) buys
+/// nothing a doc comment doesn't already cover.
+pub fn path_to_slash(path: &Path) -> String {
+    let rendered = path.to_string_lossy();
+    if std::path::MAIN_SEPARATOR == '/' {
+        rendered.into_owned()
+    } else {
+        rendered.replace(std::path::MAIN_SEPARATOR, "/")
+    }
+}
+
 /// Encode bytes as lowercase hexadecimal.
 pub fn bytes_to_lower_hex(bytes: impl AsRef<[u8]>) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -72,56 +95,62 @@ impl CSVBuilder {
     }
 }
 
+/// A path inside a vault, checked against where it lands on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPath {
+    /// The path as addressed: the vault root joined with the request, with
+    /// `.` and `..` resolved. This is the path to open and to key caches by.
+    pub path: PathBuf,
+    /// Where that path really is, relative to the vault root's real location,
+    /// once every symlink along it has been followed. Empty for the root.
+    pub real_relative: PathBuf,
+}
+
 /// Path validation helpers
 pub struct PathValidator;
 
 impl PathValidator {
-    /// Ensure a path is within a vault root (prevents directory traversal)
-    pub fn validate_path_in_vault(vault_root: &Path, path: &Path) -> Result<PathBuf> {
-        let full_path = vault_root.join(path);
-
-        // Canonicalize would require the path to exist. Instead, we check if
-        // the normalized path is still within vault_root by comparing components.
-        let canonical_vault = vault_root
-            .canonicalize()
-            .unwrap_or_else(|_| vault_root.to_path_buf());
-
-        // For non-existent paths, at least check that it doesn't escape via ..
-        // by ensuring normalized form would still be under vault
-        if let Ok(canonical_full) = full_path.canonicalize() {
-            if !canonical_full.starts_with(&canonical_vault) {
-                return Err(Error::path_traversal(full_path));
-            }
-        } else {
-            // Path doesn't exist, check statically using path normalization
-            use std::path::Component;
-            let mut normalized = PathBuf::new();
-            for component in full_path.components() {
-                match component {
-                    Component::ParentDir => {
-                        normalized.pop();
-                    }
-                    Component::Normal(name) => {
-                        normalized.push(name);
-                    }
-                    Component::RootDir => {
-                        normalized.push(component);
-                    }
-                    Component::CurDir => {
-                        // Skip .
-                    }
-                    Component::Prefix(p) => {
-                        normalized.push(p.as_os_str());
-                    }
-                }
-            }
-
-            if !normalized.starts_with(vault_root) {
-                return Err(Error::path_traversal(full_path));
-            }
+    /// Resolve `path` against `vault_root`, refusing it unless it stays inside
+    /// the vault both as written and as the filesystem will resolve it.
+    ///
+    /// Checking the text alone is not enough, because the text is not what
+    /// gets opened. A symlink inside the vault can point anywhere, and a note
+    /// that does not exist yet cannot be canonicalized the ordinary way, which
+    /// is exactly when the check used to fall back to the text and let a new
+    /// note be written through a link to anywhere on the machine. The real
+    /// location is found by following every link along the path as far as it
+    /// exists, including a dangling one at the end, which writing through
+    /// would create.
+    ///
+    /// The resolved path is still the one as addressed, not the real one, so a
+    /// vault registered through a symlinked directory keeps its own paths.
+    pub fn resolve_in_vault(vault_root: &Path, path: &Path) -> Result<ResolvedPath> {
+        let root = lexically_normalize(vault_root);
+        let addressed = lexically_normalize(&root.join(path));
+        if !addressed.starts_with(&root) {
+            return Err(Error::path_traversal(addressed));
         }
 
-        Ok(full_path)
+        let real_root = soft_canonicalize::soft_canonicalize(&root)?;
+        // A path the filesystem cannot resolve (a symlink loop, a directory
+        // that cannot be read) cannot be shown to stay inside, so it does not.
+        let real = soft_canonicalize::soft_canonicalize(&addressed)
+            .map_err(|_| Error::path_traversal(&addressed))?;
+        let Ok(real_relative) = real.strip_prefix(&real_root) else {
+            return Err(Error::path_traversal(addressed));
+        };
+
+        Ok(ResolvedPath {
+            real_relative: real_relative.to_path_buf(),
+            path: addressed,
+        })
+    }
+
+    /// Ensure a path is within a vault root (prevents directory traversal).
+    ///
+    /// See [`Self::resolve_in_vault`], which this is the path half of.
+    pub fn validate_path_in_vault(vault_root: &Path, path: &Path) -> Result<PathBuf> {
+        Ok(Self::resolve_in_vault(vault_root, path)?.path)
     }
 
     /// Ensure a path exists in the vault
@@ -140,6 +169,28 @@ impl PathValidator {
             .map(|p| Self::validate_path_in_vault(vault_root, Path::new(p)))
             .collect()
     }
+}
+
+/// Resolve `.` and `..` in a path by its text alone, without touching the
+/// filesystem. `..` at the root stays at the root.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !matches!(
+                    out.components().next_back(),
+                    None | Some(Component::RootDir | Component::Prefix(_))
+                ) {
+                    out.pop();
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Transaction tracking utilities
@@ -199,6 +250,36 @@ mod tests {
     #[test]
     fn test_bytes_to_lower_hex() {
         assert_eq!(bytes_to_lower_hex([0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+    }
+
+    #[test]
+    fn path_to_slash_leaves_an_already_slashed_path_untouched() {
+        assert_eq!(path_to_slash(Path::new("a/b")), "a/b");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn path_to_slash_preserves_a_literal_backslash_in_a_unix_filename() {
+        // A backslash is a legal filename character on Unix. MAIN_SEPARATOR
+        // there is '/', so the conditional replace must be a no-op and leave
+        // this real filename intact rather than corrupt it.
+        assert_eq!(path_to_slash(Path::new(r"weird\name.md")), r"weird\name.md");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_to_slash_converts_backslashes_on_windows() {
+        assert_eq!(path_to_slash(Path::new(r"islands\a.md")), "islands/a.md");
+        assert_eq!(
+            path_to_slash(Path::new(r"C:\vault\guides\authentication.md")),
+            "C:/vault/guides/authentication.md"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_to_slash_leaves_an_already_slashed_windows_path_untouched() {
+        assert_eq!(path_to_slash(Path::new("a/b")), "a/b");
     }
 
     #[test]

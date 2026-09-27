@@ -104,8 +104,13 @@ async fn test_search_tools_malformed_graph_data() {
 
     // Query for a path with special characters that might break parsing
     let result = tools.find_backlinks("path/with/<>:\"\\|?*.md").await;
-    // Should handle gracefully without panicking
+    // Should handle gracefully without panicking. `<>:"|?*` cannot appear in a
+    // Windows file name, so there the resolver cannot show where the path
+    // lands and refuses it rather than answering for a file that cannot exist.
+    #[cfg(unix)]
     assert!(result.is_ok());
+    #[cfg(windows)]
+    assert!(result.is_err());
 }
 
 #[tokio::test]
