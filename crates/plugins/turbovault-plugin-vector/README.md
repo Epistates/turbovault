@@ -12,8 +12,7 @@ and it stays current via a background worker that reconciles on every
 (`search`, `reindex`, `status`) are advertised namespaced as
 `vector_search_search`, `vector_search_reindex`, `vector_search_status`.
 
-Not published to crates.io yet (`publish = false`), matching
-`turbovault-vector`.
+Versioned on its own at 0.x, matching `turbovault-vector`, while both settle.
 
 ## Enabling it
 
