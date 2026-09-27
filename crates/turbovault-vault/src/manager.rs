@@ -2,7 +2,6 @@
 
 use crate::reindex::CommitOrigin;
 use futures::StreamExt;
-use path_trav::PathTrav;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -14,7 +13,7 @@ use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
 use turbovault_core::{
-    Change, ChangePlan, Precondition, VaultGitConfig, WriteBackend, path_to_slash,
+    Change, ChangePlan, PathValidator, Precondition, VaultGitConfig, WriteBackend, path_to_slash,
 };
 use turbovault_git::{CommitHook, CommitLocks, Oid, VaultRepo};
 use turbovault_graph::LinkGraph;
@@ -1452,41 +1451,24 @@ impl VaultManager {
         Ok(graph.stats())
     }
 
-    /// Normalize a path by resolving `.` and `..` components
-    /// This is used as a fallback when path_trav can't check non-existent paths
-    fn normalize_path(path: &Path) -> PathBuf {
-        let mut components = Vec::new();
-
-        for component in path.components() {
-            match component {
-                std::path::Component::CurDir => {
-                    // Skip `.` components
-                }
-                std::path::Component::ParentDir => {
-                    // Pop the last component for `..`
-                    components.pop();
-                }
-                comp => {
-                    components.push(comp);
-                }
-            }
-        }
-
-        components.iter().collect()
-    }
-
-    /// Resolve a relative path to vault-root-relative path with path traversal protection
-    /// Uses the battle-tested path_trav crate for security, with fallback normalization.
+    /// Resolve a path against the vault, with traversal protection.
     ///
     /// This is the note-API resolver: it enforces BOTH the vault boundary and
     /// the in-vault protected-directory policy (see
     /// [`Self::ensure_path_is_not_protected`]). Callers holding an explicit
     /// capability grant for protected state use
     /// [`Self::resolve_path_bypassing_policy`] instead.
+    ///
+    /// The protected-directory policy is applied to the path as written and
+    /// again to where it really lands, since a symlink inside the vault can
+    /// reach `.git` without the path ever naming it.
     pub fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
-        let full_path = self.resolve_path_bypassing_policy(path)?;
-        self.ensure_path_is_not_protected(&full_path)?;
-        Ok(full_path)
+        let resolved = PathValidator::resolve_in_vault(&self.vault_path, path)?;
+        self.ensure_path_is_not_protected(&resolved.path)?;
+        if let Some(component) = self.protected_component(&resolved.real_relative) {
+            return Err(Error::protected_path(resolved.path, component));
+        }
+        Ok(resolved.path)
     }
 
     /// Resolve a path with vault-boundary (traversal) protection ONLY.
@@ -1496,37 +1478,7 @@ impl VaultManager {
     /// that is the plugin host's config-read capability. Prefer
     /// [`Self::resolve_path`] everywhere else.
     pub fn resolve_path_bypassing_policy(&self, path: &Path) -> Result<PathBuf> {
-        // Resolve relative paths to absolute
-        let full_path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.vault_path.join(path)
-        };
-
-        // Use path_trav to detect traversal attempts (battle-tested library)
-        // is_path_trav returns Ok(true) if traversal detected, Ok(false) if safe
-        match self.vault_path.is_path_trav(&full_path) {
-            Ok(true) => {
-                // Path traversal detected by path_trav
-                Err(Error::path_traversal(full_path))
-            }
-            Ok(false) => {
-                // Path is safe according to path_trav
-                Ok(full_path)
-            }
-            Err(_) => {
-                // path_trav couldn't check (usually means file doesn't exist)
-                // Use fallback normalization to detect traversal attempts
-                let normalized = Self::normalize_path(&full_path);
-
-                // Check if normalized path is still under vault
-                if normalized.starts_with(&self.vault_path) {
-                    Ok(full_path)
-                } else {
-                    Err(Error::path_traversal(full_path))
-                }
-            }
-        }
+        Ok(PathValidator::resolve_in_vault(&self.vault_path, path)?.path)
     }
 
     /// Refuse a path that lies inside the vault but under a protected
@@ -1554,18 +1506,36 @@ impl VaultManager {
         let Ok(relative) = resolved.strip_prefix(&self.vault_path) else {
             return Ok(());
         };
-        for component in relative.components() {
+        match self.protected_component(relative) {
+            Some(component) => Err(Error::protected_path(resolved, component)),
+            None => Ok(()),
+        }
+    }
+
+    /// The first component of a vault-relative path that names a protected
+    /// directory, if any.
+    ///
+    /// Names are compared the way the filesystems vaults live on compare them,
+    /// not byte for byte. The default macOS and Windows filesystems ignore
+    /// case, so `.Git` is `.git` there, and Windows drops trailing dots and
+    /// spaces, so `.git.` is too. A byte comparison let every one of those
+    /// through to the directory it was meant to keep out. Refusing them on a
+    /// case-sensitive filesystem as well costs only the ability to name a
+    /// note folder `.GIT`.
+    fn protected_component(&self, relative: &Path) -> Option<String> {
+        relative.components().find_map(|component| {
             let std::path::Component::Normal(raw) = component else {
-                continue;
+                return None;
             };
             let name = raw.to_string_lossy();
-            if PROTECTED_COMPONENTS.contains(&name.as_ref())
-                || self.config.excluded_paths.contains(name.as_ref())
-            {
-                return Err(Error::protected_path(resolved, name.into_owned()));
-            }
-        }
-        Ok(())
+            let folded = name.trim_end_matches(['.', ' ']).to_lowercase();
+            let protected = PROTECTED_COMPONENTS
+                .iter()
+                .copied()
+                .chain(self.config.excluded_paths.iter().map(String::as_str))
+                .any(|p| p.to_lowercase() == folded);
+            protected.then(|| name.into_owned())
+        })
     }
 
     /// Scan for markdown files in vault
