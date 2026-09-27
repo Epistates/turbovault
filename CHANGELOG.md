@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-27
+
 ### Removed
 
 - **`write_note` no longer takes `force`. This is a breaking change to the MCP wire.** An intentional blind overwrite is now `expected_hash: "blind"`, the same sentinel every other write tool and batch operation accepts, so there is one way to say "overwrite without checking" instead of a flag that meant it on one tool. A client still sending `force: true` gets an `is_error` result telling it to pass `expected_hash` or `"blind"`, rather than a silent no-op.
@@ -16,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A write-safety matrix, by [@dlobue](https://github.com/dlobue) in [#46](https://github.com/Epistates/turbovault/pull/46).** TurboVault promises to refuse a write when the file on disk is not what the caller said it was. The matrix holds every write tool to that across both backends, every precondition, and every working-tree state, at four layers (tools, manager, batch, and the MCP wire), all driven from one case table per operation with the source of truth checked in as CSV. It tests clobber-safety only, did the operation refuse or proceed without silently losing an out-of-band change, and leaves content correctness to ordinary tests. The dirty-tree policy it enforces is written up in `docs/write-safety-suite/dirty-tree-policy.md`.
 
 - **`move_note` guards its destination.** `dest_expected_hash` takes a hash or `"absent"`/`"exists"`/`"blind"`, and defaults to `"absent"`, the existing refusal to clobber. Before this a move had no way to state a precondition on its destination, on the tool or in a batch.
+
+### Changed
+
+- **`turbovault-vector` 0.1.1** only moves its `turbovault-parser` requirement to 3.0, so a 3.0 build links one copy of the parser. `turbovault-plugin-vector` and `turbovault-plugin-api` are unchanged at 0.1.0.
+
+### Fixed
+
+- **`edit_note` on a missing file reports it as not found.** `VaultManager::edit_file` was the one read in the manager still passing the OS's own error text through, which 2.2.0 had replaced with `FileNotFound` everywhere else. On Windows that text doesn't say "No such file or directory", and the write-safety matrix caught a client seeing a missing note as some other failure.
 
 ## [2.2.0] - 2026-09-27
 
