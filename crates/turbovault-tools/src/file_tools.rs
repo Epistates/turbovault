@@ -524,22 +524,19 @@ impl FileTools {
             .await
     }
 
-    /// Copy a file within the vault
+    /// Copy a file within the vault, refusing to overwrite an existing
+    /// destination. Goes through [`VaultManager::copy_file`], so it is audited,
+    /// committed on a Git vault, and indexed like any other write; call that
+    /// directly for a different destination precondition.
     pub async fn copy_file(&self, from: &str, to: &str) -> Result<()> {
-        let from_path = self.manager.resolve_path(&PathBuf::from(from))?;
-        let to_path = self.manager.resolve_path(&PathBuf::from(to))?;
-
-        // Create parent directory if needed
-        if let Some(parent) = to_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(Error::io)?;
-        }
-
-        // Perform copy
-        tokio::fs::copy(&from_path, &to_path)
+        self.manager
+            .copy_file(
+                &PathBuf::from(from),
+                &PathBuf::from(to),
+                Precondition::ExpectAbsent,
+                &format!("copy_file {from} -> {to}"),
+            )
             .await
-            .map_err(Error::io)?;
-
-        Ok(())
     }
 
     /// Get lightweight metadata for multiple files without reading full content

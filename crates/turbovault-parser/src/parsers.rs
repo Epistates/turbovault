@@ -61,13 +61,8 @@ impl Parser {
     }
 
     fn extract_metadata(&self, path: &Path, content: &str) -> Result<FileMetadata> {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
         let size = content.len() as u64;
-        let mut hasher = DefaultHasher::new();
-        content.hash(&mut hasher);
-        let checksum = format!("{:x}", hasher.finish());
+        let checksum = turbovault_core::compute_hash(content);
 
         Ok(FileMetadata {
             path: path.to_path_buf(),
@@ -115,7 +110,7 @@ impl Parser {
     /// Parse frontmatter from YAML string.
     #[allow(dead_code)]
     fn parse_frontmatter(&self, fm_str: &str) -> Result<Option<Frontmatter>> {
-        match yaml_serde::from_str::<serde_json::Value>(fm_str) {
+        match crate::parse_frontmatter_yaml::<serde_json::Value>(fm_str) {
             Ok(serde_json::Value::Object(map)) => {
                 let data = map.into_iter().collect();
                 Ok(Some(Frontmatter {

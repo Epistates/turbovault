@@ -307,38 +307,111 @@ pub struct ServerConfig {
     pub max_file_size: u64,
     pub allowed_extensions: HashSet<String>,
     pub excluded_paths: HashSet<String>,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub enable_caching: bool,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub cache_ttl: u64,
     pub log_level: String,
 
     // Advanced settings
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub template_dirs: Vec<PathBuf>,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub default_template_variables: serde_json::Value,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub editor_backup_enabled: bool,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub editor_atomic_writes: bool,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub max_backup_files: usize,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub max_edit_history: usize,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub backup_retention_days: u32,
 
     // Link graph settings
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub link_graph_enabled: bool,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub link_suggestions_enabled: bool,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub max_link_suggestions: usize,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub link_similarity_threshold: f32,
 
     // Search settings
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub full_text_search_enabled: bool,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub index_rebuild_interval: u64,
 
     // Multi-vault
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub multi_vault_enabled: bool,
 
     // Admin
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub metrics_enabled: bool,
+    #[deprecated(
+        since = "3.1.0",
+        note = "never read by TurboVault; removed in the next major release"
+    )]
     pub debug_mode: bool,
 }
 
 impl Default for ServerConfig {
+    #[allow(deprecated)] // still has to initialize the deprecated fields
     fn default() -> Self {
         Self {
             vaults: vec![],

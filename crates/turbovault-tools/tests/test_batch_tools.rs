@@ -700,3 +700,122 @@ async fn test_batch_move_reports_backlink_rewritten_linker_in_affected_files() {
         "See [[bt-renamed]] here.\n"
     );
 }
+
+/// The content a plan upserts for `path`, if it rewrites it.
+fn planned_content(plan: &turbovault_core::ChangePlan, path: &str) -> Option<String> {
+    plan.changes.iter().find_map(|change| match change {
+        Change::Upsert { path: p, content } if p == path => {
+            Some(String::from_utf8(content.clone()).unwrap())
+        }
+        _ => None,
+    })
+}
+
+/// #88: the link graph resolves `[[Old Note]]` to `old note.md`
+/// case-insensitively, so it lists the linker as a backlink. The rewrite has
+/// to agree, or the move reports the linker and then leaves it broken.
+#[tokio::test]
+async fn test_plan_move_rewrites_links_that_differ_only_in_case() {
+    let linker = "See [[Old Note]], [[OLD NOTE#Heading|shown]] and ![[old note]].\n";
+    let (_temp_dir, manager) =
+        setup_vault_with_files(&[("old note.md", "# Old\n"), ("linker.md", linker)]).await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("old note.md", "new note.md", None, "rename")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        planned_content(&plan, "linker.md").as_deref(),
+        Some("See [[new note]], [[new note#Heading|shown]] and ![[new note]].\n")
+    );
+}
+
+/// A link that reaches the note through a frontmatter alias still resolves
+/// after the move (the alias moves with the note), so it is left as written.
+#[tokio::test]
+async fn test_plan_move_leaves_alias_links_alone() {
+    let (_temp_dir, manager) = setup_vault_with_files(&[
+        ("old.md", "---\naliases: [Legacy Name]\n---\n# Old\n"),
+        ("linker.md", "[[Legacy Name]] and [[old]]\n"),
+    ])
+    .await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("old.md", "fresh.md", None, "rename")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        planned_content(&plan, "linker.md").as_deref(),
+        Some("[[Legacy Name]] and [[fresh]]\n")
+    );
+}
+
+/// Two notes share a basename. Moving one rewrites only the links the graph
+/// resolves to it, never a link that names the other one.
+#[tokio::test]
+async fn test_plan_move_does_not_touch_links_to_a_same_named_note() {
+    let (_temp_dir, manager) = setup_vault_with_files(&[
+        ("a/Note.md", "# A\n"),
+        ("b/Note.md", "# B\n"),
+        ("linker.md", "[[a/Note]] and [[b/Note]]\n"),
+    ])
+    .await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("b/Note.md", "c/Other.md", None, "move")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        planned_content(&plan, "linker.md").as_deref(),
+        Some("[[a/Note]] and [[c/Other]]\n")
+    );
+}
+
+/// Byte offsets from the parser stay correct after multi-byte text, and a
+/// wikilink inside code is not a link at all.
+#[tokio::test]
+async fn test_plan_move_rewrites_after_multibyte_text_and_skips_code() {
+    let linker = "Café · 日本語 [[old]] `[[old]]`\n```\n[[old]]\n```\n";
+    let (_temp_dir, manager) =
+        setup_vault_with_files(&[("old.md", "# Old\n"), ("linker.md", linker)]).await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("old.md", "new.md", None, "rename")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        planned_content(&plan, "linker.md").as_deref(),
+        Some("Café · 日本語 [[new]] `[[old]]`\n```\n[[old]]\n```\n")
+    );
+}
+
+/// The stale-link wrap on delete follows the same resolution: case-folded
+/// links are wrapped, and so are alias links, which die with the note.
+#[tokio::test]
+async fn test_plan_delete_wraps_case_folded_and_alias_links() {
+    let (_temp_dir, manager) = setup_vault_with_files(&[
+        ("Doomed.md", "---\naliases: [Gone]\n---\n# Doomed\n"),
+        ("linker.md", "see [[doomed]], [[Gone]] and [[other]]\n"),
+        ("other.md", "# Other\n"),
+    ])
+    .await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_delete_with_stale_links("Doomed.md", None, "delete")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        planned_content(&plan, "linker.md").as_deref(),
+        Some("see ~~[[doomed]]~~, ~~[[Gone]]~~ and [[other]]\n")
+    );
+}

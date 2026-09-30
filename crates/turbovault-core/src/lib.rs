@@ -105,8 +105,8 @@ pub use precondition::Precondition;
 pub use profiles::ConfigProfile;
 #[allow(deprecated)]
 pub use utils::{
-    CSVBuilder, PathValidator, ResolvedPath, TransactionBuilder, bytes_to_lower_hex, path_to_slash,
-    to_json_string,
+    CSVBuilder, PathValidator, ResolvedPath, TransactionBuilder, bytes_to_lower_hex, compute_hash,
+    compute_hash_bytes, path_to_slash, to_json_string,
 };
 pub use validation::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Severity,

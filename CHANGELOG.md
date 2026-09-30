@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tests for the network transports.** HTTP, WebSocket and TCP each serve a real MCP session in CI now: initialize, `tools/list`, and a tool call.
+
+### Changed
+
+- **Workspace lints.** `unsafe_code` is denied in every crate (no shipped crate uses `unsafe`; one test harness is allowed it explicitly), and clippy warns on `dbg!`, `todo!`, `unimplemented!` and printing to stdout, which is the MCP channel over STDIO.
+
+- **Release binaries carry every feature.** The prebuilt binaries were default-features only, so none had HTTP, WebSocket, TCP, SQL or plugins. They're now built with the new `release` feature (all cross-platform transports, `sql`, `vector-search`) plus `unix` off Windows.
+
+- **Compiled-in plugins are opt-in at runtime.** A plugin is mounted only when `--plugins` (or `TURBOVAULT_PLUGINS`) names it, e.g. `--plugins vector_search`, so a binary with every plugin compiled in behaves like the default build until asked. Naming a plugin the binary doesn't have stops startup. A build from source with `--features vector-search` used to mount it automatically and now needs the flag too.
+
 ### Deprecated
 
 - **Public API nothing uses**, to be removed in the next major release: `turbovault_vault::{AtomicFileOps, FileOp, TransactionResult}` (every write goes through `WriteSubstrate`), `turbovault_vault::{VaultWatcher, WatcherConfig, VaultEvent}` (freshness comes from `ensure_fresh`), everything in `turbovault_core::resilience` and `turbovault_core::metrics`, `CSVBuilder` (which also doesn't escape fields), and `TransactionBuilder`. The regex parsers deprecated in 1.2 and 1.3 go at the same time.
+
+- **18 `ServerConfig` fields nothing reads**, among them `enable_caching`, `cache_ttl`, `metrics_enabled` and `link_suggestions_enabled`. They still deserialize and profiles still set them, but they have never changed behavior. They'll be removed in the next major release.
 
 ### Removed
 
@@ -17,9 +31,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Dependencies nothing used**, across eleven crates, including `turbovault-batch`'s dependencies on `turbovault-core` and `turbovault-vault` (it only defines types) and the binary's `config` and `tracing-subscriber`. CI now fails on an unused dependency (`cargo machete`).
 
-### Changed
+### Fixed
 
-- **Workspace lints.** `unsafe_code` is denied in every crate (no shipped crate uses `unsafe`; one test harness is allowed it explicitly), and clippy warns on `dbg!`, `todo!`, `unimplemented!` and printing to stdout, which is the MCP channel over STDIO.
+- **`--profile readonly` refuses writes.** The README promised a read-only profile, but `--profile` only picked a log level and accepted any string. It now parses to a real profile: `readonly` (or `read-only`) turns on the same gate as `--require-read-only-tools`, hiding and refusing every tool not annotated read-only, and an unknown name stops startup instead of quietly running with full write access. The profile's config is also the base every vault manager is built from; they all used `ServerConfig::default()` before. `development`, the default, keeps the values the vault layer reads unchanged (its 50 MB `max_file_size`, which never took effect, is back to the 10 MB default). `ObsidianMcpServer::with_config` and `with_config_and_plugins` take a base config for SDK callers.
+
+- **Human-readable logs on network transports show everything.** `--output-format human|text` installed `simple_logger`, which only sees `log` records, so every `tracing` event was dropped, and production's filter `info,turbo_vault=debug` named no crate. Every transport and format now goes through one `tracing` subscriber at the profile's level, with `log` records bridged in. `RUST_LOG` still overrides it.
+
+- **Moving or deleting a note rewrites the links the graph counted, and only those.** The link graph resolves `[[Old Note]]` to `old note.md` case-insensitively, but the rewriter matched text case-sensitively, so a move listed the linker as a backlink and then left the link broken. Move and delete now parse each linker and edit exactly the links the graph resolves to the note, at the spans the parser reports. That also means a link to a different note with the same name is left alone, and a link that reached the note through a frontmatter alias keeps working after a move without being rewritten. `LinkGraph::resolve` exposes the graph's resolution for callers doing the same.
+
+- **`edit_note` refuses a SEARCH block that matches in more than one place.** It used to edit the first match without saying so. Every matching strategy now counts its matches, and an ambiguous block fails with the count and a request for more surrounding context. An empty SEARCH still means the start of the note.
+
+- **`FileTools::copy_file` goes through the manager.** It used `tokio::fs::copy`, so a copy had no precondition, audit entry, commit on a Git vault, or index update. It's now `VaultManager::copy_file`, a one-change plan like every other write, and it refuses to overwrite an existing destination. Not an MCP tool.
+
+- **One content hash.** Audit entries hashed raw bytes while `read_note` and write preconditions hash the NFC form, so the two disagreed on any decomposed text, and `FileMetadata::checksum` used `DefaultHasher`, which isn't stable across Rust releases. All three are now `turbovault_core::compute_hash` (re-exported as `turbovault_vault::compute_hash`). Snapshot file names still address exact bytes, so a rollback restores what was there. An audit entry written before this upgrade over non-NFC text keeps its raw-byte hash, so it won't equal the `current_hash` a `rollback_preview` reports for the same text.
+
+### Security
+
+- **Frontmatter is bounded before it's parsed.** The YAML parser's cost on nested `[`/`{` grows with the square of the depth (64k unclosed brackets took several seconds to reject), and frontmatter is parsed on every write and freshness pass, so one note could stall the server. `turbovault_parser::parse_frontmatter_yaml` refuses a block over 256 KiB or nested more than 64 deep before the parser sees it, and every frontmatter parse goes through it.
 
 ## [3.0.0] - 2026-09-27
 

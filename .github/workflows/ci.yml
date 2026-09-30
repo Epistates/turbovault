@@ -100,6 +100,15 @@ jobs:
         if: matrix.os == 'windows-latest'
         run: cargo test --workspace --locked --features full
 
+      # The feature set the prebuilt release binaries use, so a platform break
+      # in it (vector search on Windows, say) fails here and not at tag time.
+      - name: Build release feature set
+        shell: bash
+        run: |
+          FEATURES=release
+          if [ "$RUNNER_OS" != "Windows" ]; then FEATURES=release,unix; fi
+          cargo build -p turbovault --locked --features "$FEATURES"
+
   # The feature flags in the install docs (README, crates/turbovault/Cargo.toml)
   # are promises about what builds standalone. This job holds each one to that
   # without paying for a full test run per combination.
@@ -120,6 +129,8 @@ jobs:
             args: --features plugin-api
           - name: full
             args: --features full
+          - name: release
+            args: --features release,unix
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

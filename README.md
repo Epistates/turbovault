@@ -75,6 +75,10 @@ This means TurboVault gets battle-tested reliability and extensibility out of th
 
 ### Installation
 
+**Prebuilt binaries**
+
+Each [GitHub release](https://github.com/Epistates/turbovault/releases) has binaries for Linux, macOS and Windows built with every feature: all transports, SQL frontmatter queries, and the vector search plugin. Vector search stays off until you enable it with `--plugins vector_search` (or `TURBOVAULT_PLUGINS=vector_search`) and point it at a local model.
+
 **From crates.io**
 
 ```bash
@@ -90,6 +94,9 @@ cargo install turbovault --features full
 
 # With SQL frontmatter queries (adds GlueSQL-powered query_frontmatter_sql tool)
 cargo install turbovault --features sql
+
+# Everything the prebuilt binaries have (add `unix` on Unix)
+cargo install turbovault --features release
 
 # Binary installed to: ~/.cargo/bin/turbovault
 ```
@@ -413,12 +420,16 @@ suggestions = client.call("suggest_links", {"path": "AI/ML.md"})
 
 ## Configuration Profiles
 
-| Profile | Use Case |
-|---------|----------|
-| `development` | Local dev with verbose logging |
-| `production` | Production with security auditing and optimized logging |
-| `readonly` | Read-only access for safe exploration |
-| `high-performance` | Large vaults (10k+ notes) with aggressive caching |
+`--profile` sets the log level (`RUST_LOG` overrides it) and the settings every vault starts from. An unknown name stops startup rather than falling back.
+
+| Profile | Log level | Also |
+|---------|-----------|------|
+| `development` (default) | debug | |
+| `production` | info | |
+| `readonly` (or `read-only`) | warn | Every tool not annotated read-only is hidden and refused, the same gate as `--require-read-only-tools` |
+| `high-performance` | warn | |
+| `minimal` | error | Doesn't reconcile with edits made outside TurboVault |
+| `multi-vault`, `collaboration` | info | |
 
 ## Tool Visibility
 
@@ -524,7 +535,8 @@ TurboVault fully understands Obsidian's syntax:
 - **File size limits** — Default 10MB per file (configurable), enforced on reads and writes
 - **Protected directories** — `.obsidian/`, `.git/`, `node_modules/`, and TurboVault's own `.turbovault/` state are unreachable through the note APIs on both write backends
 - **No shell execution** — Zero command injection risk
-- **Security auditing** — Detailed logs in production mode
+- **Audit trail**: Every write is recorded under `.turbovault/` (and as a commit on a Git-backed vault), in every profile
+- **Read-only mode**: `--profile readonly` or `--require-read-only-tools` hides and refuses every mutating tool
 
 ## System Requirements
 

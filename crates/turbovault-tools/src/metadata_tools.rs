@@ -208,7 +208,7 @@ impl MetadataTools {
         let (existing_yaml, body) = split_frontmatter(&content);
 
         let existing_fm: serde_json::Map<String, Value> = if let Some(yaml_str) = &existing_yaml {
-            yaml_serde::from_str(yaml_str).map_err(|e| {
+            turbovault_parser::parse_frontmatter_yaml(yaml_str).map_err(|e| {
                 Error::config_error(format!("Failed to parse existing frontmatter YAML: {}", e))
             })?
         } else {
@@ -280,7 +280,7 @@ impl MetadataTools {
                 let (yaml_str, body) = split_frontmatter(&content);
                 let fm_tags: Vec<String> = if let Some(yaml) = &yaml_str {
                     let fm: serde_json::Map<String, Value> =
-                        yaml_serde::from_str(yaml).map_err(|e| {
+                        turbovault_parser::parse_frontmatter_yaml(yaml).map_err(|e| {
                             Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                         })?;
                     extract_tags_from_value(fm.get("tags"))
@@ -319,7 +319,7 @@ impl MetadataTools {
 
                 let (yaml_str, body) = split_frontmatter(&content);
                 let mut fm: serde_json::Map<String, Value> = if let Some(yaml) = &yaml_str {
-                    yaml_serde::from_str(yaml).map_err(|e| {
+                    turbovault_parser::parse_frontmatter_yaml(yaml).map_err(|e| {
                         Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                     })?
                 } else {
@@ -363,7 +363,7 @@ impl MetadataTools {
 
                 let (yaml_str, body) = split_frontmatter(&content);
                 let mut fm: serde_json::Map<String, Value> = if let Some(yaml) = &yaml_str {
-                    yaml_serde::from_str(yaml).map_err(|e| {
+                    turbovault_parser::parse_frontmatter_yaml(yaml).map_err(|e| {
                         Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                     })?
                 } else {
