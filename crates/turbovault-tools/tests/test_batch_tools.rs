@@ -781,7 +781,7 @@ async fn test_plan_move_does_not_touch_links_to_a_same_named_note() {
 /// wikilink inside code is not a link at all.
 #[tokio::test]
 async fn test_plan_move_rewrites_after_multibyte_text_and_skips_code() {
-    let linker = "Café — 日本語 [[old]] `[[old]]`\n```\n[[old]]\n```\n";
+    let linker = "Café · 日本語 [[old]] `[[old]]`\n```\n[[old]]\n```\n";
     let (_temp_dir, manager) =
         setup_vault_with_files(&[("old.md", "# Old\n"), ("linker.md", linker)]).await;
     let tools = BatchTools::new(manager.clone());
@@ -793,7 +793,7 @@ async fn test_plan_move_rewrites_after_multibyte_text_and_skips_code() {
 
     assert_eq!(
         planned_content(&plan, "linker.md").as_deref(),
-        Some("Café — 日本語 [[new]] `[[old]]`\n```\n[[old]]\n```\n")
+        Some("Café · 日本語 [[new]] `[[old]]`\n```\n[[old]]\n```\n")
     );
 }
 
