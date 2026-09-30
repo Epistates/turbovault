@@ -357,9 +357,16 @@ pub(super) struct CompleteNoteWrite {
 impl CoreToolHandler {
     /// Create a new server instance (vault-agnostic - no vault required at startup)
     pub fn new() -> Result<Self> {
+        Self::with_config(ServerConfig::default())
+    }
+
+    /// Like [`Self::new`], with `config` as the base every vault manager is
+    /// built from (a profile's [`turbovault_core::ConfigProfile::create_config`]).
+    /// Its `vaults` are ignored; vaults are registered at runtime.
+    pub fn with_config(config: ServerConfig) -> Result<Self> {
         let config = ServerConfig {
             vaults: vec![],
-            ..ServerConfig::default()
+            ..config
         };
         let mgr = MultiVaultManager::empty(config)?;
         Ok(Self {
@@ -676,7 +683,7 @@ impl CoreToolHandler {
             .await
             .map_err(|e| McpError::internal(format!("No config for vault '{vault_name}': {e}")))?;
 
-        let mut server_config = ServerConfig::default();
+        let mut server_config = self.multi_vault_mgr.server_config().clone();
         let mut vault_config = vault_config;
         vault_config.is_default = true; // Mark as default so VaultManager::new() can find it
         server_config.vaults = vec![vault_config];

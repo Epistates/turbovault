@@ -1,13 +1,24 @@
-//! Pre-configured profiles for different deployment scenarios
+//! Pre-configured profiles for different deployment scenarios, selected with
+//! the binary's `--profile` flag.
 //!
-//! Provides 7 well-tuned configurations for common use cases:
-//! - Development: Verbose logging, all features enabled
-//! - Production: Optimized for reliability and security
-//! - ReadOnly: Analysis only, no mutations
-//! - HighPerformance: Tuned for 5000+ files
-//! - Minimal: Bare essentials only
-//! - MultiVault: Multiple vaults with sharing
-//! - Collaboration: Team features, webhooks
+//! A profile sets three things, and nothing else:
+//!
+//! - the log level ([`ConfigProfile::log_filter`]; `RUST_LOG` overrides it),
+//! - whether mutating tools are refused ([`ConfigProfile::is_read_only`]):
+//!   `readonly` hides every tool not annotated read-only and rejects direct
+//!   calls to them,
+//! - the base [`ServerConfig`] every vault manager is built from
+//!   ([`ConfigProfile::create_config`]). Of its fields, the vault layer reads
+//!   `max_file_size`, `allowed_extensions`, `excluded_paths` and
+//!   `reconcile_external_changes`; a vault's own config overrides them.
+//!
+//! The profiles:
+//! - Development (the default): debug logging
+//! - Production: info logging
+//! - ReadOnly: warn logging, mutating tools refused
+//! - HighPerformance: warn logging
+//! - Minimal: error logging, no reconciliation with external edits
+//! - MultiVault, Collaboration: info logging
 
 use crate::config::ServerConfig;
 
@@ -32,6 +43,7 @@ pub enum ConfigProfile {
 
 impl ConfigProfile {
     /// Create a ServerConfig from this profile
+    #[allow(deprecated)] // still sets the fields nothing reads, for callers that inspect them
     pub fn create_config(self) -> ServerConfig {
         let mut config = ServerConfig::new();
 
@@ -40,7 +52,6 @@ impl ConfigProfile {
                 config.log_level = "DEBUG".to_string();
                 config.metrics_enabled = true;
                 config.debug_mode = true;
-                config.max_file_size = 50 * 1024 * 1024; // 50MB
                 config.cache_ttl = 60; // 1 minute (frequent refresh)
                 config.reconcile_external_changes = true;
                 config.link_graph_enabled = true;
@@ -126,6 +137,28 @@ impl ConfigProfile {
         config
     }
 
+    /// Every profile, in the order `--profile` documents them.
+    pub const ALL: [Self; 7] = [
+        Self::Development,
+        Self::Production,
+        Self::ReadOnly,
+        Self::HighPerformance,
+        Self::Minimal,
+        Self::MultiVault,
+        Self::Collaboration,
+    ];
+
+    /// The `tracing` filter this profile logs at (`debug`, `info`, `warn` or
+    /// `error`), taken from its [`ServerConfig::log_level`].
+    pub fn log_filter(self) -> String {
+        self.create_config().log_level.to_lowercase()
+    }
+
+    /// Whether this profile refuses mutating tools.
+    pub fn is_read_only(self) -> bool {
+        self == Self::ReadOnly
+    }
+
     /// Recommend a profile based on vault size
     pub fn recommend(vault_size: usize) -> Self {
         match vault_size {
@@ -163,6 +196,30 @@ impl ConfigProfile {
     }
 }
 
+impl std::str::FromStr for ConfigProfile {
+    type Err = String;
+
+    /// Parse a profile name. Case, `-` and `_` are ignored, so `readonly`,
+    /// `read-only` and `Read_Only` all name [`ConfigProfile::ReadOnly`]. An
+    /// unknown name is an error rather than a fallback: silently running a
+    /// misspelled `readonly` with full write access is the failure this
+    /// prevents.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let key = |name: &str| name.to_lowercase().replace(['-', '_'], "");
+        let wanted = key(s);
+        Self::ALL
+            .into_iter()
+            .find(|profile| key(profile.name()) == wanted)
+            .ok_or_else(|| {
+                let names: Vec<&str> = Self::ALL.iter().map(|p| p.name()).collect();
+                format!(
+                    "unknown profile '{s}'; expected one of: {}",
+                    names.join(", ")
+                )
+            })
+    }
+}
+
 impl std::fmt::Display for ConfigProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.name())
@@ -170,8 +227,50 @@ impl std::fmt::Display for ConfigProfile {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // the profile tests still check every field a profile sets
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_names_parse_loosely_and_unknown_names_fail() {
+        for profile in ConfigProfile::ALL {
+            assert_eq!(profile.name().parse::<ConfigProfile>(), Ok(profile));
+        }
+        assert_eq!("readonly".parse(), Ok(ConfigProfile::ReadOnly));
+        assert_eq!("Read_Only".parse(), Ok(ConfigProfile::ReadOnly));
+        assert_eq!(
+            "highperformance".parse(),
+            Ok(ConfigProfile::HighPerformance)
+        );
+        let err = "prod".parse::<ConfigProfile>().unwrap_err();
+        assert!(err.contains("production"), "{err}");
+    }
+
+    #[test]
+    fn only_readonly_refuses_writes_and_levels_are_filters() {
+        for profile in ConfigProfile::ALL {
+            assert_eq!(profile.is_read_only(), profile == ConfigProfile::ReadOnly);
+            assert!(
+                ["debug", "info", "warn", "error"].contains(&profile.log_filter().as_str()),
+                "{profile}"
+            );
+        }
+    }
+
+    /// The default profile must not change what a vault runs with: every
+    /// field the vault layer reads matches `ServerConfig::default()`.
+    #[test]
+    fn development_keeps_the_defaults_the_vault_layer_reads() {
+        let dev = ConfigProfile::Development.create_config();
+        let default = ServerConfig::default();
+        assert_eq!(dev.max_file_size, default.max_file_size);
+        assert_eq!(dev.allowed_extensions, default.allowed_extensions);
+        assert_eq!(dev.excluded_paths, default.excluded_paths);
+        assert_eq!(
+            dev.reconcile_external_changes,
+            default.reconcile_external_changes
+        );
+    }
 
     #[test]
     fn test_development_profile() {

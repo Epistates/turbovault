@@ -90,7 +90,6 @@ anyhow = { workspace = true }
 async-trait = { workspace = true, optional = true }
 futures = { workspace = true }
 log = { workspace = true }
-simple_logger = "5.2"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
