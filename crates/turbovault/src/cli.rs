@@ -8,6 +8,7 @@ use clap::Parser;
 use std::path::PathBuf;
 use turbomcp::telemetry::TelemetryConfig;
 use turbomcp::{McpServerExt, ProtocolConfig, VisibilityLayer};
+use turbovault_core::ConfigProfile;
 use turbovault_core::cache::VaultCache;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
 use turbovault_tools::{OutputFormat, VaultLifecycleTools, direct_over_git_repo_warning};
@@ -32,9 +33,18 @@ pub struct Args {
     #[arg(long, env = "TURBOVAULT_VAULT_BACKEND_OPTS")]
     vault_backend_opts: Option<String>,
 
-    /// Configuration profile to use (development, production, etc.)
-    #[arg(short, long, default_value = "development", env = "TURBOVAULT_PROFILE")]
-    profile: String,
+    /// Configuration profile: development, production, read-only,
+    /// high-performance, minimal, multi-vault or collaboration. Sets the log
+    /// level (RUST_LOG overrides it) and the settings every vault starts from;
+    /// read-only (or readonly) also refuses every mutating tool.
+    #[arg(
+        short,
+        long,
+        default_value = "development",
+        env = "TURBOVAULT_PROFILE",
+        value_parser = parse_profile
+    )]
+    profile: ConfigProfile,
 
     /// Transport mode (stdio, http, websocket, tcp, unix)
     #[arg(short, long, default_value = "stdio", env = "TURBOVAULT_TRANSPORT")]
@@ -169,61 +179,21 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let output_format = resolve_output_format(&args)?;
     validate_transport(&args.transport)?;
 
-    // Initialize logging based on transport
-    // STDIO: Must use structured JSON logging to stderr (TurboMCP observability)
-    // HTTP/WebSocket/TCP: Can use human-readable stdout logging
-    let _observability_guard = if args.transport == "stdio" {
-        // STDIO: Use TurboMCP's structured observability (JSON to stderr)
-        let obs_config = TelemetryConfig::builder()
-            .service_name("turbovault")
-            .service_version(env!("CARGO_PKG_VERSION"))
-            .log_level(if args.profile == "production" {
-                "info,turbo_vault=debug".to_string()
-            } else {
-                "debug".to_string()
-            })
-            .json_logs(true)
-            .stderr_output(true)
-            .build();
-
-        Some(obs_config.init()?)
-    } else {
-        // HTTP/WebSocket/TCP: Use simple logger with configurable format
-        use simple_logger::SimpleLogger;
-
-        match output_format {
-            OutputFormat::Json => {
-                // JSON format for programmatic parsing
-                let obs_config = TelemetryConfig::builder()
-                    .service_name("turbovault")
-                    .service_version(env!("CARGO_PKG_VERSION"))
-                    .log_level(if args.profile == "production" {
-                        "info,turbo_vault=debug".to_string()
-                    } else {
-                        "debug".to_string()
-                    })
-                    .json_logs(true)
-                    .stderr_output(false) // HTTP/WS can use stdout
-                    .build();
-                Some(obs_config.init()?)
-            }
-            OutputFormat::Human | OutputFormat::Text => {
-                // Human-readable format for terminal/stdout
-                SimpleLogger::new()
-                    .with_level(if args.profile == "production" {
-                        log::LevelFilter::Info
-                    } else {
-                        log::LevelFilter::Debug
-                    })
-                    .with_utc_timestamps()
-                    .init()
-                    .map_err(|e| format!("Failed to initialize logger: {}", e))?;
-                None
-            }
-        }
-    };
+    // One tracing subscriber for every transport and format, so `tracing`
+    // events and `log` records (bridged by tracing-log) both reach it. STDIO
+    // must log JSON to stderr: stdout is the MCP channel. Network transports
+    // log to stdout, as JSON or human-readable per --output-format.
+    let _observability_guard = TelemetryConfig::builder()
+        .service_name("turbovault")
+        .service_version(env!("CARGO_PKG_VERSION"))
+        .log_level(args.profile.log_filter())
+        .json_logs(args.transport == "stdio" || output_format == OutputFormat::Json)
+        .stderr_output(args.transport == "stdio")
+        .build()
+        .init()?;
 
     log::info!("Turbo Vault MCP Server v{}", env!("CARGO_PKG_VERSION"));
+    log::info!("Profile: {}", args.profile);
     log::info!(
         "Transport: {} | Log format: {:?}",
         args.transport,
@@ -231,15 +201,20 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create vault-agnostic server instance (no vault required at startup)
+    let base_config = args.profile.create_config();
     #[cfg(feature = "plugin-api")]
-    let server = ObsidianMcpServer::new_with_plugins(compiled_in_plugins(&args.plugins)?)
-        .map_err(|e| format!("Failed to create MCP server: {}", e))?;
+    let server = ObsidianMcpServer::with_config_and_plugins(
+        base_config,
+        compiled_in_plugins(&args.plugins)?,
+    )
+    .map_err(|e| format!("Failed to create MCP server: {}", e))?;
     #[cfg(not(feature = "plugin-api"))]
     let server = {
         if let Some(name) = args.plugins.first() {
             return Err(unknown_plugin_error(name, &[]).into());
         }
-        ObsidianMcpServer::new().map_err(|e| format!("Failed to create MCP server: {}", e))?
+        ObsidianMcpServer::with_config(base_config)
+            .map_err(|e| format!("Failed to create MCP server: {}", e))?
     };
 
     log::info!("MCP Server created (vault-agnostic mode)");
@@ -613,10 +588,16 @@ async fn load_tool_visibility_with_default(
         disabled: args.disabled_tools.clone(),
         disabled_tags: args.disabled_tags.clone(),
         hidden_tags: args.hidden_tags.clone(),
-        require_read_only: args.require_read_only_tools,
+        // The read-only profile is the same gate as --require-read-only-tools:
+        // unannotated or mutating tools are hidden and refused, failing closed.
+        require_read_only: args.require_read_only_tools || args.profile.is_read_only(),
     });
 
     Ok(settings)
+}
+
+fn parse_profile(name: &str) -> Result<ConfigProfile, String> {
+    name.parse()
 }
 
 fn resolve_output_format(args: &Args) -> Result<OutputFormat, String> {
@@ -837,6 +818,39 @@ mod tests {
             "not-a-real-format",
         ]);
         assert_eq!(resolve_output_format(&args).unwrap(), OutputFormat::Json);
+    }
+
+    /// #88: `--profile` accepted any string and only picked a log level, so
+    /// `--profile readonly` enforced nothing. It parses to a real profile now,
+    /// and a name it doesn't know stops startup instead of running writable.
+    #[test]
+    fn profile_is_parsed_and_unknown_names_are_rejected() {
+        assert_eq!(args(&[]).profile, ConfigProfile::Development);
+        assert_eq!(
+            args(&["--profile", "readonly"]).profile,
+            ConfigProfile::ReadOnly
+        );
+        assert_eq!(
+            args(&["--profile", "production"]).profile,
+            ConfigProfile::Production
+        );
+        let err = Args::try_parse_from(["turbovault", "--profile", "prod"]).unwrap_err();
+        assert!(err.to_string().contains("unknown profile"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn readonly_profile_turns_on_the_read_only_gate() {
+        let readonly = args(&["--profile", "readonly"]);
+        let settings = load_tool_visibility_with_default(&readonly, None)
+            .await
+            .unwrap();
+        assert!(settings.require_read_only);
+
+        let development = args(&[]);
+        let settings = load_tool_visibility_with_default(&development, None)
+            .await
+            .unwrap();
+        assert!(!settings.require_read_only);
     }
 
     #[test]

@@ -321,6 +321,15 @@ impl LinkGraph {
         Ok(())
     }
 
+    /// The note a link target resolves to, by the same rules the graph uses
+    /// to draw its edges: case-insensitive, by file stem, then alias, then
+    /// path suffix, with `.md` and any `#fragment` ignored. A caller rewriting links
+    /// asks this so it touches exactly the links the graph counts, rather than
+    /// re-deriving the rules and disagreeing with them on case or aliases.
+    pub fn resolve(&self, target: &str) -> Option<&PathBuf> {
+        self.resolve_link(target).map(|idx| &self.graph[idx])
+    }
+
     /// Resolve a link target to a node index.
     ///
     /// Handles both Obsidian wikilink targets (`Note`, `Folder/Note`,

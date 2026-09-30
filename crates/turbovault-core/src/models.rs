@@ -711,6 +711,8 @@ pub struct FileMetadata {
     pub size: u64,
     pub created_at: f64,
     pub modified_at: f64,
+    /// [`crate::compute_hash`] of the content: the same hash `read_note`
+    /// reports and a Direct write's `expected_hash` is checked against.
     pub checksum: String,
     pub is_attachment: bool,
 }
