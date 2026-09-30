@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tests for the network transports.** HTTP, WebSocket and TCP each serve a real MCP session in CI now: initialize, `tools/list`, and a tool call.
+
+### Changed
+
+- **Release binaries carry every feature.** The prebuilt binaries were default-features only, so none had HTTP, WebSocket, TCP, SQL or plugins. They're now built with the new `release` feature (all cross-platform transports, `sql`, `vector-search`) plus `unix` off Windows.
+
+- **Compiled-in plugins are opt-in at runtime.** A plugin is mounted only when `--plugins` (or `TURBOVAULT_PLUGINS`) names it, e.g. `--plugins vector_search`, so a binary with every plugin compiled in behaves like the default build until asked. Naming a plugin the binary doesn't have stops startup. A build from source with `--features vector-search` used to mount it automatically and now needs the flag too.
+
 ### Deprecated
 
 - **18 `ServerConfig` fields nothing reads**, among them `enable_caching`, `cache_ttl`, `metrics_enabled` and `link_suggestions_enabled`. They still deserialize and profiles still set them, but they have never changed behavior. They'll be removed in the next major release.
@@ -24,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`FileTools::copy_file` goes through the manager.** It used `tokio::fs::copy`, so a copy had no precondition, audit entry, commit on a Git vault, or index update. It's now `VaultManager::copy_file`, a one-change plan like every other write, and it refuses to overwrite an existing destination. Not an MCP tool.
 
 - **One content hash.** Audit entries hashed raw bytes while `read_note` and write preconditions hash the NFC form, so the two disagreed on any decomposed text, and `FileMetadata::checksum` used `DefaultHasher`, which isn't stable across Rust releases. All three are now `turbovault_core::compute_hash` (re-exported as `turbovault_vault::compute_hash`). Snapshot file names still address exact bytes, so a rollback restores what was there. An audit entry written before this upgrade over non-NFC text keeps its raw-byte hash, so it won't equal the `current_hash` a `rollback_preview` reports for the same text.
+
+### Security
+
+- **Frontmatter is bounded before it's parsed.** The YAML parser's cost on nested `[`/`{` grows with the square of the depth (64k unclosed brackets took several seconds to reject), and frontmatter is parsed on every write and freshness pass, so one note could stall the server. `turbovault_parser::parse_frontmatter_yaml` refuses a block over 256 KiB or nested more than 64 deep before the parser sees it, and every frontmatter parse goes through it.
 
 ## [3.0.0] - 2026-09-27
 

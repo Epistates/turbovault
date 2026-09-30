@@ -75,6 +75,10 @@ This means TurboVault gets battle-tested reliability and extensibility out of th
 
 ### Installation
 
+**Prebuilt binaries**
+
+Each [GitHub release](https://github.com/Epistates/turbovault/releases) has binaries for Linux, macOS and Windows built with every feature: all transports, SQL frontmatter queries, and the vector search plugin. Vector search stays off until you enable it with `--plugins vector_search` (or `TURBOVAULT_PLUGINS=vector_search`) and point it at a local model.
+
 **From crates.io**
 
 ```bash
@@ -90,6 +94,9 @@ cargo install turbovault --features full
 
 # With SQL frontmatter queries (adds GlueSQL-powered query_frontmatter_sql tool)
 cargo install turbovault --features sql
+
+# Everything the prebuilt binaries have (add `unix` on Unix)
+cargo install turbovault --features release
 
 # Binary installed to: ~/.cargo/bin/turbovault
 ```

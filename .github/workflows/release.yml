@@ -176,12 +176,17 @@ jobs:
           ar = "aarch64-linux-gnu-ar"
           EOF
 
+      # Prebuilt binaries carry every feature (see `release` in
+      # crates/turbovault/Cargo.toml); the unix socket transport exists only
+      # off Windows.
       - name: Build
         run: |
+          FEATURES=release
+          if [ "${{ runner.os }}" != "Windows" ]; then FEATURES=release,unix; fi
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
+            cross build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
           else
-            cargo build --release --locked --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
           fi
         shell: bash
 

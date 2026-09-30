@@ -58,6 +58,12 @@ all-transports-unix = ["http", "websocket", "tcp", "unix"]  # Everything (Unix-o
 all-transports = ["http", "websocket", "tcp"]  # Everything (cross-platform)
 full = ["all-transports"]                    # Alias for all-transports
 
+# What the prebuilt release binaries are built with: every cross-platform
+# transport, SQL, and every plugin. A compiled-in plugin stays off until
+# `--plugins` names it, so this behaves like the default build unless asked.
+# Unix targets add `unix`.
+release = ["full", "sql", "vector-search"]
+
 [[bin]]
 name = "turbovault"
 path = "src/bin/main.rs"
@@ -110,8 +116,8 @@ serial_test = "4"
 # the JSON-RPC layer the in-process 6fo.18 suite skips and asserting derived
 # graph/search state via MCP tool responses (the real flush-on-query path,
 # no `flush_*_test` backdoor).
-turbomcp-client = { workspace = true }
-turbomcp-transport = { workspace = true }
+turbomcp-client = { workspace = true, features = ["http", "tcp", "websocket"] }
+turbomcp-transport = { workspace = true, features = ["websocket"] }
 # Also a plugin-api-gated runtime dependency; tests need it unconditionally.
 turbomcp-protocol = { workspace = true }
 # vector-search-gated at runtime, but the e2e plugin-boundary test needs it
