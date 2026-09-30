@@ -28,6 +28,7 @@ use turbomcp::prelude::*;
 use turbomcp_core::marker::MaybeSend;
 use turbomcp_server::CompositeHandler;
 use turbomcp_types::ResourceTemplate;
+use turbovault_core::ServerConfig;
 use turbovault_core::prelude::MultiVaultManager;
 
 #[cfg(feature = "plugin-api")]
@@ -432,6 +433,13 @@ impl ObsidianMcpServer {
         Self::from_core(core)
     }
 
+    /// Like [`Self::new`], with `config` as the base every vault manager is
+    /// built from. The binary passes its `--profile`'s config here.
+    pub fn with_config(config: ServerConfig) -> Result<Self> {
+        let core = CoreToolHandler::with_config(config)?;
+        Self::from_core(core)
+    }
+
     fn from_core(core: CoreToolHandler) -> Result<Self> {
         #[cfg(feature = "plugin-api")]
         {
@@ -449,7 +457,16 @@ impl ObsidianMcpServer {
     /// available only with the default-off `plugin-api` Cargo feature.
     #[cfg(feature = "plugin-api")]
     pub fn new_with_plugins(plugins: Vec<Arc<dyn Plugin>>) -> Result<Self> {
-        let core = CoreToolHandler::new()?;
+        Self::with_config_and_plugins(ServerConfig::default(), plugins)
+    }
+
+    /// [`Self::with_config`] and [`Self::new_with_plugins`] together.
+    #[cfg(feature = "plugin-api")]
+    pub fn with_config_and_plugins(
+        config: ServerConfig,
+        plugins: Vec<Arc<dyn Plugin>>,
+    ) -> Result<Self> {
+        let core = CoreToolHandler::with_config(config)?;
         Self::assemble(core, plugins)
     }
 

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--profile readonly` refuses writes.** The README promised a read-only profile, but `--profile` only picked a log level and accepted any string. It now parses to a real profile: `readonly` (or `read-only`) turns on the same gate as `--require-read-only-tools`, hiding and refusing every tool not annotated read-only, and an unknown name stops startup instead of quietly running with full write access. The profile's config is also the base every vault manager is built from; they all used `ServerConfig::default()` before. `development`, the default, keeps the values the vault layer reads unchanged (its 50 MB `max_file_size`, which never took effect, is back to the 10 MB default). `ObsidianMcpServer::with_config` and `with_config_and_plugins` take a base config for SDK callers.
+
+- **Human-readable logs on network transports show everything.** `--output-format human|text` installed `simple_logger`, which only sees `log` records, so every `tracing` event was dropped, and production's filter `info,turbo_vault=debug` named no crate. Every transport and format now goes through one `tracing` subscriber at the profile's level, with `log` records bridged in. `RUST_LOG` still overrides it.
+
+### Deprecated
+
+- **18 `ServerConfig` fields nothing reads**, among them `enable_caching`, `cache_ttl`, `metrics_enabled` and `link_suggestions_enabled`. They still deserialize and profiles still set them, but they have never changed behavior. They'll be removed in the next major release.
+
 ## [3.0.0] - 2026-09-27
 
 ### Removed

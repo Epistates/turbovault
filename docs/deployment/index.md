@@ -140,8 +140,8 @@ mcp-obsidian \
 
 - **Path Traversal Protection**: All paths validated against vault root
 - **Input Validation**: Type-safe deserialization, no code execution
-- **File Size Limits**: Prevents DoS via large files (default 5MB)
-- **Security Auditing**: All operations logged in production mode
+- **File Size Limits**: Prevents DoS via large files (default 10MB)
+- **Audit Trail**: Every write is recorded under `.turbovault/` (and as a commit on a Git-backed vault), in every profile
 - **No Shell Commands**: Pure Rust, no external command execution
 - **Principle of Least Privilege**: Docker runs as non-root user
 

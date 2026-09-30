@@ -4,15 +4,16 @@ Configure TurboVault for your specific needs and deployment scenarios.
 
 ## Configuration Profiles
 
-Pre-built profiles optimized for different use cases:
+`--profile` sets the log level (`RUST_LOG` overrides it) and the settings every vault starts from. An unknown name stops startup rather than falling back.
 
-| Profile | Use Case | Features |
-|---------|----------|----------|
-| `development` | Local development | Verbose logging, file watching enabled, permissive validation |
-| `production` | Production deployments | Info logging, security auditing, performance monitoring |
-| `readonly` | Read-only access | Disables all write operations, audit logging enabled |
-| `high-performance` | Large vaults (10k+ notes) | Aggressive caching, disabled file watching, optimized for speed |
-| `minimal` | Resource-constrained environments | Minimal caching, basic features only |
+| Profile | Log level | Also |
+|---------|-----------|------|
+| `development` (default) | debug | |
+| `production` | info | |
+| `readonly` (or `read-only`) | warn | Every tool not annotated read-only is hidden and refused, the same gate as `--require-read-only-tools` |
+| `high-performance` | warn | |
+| `minimal` | error | Doesn't reconcile with edits made outside TurboVault |
+| `multi-vault`, `collaboration` | info | |
 
 **Usage:**
 ```bash

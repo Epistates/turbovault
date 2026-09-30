@@ -87,6 +87,12 @@ impl MultiVaultManager {
         })
     }
 
+    /// The server-wide settings every vault's manager starts from (its profile's
+    /// config). A vault's own [`VaultConfig`] overrides them.
+    pub fn server_config(&self) -> &ServerConfig {
+        &self.config
+    }
+
     /// Maximum number of vaults that can be registered simultaneously
     const MAX_VAULTS: usize = 50;
 
