@@ -13,13 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Workspace lints.** `unsafe_code` is denied in every crate (no shipped crate uses `unsafe`; one test harness is allowed it explicitly), and clippy warns on `dbg!`, `todo!`, `unimplemented!` and printing to stdout, which is the MCP channel over STDIO.
+
 - **Release binaries carry every feature.** The prebuilt binaries were default-features only, so none had HTTP, WebSocket, TCP, SQL or plugins. They're now built with the new `release` feature (all cross-platform transports, `sql`, `vector-search`) plus `unix` off Windows.
 
 - **Compiled-in plugins are opt-in at runtime.** A plugin is mounted only when `--plugins` (or `TURBOVAULT_PLUGINS`) names it, e.g. `--plugins vector_search`, so a binary with every plugin compiled in behaves like the default build until asked. Naming a plugin the binary doesn't have stops startup. A build from source with `--features vector-search` used to mount it automatically and now needs the flag too.
 
 ### Deprecated
 
+- **Public API nothing uses**, to be removed in the next major release: `turbovault_vault::{AtomicFileOps, FileOp, TransactionResult}` (every write goes through `WriteSubstrate`), `turbovault_vault::{VaultWatcher, WatcherConfig, VaultEvent}` (freshness comes from `ensure_fresh`), everything in `turbovault_core::resilience` and `turbovault_core::metrics`, `CSVBuilder` (which also doesn't escape fields), and `TransactionBuilder`. The regex parsers deprecated in 1.2 and 1.3 go at the same time.
+
 - **18 `ServerConfig` fields nothing reads**, among them `enable_caching`, `cache_ttl`, `metrics_enabled` and `link_suggestions_enabled`. They still deserialize and profiles still set them, but they have never changed behavior. They'll be removed in the next major release.
+
+### Removed
+
+- **The root `tests/` directory**, which the virtual workspace manifest never compiled, so its tests had never run.
+
+- **Dependencies nothing used**, across eleven crates, including `turbovault-batch`'s dependencies on `turbovault-core` and `turbovault-vault` (it only defines types) and the binary's `config` and `tracing-subscriber`. CI now fails on an unused dependency (`cargo machete`).
 
 ### Fixed
 

@@ -9,6 +9,7 @@
 //! - Histogram: Atomic-backed distribution tracking
 //! - HistogramTimer: RAII timer for automatic duration recording
 //! - MetricsContext: Global registry for named metrics (rarely used)
+#![allow(deprecated)] // the deprecated items' own impls
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -18,6 +19,10 @@ use std::time::Instant;
 
 /// A lock-free counter metric (monotonically increasing)
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct Counter {
     value: Arc<AtomicU64>,
     name: String,
@@ -72,6 +77,10 @@ impl Counter {
 
 /// A histogram for tracking value distributions
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct Histogram {
     values: Arc<RwLock<Vec<f64>>>,
     name: String,
@@ -142,6 +151,10 @@ impl Histogram {
 
 /// Statistics computed from histogram values
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct HistogramStats {
     /// Number of samples
     pub count: usize,
@@ -157,6 +170,10 @@ pub struct HistogramStats {
 
 /// RAII timer that records duration to histogram on drop
 #[derive(Debug)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct HistogramTimer {
     histogram: Histogram,
     start: Instant,
@@ -174,6 +191,10 @@ impl Drop for HistogramTimer {
 /// For most use cases, use turbomcp's ServerMetrics directly.
 /// This is provided for backward compatibility and simple metric collection.
 #[derive(Debug)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct MetricsContext {
     enabled: bool,
     counters: Arc<RwLock<HashMap<String, Counter>>>,

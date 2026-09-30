@@ -3,7 +3,7 @@
 //! Serde/schema types + intra-batch validation for a batch of vault file
 //! operations. write-substrate-layering M4e (design §6.9): this crate
 //! SHRANK to types + validation only — it no longer executes anything.
-//! [`BatchOperation`]s are translated into one [`turbovault_core::ChangePlan`]
+//! [`BatchOperation`]s are translated into one `turbovault_core::ChangePlan`
 //! and applied through `VaultManager::apply_changes` (see
 //! `turbovault_tools::BatchTools`, the crate that owns that translation +
 //! the manager-routed execution).

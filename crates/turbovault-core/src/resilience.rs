@@ -1,4 +1,5 @@
 //! Resilience patterns: retry logic, circuit breakers, graceful degradation
+#![allow(deprecated)] // the deprecated items' own impls
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -7,6 +8,10 @@ use tokio::time::sleep;
 
 /// Retry configuration
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts
     pub max_attempts: u32,
@@ -74,6 +79,10 @@ where
 
 /// Circuit breaker states
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub enum CircuitState {
     /// Circuit is closed (normal operation)
     Closed,
@@ -84,6 +93,10 @@ pub enum CircuitState {
 }
 
 /// Circuit breaker for preventing cascading failures
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct CircuitBreaker {
     state: Arc<std::sync::Mutex<CircuitState>>,
     failure_count: Arc<AtomicU32>,
@@ -173,12 +186,20 @@ impl CircuitBreaker {
 }
 
 /// Graceful degradation: fallback strategies for failures
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub trait FallbackStrategy: Send + Sync {
     /// Execute fallback operation
     fn fallback(&self) -> Option<String>;
 }
 
 /// Simple string-based fallback
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct SimpleFallback(pub String);
 
 impl FallbackStrategy for SimpleFallback {

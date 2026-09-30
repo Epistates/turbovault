@@ -90,11 +90,16 @@ pub fn to_json_string<T: serde::Serialize + ?Sized>(data: &T, context: &str) -> 
 
 /// Generic CSV serialization builder
 /// Use the CSVBuilder fluent API to construct and export CSV data
+#[deprecated(
+    since = "3.1.0",
+    note = "unused, and doesn't escape fields. Removed in the next major release"
+)]
 pub struct CSVBuilder {
     headers: Vec<String>,
     rows: Vec<Vec<String>>,
 }
 
+#[allow(deprecated)]
 impl CSVBuilder {
     /// Create a new CSV with headers
     pub fn new(headers: Vec<&str>) -> Self {
@@ -227,11 +232,16 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 }
 
 /// Transaction tracking utilities
+#[deprecated(
+    since = "3.1.0",
+    note = "unused by TurboVault. Removed in the next major release"
+)]
 pub struct TransactionBuilder {
     transaction_id: String,
     start_time: Instant,
 }
 
+#[allow(deprecated)]
 impl TransactionBuilder {
     /// Create a new transaction tracker
     pub fn new() -> Self {
@@ -252,6 +262,7 @@ impl TransactionBuilder {
     }
 }
 
+#[allow(deprecated)]
 impl Default for TransactionBuilder {
     fn default() -> Self {
         Self::new()
@@ -259,6 +270,7 @@ impl Default for TransactionBuilder {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // still tests the deprecated builders until they're removed
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};

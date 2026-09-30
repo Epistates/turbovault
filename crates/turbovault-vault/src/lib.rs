@@ -101,6 +101,7 @@ pub mod reindex;
 pub mod substrate;
 pub mod watcher;
 
+#[allow(deprecated)]
 pub use atomic::{AtomicFileOps, FileOp, TransactionResult};
 pub use edit::{EditEngine, EditResult, SearchReplaceBlock, compute_hash};
 pub use manager::{ChangeListener, ScannedNote, VaultManager};
@@ -109,6 +110,7 @@ pub use reindex::{
 };
 pub use substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
 pub use turbovault_core::prelude::*;
+#[allow(deprecated)]
 pub use watcher::{VaultEvent, VaultWatcher, WatcherConfig};
 
 pub mod prelude {

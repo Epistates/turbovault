@@ -22,19 +22,12 @@ turbovault-batch = { workspace = true }
 turbovault-export = { workspace = true }
 turbovault-audit = { workspace = true }
 turbovault-git = { workspace = true }
-futures = { workspace = true }
 
-# MCP server framework
-# Note: No features needed here - tools crate only defines tool implementations
-# Transport features are handled by the main turbovault binary
-turbomcp = { workspace = true }
 
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 yaml_serde = { workspace = true }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
@@ -67,3 +60,6 @@ git2 = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true

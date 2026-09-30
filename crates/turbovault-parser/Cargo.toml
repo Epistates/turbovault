@@ -22,7 +22,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 yaml_serde = { workspace = true }
 regex = { workspace = true }
-log = { workspace = true }
 
 # 2025 diligence: OFM parsing with best-in-class libraries
 pulldown-cmark = { workspace = true }      # CommonMark parser with OFM extensions
@@ -33,3 +32,6 @@ tokio = { workspace = true, features = ["full"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
