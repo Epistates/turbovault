@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Moving or deleting a note rewrites the links the graph counted, and only those.** The link graph resolves `[[Old Note]]` to `old note.md` case-insensitively, but the rewriter matched text case-sensitively, so a move listed the linker as a backlink and then left the link broken. Move and delete now parse each linker and edit exactly the links the graph resolves to the note, at the spans the parser reports. That also means a link to a different note with the same name is left alone, and a link that reached the note through a frontmatter alias keeps working after a move without being rewritten. `LinkGraph::resolve` exposes the graph's resolution for callers doing the same.
+
+- **`edit_note` refuses a SEARCH block that matches in more than one place.** It used to edit the first match without saying so. Every matching strategy now counts its matches, and an ambiguous block fails with the count and a request for more surrounding context. An empty SEARCH still means the start of the note.
+
+- **`FileTools::copy_file` goes through the manager.** It used `tokio::fs::copy`, so a copy had no precondition, audit entry, commit on a Git vault, or index update. It's now `VaultManager::copy_file`, a one-change plan like every other write, and it refuses to overwrite an existing destination. Not an MCP tool.
+
+- **One content hash.** Audit entries hashed raw bytes while `read_note` and write preconditions hash the NFC form, so the two disagreed on any decomposed text, and `FileMetadata::checksum` used `DefaultHasher`, which isn't stable across Rust releases. All three are now `turbovault_core::compute_hash` (re-exported as `turbovault_vault::compute_hash`). Snapshot file names still address exact bytes, so a rollback restores what was there. An audit entry written before this upgrade over non-NFC text keeps its raw-byte hash, so it won't equal the `current_hash` a `rollback_preview` reports for the same text.
+
 ## [3.0.0] - 2026-09-27
 
 ### Removed

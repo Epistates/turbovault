@@ -24,6 +24,7 @@ log = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 parking_lot = "0.12"  # For efficient RwLock in metrics
 sha2 = { workspace = true }
+unicode-normalization = { workspace = true }
 shellexpand = { workspace = true }
 soft-canonicalize = { workspace = true }
 winnow = { workspace = true }

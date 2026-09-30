@@ -474,6 +474,53 @@ async fn test_copy_file_creates_nested_dirs() {
     assert_eq!(read.unwrap(), "content");
 }
 
+/// #88: `copy_file` used `tokio::fs::copy` and skipped the manager. It now
+/// refuses to clobber, like `move_note`'s default destination guard.
+#[tokio::test]
+async fn test_copy_file_refuses_to_overwrite() {
+    let (temp_dir, manager) = setup_test_vault().await;
+    let tools = FileTools::new(manager);
+    tokio::fs::write(temp_dir.path().join("source.md"), "new")
+        .await
+        .unwrap();
+    tokio::fs::write(temp_dir.path().join("dest.md"), "keep me")
+        .await
+        .unwrap();
+
+    assert!(tools.copy_file("source.md", "dest.md").await.is_err());
+    assert_eq!(tools.read_file("dest.md").await.unwrap(), "keep me");
+}
+
+/// The copy is a write like any other, so the link graph learns about it
+/// without waiting for a freshness pass.
+#[tokio::test]
+async fn test_copy_file_indexes_the_copy() {
+    let (temp_dir, manager) = setup_test_vault().await;
+    tokio::fs::write(temp_dir.path().join("target.md"), "# Target")
+        .await
+        .unwrap();
+    tokio::fs::write(temp_dir.path().join("source.md"), "see [[target]]")
+        .await
+        .unwrap();
+    manager.initialize().await.unwrap();
+    let tools = FileTools::new(manager.clone());
+
+    tools.copy_file("source.md", "copy.md").await.unwrap();
+
+    let graph = manager.link_graph();
+    let backlinks = graph
+        .read()
+        .await
+        .backlinks(&temp_dir.path().join("target.md"))
+        .unwrap();
+    assert!(
+        backlinks
+            .iter()
+            .any(|(p, _)| p == &temp_dir.path().join("copy.md")),
+        "{backlinks:?}"
+    );
+}
+
 // ==================== get_notes_info Tests ====================
 
 #[tokio::test]

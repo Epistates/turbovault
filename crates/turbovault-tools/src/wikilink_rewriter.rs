@@ -10,220 +10,208 @@
 //! - Block anchor:  `[[old#^block-id]]` -> `[[new#^block-id]]`
 //! - Embed:         `![[old]]` -> `![[new]]` (plus all the variants above)
 //!
-//! False-positive guard: the regex anchors on `[[` / `![[` on the left
-//! and `|` / `#` / `]]` on the right, so `[[older]]` won't be touched when
-//! rewriting target `old`.
+//! Links are found by the parser, not by a pattern over the text, so a
+//! wikilink inside code is never touched and every edit lands on a span the
+//! parser reported. Which links to edit is the caller's choice:
+//! [`rewrite_wikilinks`] / [`wrap_wikilinks_as_stale`] pick them by name,
+//! case-insensitively like Obsidian; the move and delete paths pass
+//! [`links_in`] filtered through the link graph's own resolution, so they
+//! rewrite exactly the links the graph reported as backlinks.
 
-use regex::Regex;
+use turbovault_core::Link;
+use turbovault_core::okf::normalize_link_target;
+
+/// Every wikilink and embed in `content`, with the spans the parser reports.
+/// Links inside code are not links and are not returned.
+pub fn links_in(content: &str) -> Vec<Link> {
+    let mut links = turbovault_parser::parse_wikilinks(content);
+    links.extend(turbovault_parser::parse_embeds(content));
+    links
+}
 
 /// Rewrite every wikilink in `content` that targets `old_vault_path`
 /// (vault-relative `.md` path, e.g. `wiki/old.md`) to target
-/// `new_vault_path`. Bare-basename forms (`[[old]]`) and path-prefix
-/// forms (`[[wiki/old]]`) are both rewritten.
+/// `new_vault_path`. Bare-basename forms (`[[old]]`) and path forms
+/// (`[[wiki/old]]`) are both rewritten, matched case-insensitively.
 ///
-/// If a link's existing form is path-prefix, it stays path-prefix
-/// (re-targeted to the new path-with-extension-stripped). If it's bare
-/// basename, it stays bare (re-targeted to the new basename). The
-/// caller doesn't need to know which form the source used.
+/// If a link's existing form is a path, it stays a path (re-targeted to the
+/// new path-with-extension-stripped). If it's a bare basename, it stays bare
+/// (re-targeted to the new basename). The caller doesn't need to know which
+/// form the source used.
 pub fn rewrite_wikilinks(content: &str, old_vault_path: &str, new_vault_path: &str) -> String {
-    let old_path = strip_md(old_vault_path);
-    let new_path = strip_md(new_vault_path);
-    let old_base = basename(&old_path);
-    let new_base = basename(&new_path);
-
-    // Path-prefixed form FIRST (more specific). If the file is at the
-    // vault root (path == basename) there's only one pass to do.
-    let after_path = if old_path != old_base {
-        rewrite_target_form(content, &old_path, &new_path)
-    } else {
-        content.to_string()
-    };
-    rewrite_target_form(&after_path, &old_base, &new_base)
-}
-
-/// Rewrite a SINGLE target form (either basename or path-prefix). Anchors
-/// on `[[` / `![[` left and `|` / `#` / `]]` right. tlx.3: applies only
-/// OUTSIDE fenced/inline code so wikilink-looking text in code examples is
-/// left untouched.
-fn rewrite_target_form(content: &str, old: &str, new: &str) -> String {
-    let pattern = format!(r"(!?\[\[){}(\||#|\]\])", regex::escape(old));
-    let re = Regex::new(&pattern).expect("wikilink rewrite regex compile");
-    let apply = |text: &str| {
-        re.replace_all(text, |caps: &regex::Captures| {
-            format!("{}{}{}", &caps[1], new, &caps[2])
-        })
-        .into_owned()
-    };
-    map_outside_code(content, &apply)
+    let links = links_named(content, old_vault_path);
+    rewrite_links(content, &links, old_vault_path, new_vault_path)
 }
 
 /// turbovault-oz6: wrap every wikilink in `content` targeting
-/// `deleted_vault_path` in `~~strikethrough~~` markdown, marking it as
-/// a dead reference to a deleted page. Uses the same anchored regex
-/// shape as [`rewrite_wikilinks`] so the same forms (basename,
-/// path-prefix, alias, section, block, embed) are all wrapped without
-/// false positives.
+/// `deleted_vault_path` in `~~strikethrough~~` markdown, marking it as a dead
+/// reference to a deleted page. Matches the same forms as
+/// [`rewrite_wikilinks`].
 ///
-/// Returns the rewritten content. Idempotent: a link already wrapped
-/// (`~~[[old]]~~`) won't be double-wrapped because the strikethrough
-/// brackets sit outside the match window.
+/// Idempotent: a link already wrapped (`~~[[old]]~~`) is not wrapped again.
 pub fn wrap_wikilinks_as_stale(content: &str, deleted_vault_path: &str) -> String {
-    let old_path = strip_md(deleted_vault_path);
-    let old_base = basename(&old_path);
-
-    let after_path = if old_path != old_base {
-        wrap_target_form(content, &old_path)
-    } else {
-        content.to_string()
-    };
-    wrap_target_form(&after_path, &old_base)
+    let links = links_named(content, deleted_vault_path);
+    wrap_links_as_stale(content, &links)
 }
 
-/// Wrap a SINGLE target form in `~~ ~~` strikethrough. Skips occurrences
-/// already preceded by `~~` (idempotent for re-applied deletes). tlx.3:
-/// applies only OUTSIDE fenced/inline code.
-fn wrap_target_form(content: &str, target: &str) -> String {
-    let link_pat = format!(r"!?\[\[{}(?:[|#][^\]]*)?\]\]", regex::escape(target));
-    let re = Regex::new(&link_pat).expect("wrap regex compile");
-    let wrap_one = |text: &str| -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut cursor = 0;
-        for m in re.find_iter(text) {
-            // Skip already-wrapped: the 2 chars on each side are `~~`.
-            let already_wrapped =
-                text[..m.start()].ends_with("~~") && text[m.end()..].starts_with("~~");
-            out.push_str(&text[cursor..m.start()]);
-            if already_wrapped {
-                out.push_str(m.as_str());
-            } else {
-                out.push_str("~~");
-                out.push_str(m.as_str());
-                out.push_str("~~");
-            }
-            cursor = m.end();
+/// Rewrite exactly `links`, which must be spans of `content` as the parser
+/// reported them, from `old_vault_path` to `new_vault_path`.
+///
+/// A link whose target names the old note by basename or by path is
+/// re-targeted in the same form. A link that reached the note some other way
+/// (an alias in its frontmatter) is left alone: the alias moves with the
+/// note, so the link still resolves after the move.
+pub fn rewrite_links(
+    content: &str,
+    links: &[Link],
+    old_vault_path: &str,
+    new_vault_path: &str,
+) -> String {
+    let old_parts = parts_of(old_vault_path);
+    let new_path = strip_md(new_vault_path);
+    let new_base = basename(&new_path).to_string();
+
+    splice(content, links, |span| {
+        let (open, inner) = open_bracket(span)?;
+        let inner = inner.strip_suffix("]]")?;
+        let path_end = path_end(inner);
+        let path = &inner[..path_end];
+        let parts = normalize_link_target(path)?;
+
+        let replacement = if parts.len() == 1 && Some(&parts[0]) == old_parts.last() {
+            new_base.clone()
+        } else if parts.len() > 1 && old_parts.ends_with(&parts) {
+            let root = if path.starts_with('/') { "/" } else { "" };
+            format!("{root}{new_path}")
+        } else {
+            return None;
+        };
+        let extension = if has_md_extension(path.trim_end()) {
+            ".md"
+        } else {
+            ""
+        };
+        Some(format!(
+            "{open}{replacement}{extension}{}]]",
+            &inner[path_end..]
+        ))
+    })
+}
+
+/// Wrap exactly `links`, which must be spans of `content` as the parser
+/// reported them, in `~~ ~~`. A span already wrapped is left as it is.
+pub fn wrap_links_as_stale(content: &str, links: &[Link]) -> String {
+    let mut spans: Vec<&Link> = links.iter().collect();
+    spans.retain(|link| {
+        let (start, end) = (
+            link.position.offset,
+            link.position.offset + link.position.length,
+        );
+        !(content[..start].ends_with("~~") && content[end..].starts_with("~~"))
+    });
+    splice(
+        content,
+        &spans.into_iter().cloned().collect::<Vec<_>>(),
+        |span| {
+            open_bracket(span)?;
+            Some(format!("~~{span}~~"))
+        },
+    )
+}
+
+/// The links in `content` that name `vault_path` by basename or by path,
+/// case-insensitively. Without the link graph there is no way to tell which
+/// of two same-named notes a bare `[[Note]]` means, so this takes it to mean
+/// this one; the move and delete paths resolve through the graph instead.
+fn links_named(content: &str, vault_path: &str) -> Vec<Link> {
+    let target = parts_of(vault_path);
+    links_in(content)
+        .into_iter()
+        .filter(|link| {
+            normalize_link_target(&link.target).is_some_and(|parts| {
+                (parts.len() == 1 && target.last() == parts.first()) || target.ends_with(&parts)
+            })
+        })
+        .collect()
+}
+
+/// Replace each link's span with `edit(span)`, where it returns one. Spans
+/// are applied back to front so earlier offsets stay valid; a span that is
+/// not a whole wikilink in `content`, or that overlaps one already edited,
+/// is skipped rather than trusted.
+fn splice(content: &str, links: &[Link], edit: impl Fn(&str) -> Option<String>) -> String {
+    let mut spans: Vec<(usize, usize)> = links
+        .iter()
+        .map(|link| {
+            (
+                link.position.offset,
+                link.position.offset + link.position.length,
+            )
+        })
+        .filter(|&(start, end)| content.get(start..end).is_some())
+        .collect();
+    spans.sort_unstable();
+    spans.dedup();
+
+    let mut out = content.to_string();
+    let mut floor = usize::MAX;
+    for &(start, end) in spans.iter().rev() {
+        if end > floor {
+            continue;
         }
-        out.push_str(&text[cursor..]);
-        out
-    };
-    map_outside_code(content, &wrap_one)
+        if let Some(replacement) = edit(&content[start..end]) {
+            out.replace_range(start..end, &replacement);
+            floor = start;
+        }
+    }
+    out
+}
+
+/// Split a wikilink span into its opening (`[[` or `![[`) and the rest.
+fn open_bracket(span: &str) -> Option<(&'static str, &str)> {
+    if let Some(rest) = span.strip_prefix("![[") {
+        Some(("![[", rest))
+    } else {
+        span.strip_prefix("[[").map(|rest| ("[[", rest))
+    }
+}
+
+/// Where the path ends inside a link's brackets: at a heading or block anchor
+/// (`#`), or at the display text (`|`, escaped `\|` inside a table).
+fn path_end(inner: &str) -> usize {
+    let end = inner.find(['#', '|']).unwrap_or(inner.len());
+    if inner[..end].ends_with('\\') {
+        end - 1
+    } else {
+        end
+    }
+}
+
+/// A vault path as the lowercased, `.md`-stripped components the link graph
+/// resolves against.
+fn parts_of(vault_path: &str) -> Vec<String> {
+    normalize_link_target(&strip_md(vault_path)).unwrap_or_default()
+}
+
+fn has_md_extension(p: &str) -> bool {
+    p.get(p.len().saturating_sub(3)..)
+        .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".md"))
 }
 
 fn strip_md(p: &str) -> String {
     // tlx.10/[17]: case-insensitive — a path ending in `.MD`/`.Md` must still
     // strip to the bare stem, else moving `Foo.MD` looks for `[[Foo.MD]]` and
-    // leaves backlinks unrewritten. `get(..)` keeps the slice on a char
-    // boundary; a matched ascii `.md` suffix guarantees `len - 3` is one too.
-    match p.get(p.len().saturating_sub(3)..) {
-        Some(suffix) if suffix.eq_ignore_ascii_case(".md") => p[..p.len() - 3].to_string(),
-        _ => p.to_string(),
+    // leaves backlinks unrewritten. A matched ascii `.md` suffix guarantees
+    // `len - 3` is a char boundary.
+    if has_md_extension(p) {
+        p[..p.len() - 3].to_string()
+    } else {
+        p.to_string()
     }
 }
 
-fn basename(p: &str) -> String {
-    p.rsplit('/').next().unwrap_or(p).to_string()
-}
-
-// ---- tlx.3: code-aware masking ----
-//
-// The rewrite/wrap regexes must not touch wikilink-looking text inside code.
-// We split `content` into code vs non-code and apply the transform only to the
-// non-code parts. Not a full CommonMark parser: fenced blocks (``` / ~~~) and
-// inline backtick spans are handled (the common cases). 4-space indented code
-// blocks and exotic nested-backtick forms are not — those are rare and the
-// failure is cosmetic, not corrupting.
-
-/// Apply `f` to every region of `content` that is NOT inside a fenced code
-/// block or an inline code span; emit code regions verbatim.
-fn map_outside_code(content: &str, f: &dyn Fn(&str) -> String) -> String {
-    let mut out = String::with_capacity(content.len());
-    let mut fence: Option<(char, usize)> = None;
-    for line in content.split_inclusive('\n') {
-        let marker = fence_marker(line);
-        match fence {
-            Some((fc, flen)) => {
-                out.push_str(line); // inside a fence: verbatim
-                // A matching, long-enough run closes the fence.
-                if let Some((mc, mlen)) = marker
-                    && mc == fc
-                    && mlen >= flen
-                {
-                    fence = None;
-                }
-            }
-            None => match marker {
-                Some((mc, mlen)) => {
-                    out.push_str(line); // opening fence: verbatim
-                    fence = Some((mc, mlen));
-                }
-                None => out.push_str(&map_outside_inline_code(line, f)),
-            },
-        }
-    }
-    out
-}
-
-/// If `line` (ignoring leading whitespace) is a code fence, return its marker
-/// char and run length (a run of >= 3 backticks or tildes).
-fn fence_marker(line: &str) -> Option<(char, usize)> {
-    let trimmed = line.trim_start();
-    let first = trimmed.chars().next()?;
-    if first != '`' && first != '~' {
-        return None;
-    }
-    let run = trimmed.chars().take_while(|&c| c == first).count();
-    (run >= 3).then_some((first, run))
-}
-
-/// Apply `f` to the parts of `line` outside inline backtick code spans.
-fn map_outside_inline_code(line: &str, f: &dyn Fn(&str) -> String) -> String {
-    let bytes = line.as_bytes();
-    let mut out = String::with_capacity(line.len());
-    let mut i = 0;
-    let mut plain_start = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'`' {
-            let run_start = i;
-            let mut n = 0;
-            while i < bytes.len() && bytes[i] == b'`' {
-                n += 1;
-                i += 1;
-            }
-            // A code span closes on the next run of EXACTLY n backticks.
-            if let Some(close_start) = find_backtick_run(bytes, i, n) {
-                out.push_str(&f(&line[plain_start..run_start]));
-                let code_end = close_start + n;
-                out.push_str(&line[run_start..code_end]); // span verbatim
-                i = code_end;
-                plain_start = code_end;
-            }
-            // No closing run: the backticks are literal text; keep scanning.
-        } else {
-            i += 1;
-        }
-    }
-    out.push_str(&f(&line[plain_start..]));
-    out
-}
-
-/// Byte index of the next run of EXACTLY `n` backticks at or after `from`.
-fn find_backtick_run(bytes: &[u8], from: usize, n: usize) -> Option<usize> {
-    let mut i = from;
-    while i < bytes.len() {
-        if bytes[i] == b'`' {
-            let start = i;
-            let mut run = 0;
-            while i < bytes.len() && bytes[i] == b'`' {
-                run += 1;
-                i += 1;
-            }
-            if run == n {
-                return Some(start);
-            }
-        } else {
-            i += 1;
-        }
-    }
-    None
+fn basename(p: &str) -> &str {
+    p.rsplit('/').next().unwrap_or(p)
 }
 
 #[cfg(test)]
@@ -336,6 +324,39 @@ mod tests {
         // escaped before being inserted into the rewrite regex.
         let out = rewrite_wikilinks("see [[c++]]", "c++.md", "rust.md");
         assert_eq!(out, "see [[rust]]");
+    }
+
+    #[test]
+    fn rewrites_regardless_of_case() {
+        // #88: Obsidian (and the link graph) resolve targets case-insensitively.
+        let out = rewrite_wikilinks(
+            "see [[Old Note]] and [[OLD NOTE|x]]",
+            "old note.md",
+            "new note.md",
+        );
+        assert_eq!(out, "see [[new note]] and [[new note|x]]");
+    }
+
+    #[test]
+    fn keeps_an_explicit_md_extension() {
+        let out = rewrite_wikilinks(
+            "see [[old.md]] and [[wiki/old.MD#H]]",
+            "wiki/old.md",
+            "wiki/new.md",
+        );
+        assert_eq!(out, "see [[new.md]] and [[wiki/new.md#H]]");
+    }
+
+    #[test]
+    fn rewrites_the_target_of_a_table_escaped_alias() {
+        let out = rewrite_wikilinks("| [[old\\|shown]] |", "old.md", "new.md");
+        assert_eq!(out, "| [[new\\|shown]] |");
+    }
+
+    #[test]
+    fn rewrites_a_path_suffix_to_the_full_new_path() {
+        let out = rewrite_wikilinks("[[sub/old]]", "a/sub/old.md", "b/new.md");
+        assert_eq!(out, "[[b/new]]");
     }
 
     // -------- tlx.3: code-aware masking --------

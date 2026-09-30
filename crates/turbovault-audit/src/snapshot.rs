@@ -23,7 +23,7 @@ impl SnapshotStore {
     /// Store content and return the snapshot ID (SHA-256 hash)
     /// Naturally deduplicates: identical content produces the same hash/filename
     pub async fn store(&self, content: &str) -> Result<String> {
-        let id = Self::compute_hash(content);
+        let id = content_address(content);
         let path = self.snapshot_dir.join(&id);
 
         // Skip if already stored (content-addressed dedup)
@@ -49,12 +49,21 @@ impl SnapshotStore {
         self.snapshot_dir.join(id).exists()
     }
 
-    /// Compute SHA-256 hash of content (same as VaultManager's compute_hash)
+    /// The content hash recorded on audit entries and compared by rollback:
+    /// [`turbovault_core::compute_hash`], the same hash `read_note` reports and
+    /// a Direct write's `expected_hash` is checked against.
     pub fn compute_hash(content: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(content.as_bytes());
-        bytes_to_lower_hex(hasher.finalize())
+        turbovault_core::compute_hash(content)
     }
+}
+
+/// A snapshot's file name: SHA-256 of its exact bytes. Unlike
+/// [`SnapshotStore::compute_hash`] this does not normalize, because it is an
+/// address rather than a comparison: two notes that differ only in Unicode
+/// normalization are different bytes, and a rollback has to restore the ones
+/// that were there.
+fn content_address(content: &str) -> String {
+    bytes_to_lower_hex(Sha256::digest(content.as_bytes()))
 }
 
 #[cfg(test)]
@@ -74,6 +83,27 @@ mod tests {
 
         let retrieved = store.retrieve(&id).await.unwrap();
         assert_eq!(retrieved, content);
+    }
+
+    /// #88: audit hashes used raw bytes while every other hash normalized, so
+    /// they disagreed on any decomposed text. They agree now; the snapshot's
+    /// file name still addresses the exact bytes.
+    #[tokio::test]
+    async fn audit_hashes_agree_with_the_write_hash_but_snapshots_keep_exact_bytes() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let store = SnapshotStore::new(temp_dir.path().to_path_buf());
+        let composed = "caf\u{e9}";
+        let decomposed = "cafe\u{301}";
+
+        assert_eq!(
+            SnapshotStore::compute_hash(decomposed),
+            turbovault_core::compute_hash(composed)
+        );
+
+        let a = store.store(composed).await.unwrap();
+        let b = store.store(decomposed).await.unwrap();
+        assert_ne!(a, b, "different bytes need different snapshots");
+        assert_eq!(store.retrieve(&b).await.unwrap(), decomposed);
     }
 
     #[tokio::test]

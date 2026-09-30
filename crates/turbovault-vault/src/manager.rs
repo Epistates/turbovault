@@ -1406,6 +1406,37 @@ impl VaultManager {
         self.apply_one(&plan).await
     }
 
+    /// Copy a file within the vault, guarded by `dest_precondition` on the
+    /// destination ([`Precondition::ExpectAbsent`] is the no-clobber guard).
+    ///
+    /// The copy is an ordinary one-change plan through the substrate, so it
+    /// gets what every other write gets: the precondition, an audit entry on
+    /// Direct, a commit on Git, and the destination indexed. The source is read
+    /// as bytes, so an attachment copies as well as a note, and is held to the
+    /// same `max_file_size` as any read.
+    #[instrument(skip(self), fields(from = ?from, to = ?to), name = "vault_copy_file")]
+    pub async fn copy_file(
+        &self,
+        from: &Path,
+        to: &Path,
+        dest_precondition: Precondition,
+        message: &str,
+    ) -> Result<()> {
+        let from_path = self.resolve_path(from)?;
+        let to_path = self.resolve_path(to)?;
+        self.ensure_size_within_limit(&from_path).await?;
+        let content = tokio::fs::read(&from_path)
+            .await
+            .map_err(|e| Error::io_at(self.relative_path(&from_path), e))?;
+        let rel_to = self.relative_path(&to_path);
+
+        let plan = ChangePlan::new(message)
+            .upsert(rel_to.clone(), content)
+            .with_precondition(rel_to, dest_precondition);
+
+        self.apply_one(&plan).await
+    }
+
     /// Get backlinks for a file
     ///
     /// M4c (design §6.3, deliverable E): self-flushing — drains any queued
