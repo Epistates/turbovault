@@ -33,6 +33,39 @@ pub fn path_to_slash(path: &Path) -> String {
     }
 }
 
+/// The content hash TurboVault hands out for a note: lowercase hex SHA-256 of
+/// its Unicode NFC form. It is the `expected_hash` a Direct-backed write
+/// checks, the hash `read_note` reports, the before/after hash on an audit
+/// entry, and `FileMetadata::checksum`, so any two of them can be compared.
+///
+/// Normalizing first means the same text typed on two platforms (macOS input
+/// often produces decomposed accents) hashes the same. Text that is already
+/// NFC, which is nearly all of it, is hashed without being copied.
+pub fn compute_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    use unicode_normalization::{IsNormalized, UnicodeNormalization, is_nfc_quick};
+
+    let digest = if is_nfc_quick(content.chars()) == IsNormalized::Yes {
+        Sha256::digest(content.as_bytes())
+    } else {
+        let normalized: String = content.nfc().collect();
+        Sha256::digest(normalized.as_bytes())
+    };
+    bytes_to_lower_hex(digest)
+}
+
+/// [`compute_hash`] for bytes that may not be text: the same hash when they
+/// are UTF-8, and a plain SHA-256 of the bytes when they are not (an
+/// attachment).
+pub fn compute_hash_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    match std::str::from_utf8(bytes) {
+        Ok(text) => compute_hash(text),
+        Err(_) => bytes_to_lower_hex(Sha256::digest(bytes)),
+    }
+}
+
 /// Encode bytes as lowercase hexadecimal.
 pub fn bytes_to_lower_hex(bytes: impl AsRef<[u8]>) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";

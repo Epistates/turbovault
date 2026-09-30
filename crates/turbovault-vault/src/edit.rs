@@ -37,10 +37,7 @@
 //! This tolerates minor LLM errors while remaining safe.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use turbovault_core::bytes_to_lower_hex;
 use turbovault_core::{Error, Result};
-use unicode_normalization::UnicodeNormalization;
 
 /// A single SEARCH/REPLACE block
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -309,32 +306,43 @@ impl EditEngine {
         search: &str,
         replace: &str,
     ) -> Result<(String, MatchType)> {
-        // Strategy 1: Exact match
+        // Every strategy refuses a search that matches in more than one place
+        // rather than editing whichever came first: the caller named one
+        // passage, and there is no telling which of several it meant.
+
+        // Strategy 1: Exact match. An empty search matches everywhere and has
+        // always meant the start of the note, so it is not counted.
         if let Some(pos) = content.find(search) {
+            if !search.is_empty() {
+                check_unique(count_exact(content, search), MatchType::Exact)?;
+            }
             let new_content = Self::replace_at(content, pos, search.len(), replace);
             return Ok((new_content, MatchType::Exact));
         }
 
         // Strategy 2: Whitespace-insensitive
         if self.config.allow_whitespace_flex
-            && let Some((pos, len)) = self.fuzzy_find_whitespace(content, search)
+            && let Some(found) = self.fuzzy_find_whitespace(content, search)
         {
+            let (pos, len) = found.unique(MatchType::WhitespaceInsensitive)?;
             let new_content = Self::replace_at(content, pos, len, replace);
             return Ok((new_content, MatchType::WhitespaceInsensitive));
         }
 
         // Strategy 3: Indentation-preserving
         if self.config.allow_indent_flex
-            && let Some((pos, len)) = self.fuzzy_find_indentation(content, search)
+            && let Some(found) = self.fuzzy_find_indentation(content, search)
         {
+            let (pos, len) = found.unique(MatchType::IndentationPreserving)?;
             let new_content = Self::replace_at(content, pos, len, replace);
             return Ok((new_content, MatchType::IndentationPreserving));
         }
 
         // Strategy 4: Fuzzy Levenshtein
         if self.config.allow_fuzzy_match
-            && let Some((pos, len)) = self.fuzzy_find_levenshtein(content, search)
+            && let Some(found) = self.fuzzy_find_levenshtein(content, search)
         {
+            let (pos, len) = found.unique(MatchType::FuzzyLevenshtein)?;
             let new_content = Self::replace_at(content, pos, len, replace);
             return Ok((new_content, MatchType::FuzzyLevenshtein));
         }
@@ -360,7 +368,7 @@ impl EditEngine {
 
     /// Find with whitespace normalization (line-based approach).
     /// Compares lines after collapsing all whitespace runs to single spaces.
-    fn fuzzy_find_whitespace(&self, content: &str, search: &str) -> Option<(usize, usize)> {
+    fn fuzzy_find_whitespace(&self, content: &str, search: &str) -> Option<Found> {
         let search_lines: Vec<&str> = search.lines().collect();
         let spans = line_spans(content);
         let content_lines: Vec<&str> = spans.iter().map(|&(_, line)| line).collect();
@@ -374,6 +382,7 @@ impl EditEngine {
             .map(|l| normalize_whitespace(l))
             .collect();
 
+        let mut found: Option<Found> = None;
         for start_idx in 0..content_lines.len() {
             if start_idx + search_lines.len() > content_lines.len() {
                 break;
@@ -389,15 +398,18 @@ impl EditEngine {
             }
 
             if matches {
-                return Some(match_span(&spans, start_idx, search_lines.len()));
+                Found::add(
+                    &mut found,
+                    match_span(&spans, start_idx, search_lines.len()),
+                );
             }
         }
 
-        None
+        found
     }
 
     /// Find with indentation flexibility
-    fn fuzzy_find_indentation(&self, content: &str, search: &str) -> Option<(usize, usize)> {
+    fn fuzzy_find_indentation(&self, content: &str, search: &str) -> Option<Found> {
         // Split into lines
         let search_lines: Vec<&str> = search.lines().collect();
         let spans = line_spans(content);
@@ -408,6 +420,7 @@ impl EditEngine {
         }
 
         // Try to find matching sequence with flexible indentation
+        let mut found: Option<Found> = None;
         for start_idx in 0..content_lines.len() {
             if start_idx + search_lines.len() > content_lines.len() {
                 break;
@@ -423,11 +436,14 @@ impl EditEngine {
             }
 
             if matches {
-                return Some(match_span(&spans, start_idx, search_lines.len()));
+                Found::add(
+                    &mut found,
+                    match_span(&spans, start_idx, search_lines.len()),
+                );
             }
         }
 
-        None
+        found
     }
 
     /// Find using semi-global alignment DP (with size guards to prevent DoS).
@@ -438,7 +454,7 @@ impl EditEngine {
     ///
     /// Complexity: O(n * m) vs the previous sliding window O(n * m³)
     #[allow(clippy::needless_range_loop)] // DP loops index multiple arrays by j
-    fn fuzzy_find_levenshtein(&self, content: &str, search: &str) -> Option<(usize, usize)> {
+    fn fuzzy_find_levenshtein(&self, content: &str, search: &str) -> Option<Found> {
         let content_chars: Vec<char> = content.chars().collect();
         let search_chars: Vec<char> = search.chars().collect();
         let n = content_chars.len();
@@ -463,6 +479,8 @@ impl EditEngine {
         }
 
         let mut best_end: Option<(usize, usize)> = None; // (end_char_idx, distance)
+        // Whether a second place, clear of the best one, aligns just as well.
+        let mut tied_elsewhere = false;
 
         for i in 1..=n {
             let mut prev_diag = 0;
@@ -477,8 +495,15 @@ impl EditEngine {
                 prev_diag = old;
             }
 
-            if dp[m] <= threshold && best_end.is_none_or(|(_, d)| dp[m] < d) {
-                best_end = Some((i, dp[m]));
+            if dp[m] <= threshold {
+                match best_end {
+                    Some((_, d)) if dp[m] > d => {}
+                    Some((end, d)) if dp[m] == d => tied_elsewhere |= i >= end + m,
+                    _ => {
+                        best_end = Some((i, dp[m]));
+                        tied_elsewhere = false;
+                    }
+                }
             }
         }
 
@@ -525,7 +550,10 @@ impl EditEngine {
             .map(|c| c.len_utf8())
             .sum();
 
-        Some((start_byte, match_byte_len))
+        Some(Found {
+            span: (start_byte, match_byte_len),
+            count: if tied_elsewhere { 2 } else { 1 },
+        })
     }
 
     /// Generate a unified-style diff preview from old and new content.
@@ -574,12 +602,56 @@ impl MatchType {
     }
 }
 
-/// Compute SHA-256 hash of content (with Unicode NFC normalization)
-pub fn compute_hash(content: &str) -> String {
-    let normalized: String = content.nfc().collect();
-    let hash = Sha256::digest(normalized.as_bytes());
-    bytes_to_lower_hex(hash)
+/// Where a strategy matched, and in how many places. A count above one is
+/// refused by [`Found::unique`] rather than resolved by position.
+#[derive(Debug, Clone, Copy)]
+struct Found {
+    span: (usize, usize),
+    count: usize,
 }
+
+impl Found {
+    /// Record one more match, keeping the first span.
+    fn add(found: &mut Option<Found>, span: (usize, usize)) {
+        match found {
+            Some(existing) => existing.count += 1,
+            None => *found = Some(Found { span, count: 1 }),
+        }
+    }
+
+    fn unique(self, match_type: MatchType) -> Result<(usize, usize)> {
+        check_unique(self.count, match_type)?;
+        Ok(self.span)
+    }
+}
+
+/// How many places `search` occurs in `content`, overlapping ones included:
+/// `aa` in `aaa` is two candidate passages, and either could be the one meant.
+fn count_exact(content: &str, search: &str) -> usize {
+    let mut count = 0;
+    let mut from = 0;
+    while let Some(pos) = content[from..].find(search) {
+        count += 1;
+        let at = from + pos;
+        from = at + content[at..].chars().next().map_or(1, char::len_utf8);
+    }
+    count
+}
+
+fn check_unique(count: usize, match_type: MatchType) -> Result<()> {
+    if count > 1 {
+        return Err(Error::Other(format!(
+            "Search text matches {count} places ({}); include enough surrounding \
+             lines that it matches exactly one",
+            match_type.description()
+        )));
+    }
+    Ok(())
+}
+
+/// Compute SHA-256 hash of content (with Unicode NFC normalization). Lives in
+/// `turbovault-core` so the audit trail and the parser hash the same way.
+pub use turbovault_core::compute_hash;
 
 /// Normalize whitespace for comparison
 /// Each line of `content` without its terminator, with the byte offset the
@@ -777,6 +849,92 @@ second new
             err.contains("widen") && err.contains("turbovault-74v"),
             "expected wider-fence suggestion, got: {err}"
         );
+    }
+
+    fn one_block(search: &str, replace: &str) -> Vec<SearchReplaceBlock> {
+        vec![SearchReplaceBlock {
+            search: search.to_string(),
+            replace: replace.to_string(),
+        }]
+    }
+
+    /// #88: a search that matches twice used to edit the first match silently.
+    #[test]
+    fn an_exact_match_in_two_places_is_refused() {
+        let engine = EditEngine::new();
+        let err = engine
+            .apply_blocks(
+                "- [ ] todo\n- [ ] todo\n",
+                &one_block("- [ ] todo", "- [x] todo"),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("matches 2 places"), "{err}");
+    }
+
+    #[test]
+    fn overlapping_exact_matches_count_as_ambiguous() {
+        let engine = EditEngine::new();
+        assert!(engine.apply_blocks("aaa", &one_block("aa", "b")).is_err());
+    }
+
+    #[test]
+    fn a_whitespace_flexible_match_in_two_places_is_refused() {
+        let engine = EditEngine::new();
+        let content = "a  b\nx\na   b\n";
+        let err = engine
+            .apply_blocks(content, &one_block("a b", "c"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("matches 2 places"), "{err}");
+    }
+
+    #[test]
+    fn an_indentation_flexible_match_in_two_places_is_refused() {
+        let engine = EditEngine::with_config(EditConfig {
+            allow_whitespace_flex: false,
+            ..EditConfig::default()
+        });
+        let content = "  item\nother\n    item\n";
+        assert!(
+            engine
+                .apply_blocks(content, &one_block("item\n", "done\n"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_fuzzy_match_tied_in_two_places_is_refused() {
+        let engine = EditEngine::new();
+        let line = "The quick brown fox jumps over the lazy dog";
+        let content = format!("{line}!\nsomething else entirely here\n{line}?\n");
+        let search = format!("{line}.");
+        assert!(
+            engine
+                .apply_blocks(&content, &one_block(&search, "x"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_unique_match_among_near_misses_still_applies() {
+        let engine = EditEngine::new();
+        let (out, _) = engine
+            .apply_blocks(
+                "- [ ] one\n- [ ] two\n",
+                &one_block("- [ ] two", "- [x] two"),
+            )
+            .unwrap();
+        assert_eq!(out, "- [ ] one\n- [x] two\n");
+    }
+
+    #[test]
+    fn an_empty_search_still_means_the_start() {
+        let engine = EditEngine::new();
+        let (out, _) = engine
+            .apply_blocks("body\n", &one_block("", "head\n"))
+            .unwrap();
+        assert_eq!(out, "head\nbody\n");
     }
 
     #[test]

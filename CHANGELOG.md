@@ -7,15 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+
+- **18 `ServerConfig` fields nothing reads**, among them `enable_caching`, `cache_ttl`, `metrics_enabled` and `link_suggestions_enabled`. They still deserialize and profiles still set them, but they have never changed behavior. They'll be removed in the next major release.
+
 ### Fixed
 
 - **`--profile readonly` refuses writes.** The README promised a read-only profile, but `--profile` only picked a log level and accepted any string. It now parses to a real profile: `readonly` (or `read-only`) turns on the same gate as `--require-read-only-tools`, hiding and refusing every tool not annotated read-only, and an unknown name stops startup instead of quietly running with full write access. The profile's config is also the base every vault manager is built from; they all used `ServerConfig::default()` before. `development`, the default, keeps the values the vault layer reads unchanged (its 50 MB `max_file_size`, which never took effect, is back to the 10 MB default). `ObsidianMcpServer::with_config` and `with_config_and_plugins` take a base config for SDK callers.
 
 - **Human-readable logs on network transports show everything.** `--output-format human|text` installed `simple_logger`, which only sees `log` records, so every `tracing` event was dropped, and production's filter `info,turbo_vault=debug` named no crate. Every transport and format now goes through one `tracing` subscriber at the profile's level, with `log` records bridged in. `RUST_LOG` still overrides it.
 
-### Deprecated
+- **Moving or deleting a note rewrites the links the graph counted, and only those.** The link graph resolves `[[Old Note]]` to `old note.md` case-insensitively, but the rewriter matched text case-sensitively, so a move listed the linker as a backlink and then left the link broken. Move and delete now parse each linker and edit exactly the links the graph resolves to the note, at the spans the parser reports. That also means a link to a different note with the same name is left alone, and a link that reached the note through a frontmatter alias keeps working after a move without being rewritten. `LinkGraph::resolve` exposes the graph's resolution for callers doing the same.
 
-- **18 `ServerConfig` fields nothing reads**, among them `enable_caching`, `cache_ttl`, `metrics_enabled` and `link_suggestions_enabled`. They still deserialize and profiles still set them, but they have never changed behavior. They'll be removed in the next major release.
+- **`edit_note` refuses a SEARCH block that matches in more than one place.** It used to edit the first match without saying so. Every matching strategy now counts its matches, and an ambiguous block fails with the count and a request for more surrounding context. An empty SEARCH still means the start of the note.
+
+- **`FileTools::copy_file` goes through the manager.** It used `tokio::fs::copy`, so a copy had no precondition, audit entry, commit on a Git vault, or index update. It's now `VaultManager::copy_file`, a one-change plan like every other write, and it refuses to overwrite an existing destination. Not an MCP tool.
+
+- **One content hash.** Audit entries hashed raw bytes while `read_note` and write preconditions hash the NFC form, so the two disagreed on any decomposed text, and `FileMetadata::checksum` used `DefaultHasher`, which isn't stable across Rust releases. All three are now `turbovault_core::compute_hash` (re-exported as `turbovault_vault::compute_hash`). Snapshot file names still address exact bytes, so a rollback restores what was there. An audit entry written before this upgrade over non-NFC text keeps its raw-byte hash, so it won't equal the `current_hash` a `rollback_preview` reports for the same text.
 
 ## [3.0.0] - 2026-09-27
 

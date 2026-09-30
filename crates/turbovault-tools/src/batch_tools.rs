@@ -590,30 +590,32 @@ impl BatchTools {
         expected_from: Option<&str>,
         dest_expected_hash: Option<&str>,
     ) -> Result<(ChangePlan, Vec<String>)> {
-        use crate::wikilink_rewriter::rewrite_wikilinks;
+        use crate::wikilink_rewriter::rewrite_links;
 
         let content = self.read_file(from).await?;
+        let from_full = self.manager.vault_path().join(from);
 
         let backlink_paths = {
             let lg = self.manager.link_graph();
             let graph = lg.read().await;
             graph
-                .backlinks(&self.manager.vault_path().join(from))
+                .backlinks(&from_full)
                 .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
                 .into_iter()
                 .map(|(p, _links)| p)
                 .collect::<Vec<_>>()
         };
 
-        // Read each source, rewrite, capture a content hash for the
-        // precondition. Skip sources whose rewritten content equals the
-        // original (no actual link change — e.g. the `[[from]]` literal
-        // sits in a code fence).
+        // Read each source, rewrite the links in it that the graph resolves to
+        // `from`, and capture a content hash for the precondition. Skip sources
+        // whose rewritten content equals the original (every link to `from`
+        // reached it through an alias, which still resolves after the move).
         let mut link_updates: Vec<(String, String, String)> = Vec::new();
         for full_src in &backlink_paths {
             let rel_str = self.rel_backlink_path(full_src)?;
             let src_content = self.read_file(&rel_str).await?;
-            let rewritten = rewrite_wikilinks(&src_content, from, to);
+            let links = self.links_resolving_to(&src_content, &from_full).await;
+            let rewritten = rewrite_links(&src_content, &links, from, to);
             if rewritten == src_content {
                 continue;
             }
@@ -650,13 +652,14 @@ impl BatchTools {
         path: &str,
         expected_target: Option<&str>,
     ) -> Result<(ChangePlan, Vec<String>)> {
-        use crate::wikilink_rewriter::wrap_wikilinks_as_stale;
+        use crate::wikilink_rewriter::wrap_links_as_stale;
 
+        let target_full = self.manager.vault_path().join(path);
         let backlink_paths = {
             let lg = self.manager.link_graph();
             let graph = lg.read().await;
             graph
-                .backlinks(&self.manager.vault_path().join(path))
+                .backlinks(&target_full)
                 .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
                 .into_iter()
                 .map(|(p, _links)| p)
@@ -667,7 +670,8 @@ impl BatchTools {
         for full_src in &backlink_paths {
             let rel_str = self.rel_backlink_path(full_src)?;
             let src_content = self.read_file(&rel_str).await?;
-            let rewritten = wrap_wikilinks_as_stale(&src_content, path);
+            let links = self.links_resolving_to(&src_content, &target_full).await;
+            let rewritten = wrap_links_as_stale(&src_content, &links);
             if rewritten == src_content {
                 continue;
             }
@@ -687,6 +691,24 @@ impl BatchTools {
 
         let updated = link_updates.into_iter().map(|(p, _, _)| p).collect();
         Ok((plan, updated))
+    }
+
+    /// The wikilinks and embeds in `content` that the link graph resolves to
+    /// `target` (an absolute vault path). `content` is parsed as read, not
+    /// taken from the graph's copy, so every span is a span of the text about
+    /// to be rewritten even if the file changed since it was last indexed.
+    async fn links_resolving_to(
+        &self,
+        content: &str,
+        target: &std::path::Path,
+    ) -> Vec<turbovault_core::Link> {
+        let links = crate::wikilink_rewriter::links_in(content);
+        let lg = self.manager.link_graph();
+        let graph = lg.read().await;
+        links
+            .into_iter()
+            .filter(|link| graph.resolve(&link.target).is_some_and(|p| p == target))
+            .collect()
     }
 
     /// Return the list of vault-relative source paths that have inbound
