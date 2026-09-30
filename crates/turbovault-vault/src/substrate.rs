@@ -17,16 +17,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::future::BoxFuture;
-use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
 use turbovault_audit::{AuditEntry, AuditLog, OperationType, SnapshotStore};
-use turbovault_core::{
-    Change, ChangePlan, Error, Precondition, Result, bytes_to_lower_hex, write_atomic,
-};
+use turbovault_core::{Change, ChangePlan, Error, Precondition, Result, write_atomic};
 use turbovault_git::{CommitHook, CommitLocks, VaultRepo};
-
-use crate::edit::compute_hash;
 
 /// Outcome of applying one [`ChangePlan`] to a substrate (design §6.3) — the
 /// substrate-level analogue of `BatchResult`.
@@ -143,10 +138,7 @@ async fn read_if_present(path: &std::path::Path) -> Result<Option<Vec<u8>>> {
 /// codebase), raw sha256 otherwise (matching `move_file`'s pre-M3a fallback
 /// for non-UTF-8 attachments).
 fn hash_bytes(bytes: &[u8]) -> String {
-    match std::str::from_utf8(bytes) {
-        Ok(text) => compute_hash(text),
-        Err(_) => bytes_to_lower_hex(Sha256::digest(bytes)),
-    }
+    turbovault_core::compute_hash_bytes(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -634,6 +626,7 @@ fn git_err_to_core(e: turbovault_git::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edit::compute_hash;
     use tempfile::TempDir;
 
     fn direct(tmp: &TempDir) -> DirectSubstrate {
