@@ -1,0 +1,2 @@
+# Printing is fine in tests; `print_stdout` guards the server's stdout.
+allow-print-in-tests = true

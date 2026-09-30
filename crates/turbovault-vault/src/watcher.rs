@@ -2,6 +2,7 @@
 //!
 //! Provides real-time notification of file system events (create, modify, delete)
 //! for markdown files in the vault. Built on notify crate with async event streaming.
+#![allow(deprecated)] // the deprecated items' own impls
 
 use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher,
@@ -14,6 +15,10 @@ use turbovault_core::{Error, Result};
 
 /// File system event types relevant to vault operations
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused; freshness comes from `VaultManager::ensure_fresh`, which compares state instead of listening for events. Removed in the next major release"
+)]
 pub enum VaultEvent {
     /// A file was created
     FileCreated(PathBuf),
@@ -48,6 +53,10 @@ impl VaultEvent {
 
 /// Configuration for the file watcher
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "3.1.0",
+    note = "unused; freshness comes from `VaultManager::ensure_fresh`, which compares state instead of listening for events. Removed in the next major release"
+)]
 pub struct WatcherConfig {
     /// Watch recursively
     pub recursive: bool,
@@ -71,6 +80,10 @@ impl Default for WatcherConfig {
 }
 
 /// Watches a vault directory for file system changes
+#[deprecated(
+    since = "3.1.0",
+    note = "unused; freshness comes from `VaultManager::ensure_fresh`, which compares state instead of listening for events. Removed in the next major release"
+)]
 pub struct VaultWatcher {
     config: WatcherConfig,
     watch_path: PathBuf,

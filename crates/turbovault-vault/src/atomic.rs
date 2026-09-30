@@ -3,6 +3,7 @@
 //! Provides ACID-like guarantees for file operations with automatic backup
 //! and rollback on failure. All operations are either fully completed or
 //! fully rolled back, ensuring consistency.
+#![allow(deprecated)] // the deprecated items' own impls
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,10 @@ struct Backup {
 
 /// A single file operation
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "3.1.0",
+    note = "nothing writes through this; every write goes through `WriteSubstrate`. Removed in the next major release"
+)]
 pub enum FileOp {
     /// Write content to a file (path, content)
     Write(PathBuf, String),
@@ -44,6 +49,10 @@ impl FileOp {
 
 /// Result of an atomic transaction
 #[derive(Debug)]
+#[deprecated(
+    since = "3.1.0",
+    note = "nothing writes through this; every write goes through `WriteSubstrate`. Removed in the next major release"
+)]
 pub struct TransactionResult {
     /// Number of operations executed
     pub operations: usize,
@@ -58,6 +67,10 @@ pub struct TransactionResult {
 /// Provides transactional file operations with automatic backup and rollback.
 /// All operations within a transaction are either fully completed or fully
 /// rolled back on error.
+#[deprecated(
+    since = "3.1.0",
+    note = "nothing writes through this; every write goes through `WriteSubstrate`. Removed in the next major release"
+)]
 pub struct AtomicFileOps {
     /// Directory for storing backups
     backup_dir: PathBuf,

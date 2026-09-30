@@ -84,15 +84,12 @@ uuid = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 yaml_serde = { workspace = true }
-config = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true, optional = true }
 futures = { workspace = true }
 log = { workspace = true }
 simple_logger = "5.2"
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
@@ -140,3 +137,6 @@ harness = false
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 features = ["full"]
+
+[lints]
+workspace = true

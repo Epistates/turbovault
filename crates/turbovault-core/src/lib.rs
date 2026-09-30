@@ -96,12 +96,14 @@ pub use change_plan::{Change, ChangePlan};
 pub use config::*;
 pub use error::{Error, Result};
 pub use events::{VaultChange, VaultEventSink, WriteAttribution};
+#[allow(deprecated)]
 pub use metrics::{Counter, Histogram, HistogramStats, HistogramTimer, MetricsContext};
 pub use models::*;
 pub use multi_vault::{MultiVaultManager, VaultInfo};
 pub use okf::{Citation, ConceptConformance, ReservedFile, check_concept, concept_id};
 pub use precondition::Precondition;
 pub use profiles::ConfigProfile;
+#[allow(deprecated)]
 pub use utils::{
     CSVBuilder, PathValidator, ResolvedPath, TransactionBuilder, bytes_to_lower_hex, path_to_slash,
     to_json_string,
@@ -116,6 +118,7 @@ pub mod prelude {
     pub use crate::config::{ServerConfig, VaultConfig};
     pub use crate::error::{Error, Result};
     pub use crate::events::{VaultChange, VaultEventSink, WriteAttribution};
+    #[allow(deprecated)]
     pub use crate::metrics::{Counter, Histogram, MetricsContext};
     pub use crate::models::{
         Block, Callout, CalloutType, ContentBlock, FileMetadata, Frontmatter, Heading,

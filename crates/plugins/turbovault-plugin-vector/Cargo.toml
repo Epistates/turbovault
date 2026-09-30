@@ -29,7 +29,6 @@ turbovault-vector = { workspace = true }
 # not ToolInputSchema, which a plugin needs to attach a JSON Schema to a tool.
 turbomcp-types = { workspace = true }
 async-trait = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -45,3 +44,6 @@ tempfile = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true

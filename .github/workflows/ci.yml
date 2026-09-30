@@ -42,6 +42,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # A declared dependency nothing uses is still compiled, audited and
+      # published as a requirement. Fails on any, per crate.
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+
+      - name: Check for unused dependencies
+        run: cargo machete
+
       - name: Lint with clippy
         run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 

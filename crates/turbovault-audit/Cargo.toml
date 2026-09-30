@@ -22,7 +22,6 @@ chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 log = { workspace = true }
 similar = { workspace = true }
 
@@ -33,3 +32,6 @@ tokio = { workspace = true, features = ["full"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true

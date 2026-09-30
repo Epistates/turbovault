@@ -101,6 +101,7 @@ impl Backend {
 /// → different blob oids → silently break the version-token contract) and
 /// `core.excludesfile` (a global ignore could trip the substrate's lri gate).
 /// Process-global (mirrors the substrate's own `init_libgit2_opts`); set once.
+#[allow(unsafe_code)] // git2's config search-path setter is unsafe; see SAFETY below
 fn make_libgit2_hermetic() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {

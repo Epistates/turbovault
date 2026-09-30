@@ -14,18 +14,16 @@ categories.workspace = true
 documentation = "https://docs.rs/turbovault-batch"
 
 [dependencies]
-turbovault-core = { workspace = true }
-turbovault-vault = { workspace = true }
 
-tokio = { workspace = true, features = ["full"] }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-uuid = { workspace = true, features = ["v4", "serde"] }
-chrono = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 tempfile = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true

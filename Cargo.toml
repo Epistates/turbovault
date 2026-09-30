@@ -31,6 +31,20 @@ categories = ["text-processing", "development-tools"]
 description = "LLM-optimized Obsidian vault MCP server with advanced editing, search, and graph analysis"
 publish = true
 
+[workspace.lints.rust]
+# No shipped crate uses `unsafe`. `deny` rather than `forbid` so the one test
+# harness that has to (libgit2's process-global config search path) can say
+# so with a local `#[allow(unsafe_code)]`.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Over STDIO, stdout is the MCP channel: a stray print corrupts the protocol.
+# Tests may print (clippy.toml allow-print-in-tests).
+print_stdout = "warn"
+
 [workspace.dependencies]
 tokio = { version = "1.53", features = ["io-util", "macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
 tokio-util = { version = "0.7", features = ["codec"] }
