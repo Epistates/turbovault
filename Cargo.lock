@@ -5501,7 +5501,6 @@ dependencies = [
  "chrono",
  "git2",
  "log",
- "regex",
  "serde",
  "serde_json",
  "shellexpand",
@@ -5534,7 +5533,6 @@ dependencies = [
  "notify",
  "serde",
  "serde_json",
- "sha2",
  "similar",
  "tempfile",
  "tokio",
@@ -5544,7 +5542,6 @@ dependencies = [
  "turbovault-git",
  "turbovault-graph",
  "turbovault-parser",
- "unicode-normalization",
 ]
 
 [[package]]
