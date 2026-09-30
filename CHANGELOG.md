@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-30
+
 ### Added
 
 - **Tests for the network transports.** HTTP, WebSocket and TCP each serve a real MCP session in CI now: initialize, `tools/list`, and a tool call.
