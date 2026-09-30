@@ -83,7 +83,13 @@ async fn test_file_tools_delete_locked_file() {
         .unwrap();
 
     // Attempt to delete while locked (behavior varies by OS)
-    let _result = tools.delete_file("locked.md").await;
+    let _result = tools
+        .delete_file(
+            "locked.md",
+            turbovault_core::Precondition::for_in_place(None),
+            "delete locked.md",
+        )
+        .await;
     // On Windows, this has been observed to succeed; on Unix, it might succeed
     #[cfg(windows)]
     assert!(_result.is_ok());
@@ -98,8 +104,13 @@ async fn test_search_tools_malformed_graph_data() {
 
     // Query for a path with special characters that might break parsing
     let result = tools.find_backlinks("path/with/<>:\"\\|?*.md").await;
-    // Should handle gracefully without panicking
+    // Should handle gracefully without panicking. `<>:"|?*` cannot appear in a
+    // Windows file name, so there the resolver cannot show where the path
+    // lands and refuses it rather than answering for a file that cannot exist.
+    #[cfg(unix)]
     assert!(result.is_ok());
+    #[cfg(windows)]
+    assert!(result.is_err());
 }
 
 #[tokio::test]

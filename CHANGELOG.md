@@ -7,13 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-27
+
+### Removed
+
+- **`write_note` no longer takes `force`. This is a breaking change to the MCP wire.** An intentional blind overwrite is now `expected_hash: "blind"`, the same sentinel every other write tool and batch operation accepts, so there is one way to say "overwrite without checking" instead of a flag that meant it on one tool. A client still sending `force: true` gets an `is_error` result telling it to pass `expected_hash` or `"blind"`, rather than a silent no-op.
+
+### Added
+
+- **A write-safety matrix, by [@dlobue](https://github.com/dlobue) in [#46](https://github.com/Epistates/turbovault/pull/46).** TurboVault promises to refuse a write when the file on disk is not what the caller said it was. The matrix holds every write tool to that across both backends, every precondition, and every working-tree state, at four layers (tools, manager, batch, and the MCP wire), all driven from one case table per operation with the source of truth checked in as CSV. It tests clobber-safety only, did the operation refuse or proceed without silently losing an out-of-band change, and leaves content correctness to ordinary tests. The dirty-tree policy it enforces is written up in `docs/write-safety-suite/dirty-tree-policy.md`.
+
+- **`move_note` guards its destination.** `dest_expected_hash` takes a hash or `"absent"`/`"exists"`/`"blind"`, and defaults to `"absent"`, the existing refusal to clobber. Before this a move had no way to state a precondition on its destination, on the tool or in a batch.
+
+### Changed
+
+- **`turbovault-vector` 0.1.1** only moves its `turbovault-parser` requirement to 3.0, so a 3.0 build links one copy of the parser. `turbovault-plugin-vector` and `turbovault-plugin-api` are unchanged at 0.1.0.
+
+### Fixed
+
+- **`edit_note` on a missing file reports it as not found.** `VaultManager::edit_file` was the one read in the manager still passing the OS's own error text through, which 2.2.0 had replaced with `FileNotFound` everywhere else. On Windows that text doesn't say "No such file or directory", and the write-safety matrix caught a client seeing a missing note as some other failure.
+
+## [2.2.0] - 2026-09-27
+
 ### Added
 
 - **Vector search, as an optional plugin** ([#29](https://github.com/Epistates/turbovault/issues/29)). Off by default: a build without `--features vector-search` pulls none of it in and behaves exactly as before. With it, a new compiled-in `vector_search` plugin adds `vector_search_search`, `vector_search_reindex`, and `vector_search_status` alongside the existing TF-IDF `semantic_search` tool, hybrid-ranking BM25 and dense cosine similarity together with Reciprocal Rank Fusion.
 
   The stack is pure Rust and CPU-only: [`model2vec-rs`](https://github.com/MinishLab/model2vec-rs) for static embeddings (no transformer forward pass, and built with `local-only` so it never reaches the network; point `model_path` at a local [Potion model](https://huggingface.co/minishlab) directory), [`hnsw_rs`](https://github.com/jean-pierreBoth/hnswlib-rs) for the dense index, and the [`bm25`](https://github.com/Michael-JB/bm25) crate for lexical scoring. Indexing is incremental: a note is chunked on paragraph, then sentence, then character boundaries, each chunk carries a content hash, and only chunks whose hash actually changed are re-embedded. The index persists in the plugin's own storage, one entry per note, so a restart does not re-embed a vault that has not changed.
 
-  New crates `turbovault-vector` (the engine, with no dependency on the rest of the workspace) and `turbovault-plugin-vector` (the compiled-in plugin), both `publish = false` for now. The chunking algorithm, its content-hash diffing, and the RRF math are close ports of ForrestThump's prototype in #29; see `crates/turbovault-vector/README.md` for what carried over and what was rebuilt against the plugin API's current `PluginStorage` and change feed.
+  New crates `turbovault-vector` (the engine, with no dependency on the rest of the workspace) and `turbovault-plugin-vector` (the compiled-in plugin), both versioned on their own at 0.1.0 while they settle, the way `turbovault-plugin-api` is. They're published because crates.io needs every dependency of `turbovault` to be, optional ones included. The chunking algorithm, its content-hash diffing, and the RRF math are close ports of ForrestThump's prototype in #29; see `crates/turbovault-vector/README.md` for what carried over and what was rebuilt against the plugin API's current `PluginStorage` and change feed.
 
 - **A contract snapshot over the whole parser surface.** One fixture covering every construct that has broken here, with the full extracted shape checked in as JSON. The narrow tests beside it each pin one defect and were each written after that defect shipped; three shipped while the suite was green ([#55](https://github.com/Epistates/turbovault/pull/55), [#68](https://github.com/Epistates/turbovault/issues/68), [#71](https://github.com/Epistates/turbovault/issues/71)), every time because the assertion was narrower than the failure.
 

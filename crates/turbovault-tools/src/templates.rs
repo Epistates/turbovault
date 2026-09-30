@@ -362,18 +362,14 @@ impl TemplateEngine {
         template_id: &str,
         file_path: &str,
         field_values: HashMap<String, String>,
+        precondition: Precondition,
         message: &str,
     ) -> crate::Result<CreatedNoteInfo> {
         let (full_content, info) = self
             .compute_from_template(template_id, file_path, field_values)
             .await?;
         self.manager
-            .write_file(
-                Path::new(file_path),
-                &full_content,
-                Precondition::ExpectAbsent,
-                message,
-            )
+            .write_file(Path::new(file_path), &full_content, precondition, message)
             .await?;
         Ok(info)
     }

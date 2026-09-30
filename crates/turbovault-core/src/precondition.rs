@@ -54,13 +54,28 @@ impl Precondition {
 
     /// Build the precondition an old `expected_hash` caller implied for an
     /// **in-place** op (edit_note, delete_note, update_frontmatter,
-    /// manage_tags, move source):
-    /// - `expected_hash: Some(oid)` → [`ExpectBlob`](Self::ExpectBlob)
-    /// - `None` → [`ExpectExists`](Self::ExpectExists) (reads current content)
+    /// manage_tags, move source): the in-place default is
+    /// [`ExpectExists`](Self::ExpectExists) when the caller omits the param.
     pub fn for_in_place(expected_hash: Option<&str>) -> Self {
+        Self::from_wire(expected_hash, Precondition::ExpectExists)
+    }
+
+    /// Decode the MCP wire `expected_hash` value — a **sentinel-or-oid string**
+    /// (turbovault-qae.6.4) — into a precondition, falling back to `default` when
+    /// the caller omits the param (preserving each op's pre-cutover behavior):
+    /// - `None` → `default`
+    /// - `"absent"` → [`ExpectAbsent`](Self::ExpectAbsent)
+    /// - `"exists"` → [`ExpectExists`](Self::ExpectExists)
+    /// - `"blind"` → [`Blind`](Self::Blind)
+    /// - anything else → [`ExpectBlob`](Self::ExpectBlob) (a version-token oid,
+    ///   carried verbatim; the substrate validates its shape at apply time)
+    pub fn from_wire(expected_hash: Option<&str>, default: Precondition) -> Self {
         match expected_hash {
+            None => default,
+            Some("absent") => Precondition::ExpectAbsent,
+            Some("exists") => Precondition::ExpectExists,
+            Some("blind") => Precondition::Blind,
             Some(oid) => Precondition::ExpectBlob(oid.to_string()),
-            None => Precondition::ExpectExists,
         }
     }
 }
@@ -94,6 +109,28 @@ mod tests {
     fn for_in_place_with_token_is_expect_blob() {
         assert_eq!(
             Precondition::for_in_place(Some("cafebabe")),
+            Precondition::ExpectBlob("cafebabe".to_string())
+        );
+    }
+
+    #[test]
+    fn from_wire_decodes_sentinels_and_oids() {
+        let d = Precondition::ExpectAbsent;
+        assert_eq!(Precondition::from_wire(None, d.clone()), d);
+        assert_eq!(
+            Precondition::from_wire(Some("absent"), Precondition::Blind),
+            Precondition::ExpectAbsent
+        );
+        assert_eq!(
+            Precondition::from_wire(Some("exists"), Precondition::Blind),
+            Precondition::ExpectExists
+        );
+        assert_eq!(
+            Precondition::from_wire(Some("blind"), Precondition::ExpectAbsent),
+            Precondition::Blind
+        );
+        assert_eq!(
+            Precondition::from_wire(Some("cafebabe"), Precondition::Blind),
             Precondition::ExpectBlob("cafebabe".to_string())
         );
     }

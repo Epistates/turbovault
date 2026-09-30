@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 use tempfile::TempDir;
-use turbovault_core::{ConfigProfile, VaultConfig};
+use turbovault_core::{ConfigProfile, Precondition, VaultConfig};
 use turbovault_tools::FileTools;
 use turbovault_vault::VaultManager;
 
@@ -90,7 +90,13 @@ async fn test_delete_file_success() {
         .await
         .expect("Failed to create file");
 
-    let result = tools.delete_file("delete.md").await;
+    let result = tools
+        .delete_file(
+            "delete.md",
+            Precondition::for_in_place(None),
+            "delete delete.md",
+        )
+        .await;
     assert!(result.is_ok());
 
     // Verify it was deleted
@@ -103,7 +109,13 @@ async fn test_delete_file_not_found() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = FileTools::new(manager);
 
-    let result = tools.delete_file("nonexistent.md").await;
+    let result = tools
+        .delete_file(
+            "nonexistent.md",
+            Precondition::for_in_place(None),
+            "delete nonexistent.md",
+        )
+        .await;
     assert!(result.is_err());
 }
 
@@ -118,7 +130,15 @@ async fn test_move_file_success() {
         .await
         .expect("Failed to create source file");
 
-    let result = tools.move_file("source.md", "destination.md").await;
+    let result = tools
+        .move_file(
+            "source.md",
+            "destination.md",
+            Precondition::for_in_place(None),
+            Precondition::Blind,
+            "move source.md -> destination.md",
+        )
+        .await;
     assert!(result.is_ok());
 
     // Verify source is gone
@@ -147,7 +167,13 @@ async fn test_move_file_does_not_rewrite_incoming_wikilinks() {
 
     let tools = FileTools::new(manager);
     tools
-        .move_file("target.md", "archive/target.md")
+        .move_file(
+            "target.md",
+            "archive/target.md",
+            Precondition::for_in_place(None),
+            Precondition::Blind,
+            "move target.md -> archive/target.md",
+        )
         .await
         .unwrap();
 
@@ -168,7 +194,15 @@ async fn test_move_file_with_directory_creation() {
         .await
         .expect("Failed to create source file");
 
-    let result = tools.move_file("source.md", "new/folder/dest.md").await;
+    let result = tools
+        .move_file(
+            "source.md",
+            "new/folder/dest.md",
+            Precondition::for_in_place(None),
+            Precondition::Blind,
+            "move source.md -> new/folder/dest.md",
+        )
+        .await;
     assert!(result.is_ok());
 }
 
@@ -215,7 +249,15 @@ Updated content
 >>>>>>> REPLACE
 "#;
 
-    let result = tools.edit_file("edit.md", edits, None, false, "edit").await;
+    let result = tools
+        .edit_file(
+            "edit.md",
+            edits,
+            Precondition::for_in_place(None),
+            false,
+            "edit",
+        )
+        .await;
     assert!(result.is_ok());
 
     // Verify the edit was applied
@@ -244,7 +286,13 @@ Changed content
 "#;
 
     let result = tools
-        .edit_file("dryrun.md", edits, None, true, "edit")
+        .edit_file(
+            "dryrun.md",
+            edits,
+            Precondition::for_in_place(None),
+            true,
+            "edit",
+        )
         .await;
     assert!(result.is_ok());
 
@@ -277,7 +325,13 @@ New Content
 
     // Should succeed with correct hash
     let result = tools
-        .edit_file("hash.md", edits, Some(&expected_hash), false, "edit")
+        .edit_file(
+            "hash.md",
+            edits,
+            Precondition::for_in_place(Some(&expected_hash)),
+            false,
+            "edit",
+        )
         .await;
     assert!(result.is_ok());
 }
@@ -303,7 +357,13 @@ New Content
     // Should fail with wrong hash
     let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
     let result = tools
-        .edit_file("wronghash.md", edits, Some(wrong_hash), false, "edit")
+        .edit_file(
+            "wronghash.md",
+            edits,
+            Precondition::for_in_place(Some(wrong_hash)),
+            false,
+            "edit",
+        )
         .await;
     assert!(result.is_err());
 }
@@ -332,7 +392,13 @@ async fn test_path_traversal_prevention_write() {
 async fn test_delete_file_path_traversal_rejected() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = FileTools::new(manager);
-    let result = tools.delete_file("../../etc/passwd").await;
+    let result = tools
+        .delete_file(
+            "../../etc/passwd",
+            Precondition::for_in_place(None),
+            "delete traversal",
+        )
+        .await;
     assert!(result.is_err());
 }
 
@@ -343,7 +409,15 @@ async fn test_move_file_destination_path_traversal() {
     tokio::fs::write(temp_dir.path().join("source.md"), "content")
         .await
         .unwrap();
-    let result = tools.move_file("source.md", "../../tmp/evil.md").await;
+    let result = tools
+        .move_file(
+            "source.md",
+            "../../tmp/evil.md",
+            Precondition::for_in_place(None),
+            Precondition::Blind,
+            "move traversal",
+        )
+        .await;
     assert!(result.is_err());
     // Source should still exist (move should have been rejected before any IO)
     assert!(temp_dir.path().join("source.md").exists());
@@ -353,7 +427,15 @@ async fn test_move_file_destination_path_traversal() {
 async fn test_move_file_source_not_found() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = FileTools::new(manager);
-    let result = tools.move_file("nonexistent.md", "dest.md").await;
+    let result = tools
+        .move_file(
+            "nonexistent.md",
+            "dest.md",
+            Precondition::for_in_place(None),
+            Precondition::Blind,
+            "move nonexistent.md -> dest.md",
+        )
+        .await;
     assert!(result.is_err());
 }
 
@@ -506,7 +588,7 @@ async fn test_write_mode_append_empty_file() {
             "empty.md",
             "appended content",
             turbovault_tools::WriteMode::Append,
-            None,
+            Precondition::for_replace(None, true),
             "write",
         )
         .await
@@ -527,7 +609,7 @@ async fn test_write_mode_append_nonempty_file() {
             "existing.md",
             "line2",
             turbovault_tools::WriteMode::Append,
-            None,
+            Precondition::for_replace(None, true),
             "write",
         )
         .await
@@ -551,7 +633,7 @@ async fn test_write_mode_prepend_with_frontmatter() {
             "fm.md",
             "INSERTED",
             turbovault_tools::WriteMode::Prepend,
-            None,
+            Precondition::for_replace(None, true),
             "write",
         )
         .await
@@ -581,7 +663,7 @@ async fn test_write_mode_prepend_without_frontmatter() {
             "nofm.md",
             "INSERTED",
             turbovault_tools::WriteMode::Prepend,
-            None,
+            Precondition::for_replace(None, true),
             "write",
         )
         .await
@@ -603,7 +685,7 @@ async fn test_write_mode_prepend_empty_file() {
             "empty.md",
             "new content",
             turbovault_tools::WriteMode::Prepend,
-            None,
+            Precondition::for_replace(None, true),
             "write",
         )
         .await
@@ -628,7 +710,7 @@ async fn test_write_mode_prepend_malformed_frontmatter() {
             "malformed.md",
             "INSERTED",
             turbovault_tools::WriteMode::Prepend,
-            None,
+            Precondition::for_replace(None, true),
             "write",
         )
         .await

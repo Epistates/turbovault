@@ -1,17 +1,17 @@
 [package]
 name = "turbovault-plugin-vector"
-version.workspace = true
+# Versioned on its own, matching turbovault-vector: still settling. Published
+# only because turbovault's default-off `vector-search` feature depends on it.
+version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-# Not published yet, matching turbovault-vector: still-settling, no external
-# consumers, mounted only behind the default-off `vector-search` feature on
-# the turbovault binary.
-publish = false
+publish = true
 description = "Semantic vector search vertical for TurboVault, as a compiled-in plugin module"
+documentation = "https://docs.rs/turbovault-plugin-vector"
 readme = "README.md"
 
 [features]
