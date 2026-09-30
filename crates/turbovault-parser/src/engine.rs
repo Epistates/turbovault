@@ -331,7 +331,7 @@ impl<'a> ParseEngine<'a> {
                     if options.parse_frontmatter && !metadata_content.is_empty() {
                         // Parse YAML frontmatter
                         if let Ok(serde_json::Value::Object(map)) =
-                            yaml_serde::from_str(&metadata_content)
+                            crate::parse_frontmatter_yaml(&metadata_content)
                         {
                             result.frontmatter = Some(Frontmatter {
                                 data: map.into_iter().collect(),

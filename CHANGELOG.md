@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Release binaries carry every feature.** The prebuilt binaries were default-features only, so none had HTTP, WebSocket, TCP, SQL or plugins. They're now built with the new `release` feature (all cross-platform transports, `sql`, `vector-search`) plus `unix` off Windows.
+
+- **Compiled-in plugins are opt-in at runtime.** A plugin is mounted only when `--plugins` (or `TURBOVAULT_PLUGINS`) names it, e.g. `--plugins vector_search`, so a binary with every plugin compiled in behaves like the default build until asked. Naming a plugin the binary doesn't have stops startup. A build from source with `--features vector-search` used to mount it automatically and now needs the flag too.
+
+### Security
+
+- **Frontmatter is bounded before it's parsed.** The YAML parser's cost on nested `[`/`{` grows with the square of the depth (64k unclosed brackets took several seconds to reject), and frontmatter is parsed on every write and freshness pass, so one note could stall the server. `turbovault_parser::parse_frontmatter_yaml` refuses a block over 256 KiB or nested more than 64 deep before the parser sees it, and every frontmatter parse goes through it.
+
+### Added
+
+- **Tests for the network transports.** HTTP, WebSocket and TCP each serve a real MCP session in CI now: initialize, `tools/list`, and a tool call.
+
 ## [3.0.0] - 2026-09-27
 
 ### Removed

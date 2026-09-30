@@ -121,11 +121,13 @@
 // Core modules
 mod blocks;
 mod engine;
+mod frontmatter;
 pub mod models;
 pub mod parsers;
 mod standalone;
 
 // Main exports
+pub use frontmatter::{MAX_FRONTMATTER_BYTES, MAX_FRONTMATTER_DEPTH, parse_frontmatter_yaml};
 pub use models::TaskStatus;
 pub use parsers::Parser;
 pub use standalone::{ParseOptions, ParsedContent};

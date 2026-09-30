@@ -97,6 +97,12 @@ pub struct Args {
         action = clap::ArgAction::SetTrue
     )]
     require_read_only_tools: bool,
+
+    /// Comma-separated compiled-in plugins to enable, by ID (e.g.
+    /// `vector_search`). None are enabled unless named here, so a binary
+    /// built with every plugin behaves like one built with none by default.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_PLUGINS")]
+    plugins: Vec<String>,
 }
 
 /// Parse process arguments and run the CLI.
@@ -104,10 +110,40 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
     run(Args::parse()).await
 }
 
-/// Compiled-in plugins to mount, based on which plugin Cargo features this
-/// binary was built with. Each plugin feature is default-off and responsible
-/// for pushing its own factory here; `plugin-api` compiled in on its own,
-/// with no individual plugin feature, mounts nothing. See
+/// The compiled-in plugins to mount: those this binary was built with that
+/// `--plugins` names. A plugin compiled in but not named stays unmounted, and
+/// naming one this binary doesn't have stops startup rather than being
+/// ignored.
+#[cfg(feature = "plugin-api")]
+fn compiled_in_plugins(
+    enabled: &[String],
+) -> Result<Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>>, String> {
+    let available = available_plugins();
+    let ids: Vec<String> = available.iter().map(|p| p.descriptor().id).collect();
+    if let Some(unknown) = enabled.iter().find(|name| !ids.contains(name)) {
+        return Err(unknown_plugin_error(unknown, &ids));
+    }
+    Ok(available
+        .into_iter()
+        .filter(|plugin| enabled.contains(&plugin.descriptor().id))
+        .collect())
+}
+
+fn unknown_plugin_error(name: &str, available: &[String]) -> String {
+    if available.is_empty() {
+        format!("unknown plugin '{name}': this binary was built without any plugins")
+    } else {
+        format!(
+            "unknown plugin '{name}': this binary has {}",
+            available.join(", ")
+        )
+    }
+}
+
+/// Every plugin this binary was built with, based on which plugin Cargo
+/// features are on. Each plugin feature is default-off and responsible for
+/// pushing its own factory here; `plugin-api` compiled in on its own, with no
+/// individual plugin feature, has none. See
 /// `mounts_no_plugins_without_a_plugin_feature` below.
 #[cfg(feature = "plugin-api")]
 #[allow(
@@ -115,7 +151,7 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
     reason = "each plugin feature conditionally pushes its own entry; with none enabled this \
               is legitimately Vec::new() and nothing else, which vec![] cannot express"
 )]
-fn compiled_in_plugins() -> Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>> {
+fn available_plugins() -> Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>> {
     #[allow(unused_mut)]
     let mut plugins: Vec<std::sync::Arc<dyn turbovault_plugin_api::Plugin>> = Vec::new();
     #[cfg(feature = "vector-search")]
@@ -196,11 +232,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Create vault-agnostic server instance (no vault required at startup)
     #[cfg(feature = "plugin-api")]
-    let server = ObsidianMcpServer::new_with_plugins(compiled_in_plugins())
+    let server = ObsidianMcpServer::new_with_plugins(compiled_in_plugins(&args.plugins)?)
         .map_err(|e| format!("Failed to create MCP server: {}", e))?;
     #[cfg(not(feature = "plugin-api"))]
-    let server =
-        ObsidianMcpServer::new().map_err(|e| format!("Failed to create MCP server: {}", e))?;
+    let server = {
+        if let Some(name) = args.plugins.first() {
+            return Err(unknown_plugin_error(name, &[]).into());
+        }
+        ObsidianMcpServer::new().map_err(|e| format!("Failed to create MCP server: {}", e))?
+    };
 
     log::info!("MCP Server created (vault-agnostic mode)");
 
@@ -699,13 +739,37 @@ mod tests {
     #[cfg(all(feature = "plugin-api", not(feature = "vector-search")))]
     #[test]
     fn mounts_no_plugins_without_a_plugin_feature() {
-        assert!(compiled_in_plugins().is_empty());
+        assert!(available_plugins().is_empty());
+        assert!(compiled_in_plugins(&[]).unwrap().is_empty());
+    }
+
+    /// A release binary compiles vector search in; it stays unmounted until
+    /// `--plugins vector_search` asks for it.
+    #[cfg(feature = "vector-search")]
+    #[test]
+    fn compiled_in_plugins_mount_only_when_named() {
+        assert!(compiled_in_plugins(&[]).unwrap().is_empty());
+        let named = compiled_in_plugins(&["vector_search".to_string()]).unwrap();
+        assert_eq!(named.len(), 1);
+        let err = compiled_in_plugins(&["vector".to_string()])
+            .err()
+            .expect("an unknown plugin is an error");
+        assert!(err.contains("vector_search"), "{err}");
+    }
+
+    #[test]
+    fn plugins_flag_parses_a_list() {
+        assert!(args(&[]).plugins.is_empty());
+        assert_eq!(
+            args(&["--plugins", "vector_search,other"]).plugins,
+            vec!["vector_search".to_string(), "other".to_string()]
+        );
     }
 
     #[cfg(feature = "vector-search")]
     #[test]
     fn vector_search_feature_mounts_exactly_the_vector_search_plugin() {
-        let plugins = compiled_in_plugins();
+        let plugins = available_plugins();
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].descriptor().id, "vector_search");
     }
