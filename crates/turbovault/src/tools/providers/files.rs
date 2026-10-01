@@ -41,15 +41,6 @@ impl FileProvider {
     /// Read the contents of a note, optionally only part of it
     #[tool(
         description = "Read markdown content of a note from active vault, either whole or a selected part",
-        usage = "Use before editing, analyzing, or displaying notes. Supports all Obsidian Flavored Markdown syntax including wikilinks [[note]], embeds ![[image.png]], and block references ^block-id. Omit every optional parameter to read the whole note. To read part of a long note, pass EITHER line selectors (head_lines or tail_lines, not both) OR section selectors (heading_level, heading_equals, last_sections) - mixing the two is an error. heading_level must be 1-6 and sets which heading level delimits a section; a section runs to the next heading of the same or a higher level, so subheadings stay inside it. heading_equals matches heading text exactly, case-sensitively, without the leading # markers. Omit last_sections to get every matching section. A partial read returns no hash, so do not follow it with a whole-file write_note: use edit_note for a targeted change, or read the note again in full first.",
-        performance = "Fast (<10ms typical). A whole-file read returns path, content and a content hash for conflict detection. A partial read returns the selected content plus truncated, total_lines, and either returned_lines or sections - and deliberately no hash",
-        related = ["edit_note", "write_note", "get_backlinks"],
-        examples = [
-            "path: daily/2024-01-15.md (whole note)",
-            "path: projects/log.md, tail_lines: 40 (last 40 lines)",
-            "path: projects/log.md, heading_level: 2, last_sections: 3 (last 3 entries)",
-            "path: projects/log.md, heading_level: 2, heading_equals: 2026-08-15 (one named entry)",
-        ],
         tags = ["read"],
         read_only = true,
     )]
@@ -122,10 +113,6 @@ impl FileProvider {
     /// Write or update a note with optional mode (overwrite, append, prepend)
     #[tool(
         description = "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash (or expected_hash=\"blind\" for an intentional blind overwrite). Git-backed vaults commit the mutation atomically.",
-        usage = "Read existing notes first and pass the returned expected_hash. expected_hash accepts a hash or a sentinel (\"blind\"|\"absent\"|\"exists\"); use \"blind\" only for an intentional blind overwrite. commit_message controls the Git commit subject when using write_backend=git.",
-        performance = "Moderate (<50ms typical). Includes filesystem write and link graph update",
-        related = ["read_note", "edit_note", "create_from_template"],
-        examples = ["mode: overwrite (default)", "mode: append (add to end)", "mode: prepend (add after frontmatter)", "expected_hash: <hash from read_note>"],
         tags = ["write"],
         destructive = true,
     )]
@@ -201,10 +188,6 @@ impl FileProvider {
     /// Edit note using SEARCH/REPLACE blocks
     #[tool(
         description = "Apply targeted edits using SEARCH/REPLACE blocks (safer than full overwrite)",
-        usage = "Use for precise modifications without reading/writing entire file. Requires exact match of search text. Supports optional content hash for conflict detection and dry_run mode for preview. Returns applied changes, rejected changes, and new hash",
-        performance = "Fast (<30ms typical). More efficient than read+write cycle for small edits",
-        related = ["read_note", "write_note"],
-        examples = [],
         tags = ["write"],
         destructive = true,
     )]
@@ -250,10 +233,6 @@ impl FileProvider {
     /// Delete a note (confirmation-protected)
     #[tool(
         description = "Delete a note with confirmation, concurrency protection, and backlink safety. By default refuses when inbound links exist; use on_backlinks='rewrite-stale-callout' for an atomic delete+rewrite, or force=true to leave broken links.",
-        usage = "confirm_path must exactly match path. Pass expected_hash from read_note. Git-backed rewrite mode updates every linker in the same atomic commit.",
-        performance = "Fast (<20ms typical). Includes filesystem delete and link graph update",
-        related = ["get_backlinks", "get_broken_links", "move_note"],
-        examples = ["path: drafts/old-idea.md, confirm_path: drafts/old-idea.md"],
         tags = ["write", "delete"],
         destructive = true,
     )]
@@ -337,10 +316,6 @@ impl FileProvider {
     /// Move or rename a note
     #[tool(
         description = "Move or rename a note. `expected_hash` guards the SOURCE, `dest_expected_hash` the DESTINATION (both accept a hash or a sentinel: \"absent\"|\"exists\"|\"blind\"; dest omitted = \"absent\", the no-clobber guard). Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
-        usage = "Pass expected_hash from read_note. dest_expected_hash defaults to \"absent\" (refuse if the destination exists); pass \"blind\" to overwrite. With update_backlinks=true, a concurrent change to the source or any linker aborts the entire move with nothing committed.",
-        performance = "Fast (<20ms typical). Filesystem rename, falls back to copy+delete for cross-filesystem moves",
-        related = ["get_backlinks", "get_forward_links", "search"],
-        examples = [],
         tags = ["write"],
         destructive = true,
     )]

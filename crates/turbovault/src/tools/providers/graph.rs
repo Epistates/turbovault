@@ -28,10 +28,6 @@ impl GraphProvider {
     /// Find all notes that link to this note
     #[tool(
         description = "Find all notes that link TO this note (incoming links)",
-        usage = "Use to understand note importance in knowledge graph, discover related content, and analyze impact before deletion. Essential for bidirectional link analysis.",
-        performance = "Fast retrieval from pre-built link graph (<50ms typical)",
-        related = ["get_forward_links", "get_related_notes", "get_hub_notes"],
-        examples = [],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -59,10 +55,6 @@ impl GraphProvider {
     /// Find all notes that this note links to
     #[tool(
         description = "Find all notes that this note links TO (outgoing links)",
-        usage = "Use to understand note dependencies, validate link integrity, and explore connection patterns. Pair with get_backlinks for bidirectional link analysis.",
-        performance = "Fast retrieval from pre-built link graph (<50ms typical)",
-        related = ["get_backlinks", "get_related_notes", "get_broken_links"],
-        examples = [],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -87,10 +79,6 @@ impl GraphProvider {
     /// Find related notes (by link proximity)
     #[tool(
         description = "Find notes connected within N hops in the link graph (default 2 hops)",
-        usage = "Use to discover non-obvious relationships through graph traversal. Ideal for recommendations, cluster analysis, and exploring knowledge neighborhoods. Configurable max_hops parameter.",
-        performance = "Graph traversal speed varies by depth: 2 hops <100ms typical, 3+ hops may take longer on large vaults",
-        related = ["recommend_related", "get_hub_notes", "suggest_links"],
-        examples = [],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -121,10 +109,6 @@ impl GraphProvider {
     /// Find hub notes (highly connected)
     #[tool(
         description = "Find the top N most connected notes in the vault (default 10). Returns notes ranked by total link count (incoming + outgoing). Hub notes are central to knowledge graph structure and often represent key concepts or index pages.",
-        usage = "Identify knowledge centers, validate vault organization, discover MOCs (Maps of Content)",
-        performance = "<50ms typical, scales linearly with vault size",
-        related = ["get_centrality_ranking", "get_dead_end_notes", "explain_vault"],
-        examples = [],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -149,10 +133,6 @@ impl GraphProvider {
     /// Find dead-end notes (incoming but no outgoing)
     #[tool(
         description = "Find notes with incoming links but NO outgoing links (knowledge dead-ends). Returns list of paths with backlink counts. Dead-ends may indicate incomplete notes, missing connections, or final destination topics.",
-        usage = "Identify incomplete notes needing expansion, discover topics lacking context, prioritize linking work",
-        performance = "<100ms typical, graph traversal O(N)",
-        related = ["suggest_links", "get_hub_notes", "get_isolated_clusters"],
-        examples = [],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -175,10 +155,6 @@ impl GraphProvider {
     /// Find isolated clusters in vault
     #[tool(
         description = "Find disconnected groups of notes (subgraphs with no connections to main graph). Returns clusters as arrays of paths. Isolated clusters may represent separate projects, orphaned content, or incomplete knowledge areas.",
-        usage = "Improve vault connectivity, discover orphaned content, validate vault structure",
-        performance = "<200ms typical, uses union-find algorithm O(N)",
-        related = ["suggest_links", "get_dead_end_notes", "full_health_analysis"],
-        examples = [],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -203,10 +179,6 @@ impl GraphProvider {
     /// Quick health check (0-100 score)
     #[tool(
         description = "Perform fast health assessment of active vault returning 0-100 score",
-        usage = "Use as first diagnostic before deeper analysis. Score <60 suggests issues needing attention",
-        performance = "Fast - optimized for speed with <100ms typical response using heuristics not exhaustive analysis",
-        related = ["full_health_analysis", "get_broken_links", "detect_cycles"],
-        examples = ["quick vault check", "is my vault healthy?", "vault health score"],
         tags = ["read", "health"],
         read_only = true,
     )]
@@ -233,10 +205,6 @@ impl GraphProvider {
     /// Full health analysis with detailed report
     #[tool(
         description = "Comprehensive vault health report with detailed metrics including broken links, orphan analysis, link density, cluster analysis, and recommendations",
-        usage = "Use when quick_health_check reveals issues or before major vault refactoring. Provides actionable insights for vault improvement",
-        performance = "Slow - may take several seconds on large vaults. Significantly slower than quick_health_check due to exhaustive analysis",
-        related = ["quick_health_check", "export_health_report", "explain_vault"],
-        examples = ["detailed health analysis", "comprehensive vault check", "what are all my vault issues?"],
         tags = ["read", "health"],
         read_only = true,
     )]
@@ -268,10 +236,6 @@ impl GraphProvider {
     /// Get all broken links in vault
     #[tool(
         description = "Find all links pointing to non-existent notes with source path, target path, link text, and line number for each broken link",
-        usage = "Use to identify notes to create or links to fix. Broken links harm navigation and indicate incomplete knowledge graph",
-        performance = "Moderate - scans all notes and validates link targets, scales with vault size",
-        related = ["suggest_links", "full_health_analysis", "export_broken_links"],
-        examples = ["find broken links", "which links are broken?", "show missing note targets"],
         tags = ["read", "health"],
         read_only = true,
     )]
@@ -299,10 +263,6 @@ impl GraphProvider {
     /// Detect cycles in link graph
     #[tool(
         description = "Detect circular reference chains in the link graph returning all cycles as arrays of paths",
-        usage = "Use for graph topology analysis. Cycles aren't necessarily bad (many knowledge domains are naturally circular) but may indicate redundant structure or need for hub notes",
-        performance = "Moderate - performs graph traversal to detect cycles, scales with vault complexity and link density",
-        related = ["get_hub_notes", "full_health_analysis", "get_related_notes"],
-        examples = ["find circular links", "detect reference cycles", "A→B→C→A patterns"],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -331,10 +291,6 @@ impl GraphProvider {
     /// Provides all essential vault structure info at once: organization, health, hubs, orphans, recommendations
     #[tool(
         description = "Generate holistic vault overview in a single comprehensive call",
-        usage = "Use as comprehensive diagnostic or for presenting complete vault state. Replaces 5+ separate calls (scan + health + hubs + orphans + stats)",
-        performance = "SLOW (1-5 seconds on large vaults) - aggregates multiple analyses. Use quick_health_check for fast diagnostics",
-        related = ["get_vault_context", "full_health_analysis", "get_hub_notes", "quick_health_check"],
-        examples = ["Get complete vault status before refactoring", "Present vault health to user", "Generate comprehensive diagnostic report"],
         tags = ["read"],
         read_only = true,
     )]

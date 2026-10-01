@@ -60,10 +60,6 @@ impl ContentProvider {
     /// Get Obsidian Flavored Markdown syntax guide (tool fallback for clients without resource support)
     #[tool(
         description = "Get Obsidian Flavored Markdown syntax guide for the OFM syntax TurboVault parses, classifies, or preserves",
-        usage = "Use before writing notes to ensure correct syntax, or as reference for OFM extensions. Prefer resource obsidian://syntax/complete-guide if client supports resources",
-        performance = "Instant, returns static documentation",
-        related = ["get_ofm_quick_ref", "get_ofm_examples"],
-        examples = [],
         tags = ["read"],
         read_only = true,
     )]
@@ -93,10 +89,6 @@ impl ContentProvider {
     /// Get quick reference for Obsidian Flavored Markdown (tool fallback)
     #[tool(
         description = "Get condensed OFM cheat sheet with common patterns and best practices",
-        usage = "Use for quick syntax reminders during note writing. More concise than full guide. Prefer resource obsidian://syntax/quick-ref if client supports resources",
-        performance = "Instant, returns static documentation",
-        related = ["get_ofm_syntax_guide", "get_ofm_examples"],
-        examples = [],
         tags = ["read"],
         read_only = true,
     )]
@@ -125,10 +117,6 @@ impl ContentProvider {
     /// Get example note demonstrating all OFM features (tool fallback)
     #[tool(
         description = "Get comprehensive example note demonstrating ALL OFM features with real-world patterns",
-        usage = "Use as reference when creating complex notes or learning OFM syntax by example. Shows daily notes, Zettelkasten, and MOC patterns. Prefer resource obsidian://examples/sample-note if client supports resources",
-        performance = "Instant, returns static example note",
-        related = ["get_ofm_syntax_guide", "get_ofm_quick_ref"],
-        examples = [],
         tags = ["read"],
         read_only = true,
     )]

@@ -4,6 +4,7 @@
 //! without starting a network server.
 
 use turbomcp::{McpHandler, RequestContext, VisibilityLayer};
+use turbomcp_core::ErrorKind;
 use turbovault::ObsidianMcpServer;
 use turbovault::tool_visibility::ToolVisibilitySettings;
 
@@ -129,16 +130,14 @@ async fn visibility_layer_disabled_name_blocks_tool() {
     // Not in list.
     assert!(!tool_names(&layer).contains(&"delete_note".to_string()));
 
-    // Direct call is rejected with ToolNotFound (-32001).
+    // Direct call is rejected as an unknown tool. Checked by kind: since
+    // TurboMCP 3.5 that is `-32602` on the wire, a code it shares with invalid
+    // arguments.
     let err = layer
         .call_tool("delete_note", serde_json::json!({"path": "x.md"}), &ctx())
         .await
         .expect_err("disabled tool must not be callable");
-    assert_eq!(
-        err.jsonrpc_code(),
-        -32001,
-        "expected ToolNotFound error code"
-    );
+    assert_eq!(err.kind, ErrorKind::ToolNotFound, "got: {err}");
 }
 
 #[tokio::test]
@@ -162,11 +161,11 @@ async fn visibility_layer_hidden_name_omits_from_list_but_allows_call() {
     match result {
         Ok(_) => {}
         Err(e) => {
-            // Any error except ToolNotFound is acceptable; ToolNotFound (-32001) would
+            // Any error except ToolNotFound is acceptable; ToolNotFound would
             // mean the layer is incorrectly blocking a merely-hidden tool.
             assert_ne!(
-                e.jsonrpc_code(),
-                -32001,
+                e.kind,
+                ErrorKind::ToolNotFound,
                 "hidden tool must not return ToolNotFound; got: {e}"
             );
         }
@@ -198,7 +197,7 @@ async fn visibility_layer_disabled_tags_blocks_all_tagged_tools() {
         .call_tool("delete_note", serde_json::json!({"path": "x.md"}), &ctx())
         .await
         .expect_err("tag-disabled tool must not be callable");
-    assert_eq!(err.jsonrpc_code(), -32001);
+    assert_eq!(err.kind, ErrorKind::ToolNotFound, "got: {err}");
 }
 
 #[tokio::test]

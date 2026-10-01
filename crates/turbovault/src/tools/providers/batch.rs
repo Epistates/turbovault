@@ -28,14 +28,6 @@ impl BatchProvider {
     /// Execute a validated batch of file operations.
     #[tool(
         description = "Execute multiple file operations. With write_backend=git, the complete batch is one atomic commit with per-path CAS preconditions: every operation applies or none do.",
-        usage = "Use the Git backend for all-or-nothing batches and cross-process concurrency safety. Pass expected_hash on guarded operations and an optional commit_message. The direct backend remains sequential and refuses Git-only operations or batch CAS preconditions.",
-        performance = "Git batches build one isolated tree and advance one ref regardless of operation count.",
-        related = ["write_note", "delete_note", "move_note"],
-        examples = [
-            r#"[{"type":"write","path":"note1.md","content":"..."}]"#,
-            r#"[{"type":"delete","path":"old.md"},{"type":"write","path":"new.md","content":"..."}]"#,
-            r#"[{"type":"move","from":"a.md","to":"b.md"},{"type":"write","path":"index.md","content":"..."}]"#
-        ],
         tags = ["write", "batch"],
         destructive = true,
     )]

@@ -28,10 +28,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Compare two notes side-by-side showing unified diff, line-level and word-level changes, and similarity score",
-        usage = "Use to understand differences between two notes, find duplicate content, or review changes. Returns unified diff format with added/removed/changed line counts and word-level inline changes",
-        performance = "Fast (<50ms typical). Uses line-level then word-level diff for changed lines",
-        related = ["read_note", "find_duplicates", "compare_notes"],
-        examples = ["diff_notes(left='projects/plan-v1.md', right='projects/plan-v2.md')"],
         tags = ["read"],
         read_only = true,
     )]
@@ -55,10 +51,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Compare current note with a previous version from the audit trail",
-        usage = "Use to see what changed in a note over time. Specify operation_id from audit_log to identify the version to compare against",
-        performance = "Fast (<50ms for diff, plus audit snapshot read time)",
-        related = ["audit_log", "rollback_preview", "diff_notes"],
-        examples = ["diff_note_version(path='notes/todo.md', operation_id='abc-123')"],
         tags = ["read", "audit"],
         read_only = true,
     )]
@@ -128,10 +120,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Evaluate note quality across readability, structure, completeness, and staleness dimensions (0-100 score per dimension plus composite)",
-        usage = "Use to assess individual note quality and get specific improvement recommendations. Examines heading hierarchy, link density, vocabulary diversity, metadata completeness, and modification recency",
-        performance = "Fast (<100ms per note). Parses content and checks graph for backlinks",
-        related = ["vault_quality_report", "find_stale_notes", "full_health_analysis"],
-        examples = ["evaluate_note_quality(path='projects/research.md')"],
         tags = ["read", "health"],
         read_only = true,
     )]
@@ -152,10 +140,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Generate vault-wide quality report with score distribution, dimension averages, lowest/highest quality notes, and recommendations",
-        usage = "Use for vault-wide quality assessment. Identifies notes needing improvement and provides aggregate metrics across readability, structure, completeness, and staleness",
-        performance = "Moderate to slow (500ms-5s depending on vault size). Evaluates all notes",
-        related = ["evaluate_note_quality", "find_stale_notes", "full_health_analysis", "explain_vault"],
-        examples = ["vault_quality_report()", "vault_quality_report(bottom_n=20)"],
         tags = ["read", "health"],
         read_only = true,
     )]
@@ -180,10 +164,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Extract grounding primitives for a note — the raw material an external LLM judge needs to score hallucination/contradiction/redundancy: candidate factual claims from the prose, declared citations (# Citations), structural signals (Schema/Examples sections), and an 'uncited' flag (makes claims but cites nothing). TurboVault does NOT score grounding itself; it surfaces the data deterministically",
-        usage = "Use to feed an LLM-judge grounding evaluation: pass the returned `claims` + `citations` (and the cited sources) to a judge to score how many claims are supported. The `uncited` flag marks hallucination-risk notes. Claims are heuristic sentence-level extractions, not semantic parses",
-        performance = "Fast (<50ms typical) — parses one note",
-        related = ["find_ungrounded_notes", "evaluate_note_quality", "okf_validate"],
-        examples = ["analyze_note_grounding(path=\"tables/orders.md\")"],
         tags = ["read", "quality", "okf"],
         read_only = true,
     )]
@@ -204,10 +184,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Scan the vault for hallucination-risk notes: notes that make factual claims in prose but declare no citations (# Citations). Returns them sorted by claim count (most claims first) — the notes most worth grounding review or an LLM-judge pass",
-        usage = "Use to triage a knowledge base for ungrounded content before publishing, or to prioritize which notes to send to a grounding judge. `limit` caps the returned list (default 50)",
-        performance = "Moderate (scans and parses all notes; proportional to vault size)",
-        related = ["analyze_note_grounding", "vault_quality_report", "okf_validate"],
-        examples = ["find_ungrounded_notes()", "find_ungrounded_notes(limit=20)"],
         tags = ["read", "quality", "okf"],
         read_only = true,
     )]
@@ -235,10 +211,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Validate the vault as an Open Knowledge Format (OKF) bundle: checks every note for OKF v0.1 conformance (parseable frontmatter with a non-empty `type`) and surfaces each concept's OKF metadata (type, title, description, resource, timestamp, citation count) plus the bundle's type vocabulary. Reports non-conformant files for use as a CI gate",
-        usage = "Use to check whether a vault is a conformant OKF bundle, to discover the set of concept `type` values in use, or as a pre-publish/CI gate (non_conformant > 0 means the bundle is not conformant). Pass `subtree` (a vault-relative directory) to scope the check. index.md/log.md are treated as reserved files and exempt from the `type` requirement",
-        performance = "Moderate (scans and parses all notes; proportional to vault size)",
-        related = ["generate_index", "inspect_frontmatter", "query_metadata", "explain_vault"],
-        examples = ["okf_validate()", "okf_validate(subtree=\"tables\")"],
         tags = ["read", "okf", "frontmatter"],
         read_only = true,
     )]
@@ -267,10 +239,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Generate or refresh OKF index.md files for progressive disclosure: each indexed directory gets an index.md listing its concept notes (with their frontmatter descriptions) and subdirectories, so agents and humans can navigate the bundle one level at a time instead of loading everything. Idempotent — unchanged indexes are not rewritten",
-        usage = "Use after adding or editing notes to keep navigation indexes current, or to bootstrap progressive disclosure for an OKF bundle. `directory` (vault-relative, default = bundle root) scopes which directory to index; set `recursive=true` to index every subdirectory; set `dry_run=true` to preview what would be written without changing files. `commit_message` overrides the auto-derived subject for every index this call writes; required on write_backend=git vaults with git.require_commit_message=true",
-        performance = "Moderate (parses concept notes in the targeted directories to read titles/descriptions)",
-        related = ["okf_validate", "explain_vault", "write_note"],
-        examples = ["generate_index(recursive=true)", "generate_index(directory=\"tables\")", "generate_index(recursive=true, dry_run=true)"],
         tags = ["write", "okf"],
     )]
     async fn generate_index(
@@ -338,13 +306,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Append an entry to an OKF log.md update history (spec §7). Files the entry under a `## YYYY-MM-DD` date section, newest-first — a new date becomes the top section, an existing date gains another bullet. Creates log.md (with a title) if absent",
-        usage = "Use to record a change to a directory's knowledge (e.g. after enriching or restructuring notes). `directory` (vault-relative, default = bundle root) selects which log.md; `kind` is the leading bold word (Update/Creation/Deprecation, default Update); `date` is ISO YYYY-MM-DD (default today). commit_message controls the Git commit subject when using write_backend=git",
-        performance = "Fast (<20ms) — reads and rewrites one log.md",
-        related = ["generate_index", "okf_validate"],
-        examples = [
-            "append_log_entry(text=\"Added the orders table reference.\")",
-            "append_log_entry(directory=\"tables\", kind=\"Creation\", text=\"Established the tables index.\", date=\"2026-06-13\")"
-        ],
         tags = ["write", "okf"],
     )]
     async fn append_log_entry(
@@ -389,10 +350,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Render the vault's concept graph as a single self-contained HTML file: a force-directed graph of every note, a detail panel with the rendered markdown body and 'cited by' backlinks, plus type filter and search. The bundle is embedded as JSON; the graph/markdown libraries load from a CDN. Shareable as a static artifact — open in any browser, no backend. Covers both OKF cross-links and Obsidian wikilinks",
-        usage = "Use to produce a browsable/shareable visualization of a vault or OKF bundle. Writes the HTML to `output` (vault-relative, default `viz.html` at the bundle root) and returns node/edge counts and the file size. `name` overrides the header title (defaults to the vault folder name). commit_message controls the Git commit subject when using write_backend=git",
-        performance = "Moderate (parses every note to embed titles/bodies; proportional to vault size)",
-        related = ["explain_vault", "get_centrality_ranking", "okf_validate"],
-        examples = ["visualize()", "visualize(output=\"reports/graph.html\", name=\"Sales Bundle\")"],
         tags = ["write", "export", "okf"],
     )]
     async fn visualize(
@@ -439,10 +396,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Find notes that have not been updated recently, sorted by staleness (most stale first)",
-        usage = "Use to identify neglected content that may need review, updating, or archiving. Configurable threshold in days and result limit",
-        performance = "Moderate (200ms-2s depending on vault size). Checks file modification times",
-        related = ["evaluate_note_quality", "vault_quality_report", "query_metadata"],
-        examples = ["find_stale_notes(threshold_days=90)", "find_stale_notes(threshold_days=30, limit=20)"],
         tags = ["read", "health"],
         read_only = true,
     )]
@@ -474,10 +427,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Find notes semantically similar to a query using TF-IDF cosine similarity (finds conceptual matches beyond exact keyword overlap)",
-        usage = "Use when keyword search returns too few results or you want conceptual similarity. Returns similarity scores (0-1) and shared terms for explainability. More sophisticated than keyword search",
-        performance = "Moderate (<500ms for 10k notes). Builds TF-IDF vectors on first call, cached for subsequent queries",
-        related = ["search", "find_similar_notes", "recommend_related", "advanced_search"],
-        examples = ["semantic_search(query='distributed systems architecture')", "semantic_search(query='machine learning concepts', limit=20)"],
         tags = ["read", "search", "semantic"],
         read_only = true,
     )]
@@ -504,10 +453,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Find notes most similar in content to a specific note using TF-IDF cosine similarity",
-        usage = "Use to discover related notes for linking, find candidates for merging, or identify thematic clusters. More content-aware than graph-based get_related_notes",
-        performance = "Moderate (<500ms for 10k notes). Uses pre-built TF-IDF vectors",
-        related = ["semantic_search", "recommend_related", "get_related_notes", "find_duplicates"],
-        examples = ["find_similar_notes(path='projects/research.md')", "find_similar_notes(path='ideas/concept.md', limit=20)"],
         tags = ["read", "search", "semantic"],
         read_only = true,
     )]
@@ -536,10 +481,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Find near-duplicate notes across vault using SimHash fingerprinting and TF-IDF cosine similarity verification",
-        usage = "Use to identify redundant content, merge candidates, or detect copied notes. Default threshold 0.8 catches close duplicates; lower to 0.6 for looser matching. Two-stage: fast SimHash filtering then precise verification",
-        performance = "Moderate (<2s for 10k notes). SimHash O(N^2) candidate filtering then TF-IDF verification",
-        related = ["compare_notes", "find_similar_notes", "diff_notes"],
-        examples = ["find_duplicates()", "find_duplicates(threshold=0.6, limit=50)"],
         tags = ["read", "search", "semantic"],
         read_only = true,
     )]
@@ -569,10 +510,6 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Compare two specific notes showing similarity score, shared terms, diff summary, and actionable recommendation",
-        usage = "Use to assess whether two notes should be merged, linked, or kept separate. Returns similarity score (0-1), shared vocabulary, line-level diff statistics, and a recommendation",
-        performance = "Moderate (<500ms). Builds TF-IDF vectors and computes diff",
-        related = ["find_duplicates", "diff_notes", "find_similar_notes"],
-        examples = ["compare_notes(left='projects/plan-v1.md', right='projects/plan-v2.md')"],
         tags = ["read", "semantic"],
         read_only = true,
     )]

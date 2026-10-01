@@ -28,10 +28,6 @@ impl TemplateProvider {
     /// List available templates
     #[tool(
         description = "List all available note templates in the active vault",
-        usage = "Use to discover available templates before creating notes from templates",
-        performance = "Instant (<5ms) - reads from in-memory template registry",
-        related = ["get_template", "create_from_template", "find_notes_from_template"],
-        examples = ["List all templates to find daily note template", "Check template fields before creation"],
         tags = ["read", "template"],
         read_only = true,
     )]
@@ -51,10 +47,6 @@ impl TemplateProvider {
     /// Get template details
     #[tool(
         description = "Get detailed information about a specific template including fields and preview",
-        usage = "Use to understand template structure and required fields before creating notes",
-        performance = "Instant (<5ms) - template lookup from in-memory registry",
-        related = ["list_templates", "create_from_template", "find_notes_from_template"],
-        examples = ["Get daily-note template to see required fields", "Preview meeting-notes template structure"],
         tags = ["read", "template"],
         read_only = true,
     )]
@@ -78,10 +70,6 @@ impl TemplateProvider {
     /// Create note from template
     #[tool(
         description = "Create a new note from a template with field substitution and frontmatter",
-        usage = "Use for consistent note creation workflows with predefined structure and metadata",
-        performance = "Fast (10-50ms) - template rendering + file write with directory creation",
-        related = ["get_template", "list_templates", "write_note", "find_notes_from_template"],
-        examples = ["Create daily note with date=2024-01-15", "Create meeting note with title and attendees", "Generate project note from template"],
         tags = ["write", "template"],
         destructive = true,
     )]
@@ -143,10 +131,6 @@ impl TemplateProvider {
     /// Find notes created from template
     #[tool(
         description = "Find all notes created from a specific template via frontmatter tracking",
-        usage = "Use to audit template usage, bulk update template-based notes, or analyze note patterns",
-        performance = "Moderate (50-200ms) - scans vault frontmatter for template_id metadata",
-        related = ["query_metadata", "get_template", "advanced_search", "create_from_template"],
-        examples = ["Find all daily notes from template", "List meeting notes to bulk update", "Audit project note usage"],
         tags = ["read", "template"],
         read_only = true,
     )]

@@ -260,7 +260,7 @@ fn plugin_error(error: PluginError) -> McpError {
 /// Map a plugin failure raised while reading a resource.
 ///
 /// A missing resource is a resource error, not a bad request: a client that
-/// asked for a URI the plugin no longer serves needs `-32004` to recognize it.
+/// asked for a URI the plugin no longer serves needs `-32002` to recognize it.
 #[cfg(feature = "plugin-api")]
 fn plugin_resource_error(uri: &str, error: PluginError) -> McpError {
     match error.code {
@@ -1346,7 +1346,7 @@ mod tests {
             .call_tool("round_trip", serde_json::json!({}), &ctx)
             .await
             .expect_err("unprefixed plugin tool must not be public");
-        assert_eq!(error.jsonrpc_code(), -32001);
+        assert_eq!(error.kind, turbomcp_core::ErrorKind::ToolNotFound);
 
         let conflict = server
             .call_tool(
@@ -1656,9 +1656,11 @@ mod tests {
                 .call_tool(&tool.name, serde_json::json!({}), &ctx)
                 .await
             {
+                // By kind, not code: since TurboMCP 3.5 an unknown tool is
+                // `-32602`, which the empty arguments here can also produce.
                 assert_ne!(
-                    error.jsonrpc_code(),
-                    -32001,
+                    error.kind,
+                    turbomcp_core::ErrorKind::ToolNotFound,
                     "advertised tool was not routable: {}",
                     tool.name
                 );
@@ -1675,13 +1677,16 @@ mod tests {
             .call_tool("files_read_note", serde_json::json!({"path": "x.md"}), &ctx)
             .await
             .expect_err("internal tool route must stay private");
-        assert_eq!(tool_error.jsonrpc_code(), -32001);
+        assert_eq!(tool_error.kind, turbomcp_core::ErrorKind::ToolNotFound);
 
         let resource_error = server
             .read_resource("content://obsidian://syntax/quick-ref", &ctx)
             .await
             .expect_err("internal resource route must stay private");
-        assert_eq!(resource_error.jsonrpc_code(), -32004);
+        assert_eq!(
+            resource_error.kind,
+            turbomcp_core::ErrorKind::ResourceNotFound
+        );
     }
 
     #[tokio::test]
