@@ -185,22 +185,24 @@ impl PluginProviderAdapter {
         })
     }
 
-    /// Republish every content URI inside this plugin's namespace.
+    /// Leave every content URI local, for the composite to publish.
     ///
-    /// A plugin works entirely in local paths — it never spells its own
-    /// namespace, just as it never spells its tool prefix — so the URIs it
-    /// returns have to be lifted back into the public space the client asked
-    /// against. Doing it here also means a plugin cannot serve content under a
-    /// URI belonging to the core vault or to another plugin.
-    fn namespace_contents(&self, mut result: ResourceResult) -> ResourceResult {
+    /// A plugin works in local paths and never spells its own namespace, just
+    /// as it never spells its tool prefix. The composite this provider is
+    /// mounted in prefixes every URI a read returns with the mount's scheme
+    /// (TurboMCP 3.5 and later), which lifts it into the public space the
+    /// client asked against and keeps a plugin from serving content under the
+    /// core vault's URIs or another plugin's. A plugin that spelled its own
+    /// scheme anyway has it stripped here, so the composite adds it once.
+    fn localize_contents(&self, mut result: ResourceResult) -> ResourceResult {
         let scheme = format!("{}://", self.descriptor.id);
         for contents in &mut result.contents {
             let uri = match contents {
                 turbomcp_types::ResourceContents::Text(text) => &mut text.uri,
                 turbomcp_types::ResourceContents::Blob(blob) => &mut blob.uri,
             };
-            if !uri.starts_with(&scheme) {
-                *uri = format!("{scheme}{uri}");
+            if let Some(local) = uri.strip_prefix(&scheme) {
+                *uri = local.to_string();
             }
         }
         result
@@ -350,7 +352,7 @@ impl McpHandler for PluginProviderAdapter {
                 self.provider.read_resource(uri, context),
             )
             .await
-            .map(|result| self.namespace_contents(result))
+            .map(|result| self.localize_contents(result))
             .map_err(|error| plugin_resource_error(uri, error))
         }
     }

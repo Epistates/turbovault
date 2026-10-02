@@ -80,71 +80,18 @@ async fn http_serves_an_mcp_session() {
     assert_session_works(&client).await;
 }
 
-/// TCP is newline-delimited JSON-RPC, driven here with a plain socket:
-/// turbomcp-client 3.4.0's `connect_tcp` sends `initialize` before its
-/// connection task has registered the socket, so it fails with "No active
-/// TCP connections" against any server.
 #[cfg(feature = "tcp")]
 #[tokio::test]
 async fn tcp_serves_an_mcp_session() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
     let addr = format!("127.0.0.1:{}", free_port());
     serve(turbomcp::Transport::tcp(&addr));
 
-    let stream = connect_when_ready(|| {
+    let client = connect_when_ready(|| {
         let addr = addr.clone();
-        async move { tokio::net::TcpStream::connect(addr).await.ok() }
+        async move { turbomcp_client::Client::connect_tcp(addr).await.ok() }
     })
     .await;
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-
-    let mut request = async |message: serde_json::Value| -> Option<serde_json::Value> {
-        write
-            .write_all(format!("{message}\n").as_bytes())
-            .await
-            .expect("write");
-        message.get("id")?;
-        let line = tokio::time::timeout(Duration::from_secs(10), lines.next_line())
-            .await
-            .expect("reply within 10s")
-            .expect("read")
-            .expect("a reply line");
-        Some(serde_json::from_str(&line).expect("JSON-RPC reply"))
-    };
-
-    let init = request(serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-06-18",
-            "capabilities": {},
-            "clientInfo": {"name": "tcp-test", "version": "0"}
-        }
-    }))
-    .await
-    .expect("initialize reply");
-    assert!(init.get("result").is_some(), "{init}");
-    request(serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).await;
-
-    let list = request(serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
-        .await
-        .expect("tools/list reply");
-    let names: Vec<&str> = list["result"]["tools"]
-        .as_array()
-        .expect("tools array")
-        .iter()
-        .filter_map(|tool| tool["name"].as_str())
-        .collect();
-    assert!(names.contains(&"read_note"), "{names:?}");
-
-    let call = request(serde_json::json!({
-        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {"name": "list_vaults", "arguments": {}}
-    }))
-    .await
-    .expect("tools/call reply");
-    assert_ne!(call["result"]["isError"], serde_json::json!(true), "{call}");
+    assert_session_works(&client).await;
 }
 
 #[cfg(feature = "websocket")]

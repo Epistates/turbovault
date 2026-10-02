@@ -230,3 +230,29 @@ async fn visibility_layer_require_read_only_hides_write_tools() {
         "delete_note must be hidden under require_read_only"
     );
 }
+
+/// `write_note` dropped `force` in 3.0, and the changelog promised a client
+/// still sending it an error rather than a silent no-op. Until TurboMCP 3.5
+/// refused arguments outside a tool's schema, `force` was silently ignored.
+#[tokio::test]
+async fn write_note_refuses_the_retired_force_argument() {
+    let server = make_server();
+    let result = server
+        .call_tool(
+            "write_note",
+            serde_json::json!({"path": "x.md", "content": "body", "force": true}),
+            &ctx(),
+        )
+        .await;
+    let message = match result {
+        Err(error) => error.to_string(),
+        Ok(tool_result) => {
+            assert_eq!(tool_result.is_error, Some(true), "{tool_result:?}");
+            format!("{tool_result:?}")
+        }
+    };
+    assert!(
+        message.contains("force"),
+        "the error should name `force`: {message}"
+    );
+}
