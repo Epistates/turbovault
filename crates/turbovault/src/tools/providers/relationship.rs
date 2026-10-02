@@ -28,14 +28,6 @@ impl RelationshipProvider {
     /// Suggest files to link
     #[tool(
         description = "AI-powered link suggestions for a note (returns top N candidates with reasoning)",
-        usage = "Use to improve vault connectivity and discover non-obvious relationships. Analyzes content similarity, link patterns, and graph structure. ML-based, slower than simple queries.",
-        performance = "200ms-2s depending on vault size. Uses TF-IDF + graph features. Consider limit parameter for faster results.",
-        related = ["recommend_related", "get_dead_end_notes", "get_related_notes"],
-        examples = [
-            "file: daily/2024-01-15.md, limit: 5",
-            "file: projects/research.md, limit: 10",
-            "file: index.md (default limit: 5)"
-        ],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -66,14 +58,6 @@ impl RelationshipProvider {
     /// Get link strength between two files
     #[tool(
         description = "Calculate connection strength between two notes (0.0-1.0 score based on multiple factors)",
-        usage = "Use to validate relationship importance or prioritize link maintenance. Considers direct links, shared links, content similarity, and co-citation.",
-        performance = "Fast (<50ms typical), cached graph traversal.",
-        related = ["suggest_links", "get_related_notes", "recommend_related"],
-        examples = [
-            "source: index.md, target: concepts/foo.md",
-            "source: daily/2024-01-15.md, target: projects/research.md",
-            "source: MOC.md, target: archive/old-note.md"
-        ],
         tags = ["read", "graph"],
         read_only = true,
     )]
@@ -102,14 +86,6 @@ impl RelationshipProvider {
     /// Get centrality ranking
     #[tool(
         description = "Rank all notes by graph centrality metrics (betweenness, closeness, eigenvector)",
-        usage = "Use for identifying key notes beyond simple link counts. Betweenness identifies bridge notes, closeness finds accessible notes, eigenvector reveals influence. More sophisticated than get_hub_notes.",
-        performance = "Computationally expensive on large vaults. O(V³) for betweenness. May take several seconds for >1000 notes.",
-        related = ["get_hub_notes", "explain_vault", "get_link_strength"],
-        examples = [
-            "Returns all notes ranked by betweenness (bridge importance)",
-            "Returns all notes ranked by closeness (accessibility)",
-            "Returns all notes ranked by eigenvector (influence)"
-        ],
         tags = ["read", "graph"],
         read_only = true,
     )]

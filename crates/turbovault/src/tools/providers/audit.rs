@@ -27,10 +27,6 @@ impl AuditProvider {
 
     #[tool(
         description = "View operation history for the active vault with optional filters by path, operation type (CREATE/UPDATE/DELETE/MOVE), and result limit",
-        usage = "Use to review what changed in the vault, when, and get operation IDs for rollback. Returns chronological entries (newest first) with operation IDs, timestamps, paths, and content hashes",
-        performance = "Fast (<100ms typical). Reads from append-only JSONL log file",
-        related = ["rollback_note", "rollback_preview", "audit_stats", "diff_note_version"],
-        examples = ["audit_log()", "audit_log(path='projects/', limit=20)", "audit_log(operation='DELETE')"],
         tags = ["read", "audit"],
         read_only = true,
     )]
@@ -81,10 +77,6 @@ impl AuditProvider {
 
     #[tool(
         description = "Preview what a rollback would change without applying it (dry run). Shows unified diff between current content and rollback target",
-        usage = "Always use before rollback_note to verify the change. Returns whether the rollback would create, delete, or modify the file, plus a diff preview",
-        performance = "Fast (<50ms). Read-only operation",
-        related = ["rollback_note", "audit_log", "diff_note_version"],
-        examples = ["rollback_preview(operation_id='abc-123-def-456')"],
         tags = ["read", "audit"],
         read_only = true,
     )]
@@ -113,10 +105,6 @@ impl AuditProvider {
 
     #[tool(
         description = "Restore a note to its state before a specific operation (identified by operation_id from audit_log)",
-        usage = "Use to undo unwanted changes. The rollback itself is recorded in the audit trail. Use rollback_preview first to verify. Cannot roll back MOVE or ROLLBACK operations",
-        performance = "Moderate (<100ms). Reads snapshot, writes file atomically, records new audit entry",
-        related = ["rollback_preview", "audit_log", "diff_note_version"],
-        examples = ["rollback_note(operation_id='abc-123-def-456')"],
         tags = ["write", "audit"],
         destructive = true,
     )]
@@ -164,10 +152,6 @@ impl AuditProvider {
 
     #[tool(
         description = "Get audit trail statistics including operation counts by type, total snapshot storage used, and time range of recorded operations",
-        usage = "Use for vault auditing overview. Shows operation breakdown (CREATE/UPDATE/DELETE/MOVE) and total snapshot disk usage",
-        performance = "Fast (<50ms). Aggregates from log file",
-        related = ["audit_log", "explain_vault", "vault_quality_report"],
-        examples = ["audit_stats()"],
         tags = ["read", "audit"],
         read_only = true,
     )]

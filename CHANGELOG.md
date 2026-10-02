@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **TurboMCP 3.6.0** (from 3.4.0). What a client of TurboVault will notice:
+  - **Arguments a tool doesn't take are refused.** They were silently ignored. This is what finally makes good on 3.0.0's note that `write_note` with the retired `force` gets an error; until now it was ignored, and a test holds it to that now.
+  - **Error codes follow the MCP specification.** An unknown tool is `-32602` (was `-32001`) and a missing resource `-32002` (was `-32004`). The error kind still travels in `_meta` under `io.turbomcp/errorKind`.
+  - **A missing required parameter is `-32602` naming it**, where `tools/call`, `resources/read` and `prompts/get` used to substitute an empty string and report "not found".
+  - **The TCP transport works with the TurboMCP client.** `Client::connect_tcp` failed against every server in 3.4 (the fix is upstream, [turbomcp#60](https://github.com/Epistates/turbomcp/pull/60)), and the TCP transport test uses it again.
+
+  Plugin resource URIs are unchanged: TurboMCP's composite now namespaces what a read returns, so TurboVault leaves a plugin's URIs local instead of namespacing them a second time. The tool attributes `usage`, `performance`, `related` and `examples` are gone from TurboVault's tools; TurboMCP 3.4 ignored them (their text never reached a client) and 3.5 rejects them.
+
 ## [3.1.0] - 2026-09-30
 
 ### Added

@@ -28,10 +28,6 @@ impl ExportProvider {
     /// Export health report as JSON or CSV
     #[tool(
         description = "Export vault health analysis as structured data",
-        usage = "Use for external analysis, reporting, or archiving health metrics over time",
-        performance = "Fast, <100ms typical",
-        related = ["full_health_analysis", "export_analysis_report", "quick_health_check"],
-        examples = ["format: json", "format: csv"],
         tags = ["read", "export"],
         read_only = true,
     )]
@@ -56,10 +52,6 @@ impl ExportProvider {
     /// Export broken links as JSON or CSV
     #[tool(
         description = "Export broken links report as structured data",
-        usage = "Use for bulk link fixing workflows or external tooling integration",
-        performance = "Fast, <100ms typical",
-        related = ["get_broken_links", "export_health_report", "full_health_analysis"],
-        examples = ["format: json", "format: csv"],
         tags = ["read", "export"],
         read_only = true,
     )]
@@ -84,10 +76,6 @@ impl ExportProvider {
     /// Export vault statistics as JSON or CSV
     #[tool(
         description = "Export comprehensive vault statistics as structured data",
-        usage = "Use for analytics dashboards, vault growth tracking, or external reporting",
-        performance = "Fast, <100ms typical",
-        related = ["quick_health_check", "export_analysis_report", "explain_vault"],
-        examples = ["format: json", "format: csv"],
         tags = ["read", "export"],
         read_only = true,
     )]
@@ -112,10 +100,6 @@ impl ExportProvider {
     /// Export full analysis report
     #[tool(
         description = "Export comprehensive vault analysis combining health, stats, links, and clusters",
-        usage = "Use for full vault audits or migration preparation when complete data export is needed",
-        performance = "Slow on large vaults (1-5s for 10k+ notes), combines multiple analyses",
-        related = ["full_health_analysis", "export_vault_stats", "export_health_report"],
-        examples = ["format: json", "format: csv"],
         tags = ["read", "export"],
         read_only = true,
     )]

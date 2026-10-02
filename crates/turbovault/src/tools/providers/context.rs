@@ -28,10 +28,6 @@ impl ContextProvider {
     /// Get comprehensive vault context in a single call (LLMX: replaces 4+ separate calls)
     #[tool(
         description = "Get complete vault context (vaults, stats, capabilities, markdown dialect) in a single discovery call",
-        usage = "Use as first call after connecting to understand server state and capabilities. Essential for initial orientation",
-        performance = "Fast (<10ms typical), no filesystem operations if no active vault",
-        related = ["explain_vault", "list_vaults", "quick_health_check"],
-        examples = ["Check available vaults", "Verify server readiness", "Get OFM syntax resources"],
         tags = ["read"],
         read_only = true,
     )]

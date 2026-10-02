@@ -58,8 +58,6 @@ impl Deref for FanoutProvider {
 impl FanoutProvider {
     #[tool(
         description = "Open an isolated Git worktree for parallel agent writes. Fanout provides isolation, while batch_execute provides all-or-nothing multi-file atomicity.",
-        usage = "Requires write_backend=git. Switch agents to the returned fanout_vault, then call commit_fanout or abandon_fanout.",
-        related = ["commit_fanout", "abandon_fanout", "batch_execute", "set_active_vault"],
         tags = ["write", "git"],
         destructive = true,
     )]
@@ -138,8 +136,6 @@ impl FanoutProvider {
 
     #[tool(
         description = "Merge the active fanout back into its base vault and clean up the scratch worktree.",
-        usage = "Call with either the base or fanout vault active. merge_strategy overrides the vault's Git setting.",
-        related = ["begin_fanout", "abandon_fanout", "batch_execute"],
         tags = ["write", "git"],
         destructive = true,
     )]
@@ -196,8 +192,6 @@ impl FanoutProvider {
 
     #[tool(
         description = "Discard the active fanout and remove its worktree without changing the base vault.",
-        usage = "Use when parallel work should not be merged. Safe when no fanout is active.",
-        related = ["begin_fanout", "commit_fanout"],
         tags = ["write", "git"],
         destructive = true,
     )]
@@ -241,8 +235,6 @@ impl FanoutProvider {
 
     #[tool(
         description = "List orphan fanout worktrees left by interrupted server sessions.",
-        usage = "Diagnostic only; this tool never mutates Git state.",
-        related = ["begin_fanout", "abandon_fanout"],
         tags = ["read", "git"],
         read_only = true,
     )]

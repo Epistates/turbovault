@@ -89,7 +89,7 @@ async fn assert_protected(temp: &tempfile::TempDir, server: &ObsidianMcpServer, 
         let write = server
             .call_tool(
                 "write_note",
-                serde_json::json!({"path": path, "content": "payload", "force": true}),
+                serde_json::json!({"path": path, "content": "payload"}),
                 &ctx,
             )
             .await;
@@ -118,7 +118,6 @@ async fn assert_protected(temp: &tempfile::TempDir, server: &ObsidianMcpServer, 
             serde_json::json!({
                 "path": "notes/ordinary.md",
                 "content": "# Ordinary",
-                "force": true,
             }),
             &ctx,
         )

@@ -185,22 +185,24 @@ impl PluginProviderAdapter {
         })
     }
 
-    /// Republish every content URI inside this plugin's namespace.
+    /// Leave every content URI local, for the composite to publish.
     ///
-    /// A plugin works entirely in local paths — it never spells its own
-    /// namespace, just as it never spells its tool prefix — so the URIs it
-    /// returns have to be lifted back into the public space the client asked
-    /// against. Doing it here also means a plugin cannot serve content under a
-    /// URI belonging to the core vault or to another plugin.
-    fn namespace_contents(&self, mut result: ResourceResult) -> ResourceResult {
+    /// A plugin works in local paths and never spells its own namespace, just
+    /// as it never spells its tool prefix. The composite this provider is
+    /// mounted in prefixes every URI a read returns with the mount's scheme
+    /// (TurboMCP 3.5 and later), which lifts it into the public space the
+    /// client asked against and keeps a plugin from serving content under the
+    /// core vault's URIs or another plugin's. A plugin that spelled its own
+    /// scheme anyway has it stripped here, so the composite adds it once.
+    fn localize_contents(&self, mut result: ResourceResult) -> ResourceResult {
         let scheme = format!("{}://", self.descriptor.id);
         for contents in &mut result.contents {
             let uri = match contents {
                 turbomcp_types::ResourceContents::Text(text) => &mut text.uri,
                 turbomcp_types::ResourceContents::Blob(blob) => &mut blob.uri,
             };
-            if !uri.starts_with(&scheme) {
-                *uri = format!("{scheme}{uri}");
+            if let Some(local) = uri.strip_prefix(&scheme) {
+                *uri = local.to_string();
             }
         }
         result
@@ -260,7 +262,7 @@ fn plugin_error(error: PluginError) -> McpError {
 /// Map a plugin failure raised while reading a resource.
 ///
 /// A missing resource is a resource error, not a bad request: a client that
-/// asked for a URI the plugin no longer serves needs `-32004` to recognize it.
+/// asked for a URI the plugin no longer serves needs `-32002` to recognize it.
 #[cfg(feature = "plugin-api")]
 fn plugin_resource_error(uri: &str, error: PluginError) -> McpError {
     match error.code {
@@ -350,7 +352,7 @@ impl McpHandler for PluginProviderAdapter {
                 self.provider.read_resource(uri, context),
             )
             .await
-            .map(|result| self.namespace_contents(result))
+            .map(|result| self.localize_contents(result))
             .map_err(|error| plugin_resource_error(uri, error))
         }
     }
@@ -1346,7 +1348,7 @@ mod tests {
             .call_tool("round_trip", serde_json::json!({}), &ctx)
             .await
             .expect_err("unprefixed plugin tool must not be public");
-        assert_eq!(error.jsonrpc_code(), -32001);
+        assert_eq!(error.kind, turbomcp_core::ErrorKind::ToolNotFound);
 
         let conflict = server
             .call_tool(
@@ -1656,9 +1658,11 @@ mod tests {
                 .call_tool(&tool.name, serde_json::json!({}), &ctx)
                 .await
             {
+                // By kind, not code: since TurboMCP 3.5 an unknown tool is
+                // `-32602`, which the empty arguments here can also produce.
                 assert_ne!(
-                    error.jsonrpc_code(),
-                    -32001,
+                    error.kind,
+                    turbomcp_core::ErrorKind::ToolNotFound,
                     "advertised tool was not routable: {}",
                     tool.name
                 );
@@ -1675,13 +1679,16 @@ mod tests {
             .call_tool("files_read_note", serde_json::json!({"path": "x.md"}), &ctx)
             .await
             .expect_err("internal tool route must stay private");
-        assert_eq!(tool_error.jsonrpc_code(), -32001);
+        assert_eq!(tool_error.kind, turbomcp_core::ErrorKind::ToolNotFound);
 
         let resource_error = server
             .read_resource("content://obsidian://syntax/quick-ref", &ctx)
             .await
             .expect_err("internal resource route must stay private");
-        assert_eq!(resource_error.jsonrpc_code(), -32004);
+        assert_eq!(
+            resource_error.kind,
+            turbomcp_core::ErrorKind::ResourceNotFound
+        );
     }
 
     #[tokio::test]

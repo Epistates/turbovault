@@ -96,16 +96,16 @@ criterion = "0.8"
 log = "0.4"
 
 # MCP server framework
-turbomcp = { version = "3.4.0", default-features = false }
-turbomcp-core = "3.4.0"
-turbomcp-protocol = "3.4.0"
-turbomcp-server = { version = "3.4.0", default-features = false }
-turbomcp-types = "3.4.0"
+turbomcp = { version = "3.6.0", default-features = false }
+turbomcp-core = "3.6.0"
+turbomcp-protocol = "3.6.0"
+turbomcp-server = { version = "3.6.0", default-features = false }
+turbomcp-types = "3.6.0"
 # Used by the wire-level e2e test. Declared here with the rest so a turbomcp
 # bump cannot leave the client behind, which is how it ended up driving a
 # 3.3.0 server from a 3.1.5 client.
-turbomcp-client = "3.4.0"
-turbomcp-transport = "3.4.0"
+turbomcp-client = "3.6.0"
+turbomcp-transport = "3.6.0"
 
 # SQL query engine (optional, for frontmatter SQL queries)
 gluesql = { version = "0.20", default-features = false, features = ["gluesql_memory_storage"] }

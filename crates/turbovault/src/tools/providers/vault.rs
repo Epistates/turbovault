@@ -60,10 +60,6 @@ impl VaultProvider {
     // it accepts. Spell them out here or they are undiscoverable.
     #[tool(
         description = "Create and register a new Obsidian vault at the specified filesystem path with an optional template. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
-        usage = "Use for programmatic vault creation. The new vault is registered immediately; use set_active_vault if another vault is currently active",
-        performance = "Fast (<50ms), creates .obsidian directory and config files",
-        related = ["set_active_vault", "list_vaults"],
-        examples = ["template: default", "template: research", "template: team"],
         tags = ["write", "admin"],
     )]
     async fn create_vault(
@@ -101,10 +97,6 @@ impl VaultProvider {
     /// Add an existing vault (automatically initializes it for better DX)
     #[tool(
         description = "Register an existing Obsidian vault with the MCP server and auto-initialize. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
-        usage = "Use as first step when working with existing vaults. Idempotent and safe to call multiple times",
-        performance = "Depends on vault size: 100ms for small vaults, 1-5s for large (1000+ files) due to initialization",
-        related = ["list_vaults", "set_active_vault", "get_vault_context"],
-        examples = ["Add personal vault", "Register work vault", "Connect to shared knowledge base"],
         tags = ["write", "admin"],
     )]
     async fn add_vault(
@@ -158,10 +150,6 @@ impl VaultProvider {
     /// Remove a vault from registration
     #[tool(
         description = "Unregister a vault from the MCP server (does NOT delete files)",
-        usage = "Use when vault is no longer needed in current session. Not idempotent (fails if already removed)",
-        performance = "Instant (<1ms), only removes from registry and clears cache",
-        related = ["list_vaults", "add_vault"],
-        examples = ["Remove temporary vault", "Cleanup after migration", "Close vault for maintenance"],
         tags = ["write", "admin"],
     )]
     async fn remove_vault(&self, name: String) -> McpResult<serde_json::Value> {
@@ -171,10 +159,6 @@ impl VaultProvider {
     /// List all registered vaults
     #[tool(
         description = "List all vaults registered with the MCP server",
-        usage = "Use to discover available vaults before setting active vault. Empty list means call add_vault first",
-        performance = "Instant (<1ms), reads from in-memory registry",
-        related = ["get_active_vault", "add_vault", "set_active_vault"],
-        examples = ["Show all vaults", "Check available options", "Verify vault registration"],
         tags = ["read", "admin"],
         read_only = true,
     )]
@@ -196,10 +180,6 @@ impl VaultProvider {
     /// Get configuration for a specific vault
     #[tool(
         description = "Get detailed configuration for a specific vault",
-        usage = "Use to inspect vault settings before operations or validate vault configuration",
-        performance = "Instant (<1ms), reads from in-memory config",
-        related = ["set_active_vault", "list_vaults"],
-        examples = ["Check vault path", "Verify search settings", "Inspect custom config"],
         tags = ["read", "admin"],
         read_only = true,
     )]
@@ -220,10 +200,6 @@ impl VaultProvider {
     /// Set the active vault
     #[tool(
         description = "Switch the active vault for subsequent operations",
-        usage = "Use when working with multiple vaults. All tools operate on the active vault. Idempotent",
-        performance = "Instant (<1ms), updates in-memory state only",
-        related = ["get_active_vault", "list_vaults", "get_vault_context"],
-        examples = ["Switch to personal vault", "Activate work vault", "Change vault context"],
         tags = ["write", "admin"],
     )]
     async fn set_active_vault(&self, name: String) -> McpResult<serde_json::Value> {
@@ -250,10 +226,6 @@ impl VaultProvider {
     /// Get the currently active vault
     #[tool(
         description = "Get the name of the currently active vault",
-        usage = "Use to verify vault context before operations. Returns empty string if none active",
-        performance = "Instant (<1ms), reads from in-memory state",
-        related = ["set_active_vault", "list_vaults", "get_vault_context"],
-        examples = ["Check current vault", "Verify context", "Confirm active vault"],
         tags = ["read", "admin"],
         read_only = true,
     )]
