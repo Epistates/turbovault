@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-05
+
+3.1.0 was released on GitHub but never published to crates.io, so the crates go from 3.0.0 to 3.2.0. Coming from 3.0.0, read the [3.1.0](#310---2026-09-30) section below as well: everything in it ships in this release.
+
 ### Changed
 
 - **TurboMCP 3.6.0** (from 3.4.0). What a client of TurboVault will notice:

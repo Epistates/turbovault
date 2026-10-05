@@ -5487,7 +5487,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5524,7 +5524,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-audit"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "log",
@@ -5540,7 +5540,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-batch"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "schemars 1.2.2",
  "serde",
@@ -5550,7 +5550,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-core"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "log",
@@ -5571,7 +5571,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-export"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -5581,7 +5581,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-git"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "criterion",
  "git2",
@@ -5593,7 +5593,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-graph"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "petgraph",
  "serde",
@@ -5604,7 +5604,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-parser"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "pulldown-cmark",
  "regex",
@@ -5644,7 +5644,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-sql"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "gluesql",
  "log",
@@ -5658,7 +5658,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-tools"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "chrono",
  "git2",
@@ -5687,7 +5687,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "futures",
  "git2",
