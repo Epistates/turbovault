@@ -18,7 +18,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "3.1.0"
+version = "3.2.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
@@ -137,16 +137,16 @@ bm25 = "2.3"              # Pure-Rust BM25 scorer/search engine (Michael-JB/bm25
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "3.1.0", path = "crates/turbovault-core" }
-turbovault-parser = { version = "3.1.0", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "3.1.0", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "3.1.0", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "3.1.0", path = "crates/turbovault-batch" }
-turbovault-export = { version = "3.1.0", path = "crates/turbovault-export" }
-turbovault-audit = { version = "3.1.0", path = "crates/turbovault-audit" }
-turbovault-git = { version = "3.1.0", path = "crates/turbovault-git" }
-turbovault-sql = { version = "3.1.0", path = "crates/turbovault-sql" }
-turbovault-tools = { version = "3.1.0", path = "crates/turbovault-tools" }
+turbovault-core = { version = "3.2.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "3.2.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "3.2.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "3.2.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "3.2.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "3.2.0", path = "crates/turbovault-export" }
+turbovault-audit = { version = "3.2.0", path = "crates/turbovault-audit" }
+turbovault-git = { version = "3.2.0", path = "crates/turbovault-git" }
+turbovault-sql = { version = "3.2.0", path = "crates/turbovault-sql" }
+turbovault-tools = { version = "3.2.0", path = "crates/turbovault-tools" }
 # Versioned independently of the workspace: the plugin contract has no external
 # implementors yet and needs room to change without dragging every other crate
 # to a new major. Promote it to the workspace version once it is stable.
@@ -157,7 +157,7 @@ turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-ap
 # every dependency of a published crate to be published, optional ones included.
 turbovault-vector = { version = "0.1.1", path = "crates/turbovault-vector" }
 turbovault-plugin-vector = { version = "0.1.0", path = "crates/plugins/turbovault-plugin-vector" }
-turbovault = { version = "3.1.0", path = "crates/turbovault" }
+turbovault = { version = "3.2.0", path = "crates/turbovault" }
 
 [profile.release]
 opt-level = 3
