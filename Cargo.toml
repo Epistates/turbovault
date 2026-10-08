@@ -81,7 +81,7 @@ anyhow = "1.0"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.26", features = ["v4", "serde"] }
+uuid = { version = "1.27", features = ["v4", "serde"] }
 dashmap = "6.2"
 
 # Configuration

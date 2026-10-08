@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependencies refreshed.** Every requirement is at its latest release, and the lockfile moved 44 packages to their latest compatible versions, among them `yoke-derive` 0.8.4 in place of the yanked 0.8.3 that `cargo audit` flagged. The test-only `serial_test` 4.0.1 needs Rust 1.93.1, so running the test suite needs a newer toolchain than the 1.90 the crates themselves build with.
+
 ## [3.2.0] - 2026-10-05
 
 3.1.0 was released on GitHub but never published to crates.io, so the crates go from 3.0.0 to 3.2.0. Coming from 3.0.0, read the [3.1.0](#310---2026-09-30) section below as well: everything in it ships in this release.
