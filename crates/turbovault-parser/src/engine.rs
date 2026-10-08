@@ -227,6 +227,10 @@ impl<'a> ParseEngine<'a> {
             let frontmatter_text = &self.content[..body_start];
             self.parse_frontmatter_wikilinks(frontmatter_text, &mut result);
         }
+        if options.parse_markdown_links && body_start > 0 {
+            let frontmatter_text = &self.content[..body_start];
+            self.parse_frontmatter_markdown_links(frontmatter_text, &mut result);
+        }
 
         // Phase 2: OFM-specific regex pass (respecting excluded ranges)
         let body = if body_start > 0 {
@@ -642,6 +646,64 @@ impl<'a> ParseEngine<'a> {
                 is_valid: true,
             });
         }
+    }
+
+    /// Extract Markdown links from YAML frontmatter string values.
+    ///
+    /// Since Obsidian 1.11 a text or list property can hold a Markdown link,
+    /// `source: "[Paper](papers/paper.md)"`, and Obsidian treats it as a link
+    /// like any in the body. Each line is parsed on its own, without its
+    /// indentation: YAML nests with indentation that CommonMark would read
+    /// as a code block, and a property value never spans a link across lines.
+    fn parse_frontmatter_markdown_links(&self, frontmatter_text: &str, result: &mut ParseResult) {
+        let source = self
+            .source_file
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+
+        let mut links = Vec::new();
+        let mut line_start = 0;
+        for line in frontmatter_text.split_inclusive('\n') {
+            let value = line.trim_start();
+            let value_start = line_start + (line.len() - value.len());
+            line_start += line.len();
+            if !value.contains("](") {
+                continue;
+            }
+
+            let mut current: Option<(String, usize)> = None;
+            let mut text = String::new();
+            for (event, range) in Parser::new(value).into_offset_iter() {
+                match event {
+                    Event::Start(Tag::Link { dest_url, .. }) => {
+                        current = Some((dest_url.to_string(), range.start));
+                        text.clear();
+                    }
+                    Event::Text(t) | Event::Code(t) if current.is_some() => text.push_str(&t),
+                    Event::End(TagEnd::Link) => {
+                        if let Some((url, start)) = current.take() {
+                            links.push(Link {
+                                type_: classify_url(&url),
+                                source_file: source.clone(),
+                                target: url,
+                                display_text: Some(text.trim().to_string()),
+                                position: SourcePosition::from_offset_indexed(
+                                    &self.index,
+                                    value_start + start,
+                                    range.end - start,
+                                ),
+                                resolved_target: None,
+                                is_valid: true,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Frontmatter comes first in the note, so its links do too.
+        result.markdown_links.splice(0..0, links);
     }
 
     /// Parse tags, respecting excluded ranges.
@@ -1535,6 +1597,51 @@ Back to normal [[Valid]]
         let result = engine.parse(&opts);
 
         assert!(result.wikilinks.is_empty());
+    }
+
+    #[test]
+    fn test_frontmatter_markdown_links() {
+        let content = "---\nsource: \"[Paper](papers/paper.md)\"\nrelated:\n    - \"[Spaced](<My Note.md>)\"\n    - \"[Site](https://example.com)\"\ncover: \"![Cover](cover.png)\"\n---\n\nBody [Later](later.md)";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        let links: Vec<_> = result
+            .markdown_links
+            .iter()
+            .map(|link| {
+                (
+                    link.type_,
+                    link.target.as_str(),
+                    link.display_text.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            links,
+            [
+                (LinkType::MarkdownLink, "papers/paper.md", Some("Paper")),
+                (LinkType::MarkdownLink, "My Note.md", Some("Spaced")),
+                (LinkType::ExternalLink, "https://example.com", Some("Site")),
+                (LinkType::MarkdownLink, "later.md", Some("Later")),
+            ]
+        );
+        // Spans land on the link itself, so a rewrite can splice them.
+        let span = |link: &Link| &content[link.position.offset..][..link.position.length];
+        assert_eq!(span(&result.markdown_links[0]), "[Paper](papers/paper.md)");
+        assert_eq!(span(&result.markdown_links[1]), "[Spaced](<My Note.md>)");
+    }
+
+    #[test]
+    fn test_frontmatter_markdown_links_not_extracted_when_disabled() {
+        let content = "---\nsource: \"[Paper](paper.md)\"\n---\n\nBody";
+        let engine = ParseEngine::new(content);
+        let opts = ParseOptions {
+            parse_markdown_links: false,
+            ..ParseOptions::all()
+        };
+        let result = engine.parse(&opts);
+
+        assert!(result.markdown_links.is_empty());
     }
 
     #[test]

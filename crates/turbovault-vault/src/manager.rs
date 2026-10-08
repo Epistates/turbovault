@@ -2296,6 +2296,31 @@ mod tests {
         assert_eq!(backlinks.len(), 1, "customers.md should have one backlink");
     }
 
+    /// Obsidian 1.11 reads a Markdown link in a property as a link, and a
+    /// wikilink in a table cell is written with its alias pipe escaped. Both
+    /// reach the target as backlinks.
+    #[tokio::test]
+    async fn property_markdown_links_and_table_wikilinks_are_backlinks() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("paper.md"), "# Paper\n").unwrap();
+        std::fs::write(temp_dir.path().join("tool.md"), "# Tool\n").unwrap();
+        std::fs::write(
+            temp_dir.path().join("index.md"),
+            "---\nsource: \"[The paper](paper.md)\"\n---\n| Area | Notes |\n|---|---|\n| Tools | [[tool\\|The tool]] |\n",
+        )
+        .unwrap();
+
+        manager.initialize().await.unwrap();
+
+        for target in ["paper.md", "tool.md"] {
+            let backlinks = manager.get_backlinks(Path::new(target)).await.unwrap();
+            assert_eq!(backlinks.len(), 1, "{target}: {backlinks:?}");
+        }
+    }
+
     #[tokio::test]
     async fn test_write_non_markdown_file_does_not_pollute_graph() {
         // Writing a non-markdown artifact (e.g. an exported viz.html) must not
