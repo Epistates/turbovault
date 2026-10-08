@@ -20,7 +20,7 @@ use turbovault_core::{
 
 use crate::ParseOptions;
 use crate::blocks::slugify;
-use crate::parsers::link_utils::{classify_url, classify_wikilink};
+use crate::parsers::link_utils::{classify_url, classify_wikilink, split_wikilink};
 
 // ============================================================================
 // Compiled regex patterns (LazyLock for Rust 1.80+ SOTA)
@@ -503,7 +503,7 @@ impl<'a> ParseEngine<'a> {
             }
 
             let raw_target = caps.get(1).unwrap().as_str();
-            let (target, display_text) = parse_link_target(raw_target);
+            let (target, display_text) = split_wikilink(raw_target);
             let link_type = classify_wikilink(&target);
 
             result.wikilinks.push(Link {
@@ -550,7 +550,7 @@ impl<'a> ParseEngine<'a> {
             }
 
             let raw_target = caps.get(1).unwrap().as_str();
-            let (target, display_text) = parse_link_target(raw_target);
+            let (target, display_text) = split_wikilink(raw_target);
 
             result.embeds.push(Link {
                 type_: LinkType::Embed,
@@ -602,7 +602,7 @@ impl<'a> ParseEngine<'a> {
             }
 
             let raw_target = caps.get(1).unwrap().as_str();
-            let (target, display_text) = parse_link_target(raw_target);
+            let (target, display_text) = split_wikilink(raw_target);
             let link_type = classify_wikilink(&target);
 
             result.wikilinks.push(Link {
@@ -626,7 +626,7 @@ impl<'a> ParseEngine<'a> {
             let global_start = full_match.start();
 
             let raw_target = caps.get(1).unwrap().as_str();
-            let (target, display_text) = parse_link_target(raw_target);
+            let (target, display_text) = split_wikilink(raw_target);
 
             result.embeds.push(Link {
                 type_: LinkType::Embed,
@@ -890,17 +890,6 @@ impl<'a> ParseEngine<'a> {
 // Helper functions
 // ============================================================================
 
-/// Parse wikilink/embed target, extracting display text if present.
-fn parse_link_target(raw: &str) -> (String, Option<String>) {
-    if let Some(pipe_idx) = raw.find('|') {
-        let target = raw[..pipe_idx].to_string();
-        let display = raw[pipe_idx + 1..].to_string();
-        (target, Some(display))
-    } else {
-        (raw.to_string(), None)
-    }
-}
-
 /// Exclude Obsidian link spans from tag parsing.
 ///
 /// Same-document anchors such as `[[#Heading]]` and embedded anchors such as
@@ -1008,6 +997,28 @@ mod tests {
             result.wikilinks[1].display_text,
             Some("display".to_string())
         );
+    }
+
+    #[test]
+    fn test_engine_table_escaped_pipe() {
+        // Inside a table Obsidian escapes the alias pipe as `\|`; the
+        // backslash is part of neither the target nor the display text.
+        let content = "| Area | Links |\n|---|---|\n| MCP | [[turbomcp\\|TurboMCP]], [[dagent]] |\n| Art | ![[diagram.png\\|300]] |\n";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        let wikilinks: Vec<_> = result
+            .wikilinks
+            .iter()
+            .map(|link| (link.target.as_str(), link.display_text.as_deref()))
+            .collect();
+        assert_eq!(
+            wikilinks,
+            [("turbomcp", Some("TurboMCP")), ("dagent", None)]
+        );
+        assert_eq!(result.embeds.len(), 1);
+        assert_eq!(result.embeds[0].target, "diagram.png");
+        assert_eq!(result.embeds[0].display_text.as_deref(), Some("300"));
     }
 
     #[test]
