@@ -207,29 +207,55 @@ impl FrontmatterValidator {
             }
         }
 
-        // Validate tags format if present
-        if let Some(tags_value) = frontmatter.data.get("tags") {
-            match tags_value {
-                serde_json::Value::Array(arr) => {
-                    for (idx, tag) in arr.iter().enumerate() {
-                        if !tag.is_string() {
+        // Obsidian 1.9 reads `tags`, `aliases` and `cssclasses` only as YAML
+        // lists, and dropped the singular `tag`, `alias` and `cssclass`. A note
+        // still written the old way has properties Obsidian no longer sees.
+        for (singular, plural) in [
+            ("tag", "tags"),
+            ("alias", "aliases"),
+            ("cssclass", "cssclasses"),
+        ] {
+            if frontmatter.data.contains_key(singular) {
+                report.add_issue(
+                    ValidationIssue::new(
+                        Severity::Warning,
+                        "frontmatter",
+                        format!(
+                            "Obsidian 1.9 and later ignore `{singular}`, replaced by `{plural}`"
+                        ),
+                    )
+                    .with_suggestion(format!(
+                        "Rename `{singular}:` to `{plural}:` and write its values as a list"
+                    )),
+                );
+            }
+
+            match frontmatter.data.get(plural) {
+                None | Some(serde_json::Value::Null) => {}
+                Some(serde_json::Value::Array(items)) => {
+                    for (idx, item) in items.iter().enumerate() {
+                        if !item.is_string() {
                             report.add_issue(ValidationIssue::new(
                                 Severity::Warning,
                                 "frontmatter",
-                                format!("Tag at index {} is not a string", idx),
+                                format!("`{plural}` item {idx} is not text"),
                             ));
                         }
                     }
                 }
-                serde_json::Value::String(_) => {
-                    // Single string tag is OK
-                }
-                _ => {
-                    report.add_issue(ValidationIssue::new(
-                        Severity::Warning,
-                        "frontmatter",
-                        "Tags should be an array of strings or a single string",
-                    ));
+                Some(_) => {
+                    report.add_issue(
+                        ValidationIssue::new(
+                            Severity::Warning,
+                            "frontmatter",
+                            format!(
+                                "`{plural}` is not a list, so Obsidian 1.9 and later ignore it"
+                            ),
+                        )
+                        .with_suggestion(format!(
+                            "Write `{plural}` as a YAML list, one value per `- ` line"
+                        )),
+                    );
                 }
             }
         }
@@ -653,6 +679,45 @@ mod tests {
 
         let report = validator.validate(&file);
         assert!(report.passed);
+    }
+
+    /// What Obsidian 1.9 stopped reading is flagged; the current format and
+    /// an empty property are not.
+    #[test]
+    fn test_frontmatter_validator_flags_pre_1_9_list_properties() {
+        let messages = |data: serde_json::Value| {
+            let mut file = create_test_file();
+            file.frontmatter = Some(Frontmatter {
+                data: serde_json::from_value(data).unwrap(),
+                position: SourcePosition::start(),
+            });
+            FrontmatterValidator::new()
+                .validate(&file)
+                .issues
+                .into_iter()
+                .map(|issue| issue.message)
+                .collect::<Vec<_>>()
+        };
+
+        assert!(
+            messages(serde_json::json!({
+                "tags": ["work"], "aliases": ["Home"], "cssclasses": ["wide"]
+            }))
+            .is_empty()
+        );
+        assert!(messages(serde_json::json!({ "tags": null })).is_empty());
+
+        assert_eq!(
+            messages(serde_json::json!({ "tags": "work, personal", "alias": "Home" })),
+            [
+                "`tags` is not a list, so Obsidian 1.9 and later ignore it",
+                "Obsidian 1.9 and later ignore `alias`, replaced by `aliases`",
+            ]
+        );
+        assert_eq!(
+            messages(serde_json::json!({ "cssclasses": ["wide", 3] })),
+            ["`cssclasses` item 1 is not text"]
+        );
     }
 
     #[test]

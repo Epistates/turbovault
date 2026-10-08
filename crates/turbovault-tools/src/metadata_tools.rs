@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_core::Precondition;
 use turbovault_core::prelude::*;
+use turbovault_core::property_tags;
 use turbovault_parser::parse_tags;
 use turbovault_vault::VaultManager;
 
@@ -283,7 +284,7 @@ impl MetadataTools {
                         turbovault_parser::parse_frontmatter_yaml(yaml).map_err(|e| {
                             Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
                         })?;
-                    extract_tags_from_value(fm.get("tags"))
+                    property_tags(fm.get("tags"))
                 } else {
                     vec![]
                 };
@@ -327,7 +328,7 @@ impl MetadataTools {
                 };
 
                 // Get or create tags array
-                let mut existing_tags = extract_tags_from_value(fm.get("tags"));
+                let mut existing_tags = tags_to_rewrite(fm.get("tags"));
                 for tag in tags_to_add {
                     let normalized = tag.strip_prefix('#').unwrap_or(tag).to_string();
                     if !existing_tags.contains(&normalized) {
@@ -378,7 +379,7 @@ impl MetadataTools {
                     ));
                 };
 
-                let existing_tags = extract_tags_from_value(fm.get("tags"));
+                let existing_tags = tags_to_rewrite(fm.get("tags"));
                 let remove_set: HashSet<String> = tags_to_remove
                     .iter()
                     .map(|t| t.strip_prefix('#').unwrap_or(t).to_string())
@@ -444,26 +445,23 @@ impl MetadataTools {
     }
 }
 
-/// Extract tags from a frontmatter Value (handles both array and string forms)
-/// Always normalizes by stripping leading `#` prefix
-fn extract_tags_from_value(value: Option<&Value>) -> Vec<String> {
+/// The tags a rewrite of the `tags` property starts from.
+///
+/// A list reads as Obsidian reads it ([`property_tags`]). A string is the
+/// format Obsidian 1.9 stopped reading (`tags: work, personal` or
+/// `tags: work personal`); Obsidian ignores it, but a rewrite that did too
+/// would drop the tags it holds. They are split out instead, so the rewrite
+/// writes them back as the list Obsidian expects, as its format converter
+/// does. A tag cannot contain a space, so commas and whitespace both split.
+fn tags_to_rewrite(value: Option<&Value>) -> Vec<String> {
     match value {
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| {
-                v.as_str()
-                    .map(|s| s.strip_prefix('#').unwrap_or(s).to_string())
-            })
+        Some(Value::String(legacy)) => legacy
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(|tag| tag.strip_prefix('#').unwrap_or(tag))
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_string)
             .collect(),
-        Some(Value::String(s)) => s
-            .split(',')
-            .map(|t| {
-                let trimmed = t.trim();
-                trimmed.strip_prefix('#').unwrap_or(trimmed).to_string()
-            })
-            .filter(|t| !t.is_empty())
-            .collect(),
-        _ => vec![],
+        value => property_tags(value),
     }
 }
 
@@ -583,65 +581,72 @@ mod tests {
     #[test]
     fn test_extract_tags_strips_hash_prefix() {
         let val = serde_json::json!(["#work", "personal", "#urgent"]);
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert_eq!(tags, vec!["work", "personal", "urgent"]);
     }
 
     #[test]
     fn test_extract_tags_from_comma_string() {
         let val = serde_json::json!("#work, personal, #urgent");
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert_eq!(tags, vec!["work", "personal", "urgent"]);
     }
 
-    // ==================== extract_tags_from_value edge cases ====================
+    // ==================== tags_to_rewrite edge cases ====================
 
     #[test]
-    fn test_extract_tags_from_value_none() {
-        let tags = extract_tags_from_value(None);
+    fn test_tags_to_rewrite_none() {
+        let tags = tags_to_rewrite(None);
         assert!(tags.is_empty());
     }
 
     #[test]
-    fn test_extract_tags_from_value_null() {
+    fn test_tags_to_rewrite_null() {
         let val = Value::Null;
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert!(tags.is_empty());
     }
 
     #[test]
-    fn test_extract_tags_from_value_number() {
+    fn test_tags_to_rewrite_number() {
         let val = serde_json::json!(42);
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert!(tags.is_empty());
     }
 
     #[test]
-    fn test_extract_tags_from_value_empty_array() {
+    fn test_tags_to_rewrite_empty_array() {
         let val = serde_json::json!([]);
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert!(tags.is_empty());
     }
 
     #[test]
-    fn test_extract_tags_from_value_array_with_non_string_elements() {
+    fn test_tags_to_rewrite_array_with_non_string_elements() {
         let val = serde_json::json!([1, null, "valid", true]);
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert_eq!(tags, vec!["valid"]);
     }
 
     #[test]
-    fn test_extract_tags_from_value_comma_string_empty_segments() {
+    fn test_tags_to_rewrite_comma_string_empty_segments() {
         let val = serde_json::json!(" , ,,");
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert!(tags.is_empty());
     }
 
     #[test]
-    fn test_extract_tags_from_value_comma_string_whitespace() {
+    fn test_tags_to_rewrite_comma_string_whitespace() {
         let val = serde_json::json!(" work , personal ");
-        let tags = extract_tags_from_value(Some(&val));
+        let tags = tags_to_rewrite(Some(&val));
         assert_eq!(tags, vec!["work", "personal"]);
+    }
+
+    #[test]
+    fn test_tags_to_rewrite_space_separated_string() {
+        let val = serde_json::json!("work #personal  urgent");
+        let tags = tags_to_rewrite(Some(&val));
+        assert_eq!(tags, vec!["work", "personal", "urgent"]);
     }
 
     // ==================== parse_query edge cases ====================

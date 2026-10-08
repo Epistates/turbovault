@@ -679,29 +679,43 @@ pub struct Frontmatter {
 }
 
 impl Frontmatter {
-    /// Extract tags from frontmatter
+    /// The note's `tags` property, as Obsidian reads it (see [`property_tags`]).
     pub fn tags(&self) -> Vec<String> {
-        match self.data.get("tags") {
-            Some(serde_json::Value::String(s)) => vec![s.clone()],
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect(),
-            _ => vec![],
-        }
+        property_tags(self.data.get("tags"))
     }
 
-    /// Extract aliases from frontmatter
+    /// The note's `aliases` property, as Obsidian reads it (see [`property_list`]).
     pub fn aliases(&self) -> Vec<String> {
-        match self.data.get("aliases") {
-            Some(serde_json::Value::String(s)) => vec![s.clone()],
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect(),
-            _ => vec![],
-        }
+        property_list(self.data.get("aliases"))
     }
+}
+
+/// The values of a list property, read the way Obsidian 1.9 and later read
+/// `tags`, `aliases` and `cssclasses`: a YAML list, of which the non-empty
+/// strings count. Obsidian ignores any other value, a comma-separated string
+/// included, and so does this. Writers that want to keep such a value should
+/// convert it to a list rather than read it as one.
+pub fn property_list(value: Option<&serde_json::Value>) -> Vec<String> {
+    match value {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The values of a `tags` property: [`property_list`], without the `#` a tag
+/// may be written with (`- "#project"` is the tag `project`).
+pub fn property_tags(value: Option<&serde_json::Value>) -> Vec<String> {
+    property_list(value)
+        .into_iter()
+        .map(|tag| tag.strip_prefix('#').unwrap_or(&tag).to_string())
+        .filter(|tag| !tag.is_empty())
+        .collect()
 }
 
 /// File metadata
@@ -827,6 +841,25 @@ mod tests {
         let tags = fm.tags();
         assert_eq!(tags.len(), 2);
         assert!(tags.contains(&"rust".to_string()));
+    }
+
+    /// Obsidian 1.9 and later read list properties only as lists.
+    #[test]
+    fn test_list_properties_read_as_obsidian_reads_them() {
+        use serde_json::json;
+        assert_eq!(
+            property_tags(Some(&json!(["#work", " personal ", "", 3, "#"]))),
+            ["work", "personal"]
+        );
+        assert_eq!(
+            property_list(Some(&json!(["Home Base", "HB"]))),
+            ["Home Base", "HB"]
+        );
+        // The pre-1.9 string form, and anything else, is not a list.
+        assert!(property_tags(Some(&json!("work, personal"))).is_empty());
+        assert!(property_list(Some(&json!("Home Base"))).is_empty());
+        assert!(property_list(Some(&json!(null))).is_empty());
+        assert!(property_list(None).is_empty());
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::instrument;
 use turbovault_core::prelude::*;
+use turbovault_core::property_tags;
 use turbovault_vault::VaultManager;
 
 /// SQL-based frontmatter query engine backed by GlueSQL.
@@ -76,19 +77,16 @@ impl FrontmatterSqlEngine {
                 }
 
                 // --- tags table (unnested from frontmatter) ---
-                if let Some(tags_val) = fm.data.get("tags") {
-                    let tag_strings = extract_tag_strings(tags_val);
-                    for tag in &tag_strings {
-                        let inserted = exec_with(
-                            &mut glue,
-                            "INSERT INTO tags VALUES ($1, $2)",
-                            params![rel_path.as_str(), tag.as_str()],
-                        );
-                        if let Err(e) = inserted {
-                            log::warn!("Tag insert error for {rel_path}: {e}");
-                        } else {
-                            tag_count += 1;
-                        }
+                for tag in &property_tags(fm.data.get("tags")) {
+                    let inserted = exec_with(
+                        &mut glue,
+                        "INSERT INTO tags VALUES ($1, $2)",
+                        params![rel_path.as_str(), tag.as_str()],
+                    );
+                    if let Err(e) = inserted {
+                        log::warn!("Tag insert error for {rel_path}: {e}");
+                    } else {
+                        tag_count += 1;
                     }
                 }
             }
@@ -254,26 +252,6 @@ struct SchemaInfo {
     type_name: String,
     count: usize,
     nullable: bool,
-}
-
-/// Extract tag strings from a frontmatter value (handles arrays and comma-separated strings).
-fn extract_tag_strings(value: &Value) -> Vec<String> {
-    match value {
-        Value::Array(arr) => arr
-            .iter()
-            .filter_map(|v| v.as_str())
-            .map(|s| s.strip_prefix('#').unwrap_or(s).to_string())
-            .collect(),
-        Value::String(s) => s
-            .split(',')
-            .map(|t| {
-                let trimmed = t.trim();
-                trimmed.strip_prefix('#').unwrap_or(trimmed).to_string()
-            })
-            .filter(|t| !t.is_empty())
-            .collect(),
-        _ => vec![],
-    }
 }
 
 /// Execute a SQL statement, mapping errors to `turbovault_core::Error`.
@@ -483,25 +461,5 @@ mod tests {
             payload_to_json(tags.into_iter().next().unwrap())["rows"],
             json!([{ "path": path, "tag": tag }])
         );
-    }
-
-    #[test]
-    fn test_extract_tag_strings_array() {
-        let val = json!(["#work", "personal", "#urgent"]);
-        let tags = extract_tag_strings(&val);
-        assert_eq!(tags, vec!["work", "personal", "urgent"]);
-    }
-
-    #[test]
-    fn test_extract_tag_strings_csv() {
-        let val = json!("#work, personal, #urgent");
-        let tags = extract_tag_strings(&val);
-        assert_eq!(tags, vec!["work", "personal", "urgent"]);
-    }
-
-    #[test]
-    fn test_extract_tag_strings_empty() {
-        assert!(extract_tag_strings(&json!(null)).is_empty());
-        assert!(extract_tag_strings(&json!(42)).is_empty());
     }
 }
