@@ -91,6 +91,33 @@ pub fn classify_wikilink(target: &str) -> LinkType {
     }
 }
 
+/// Split the inside of a wikilink or embed into its target and display text.
+///
+/// The first `|` separates them: `[[Note|Shown]]`. Inside a Markdown table a
+/// bare `|` would end the cell, so Obsidian writes it escaped as `\|`
+/// (`[[Note\|Shown]]`, `![[image.png\|300]]`) and reads it the same way; the
+/// backslash belongs to neither half.
+///
+/// # Examples
+///
+/// ```
+/// use turbovault_parser::parsers::link_utils::split_wikilink;
+///
+/// assert_eq!(split_wikilink("Note"), ("Note".to_string(), None));
+/// assert_eq!(split_wikilink("Note|Shown"), ("Note".to_string(), Some("Shown".to_string())));
+/// assert_eq!(split_wikilink("Note\\|Shown"), ("Note".to_string(), Some("Shown".to_string())));
+/// ```
+pub fn split_wikilink(inner: &str) -> (String, Option<String>) {
+    match inner.find('|') {
+        Some(pipe) => {
+            let target = &inner[..pipe];
+            let target = target.strip_suffix('\\').unwrap_or(target);
+            (target.to_string(), Some(inner[pipe + 1..].to_string()))
+        }
+        None => (inner.to_string(), None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

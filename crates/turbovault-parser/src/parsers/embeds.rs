@@ -8,6 +8,8 @@ use std::path::Path;
 use std::sync::LazyLock;
 use turbovault_core::{LineIndex, Link, LinkType, SourcePosition};
 
+use super::link_utils::split_wikilink;
+
 /// Matches ![[...]] for embedded files/notes
 static EMBED_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[\[([^\]]+)\]\]").unwrap());
 
@@ -26,13 +28,7 @@ pub fn parse_embeds(content: &str, source_file: &Path) -> Vec<Link> {
             let raw_target = caps.get(1).unwrap().as_str();
 
             // Handle display text syntax: ![[target|display_text]]
-            let (target, display_text) = if let Some(pipe_idx) = raw_target.find('|') {
-                let target = raw_target[..pipe_idx].to_string();
-                let display = raw_target[pipe_idx + 1..].to_string();
-                (target, Some(display))
-            } else {
-                (raw_target.to_string(), None)
-            };
+            let (target, display_text) = split_wikilink(raw_target);
 
             Link {
                 type_: LinkType::Embed,
@@ -65,13 +61,7 @@ pub fn parse_embeds_indexed(content: &str, source_file: &Path, index: &LineIndex
             let full_match = caps.get(0).unwrap();
             let raw_target = caps.get(1).unwrap().as_str();
 
-            let (target, display_text) = if let Some(pipe_idx) = raw_target.find('|') {
-                let target = raw_target[..pipe_idx].to_string();
-                let display = raw_target[pipe_idx + 1..].to_string();
-                (target, Some(display))
-            } else {
-                (raw_target.to_string(), None)
-            };
+            let (target, display_text) = split_wikilink(raw_target);
 
             Link {
                 type_: LinkType::Embed,

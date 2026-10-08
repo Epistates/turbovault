@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tags`, `aliases` and `cssclasses` are read as Obsidian 1.9 and later read them: as YAML lists only.** A comma-separated string (`tags: work, personal`) and the singular `tag`, `alias` and `cssclass` no longer count, because Obsidian no longer sees them. TurboVault had been reading a string three different ways, so its tags and alias resolution could differ from Obsidian's. `validate_note` and `validate_vault` now warn about both old forms. `manage_tags` add and remove convert an old-style string to a list when they rewrite it, so its tags are kept.
 - **Dependencies refreshed.** Every requirement is at its latest release, and the lockfile moved 44 packages to their latest compatible versions, among them `yoke-derive` 0.8.4 in place of the yanked 0.8.3 that `cargo audit` flagged. The test-only `serial_test` 4.0.1 needs Rust 1.93.1, so running the test suite needs a newer toolchain than the 1.90 the crates themselves build with.
+
+### Fixed
+
+- **Links in Markdown tables.** Inside a table Obsidian writes the alias pipe escaped, `[[Note\|Shown]]` and `![[image.png\|300]]`. TurboVault kept the backslash, so these came out as links to `Note\` and `image.png\` in link listings, broken-link reports and attachment checks.
+- **Markdown links in properties.** Obsidian 1.11 treats a Markdown link in a text or list property, `source: "[Paper](paper.md)"`, as a link. TurboVault only found wikilinks there, so these never showed up as links or backlinks.
 
 ## [3.2.0] - 2026-10-05
 

@@ -459,6 +459,61 @@ async fn test_manage_tags_list_no_frontmatter() {
     assert!(!inline_tags.is_empty());
 }
 
+/// A `tags` string is the format Obsidian 1.9 stopped reading. Listing
+/// reports no frontmatter tags, as Obsidian sees none; adding one keeps the
+/// string's tags and writes them all back as a list.
+#[tokio::test]
+async fn test_manage_tags_pre_1_9_string_tags() {
+    let (temp_dir, manager) = setup_test_vault_with_metadata().await;
+    let tools = MetadataTools::new(manager.clone());
+    let path = temp_dir.path().join("legacy.md");
+    tokio::fs::write(&path, "---\ntags: work, personal\n---\n# Legacy\n")
+        .await
+        .unwrap();
+
+    let listed = tools
+        .manage_tags(
+            "legacy.md",
+            "list",
+            None,
+            Precondition::for_in_place(None),
+            "tags",
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed["frontmatter_tags"], serde_json::json!([]));
+
+    let added = tools
+        .manage_tags(
+            "legacy.md",
+            "add",
+            Some(&["urgent".to_string()]),
+            Precondition::for_in_place(None),
+            "tags",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        added["tags"],
+        serde_json::json!(["work", "personal", "urgent"])
+    );
+
+    let relisted = tools
+        .manage_tags(
+            "legacy.md",
+            "list",
+            None,
+            Precondition::for_in_place(None),
+            "tags",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        relisted["frontmatter_tags"],
+        serde_json::json!(["work", "personal", "urgent"])
+    );
+}
+
 #[tokio::test]
 async fn test_manage_tags_add_to_existing() {
     let (_temp_dir, manager) = setup_test_vault_with_metadata().await;
