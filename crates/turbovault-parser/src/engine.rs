@@ -365,8 +365,13 @@ impl<'a> ParseEngine<'a> {
                             HeadingLevel::H6 => 6,
                         };
 
-                        // Generate anchor if not provided
-                        let anchor = id.or_else(|| Some(slugify(&heading_text)));
+                        // Generate anchor if not provided. A heading with no text,
+                        // such as one that is only an image, has none, the same
+                        // as the block parser reports for it.
+                        let anchor = id.or_else(|| {
+                            let slug = slugify(&heading_text);
+                            (!slug.is_empty()).then_some(slug)
+                        });
 
                         result.headings.push(Heading {
                             text: heading_text.trim().to_string(),
@@ -380,8 +385,19 @@ impl<'a> ParseEngine<'a> {
                         });
                     }
                 }
-                Event::Text(text) if current_heading.is_some() => {
+                // A heading's text is what it renders as, the label the block
+                // parser gives it too: an image's alt is not part of it, so
+                // `# Title ![a](a.png)` is `Title`, not `Title a` with an
+                // anchor of `title-a` (#78, which 2.2.0 fixed in the block
+                // parser only).
+                Event::Text(text)
+                    if current_heading.is_some() && markdown_image_range_start.is_none() =>
+                {
                     heading_text.push_str(&text);
+                }
+                // A setext heading can span lines; its lines are one heading.
+                Event::SoftBreak | Event::HardBreak if current_heading.is_some() => {
+                    heading_text.push(' ');
                 }
 
                 // === Tasks ===
@@ -1045,6 +1061,29 @@ fn parse_callout_type(type_str: &str) -> CalloutType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The heading list is what an outline prints and what its anchors are
+    /// cut from, so it has to agree with the block parser's heading text:
+    /// an image contributes nothing, a link its label (#78).
+    #[test]
+    fn a_heading_list_entry_is_its_text_without_image_alt() {
+        let headings = crate::parse_headings(
+            "# Title ![a](a.png)\n\n## See [docs](u) here\n\n## ![logo](l.png)\n\nSetext\nhead\n===\n",
+        );
+        let shown: Vec<_> = headings
+            .iter()
+            .map(|h| (h.text.as_str(), h.anchor.as_deref()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Title", Some("title")),
+                ("See docs here", Some("see-docs-here")),
+                ("", None),
+                ("Setext head", Some("setext-head")),
+            ]
+        );
+    }
 
     #[test]
     fn test_engine_wikilinks() {

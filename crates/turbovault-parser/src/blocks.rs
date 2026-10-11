@@ -1133,6 +1133,27 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 value: "\n".to_string(),
             });
         }
+        // A setext heading can span lines, and its lines are one heading.
+        Event::SoftBreak | Event::HardBreak if state.in_heading => {
+            if state.in_image || state.in_link {
+                state.link_text.push(' ');
+            } else {
+                state.heading_buffer.push(' ');
+                state.heading_inline.push(InlineElement::Text {
+                    value: " ".to_string(),
+                });
+            }
+        }
+        // A tight list item's text is not in a paragraph, so the arm above
+        // never saw its line breaks and `- first line` / `  continued` read
+        // as `first linecontinued`.
+        Event::SoftBreak if !state.item_stack.is_empty() => {
+            if state.in_link || state.in_image {
+                state.link_text.push(' ');
+            } else {
+                state.add_inline_text(" ");
+            }
+        }
         Event::Rule => {
             state.flush_paragraph(blocks);
             blocks.push(ContentBlock::HorizontalRule);
@@ -1399,6 +1420,36 @@ pub fn to_plain_text(markdown: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tight item's text is not in a paragraph, and its line breaks were
+    /// dropped, so a wrapped item ran its lines together.
+    #[test]
+    fn a_tight_list_item_keeps_the_space_at_its_line_breaks() {
+        let blocks = parse_blocks("- first line\n  continued\n- next\n");
+        let ContentBlock::List { items, .. } = &blocks[0] else {
+            panic!("expected a list, got {blocks:?}");
+        };
+        assert_eq!(items[0].content, "first line continued");
+        let text: String = items[0]
+            .inline
+            .iter()
+            .map(|e| match e {
+                InlineElement::Text { value } => value.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(text, "first line continued");
+        assert_eq!(items[1].content, "next");
+    }
+
+    #[test]
+    fn a_setext_heading_spanning_lines_is_one_spaced_heading() {
+        let blocks = parse_blocks("Line one\nline two\n===\n");
+        let ContentBlock::Heading { content, .. } = &blocks[0] else {
+            panic!("expected a heading, got {blocks:?}");
+        };
+        assert_eq!(content, "Line one line two");
+    }
 
     #[test]
     fn test_parse_paragraph() {

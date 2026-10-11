@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Links in Markdown tables.** Inside a table Obsidian writes the alias pipe escaped, `[[Note\|Shown]]` and `![[image.png\|300]]`. TurboVault kept the backslash, so these came out as links to `Note\` and `image.png\` in link listings, broken-link reports and attachment checks.
 - **Markdown links in properties.** Obsidian 1.11 treats a Markdown link in a text or list property, `source: "[Paper](paper.md)"`, as a link. TurboVault only found wikilinks there, so these never showed up as links or backlinks.
+- **`parse_headings` reports a heading's text without an image's alt** ([#78](https://github.com/Epistates/turbovault/issues/78)). 2.2.0 fixed this in the block parser, but the heading list, which is what an outline prints and what anchors are cut from, still appended the alt: `# Title ![a](a.png)` was `Title a` with an anchor of `title-a`, disagreeing with the block parser's `Title`. A heading that is only an image now has no text and no anchor there too, the same as in the block parser.
+- **A tight list item keeps the space at its line breaks.** Its text is not in a paragraph, so the soft-break handling never saw it, and `- first line` followed by an indented `continued` came back as `first linecontinued`, in both `content` and `inline`.
+- **A setext heading spanning lines reads as one spaced heading** in both parsers, `Line one line two` rather than `Line oneline two`.
 
 ## [3.2.0] - 2026-10-05
 
