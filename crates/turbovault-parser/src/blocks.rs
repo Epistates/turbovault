@@ -268,6 +268,11 @@ struct BlockParserState {
     /// Document line the buffering blockquote started on, so the re-parse of
     /// its raw text can number its blocks from there instead of from zero.
     blockquote_start_line: usize,
+    /// When this parse is a blockquote's re-parse and that quote sits inside
+    /// a list item, the line the outermost such item starts on. Elements in
+    /// the quote measure their `line_offset` from it, so they agree with the
+    /// item's other elements.
+    outer_item_line: Option<usize>,
     paragraph_buffer: String,
     inline_buffer: Vec<InlineElement>,
     /// Lists open in the main document tree, outermost first.
@@ -312,11 +317,12 @@ struct BlockParserState {
 }
 
 impl BlockParserState {
-    fn new(start_line: usize) -> Self {
+    fn new(start_line: usize, outer_item_line: Option<usize>) -> Self {
         Self {
             current_line: start_line,
             current_end_line: start_line,
             blockquote_start_line: start_line,
+            outer_item_line,
             paragraph_buffer: String::new(),
             inline_buffer: Vec::new(),
             list_stack: Vec::new(),
@@ -387,9 +393,15 @@ impl BlockParserState {
             ordered: frame.ordered,
             items: frame.items,
         };
+        self.push_to_container(blocks, list_block);
+    }
+
+    /// Attaches a finished block to whatever encloses it: the innermost open
+    /// item's own blocks when there is one, the top-level `blocks` otherwise.
+    fn push_to_container(&mut self, blocks: &mut Vec<ContentBlock>, block: ContentBlock) {
         match self.item_stack.last_mut() {
-            Some(item) => item.blocks.push(list_block),
-            None => blocks.push(list_block),
+            Some(item) => item.blocks.push(block),
+            None => blocks.push(block),
         }
     }
 
@@ -413,25 +425,40 @@ impl BlockParserState {
         }
     }
 
+    /// Closes the buffering blockquote into the block it re-parses to, or
+    /// `None` when it collected no text.
+    fn take_blockquote(&mut self) -> Option<ContentBlock> {
+        if !(self.in_blockquote && !self.blockquote_buffer.is_empty()) {
+            return None;
+        }
+        // Paragraph ends inside the quote append a blank-line separator,
+        // which leaves a trailing one on the last paragraph. It carries no
+        // meaning and would show up in every consumer's `content`.
+        let content = self.blockquote_buffer.trim_end().to_string();
+        // Numbered from the quote's own line, not from zero. The re-parse
+        // rebuilds the quote line for line, so a block inside it lands on
+        // the document line it was written on. Parsing the fragment cold
+        // reported every quoted fence as `start_line: 0`, which put it
+        // before the start of the document for any consumer filtering on
+        // position.
+        //
+        // A quote inside a list item also hands down the line the outermost
+        // item starts on, so a link inside the quote reports its
+        // `line_offset` on the same scale as every other element the item
+        // collects, rather than none at all.
+        let nested_blocks =
+            parse_blocks_anchored(&content, self.blockquote_start_line, self.item_anchor());
+        self.blockquote_buffer.clear();
+        self.in_blockquote = false;
+        Some(ContentBlock::Blockquote {
+            content,
+            blocks: nested_blocks,
+        })
+    }
+
     fn flush_blockquote(&mut self, blocks: &mut Vec<ContentBlock>) {
-        if self.in_blockquote && !self.blockquote_buffer.is_empty() {
-            // Paragraph ends inside the quote append a blank-line separator,
-            // which leaves a trailing one on the last paragraph. It carries no
-            // meaning and would show up in every consumer's `content`.
-            let content = self.blockquote_buffer.trim_end().to_string();
-            // Numbered from the quote's own line, not from zero. The re-parse
-            // rebuilds the quote line for line, so a block inside it lands on
-            // the document line it was written on. Parsing the fragment cold
-            // reported every quoted fence as `start_line: 0`, which put it
-            // before the start of the document for any consumer filtering on
-            // position.
-            let nested_blocks = parse_blocks_from_line(&content, self.blockquote_start_line);
-            blocks.push(ContentBlock::Blockquote {
-                content,
-                blocks: nested_blocks,
-            });
-            self.blockquote_buffer.clear();
-            self.in_blockquote = false;
+        if let Some(quote) = self.take_blockquote() {
+            blocks.push(quote);
         }
     }
 
@@ -567,9 +594,15 @@ impl BlockParserState {
     /// item's aggregated `inline` (see `collect_inline_elements`) tell how far
     /// into the source a given element actually is.
     fn item_line_offset(&self) -> Option<usize> {
-        self.item_stack
-            .first()
-            .map(|frame| self.current_line.saturating_sub(frame.start_line))
+        self.item_anchor()
+            .map(|anchor| self.current_line.saturating_sub(anchor))
+    }
+
+    /// Source line of the outermost list item enclosing the current event,
+    /// including one outside this parse when this is a blockquote's re-parse.
+    fn item_anchor(&self) -> Option<usize> {
+        self.outer_item_line
+            .or_else(|| self.item_stack.first().map(|frame| frame.start_line))
     }
 
     /// The inline list the enclosing container collects into. A heading keeps
@@ -832,7 +865,13 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             state.in_blockquote = true;
         }
         Event::End(TagEnd::BlockQuote(_)) => {
-            state.flush_blockquote(blocks);
+            // A quote inside a list item is one of that item's blocks. Sending
+            // it to the top-level `blocks` put it ahead of the list it was
+            // written in, since the list itself only lands there when it
+            // closes, and left the item with no trace of it.
+            if let Some(quote) = state.take_blockquote() {
+                state.push_to_container(blocks, quote);
+            }
             // `flush_blockquote` only resets the flag when it had something to
             // emit, so a quote that produced no text (`>` on a line by itself)
             // left it set and every block after it was swallowed into a quote
@@ -1311,6 +1350,17 @@ fn line_index_of(starts: &[usize], offset: usize) -> usize {
 ///
 /// Use this when you need accurate line numbers for nested content.
 pub fn parse_blocks_from_line(markdown: &str, start_line: usize) -> Vec<ContentBlock> {
+    parse_blocks_anchored(markdown, start_line, None)
+}
+
+/// [`parse_blocks_from_line`], for a fragment that sits inside a list item
+/// starting on `outer_item_line`, so the fragment's inline elements report
+/// their `line_offset` relative to that item.
+fn parse_blocks_anchored(
+    markdown: &str,
+    start_line: usize,
+    outer_item_line: Option<usize>,
+) -> Vec<ContentBlock> {
     // Pre-process wikilinks
     let preprocessed = preprocess_wikilinks(markdown);
 
@@ -1334,7 +1384,7 @@ pub fn parse_blocks_from_line(markdown: &str, start_line: usize) -> Vec<ContentB
     let line_starts = line_start_offsets(&processed_markdown);
     let parser = Parser::new_ext(&processed_markdown, options).into_offset_iter();
     let mut blocks = Vec::new();
-    let mut state = BlockParserState::new(start_line);
+    let mut state = BlockParserState::new(start_line, outer_item_line);
 
     for (event, span) in parser {
         state.current_line = start_line + line_index_of(&line_starts, span.start);

@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`parse_headings` reports a heading's text without an image's alt** ([#78](https://github.com/Epistates/turbovault/issues/78)). 2.2.0 fixed this in the block parser, but the heading list, which is what an outline prints and what anchors are cut from, still appended the alt: `# Title ![a](a.png)` was `Title a` with an anchor of `title-a`, disagreeing with the block parser's `Title`. A heading that is only an image now has no text and no anchor there too, the same as in the block parser.
 - **A tight list item keeps the space at its line breaks.** Its text is not in a paragraph, so the soft-break handling never saw it, and `- first line` followed by an indented `continued` came back as `first linecontinued`, in both `content` and `inline`.
 - **A setext heading spanning lines reads as one spaced heading** in both parsers, `Line one line two` rather than `Line oneline two`.
+- **A blockquote inside a list item stays in that item.** It went to the top-level blocks instead, so `- item` followed by an indented `> quoted` came back as the quote *ahead of* the list, and the item had no trace of it. It's now one of the item's `blocks`, in source order among the others and at any depth, and the item's `inline` collects the quote's links like any other nested block's, with a `line_offset` measured from the item as usual.
 
 ## [3.2.0] - 2026-10-05
 

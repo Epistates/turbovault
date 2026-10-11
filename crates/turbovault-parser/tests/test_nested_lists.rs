@@ -289,3 +289,118 @@ fn a_nested_task_checkbox_in_a_quote_keeps_its_own_state() {
     assert_eq!(inner_items[0].checked, Some(true));
     assert_eq!(inner_items[0].content, "inner");
 }
+
+// ---------------------------------------------------------------------------
+// A blockquote inside an item
+// ---------------------------------------------------------------------------
+//
+// The quote's end used to flush straight to the top-level blocks, ignoring the
+// open item, so `- item` / `  > quoted` came back as the quote *ahead of* the
+// list it was written inside, and the item had no trace of it.
+
+/// The single blockquote in `item`'s own blocks, as `(content, blocks)`.
+fn item_quote(item: &ListItem) -> (String, Vec<ContentBlock>) {
+    match item.blocks.as_slice() {
+        [ContentBlock::Blockquote { content, blocks }] => (content.clone(), blocks.clone()),
+        other => panic!(
+            "expected item {:?} to hold a single blockquote, got {other:?}",
+            item.content
+        ),
+    }
+}
+
+#[test]
+fn a_quote_in_a_loose_item_lands_in_that_items_blocks() {
+    let (_, items) = top_list("- item\n\n  > quoted\n- next\n");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].content, "item");
+    let (content, _) = item_quote(&items[0]);
+    assert_eq!(content, "quoted");
+    assert_eq!(items[1].content, "next");
+    assert!(items[1].blocks.is_empty());
+}
+
+#[test]
+fn a_quote_in_a_tight_item_lands_in_that_items_blocks() {
+    let (_, items) = top_list("- item\n  > quoted\n- next\n");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].content, "item");
+    let (content, _) = item_quote(&items[0]);
+    assert_eq!(content, "quoted");
+    assert_eq!(items[1].content, "next");
+}
+
+/// The quote takes its place among the item's other blocks in source order,
+/// neither ahead of a paragraph written before it nor after one written below.
+#[test]
+fn a_quote_keeps_its_place_among_the_items_other_blocks() {
+    let (_, items) = top_list("- item\n\n  before\n\n  > quoted\n\n  after\n- next\n");
+    let kinds: Vec<String> = items[0]
+        .blocks
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Paragraph { content, .. } => format!("p:{content}"),
+            ContentBlock::Blockquote { content, .. } => format!("q:{content}"),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(kinds, ["p:before", "q:quoted", "p:after"]);
+}
+
+#[test]
+fn a_quote_in_a_nested_item_lands_in_the_nested_items_blocks() {
+    let (_, items) = top_list("- outer\n  - inner\n\n    > deep\n- next\n");
+    assert_eq!(items.len(), 2);
+    let (_, inner_items) = nested_list(&items[0]);
+    assert_eq!(inner_items[0].content, "inner");
+    let (content, _) = item_quote(&inner_items[0]);
+    assert_eq!(content, "deep");
+    assert_eq!(items[1].content, "next");
+}
+
+#[test]
+fn a_list_in_a_quote_in_an_item_stays_inside_the_quote() {
+    let (_, items) = top_list("- item\n  > - a\n  > - b\n- next\n");
+    assert_eq!(items.len(), 2);
+    let (_, quoted) = item_quote(&items[0]);
+    let [ContentBlock::List { items: inner, .. }] = quoted.as_slice() else {
+        panic!("expected a single list inside the quote, got {quoted:?}");
+    };
+    let contents: Vec<_> = inner.iter().map(|i| i.content.as_str()).collect();
+    assert_eq!(contents, ["a", "b"]);
+    assert_eq!(items[1].content, "next");
+}
+
+/// An item's `inline` gathers its nested blocks' elements, a quote's
+/// included, once each and on the same line scale as every other nested
+/// element: lines below the outermost item's marker.
+#[test]
+fn a_link_in_a_quote_in_an_item_is_collected_once_with_its_line() {
+    let (_, items) = top_list("- item\n  > see [quoted](https://q.example)\n");
+    let links: Vec<_> = items[0]
+        .inline
+        .iter()
+        .filter_map(|e| match e {
+            InlineElement::Link {
+                text, line_offset, ..
+            } => Some((text.as_str(), *line_offset)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(links, [("quoted", Some(1))]);
+}
+
+#[test]
+fn a_fence_in_a_quote_in_an_item_reports_real_lines() {
+    let (_, items) = top_list("- item\n\n  > ```sh\n  > run\n  > ```\n");
+    let (_, quoted) = item_quote(&items[0]);
+    assert_eq!(
+        quoted,
+        vec![ContentBlock::Code {
+            language: Some("sh".to_string()),
+            content: "run".to_string(),
+            start_line: 3,
+            end_line: 5,
+        }]
+    );
+}
