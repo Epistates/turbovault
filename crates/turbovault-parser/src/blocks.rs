@@ -287,6 +287,9 @@ struct BlockParserState {
     /// had accumulated, so `- item ![a](a.png)` lost its "item " prefix.
     image_title: String,
     blockquote_buffer: String,
+    /// How many quotes are open, the buffering one included. Only the
+    /// outermost one's end flushes the buffer.
+    blockquote_depth: usize,
     /// Lists open inside the buffering blockquote, outermost first.
     quoted_lists: Vec<QuotedList>,
     /// Content column of each open item in `quoted_lists`, so a nested list
@@ -332,6 +335,7 @@ impl BlockParserState {
             code_start_line: 0,
             image_title: String::new(),
             blockquote_buffer: String::new(),
+            blockquote_depth: 0,
             quoted_lists: Vec::new(),
             quoted_item_indents: Vec::new(),
             table_headers: Vec::new(),
@@ -863,8 +867,18 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.blockquote_start_line = state.current_line;
             }
             state.in_blockquote = true;
+            state.blockquote_depth += 1;
+        }
+        // A nested quote's end is not the buffer's. Flushing here closed the
+        // outer quote with it: the rest of the outer quote came back as
+        // top-level blocks, and the ends of any quoted item and list still
+        // open around the nested quote reached the main tree as if they were
+        // its own, closing a real list early and losing the items after it.
+        Event::End(TagEnd::BlockQuote(_)) if state.blockquote_depth > 1 => {
+            state.blockquote_depth -= 1;
         }
         Event::End(TagEnd::BlockQuote(_)) => {
+            state.blockquote_depth = 0;
             // A quote inside a list item is one of that item's blocks. Sending
             // it to the top-level `blocks` put it ahead of the list it was
             // written in, since the list itself only lands there when it

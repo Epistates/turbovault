@@ -123,6 +123,11 @@ fn top_level() {
 > outer quote
 >
 > > nested quote
+>
+> back in the outer quote
+
+- > - > a quote nested in a quoted item
+- the item after it
 
 | Column A | Column B | Column C |
 |:---------|:--------:|---------:|

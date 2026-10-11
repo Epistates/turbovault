@@ -404,3 +404,17 @@ fn a_fence_in_a_quote_in_an_item_reports_real_lines() {
         }]
     );
 }
+
+/// Closing a quote nested inside a quoted item used to close the outer quote
+/// too. The quoted item's and list's own ends then reached the main tree as if
+/// they were the enclosing item's, which closed the real list early and lost
+/// every item after it.
+#[test]
+fn a_quote_nested_in_a_quoted_item_does_not_end_the_enclosing_list() {
+    let (_, items) = top_list("- > - > x\n- next\n");
+    let contents: Vec<_> = items.iter().map(|i| i.content.as_str()).collect();
+    assert_eq!(contents.len(), 2, "expected two items, got {items:?}");
+    assert_eq!(contents[1], "next");
+    let (content, _) = item_quote(&items[0]);
+    assert_eq!(content, "- x");
+}

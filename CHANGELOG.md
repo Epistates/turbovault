@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A tight list item keeps the space at its line breaks.** Its text is not in a paragraph, so the soft-break handling never saw it, and `- first line` followed by an indented `continued` came back as `first linecontinued`, in both `content` and `inline`.
 - **A setext heading spanning lines reads as one spaced heading** in both parsers, `Line one line two` rather than `Line oneline two`.
 - **A blockquote inside a list item stays in that item.** It went to the top-level blocks instead, so `- item` followed by an indented `> quoted` came back as the quote *ahead of* the list, and the item had no trace of it. It's now one of the item's `blocks`, in source order among the others and at any depth, and the item's `inline` collects the quote's links like any other nested block's, with a `line_offset` measured from the item as usual.
+- **A quote nested in a quote no longer ends the outer one.** Closing the nested quote closed both, so whatever the outer quote said after it came back as a top-level paragraph, sometimes carrying an image from an earlier quote in its `inline`. Inside a list it was worse: `- > - > x` followed by `- next` lost `next` entirely, because the quoted item's own end was taken for the list item's. The nested quote's text still merges into the outer quote's, as before.
 
 ## [3.2.0] - 2026-10-05
 

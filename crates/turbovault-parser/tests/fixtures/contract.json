@@ -1059,10 +1059,70 @@
           }
         ],
         "type": "paragraph"
+      },
+      {
+        "content": "back in the outer quote",
+        "inline": [
+          {
+            "type": "text",
+            "value": "back in the outer quote"
+          }
+        ],
+        "type": "paragraph"
       }
     ],
-    "content": "outer quote\n\nnested quote",
+    "content": "outer quote\n\nnested quote\n\nback in the outer quote",
     "type": "blockquote"
+  },
+  {
+    "items": [
+      {
+        "blocks": [
+          {
+            "blocks": [
+              {
+                "items": [
+                  {
+                    "checked": null,
+                    "content": "a quote nested in a quoted item",
+                    "inline": [
+                      {
+                        "type": "text",
+                        "value": "a quote nested in a quoted item"
+                      }
+                    ]
+                  }
+                ],
+                "ordered": false,
+                "type": "list"
+              }
+            ],
+            "content": "- a quote nested in a quoted item",
+            "type": "blockquote"
+          }
+        ],
+        "checked": null,
+        "content": "",
+        "inline": [
+          {
+            "type": "text",
+            "value": "a quote nested in a quoted item"
+          }
+        ]
+      },
+      {
+        "checked": null,
+        "content": "the item after it",
+        "inline": [
+          {
+            "type": "text",
+            "value": "the item after it"
+          }
+        ]
+      }
+    ],
+    "ordered": false,
+    "type": "list"
   },
   {
     "alignments": [
@@ -1118,9 +1178,9 @@
   },
   {
     "content": "fence with no language, after the details block",
-    "end_line": 141,
+    "end_line": 146,
     "language": null,
-    "start_line": 139,
+    "start_line": 144,
     "type": "code"
   },
   {
