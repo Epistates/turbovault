@@ -210,6 +210,18 @@ fn extract_summary(details_content: &str) -> String {
 // Parser state machine
 // ============================================================================
 
+/// Deepest a list nests inside another in the blocks [`parse_blocks`]
+/// returns, counted separately in the document and inside each blockquote.
+/// An item nested deeper contributes its text and blocks to the deepest item
+/// kept rather than opening a level of its own.
+///
+/// This is a bound on cost, not a style rule. A quote is rebuilt as markdown,
+/// and markdown says a list is nested only by indenting it, so a quote that
+/// nests `> - > - …` a level per four bytes rebuilt as text quadratic in its
+/// size. Every consumer that walks the tree recursively also pays for its
+/// depth on the stack. Thirty-two levels is far past anything written by hand.
+pub const MAX_LIST_DEPTH: usize = 32;
+
 /// One list level open inside a blockquote that is still buffering.
 ///
 /// A quote is rebuilt by re-parsing its raw text, so a list inside one has to
@@ -279,6 +291,9 @@ struct BlockParserState {
     list_stack: Vec<ListFrame>,
     /// List items open in the main document tree, outermost first.
     item_stack: Vec<ItemFrame>,
+    /// Lists open past [`MAX_LIST_DEPTH`] in the main document tree, which
+    /// fold into the deepest item kept instead of nesting.
+    list_overflow: usize,
     code_buffer: String,
     code_language: Option<String>,
     code_start_line: usize,
@@ -290,8 +305,16 @@ struct BlockParserState {
     /// How many quotes are open, the buffering one included. Only the
     /// outermost one's end flushes the buffer.
     blockquote_depth: usize,
+    /// Newlines in `blockquote_buffer[..quoted_scanned]`. Finding the buffer's
+    /// height then only reads what was written since the last time; reading
+    /// all of it for every block made a long quote quadratic.
+    quoted_newlines: usize,
+    quoted_scanned: usize,
     /// Lists open inside the buffering blockquote, outermost first.
     quoted_lists: Vec<QuotedList>,
+    /// Lists open past [`MAX_LIST_DEPTH`] inside the buffering blockquote,
+    /// written as part of the deepest item kept instead of nesting.
+    quoted_list_overflow: usize,
     /// Content column of each open item in `quoted_lists`, so a nested list
     /// indents under its parent's marker instead of a fixed two spaces.
     quoted_item_indents: Vec<String>,
@@ -330,13 +353,17 @@ impl BlockParserState {
             inline_buffer: Vec::new(),
             list_stack: Vec::new(),
             item_stack: Vec::new(),
+            list_overflow: 0,
             code_buffer: String::new(),
             code_language: None,
             code_start_line: 0,
             image_title: String::new(),
             blockquote_buffer: String::new(),
             blockquote_depth: 0,
+            quoted_newlines: 0,
+            quoted_scanned: 0,
             quoted_lists: Vec::new(),
+            quoted_list_overflow: 0,
             quoted_item_indents: Vec::new(),
             table_headers: Vec::new(),
             table_alignments: Vec::new(),
@@ -453,6 +480,8 @@ impl BlockParserState {
         let nested_blocks =
             parse_blocks_anchored(&content, self.blockquote_start_line, self.item_anchor());
         self.blockquote_buffer.clear();
+        self.quoted_newlines = 0;
+        self.quoted_scanned = 0;
         self.in_blockquote = false;
         Some(ContentBlock::Blockquote {
             content,
@@ -467,8 +496,11 @@ impl BlockParserState {
     }
 
     /// Document line the next character written to the quote buffer lands on.
-    fn next_quoted_line(&self) -> usize {
-        self.blockquote_start_line + self.blockquote_buffer.matches('\n').count()
+    fn next_quoted_line(&mut self) -> usize {
+        let unscanned = &self.blockquote_buffer.as_bytes()[self.quoted_scanned..];
+        self.quoted_newlines += unscanned.iter().filter(|&&b| b == b'\n').count();
+        self.quoted_scanned = self.blockquote_buffer.len();
+        self.blockquote_start_line + self.quoted_newlines
     }
 
     /// Pads the quote buffer with newlines until its next write lands on
@@ -523,6 +555,13 @@ impl BlockParserState {
     }
 
     fn open_quoted_list(&mut self, start_number: Option<u64>, source_line: usize) {
+        // Past the limit a list writes no markers and no indent of its own;
+        // see `open_quoted_item`. Indenting every level two columns further
+        // is what made `> - > - …` rebuild as text quadratic in its length.
+        if self.quoted_list_overflow > 0 || self.quoted_lists.len() >= MAX_LIST_DEPTH {
+            self.quoted_list_overflow += 1;
+            return;
+        }
         let indent = self.quoted_item_indents.last().cloned().unwrap_or_default();
         if self.quoted_lists.is_empty() {
             self.sync_quoted_line(source_line);
@@ -538,10 +577,21 @@ impl BlockParserState {
     }
 
     fn close_quoted_list(&mut self) {
-        self.quoted_lists.pop();
+        if self.quoted_list_overflow > 0 {
+            self.quoted_list_overflow -= 1;
+        } else {
+            self.quoted_lists.pop();
+        }
     }
 
     fn open_quoted_item(&mut self, source_line: usize) {
+        if self.quoted_list_overflow > 0 {
+            // An item past the limit is written as more of the deepest item
+            // kept: a continuation line at its content column, or nothing at
+            // all when it opens on a line that item already occupies.
+            self.open_quoted_block(source_line);
+            return;
+        }
         if self.quoted_lists.is_empty() {
             return;
         }
@@ -565,6 +615,9 @@ impl BlockParserState {
     }
 
     fn close_quoted_item(&mut self) {
+        if self.quoted_list_overflow > 0 {
+            return;
+        }
         self.quoted_item_indents.pop();
         if !self.blockquote_buffer.ends_with('\n') {
             self.blockquote_buffer.push('\n');
@@ -783,11 +836,31 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         Event::End(TagEnd::Item) if state.in_blockquote => {
             state.close_quoted_item();
         }
+        // A checkbox past the limit has no item of its own to mark.
+        Event::TaskListMarker(_) if state.in_blockquote && state.quoted_list_overflow > 0 => {}
         Event::TaskListMarker(checked) if state.in_blockquote => {
             state
                 .blockquote_buffer
                 .push_str(if checked { "[x] " } else { "[ ] " });
         }
+        // Past `MAX_LIST_DEPTH` a list opens no level of its own. Its items'
+        // text and blocks fold into the deepest item kept, which is still
+        // open around them, so nothing is lost but the nesting.
+        Event::Start(Tag::List(_))
+            if state.list_overflow > 0 || state.list_stack.len() >= MAX_LIST_DEPTH =>
+        {
+            state.list_overflow += 1;
+        }
+        Event::End(TagEnd::List(_)) if state.list_overflow > 0 => {
+            state.list_overflow -= 1;
+        }
+        Event::Start(Tag::Item) if state.list_overflow > 0 => {
+            // Kept apart from the text before it, the way a line break would.
+            if !state.paragraph_buffer.is_empty() {
+                state.add_inline_text(" ");
+            }
+        }
+        Event::End(TagEnd::Item) | Event::TaskListMarker(_) if state.list_overflow > 0 => {}
         Event::Start(Tag::List(start_number)) => {
             state.list_stack.push(ListFrame {
                 ordered: start_number.is_some(),
@@ -816,20 +889,25 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             let Some(frame) = state.item_stack.pop() else {
                 return;
             };
-            let mut item_blocks = frame.blocks;
-            let (content, mut inline, remaining_blocks) = if !state.paragraph_buffer.is_empty() {
+            let mut remaining_blocks = frame.blocks;
+            // Only a leading paragraph is taken out, and it is moved rather
+            // than cloned: cloning `first()` to look at it deep-copied a
+            // nested list's whole subtree at every level it was nested in.
+            let (content, mut inline) = if !state.paragraph_buffer.is_empty() {
                 (
                     std::mem::take(&mut state.paragraph_buffer),
                     std::mem::take(&mut state.inline_buffer),
-                    item_blocks,
                 )
-            } else if let Some(ContentBlock::Paragraph { content, inline }) =
-                item_blocks.first().cloned()
-            {
-                let remaining: Vec<ContentBlock> = item_blocks.drain(1..).collect();
-                (content, inline, remaining)
+            } else if matches!(
+                remaining_blocks.first(),
+                Some(ContentBlock::Paragraph { .. })
+            ) {
+                match remaining_blocks.remove(0) {
+                    ContentBlock::Paragraph { content, inline } => (content, inline),
+                    _ => (String::new(), Vec::new()),
+                }
             } else {
-                (String::new(), Vec::new(), std::mem::take(&mut item_blocks))
+                (String::new(), Vec::new())
             };
 
             // Collect inline elements from all nested blocks (paragraphs, lists, etc.)
@@ -892,6 +970,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             // that had already closed.
             state.in_blockquote = false;
             state.quoted_lists.clear();
+            state.quoted_list_overflow = 0;
             state.quoted_item_indents.clear();
         }
         Event::Start(Tag::Table(alignments)) => {
