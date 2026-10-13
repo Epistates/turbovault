@@ -300,7 +300,9 @@ mod tests {
             .collect();
         assert_eq!(
             days,
-            ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "31st"]
+            [
+                "1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "31st"
+            ]
         );
     }
 }

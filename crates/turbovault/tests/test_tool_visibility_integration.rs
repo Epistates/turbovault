@@ -47,7 +47,7 @@ fn mutating_tool_descriptions_match_current_safety_contract() {
     let move_description = move_note.description.as_deref().unwrap_or_default();
     assert!(
         move_description
-            .contains("update inbound links (wikilinks and Markdown links) atomically by default")
+            .contains("update inbound links (wikilinks, Markdown links and canvas references) atomically by default")
     );
     assert!(move_description.contains("update_backlinks=false"));
 }

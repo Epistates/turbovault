@@ -104,23 +104,23 @@ pub struct TaskMatch {
     /// The description, without its Tasks metadata.
     pub text: String,
     pub priority: Priority,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recurrence: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_ref: Option<String>,
 }
 
@@ -200,13 +200,20 @@ pub async fn query_tasks(manager: &Arc<VaultManager>, query: &TaskQuery) -> Resu
         }
     }
     matches.sort_by(|a, b| {
-        (a.due.is_none(), &a.due, std::cmp::Reverse(a.priority), &a.path, a.line).cmp(&(
-            b.due.is_none(),
-            &b.due,
-            std::cmp::Reverse(b.priority),
-            &b.path,
-            b.line,
-        ))
+        (
+            a.due.is_none(),
+            &a.due,
+            std::cmp::Reverse(a.priority),
+            &a.path,
+            a.line,
+        )
+            .cmp(&(
+                b.due.is_none(),
+                &b.due,
+                std::cmp::Reverse(b.priority),
+                &b.path,
+                b.line,
+            ))
     });
     Ok(matches)
 }

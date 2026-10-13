@@ -98,7 +98,9 @@ impl Env<'_> {
             _ => return None,
         };
         let resolved = self.graph.resolve(&target)?;
-        self.files.iter().position(|file| &file.full_path == resolved)
+        self.files
+            .iter()
+            .position(|file| &file.full_path == resolved)
     }
 }
 
@@ -343,14 +345,15 @@ impl<'e, 'a> Row<'e, 'a> {
             "today" => Value::Date(self.env.now.date().and_time(chrono::NaiveTime::MIN)),
             "date" => match values.first() {
                 Some(Value::Date(at)) => Value::Date(*at),
-                Some(Value::Str(s)) => Value::Date(
-                    parse_date(s).ok_or_else(|| format!("date({s:?}) is not a date"))?,
-                ),
+                Some(Value::Str(s)) => {
+                    Value::Date(parse_date(s).ok_or_else(|| format!("date({s:?}) is not a date"))?)
+                }
                 _ => return Err("date() takes a date string".to_string()),
             },
             "duration" => match values.first() {
                 Some(Value::Str(s)) => Value::Duration(
-                    parse_duration(s).ok_or_else(|| format!("duration({s:?}) is not a duration"))?,
+                    parse_duration(s)
+                        .ok_or_else(|| format!("duration({s:?}) is not a duration"))?,
                 ),
                 Some(Value::Duration(d)) => Value::Duration(*d),
                 _ => return Err("duration() takes a string such as \"1 day\"".to_string()),
@@ -413,11 +416,9 @@ impl<'e, 'a> Row<'e, 'a> {
             "toString" => return Ok(Value::Str(to_text(receiver))),
             "isType" => {
                 let wanted = self.args(args)?;
-                return Ok(Value::Bool(
-                    wanted
-                        .first()
-                        .is_some_and(|t| to_text(t).eq_ignore_ascii_case(type_name(receiver))),
-                ));
+                return Ok(Value::Bool(wanted.first().is_some_and(|t| {
+                    to_text(t).eq_ignore_ascii_case(type_name(receiver))
+                })));
             }
             _ => {}
         }
@@ -446,7 +447,7 @@ impl<'e, 'a> Row<'e, 'a> {
             (Value::Str(s), "trim") => Value::Str(s.trim().to_string()),
             (Value::Str(s), "replace") => Value::Str(s.replacen(&text_arg(0), &text_arg(1), 1)),
             (Value::Str(s), "repeat") => {
-                Value::Str(s.repeat(number_arg(0).unwrap_or(0.0).max(0.0).min(10_000.0) as usize))
+                Value::Str(s.repeat(number_arg(0).unwrap_or(0.0).clamp(0.0, 10_000.0) as usize))
             }
             (Value::Str(s), "reverse") => Value::Str(s.chars().rev().collect()),
             (Value::Str(s), "slice") => {
@@ -528,9 +529,9 @@ impl<'e, 'a> Row<'e, 'a> {
             (Value::Date(_), "isEmpty") => Value::Bool(false),
             (Value::Date(at), "date") => Value::Date(at.date().and_time(chrono::NaiveTime::MIN)),
             (Value::Date(at), "time") => Value::Str(at.format("%H:%M:%S").to_string()),
-            (Value::Date(at), "format") => Value::Str(
-                crate::moment_format::format(*at, &text_arg(0))?,
-            ),
+            (Value::Date(at), "format") => {
+                Value::Str(crate::moment_format::format(*at, &text_arg(0))?)
+            }
 
             (Value::File(index), method) => {
                 let file = &self.env.files[*index];
@@ -546,8 +547,7 @@ impl<'e, 'a> Row<'e, 'a> {
                         let folder = text_arg(0);
                         let folder = folder.trim_matches('/');
                         Value::Bool(
-                            folder.is_empty()
-                                || file.path.starts_with(&format!("{folder}/")),
+                            folder.is_empty() || file.path.starts_with(&format!("{folder}/")),
                         )
                     }
                     "hasProperty" => Value::Bool(file.properties.contains_key(&text_arg(0))),
@@ -603,7 +603,8 @@ impl<'e, 'a> Row<'e, 'a> {
         let mut out = Vec::new();
         for (index, item) in items.iter().enumerate() {
             self.vars.push(("value".to_string(), item.clone()));
-            self.vars.push(("index".to_string(), Value::Number(index as f64)));
+            self.vars
+                .push(("index".to_string(), Value::Number(index as f64)));
             self.vars.push(("acc".to_string(), acc.clone()));
             let result = self.eval(body);
             self.vars.truncate(self.vars.len() - 3);
@@ -615,7 +616,11 @@ impl<'e, 'a> Row<'e, 'a> {
                 _ => {}
             }
         }
-        Ok(if name == "reduce" { acc } else { Value::List(out) })
+        Ok(if name == "reduce" {
+            acc
+        } else {
+            Value::List(out)
+        })
     }
 
     fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> EvalResult {
@@ -720,7 +725,11 @@ fn arithmetic(op: BinaryOp, l: &Value, r: &Value) -> EvalResult {
         (Value::Number(a), Value::Number(b)) => Value::Number(a + f64::from(sign) * b),
         (Value::Date(at), other) if duration(other).is_some() => {
             let d = duration(other).unwrap_or_default();
-            Value::Date(shift(*at, d.months * i64::from(sign), d.millis * i64::from(sign))?)
+            Value::Date(shift(
+                *at,
+                d.months * i64::from(sign),
+                d.millis * i64::from(sign),
+            )?)
         }
         (other, Value::Date(at)) if op == BinaryOp::Add && duration(other).is_some() => {
             let d = duration(other).unwrap_or_default();
@@ -954,11 +963,9 @@ pub fn from_json(value: &serde_json::Value) -> Value {
             None => Value::Str(s.clone()),
         },
         serde_json::Value::Array(items) => Value::List(items.iter().map(from_json).collect()),
-        serde_json::Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), from_json(v)))
-                .collect(),
-        ),
+        serde_json::Value::Object(map) => {
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), from_json(v))).collect())
+        }
     }
 }
 
@@ -1064,7 +1071,10 @@ mod tests {
         );
         assert_eq!(parse_duration("1M").map(|d| d.months), Some(1));
         assert_eq!(parse_duration("2m").map(|d| d.millis), Some(120_000));
-        assert_eq!(parse_duration("1 year 2 months").map(|d| d.months), Some(14));
+        assert_eq!(
+            parse_duration("1 year 2 months").map(|d| d.months),
+            Some(14)
+        );
         assert_eq!(parse_duration("-1w").map(|d| d.millis), Some(-604_800_000));
         assert_eq!(parse_duration("soon"), None);
     }

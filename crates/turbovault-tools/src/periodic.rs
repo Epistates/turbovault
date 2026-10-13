@@ -26,8 +26,8 @@ use std::sync::Arc;
 use chrono::{Datelike, Days, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use turbovault_core::prelude::*;
 use turbovault_core::Precondition;
+use turbovault_core::prelude::*;
 use turbovault_vault::VaultManager;
 
 use crate::moment_format::{format, start_of_locale_week, uses_iso_weeks};
@@ -74,7 +74,7 @@ pub struct PeriodSettings {
     pub folder: String,
     pub format: String,
     /// The template note, vault-relative with its extension, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
     /// `periodic-notes`, `daily-notes` or `default`.
     pub source: &'static str,
@@ -94,10 +94,10 @@ pub struct PeriodicNote {
     pub created: bool,
     pub settings: PeriodSettings,
     /// The note's markdown, when it exists.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// Its hash, for a later write's `expected_hash`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hash: Option<String>,
 }
 
@@ -110,7 +110,10 @@ pub fn settings(root: &Path, period: Period) -> Result<PeriodSettings> {
     if plugin_enabled
         && let Some(data) = read_json(&config.join("plugins/periodic-notes/data.json"))?
         && let Some(entry) = data.get(period.key())
-        && entry.get("enabled").and_then(Value::as_bool).unwrap_or(false)
+        && entry
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     {
         return Ok(from_entry(entry, period, "periodic-notes"));
     }
@@ -174,7 +177,10 @@ fn read_json(path: &Path) -> Result<Option<Value>> {
         return Ok(None);
     }
     serde_json::from_str(&text).map(Some).map_err(|error| {
-        Error::config_error(format!("{} is not valid JSON: {error}", display_settings(path)))
+        Error::config_error(format!(
+            "{} is not valid JSON: {error}",
+            display_settings(path)
+        ))
     })
 }
 
@@ -259,16 +265,15 @@ pub async fn get_periodic_note(
         None if create => {
             let content = match &note.settings.template {
                 Some(template) => {
-                    let template_text = manager
-                        .read_file(Path::new(template))
-                        .await
-                        .map_err(|error| match error {
+                    let template_text = manager.read_file(Path::new(template)).await.map_err(
+                        |error| match error {
                             Error::FileNotFound { .. } => Error::not_found(format!(
                                 "template {template} (set for {} notes in Obsidian's settings)",
                                 period.key()
                             )),
                             other => other,
-                        })?;
+                        },
+                    )?;
                     let time_settings = template_formats(&root)?;
                     fill_template(
                         &template_text,
@@ -283,7 +288,12 @@ pub async fn get_periodic_note(
                 None => String::new(),
             };
             manager
-                .write_file(Path::new(&path), &content, Precondition::ExpectAbsent, message)
+                .write_file(
+                    Path::new(&path),
+                    &content,
+                    Precondition::ExpectAbsent,
+                    message,
+                )
                 .await?;
             note.exists = true;
             note.created = true;
@@ -308,7 +318,10 @@ fn template_formats(root: &Path) -> Result<(String, String)> {
             .unwrap_or(default)
             .to_string()
     };
-    Ok((text("dateFormat", "YYYY-MM-DD"), text("timeFormat", "HH:mm")))
+    Ok((
+        text("dateFormat", "YYYY-MM-DD"),
+        text("timeFormat", "HH:mm"),
+    ))
 }
 
 /// `template` with its variables filled for the note at `path`. A variable
@@ -344,10 +357,12 @@ fn fill_template(
         };
         let filled = match (name.to_lowercase().as_str(), period) {
             ("title", _) => Some(title.to_string()),
-            ("date", _) => Some(format(at, custom.unwrap_or(date_format)).map_err(Error::validation_error)?),
-            ("time", _) => Some(
-                format(now, custom.unwrap_or(time_format)).map_err(Error::validation_error)?,
-            ),
+            ("date", _) => {
+                Some(format(at, custom.unwrap_or(date_format)).map_err(Error::validation_error)?)
+            }
+            ("time", _) => {
+                Some(format(now, custom.unwrap_or(time_format)).map_err(Error::validation_error)?)
+            }
             ("yesterday", Period::Daily) => Some(
                 format(at - Days::new(1), custom.unwrap_or(note_format))
                     .map_err(Error::validation_error)?,
@@ -458,7 +473,11 @@ mod tests {
     #[test]
     fn periodic_notes_plugin_wins_when_enabled() {
         let dir = TempDir::new().unwrap();
-        write(dir.path(), ".obsidian/daily-notes.json", r#"{"folder":"Core"}"#);
+        write(
+            dir.path(),
+            ".obsidian/daily-notes.json",
+            r#"{"folder":"Core"}"#,
+        );
         write(
             dir.path(),
             ".obsidian/plugins/periodic-notes/data.json",
@@ -472,7 +491,10 @@ mod tests {
             r#"["periodic-notes"]"#,
         );
         let daily = settings(dir.path(), Period::Daily).unwrap();
-        assert_eq!((daily.source, daily.folder.as_str()), ("periodic-notes", "Plugin"));
+        assert_eq!(
+            (daily.source, daily.folder.as_str()),
+            ("periodic-notes", "Plugin")
+        );
         assert_eq!(daily.format, "YYYY-MM-DD");
         // A period the plugin has turned off falls back to the defaults.
         assert_eq!(settings_source(dir.path(), Period::Weekly), "default");
@@ -483,7 +505,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         write(dir.path(), ".obsidian/daily-notes.json", "{not json");
         let error = settings(dir.path(), Period::Daily).unwrap_err();
-        assert!(error.to_string().contains(".obsidian/daily-notes.json"), "{error}");
+        assert!(
+            error.to_string().contains(".obsidian/daily-notes.json"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -525,13 +550,18 @@ mod tests {
             ".obsidian/daily-notes.json",
             r#"{"folder":"Daily","template":"Templates/Day"}"#,
         );
-        write(dir.path(), "Templates/Day.md", "# {{title}}\n\n- [ ] plan\n");
+        write(
+            dir.path(),
+            "Templates/Day.md",
+            "# {{title}}\n\n- [ ] plan\n",
+        );
         let manager = manager(dir.path()).await;
         let now = day(2026, 10, 13).and_hms_opt(8, 0, 0).unwrap();
 
-        let missing = get_periodic_note(&manager, Period::Daily, day(2026, 10, 13), now, false, "m")
-            .await
-            .unwrap();
+        let missing =
+            get_periodic_note(&manager, Period::Daily, day(2026, 10, 13), now, false, "m")
+                .await
+                .unwrap();
         assert!(!missing.exists && missing.content.is_none());
         assert_eq!(missing.path, "Daily/2026-10-13.md");
 
@@ -539,7 +569,10 @@ mod tests {
             .await
             .unwrap();
         assert!(created.created && created.exists);
-        assert_eq!(created.content.as_deref(), Some("# 2026-10-13\n\n- [ ] plan\n"));
+        assert_eq!(
+            created.content.as_deref(),
+            Some("# 2026-10-13\n\n- [ ] plan\n")
+        );
 
         let again = get_periodic_note(&manager, Period::Daily, day(2026, 10, 13), now, true, "m")
             .await

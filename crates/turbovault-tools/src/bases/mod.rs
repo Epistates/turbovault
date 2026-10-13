@@ -174,9 +174,7 @@ fn parse_filter(value: &Json, at: &str) -> std::result::Result<Filter, String> {
             let (key, list) = match map.iter().next() {
                 Some(entry) if map.len() == 1 => entry,
                 _ => {
-                    return Err(format!(
-                        "{at} must be an expression or one of and, or, not"
-                    ));
+                    return Err(format!("{at} must be an expression or one of and, or, not"));
                 }
             };
             let Json::Array(items) = list else {
@@ -208,7 +206,11 @@ fn parse_sort_key(value: &Json, at: &str) -> std::result::Result<SortKey, String
         None => false,
         Some(d) if d.eq_ignore_ascii_case("asc") => false,
         Some(d) if d.eq_ignore_ascii_case("desc") => true,
-        Some(other) => return Err(format!("{at} has direction {other:?}; expected ASC or DESC")),
+        Some(other) => {
+            return Err(format!(
+                "{at} has direction {other:?}; expected ASC or DESC"
+            ));
+        }
     };
     Ok(SortKey {
         expr: compile(&property)?,
@@ -289,7 +291,7 @@ pub struct BaseRow {
     /// The view's columns, by property id.
     pub values: serde_json::Map<String, Json>,
     /// The row's group, when the view groups.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<Json>,
 }
 
@@ -299,7 +301,7 @@ pub struct BaseRow {
 pub struct BaseResult {
     pub base: String,
     /// The view's name, if it has one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
     /// `table`, `cards`, `list`, or another view type, as the base says.
     pub view_type: String,
@@ -308,10 +310,10 @@ pub struct BaseResult {
     pub columns: Vec<BaseColumn>,
     pub rows: Vec<BaseRow>,
     /// The property the rows are grouped by, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
     /// Notes an expression couldn't be evaluated on, and why.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 
@@ -371,16 +373,16 @@ pub async fn query_base(
         }),
     };
     let columns: Vec<(String, Expr)> = if view.order.is_empty() {
-        vec![("file.name".to_string(), compile("file.name").map_err(Error::validation_error)?)]
+        vec![(
+            "file.name".to_string(),
+            compile("file.name").map_err(Error::validation_error)?,
+        )]
     } else {
         view.order.clone()
     };
 
     let notes = manager.vault_files_validated().await;
-    let mut files: Vec<FileInfo> = notes
-        .iter()
-        .map(|note| file_info(manager, note))
-        .collect();
+    let mut files: Vec<FileInfo> = notes.iter().map(|note| file_info(manager, note)).collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let base_full = manager.vault_path().join(base_path);
     let base_size = tokio::fs::metadata(&base_full)
@@ -504,7 +506,10 @@ pub async fn query_base(
     let display = |id: &str| {
         base.display_names
             .get(id)
-            .or_else(|| id.strip_prefix("note.").and_then(|bare| base.display_names.get(bare)))
+            .or_else(|| {
+                id.strip_prefix("note.")
+                    .and_then(|bare| base.display_names.get(bare))
+            })
             .or_else(|| base.display_names.get(&format!("note.{id}")))
             .cloned()
             .unwrap_or_else(|| id.strip_prefix("note.").unwrap_or(id).to_string())
@@ -562,7 +567,12 @@ fn file_info(manager: &VaultManager, note: &VaultFile) -> FileInfo {
     let properties: serde_json::Map<String, Json> = note
         .frontmatter
         .as_ref()
-        .map(|fm| fm.data.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .map(|fm| {
+            fm.data
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
         .unwrap_or_default();
     let mut tags: Vec<String> = property_tags(properties.get("tags"))
         .into_iter()
@@ -657,7 +667,12 @@ mod tests {
             .unwrap()
     }
 
-    async fn run(manager: &Arc<VaultManager>, root: &Path, yaml: &str, view: Option<&str>) -> Result<BaseResult> {
+    async fn run(
+        manager: &Arc<VaultManager>,
+        root: &Path,
+        yaml: &str,
+        view: Option<&str>,
+    ) -> Result<BaseResult> {
         write(root, "Library.base", yaml);
         query_base(manager, "Library.base", view, now()).await
     }
@@ -733,9 +748,14 @@ views:
         .unwrap();
         assert_eq!(paths(&negated), ["Notes/Idea.md"]);
 
-        let nested_tag = run(&manager, dir.path(), "filters: file.hasTag(\"book/scifi\")\n", None)
-            .await
-            .unwrap();
+        let nested_tag = run(
+            &manager,
+            dir.path(),
+            "filters: file.hasTag(\"book/scifi\")\n",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(paths(&nested_tag), ["Books/Dune.md"]);
 
         let backlinked = run(
@@ -771,13 +791,17 @@ views:
         let all = run(&manager, dir.path(), yaml, None).await.unwrap();
         assert_eq!(all.rows.len(), 4);
         assert_eq!(all.views, ["All", "By status"]);
-        let grouped = run(&manager, dir.path(), yaml, Some("By status")).await.unwrap();
+        let grouped = run(&manager, dir.path(), yaml, Some("By status"))
+            .await
+            .unwrap();
         assert_eq!(grouped.view_type, "cards");
         assert_eq!(grouped.group_by.as_deref(), Some("status"));
         assert_eq!(paths(&grouped), ["Books/Foundation.md", "Notes/Idea.md"]);
         assert_eq!(grouped.rows[0].group, Some(Json::from("done")));
 
-        let error = run(&manager, dir.path(), yaml, Some("Missing")).await.unwrap_err();
+        let error = run(&manager, dir.path(), yaml, Some("Missing"))
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("All, By status"), "{error}");
     }
 
@@ -795,7 +819,11 @@ views:
         // The notes were all written moments ago, relative to the real
         // clock; `now()` is pinned to 2026-10-13, so compare against that.
         let real_now = chrono::Local::now().naive_local();
-        let expected = if real_now > now() - chrono::Duration::days(1) { 4 } else { 0 };
+        let expected = if real_now > now() - chrono::Duration::days(1) {
+            4
+        } else {
+            0
+        };
         assert_eq!(result.rows.len(), expected);
     }
 
@@ -812,22 +840,34 @@ views:
             let error = run(&manager, dir.path(), yaml, None).await.unwrap_err();
             assert!(error.to_string().contains(expected), "{yaml}: {error}");
         }
-        let error = query_base(&manager, "Books/Dune.md", None, now()).await.unwrap_err();
+        let error = query_base(&manager, "Books/Dune.md", None, now())
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains(".base"), "{error}");
     }
 
     #[tokio::test]
     async fn a_type_error_on_one_note_is_a_warning() {
         let (dir, manager) = vault().await;
-        let result = run(&manager, dir.path(), "filters: 'author.lower() == \"asimov\"'\n", None)
-            .await
-            .unwrap();
+        let result = run(
+            &manager,
+            dir.path(),
+            "filters: 'author.lower() == \"asimov\"'\n",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(paths(&result), ["Books/Foundation.md"]);
         assert!(result.warnings.is_empty());
 
-        let result = run(&manager, dir.path(), "filters: 'price.lower() == \"x\"'\n", None)
-            .await
-            .unwrap();
+        let result = run(
+            &manager,
+            dir.path(),
+            "filters: 'price.lower() == \"x\"'\n",
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.rows.is_empty());
         assert_eq!(result.warnings.len(), 2, "{:?}", result.warnings);
         assert!(result.warnings[0].contains("no method lower()"));

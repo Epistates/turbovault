@@ -192,6 +192,58 @@ async fn every_tool_result_matches_its_output_schema() {
         )
         .await;
 
+    // ---- Canvases, bases, tasks and periodic notes ----
+    checked
+        .call(
+            "write_canvas",
+            json!({
+                "path": "boards/Board.canvas",
+                "canvas": {
+                    "nodes": [
+                        {"id": "f", "type": "file", "file": "beta.md", "x": 0, "y": 0, "width": 200, "height": 200},
+                        {"id": "t", "type": "text", "text": "See [[alpha]].", "x": 0, "y": 300, "width": 200, "height": 100},
+                    ],
+                    "edges": [{"id": "e", "fromNode": "t", "toNode": "f", "label": "about"}],
+                },
+            }),
+        )
+        .await;
+    checked
+        .call("read_canvas", json!({"path": "boards/Board.canvas"}))
+        .await;
+    checked
+        .call(
+            "read_canvas",
+            json!({"path": "boards/Board.canvas", "limit": 1}),
+        )
+        .await;
+    std::fs::write(
+        vault.path().join("Concepts.base"),
+        "filters: 'type == \"concept\"'\nformulas:\n  rank: 'priority * 2'\nviews:\n  - type: table\n    name: Concepts\n    order: [file.name, status, formula.rank]\n    groupBy:\n      property: status\n      direction: ASC\n",
+    )
+    .unwrap();
+    checked
+        .call("query_base", json!({"path": "Concepts.base"}))
+        .await;
+    checked
+        .call(
+            "query_tasks",
+            json!({"status": ["todo"], "path": "alpha.md"}),
+        )
+        .await;
+    checked
+        .call(
+            "get_periodic_note",
+            json!({"period": "daily", "date": "2026-10-13"}),
+        )
+        .await;
+    checked
+        .call(
+            "get_periodic_note",
+            json!({"period": "weekly", "date": "2026-10-13", "create": true}),
+        )
+        .await;
+
     // ---- Graph ----
     for tool in [
         "get_backlinks",

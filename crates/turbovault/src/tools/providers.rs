@@ -15,6 +15,7 @@ mod fanout;
 mod files;
 mod graph;
 mod metadata;
+mod obsidian;
 mod relationship;
 mod templates;
 mod vault;
@@ -107,6 +108,7 @@ use self::fanout::FanoutProvider;
 use self::files::FileProvider;
 use self::graph::GraphProvider;
 use self::metadata::MetadataProvider;
+use self::obsidian::ObsidianProvider;
 use self::relationship::RelationshipProvider;
 use self::templates::TemplateProvider;
 use self::vault::VaultProvider;
@@ -643,6 +645,7 @@ impl ObsidianMcpServer {
         mount!(ContentProvider::new(core.clone()), "content");
         mount!(AnalysisProvider::new(core.clone()), "analysis");
         mount!(AuditProvider::new(core.clone()), "audit");
+        mount!(ObsidianProvider::new(core.clone()), "obsidian");
 
         #[cfg(feature = "plugin-api")]
         let (hooks, shutdown, mounted_plugins) = {
@@ -1419,7 +1422,7 @@ mod tests {
             .expect("select vault");
 
         let advertised = server.list_tools();
-        assert_eq!(advertised.len(), 75);
+        assert_eq!(advertised.len(), 80);
         assert!(
             advertised
                 .iter()
@@ -1670,7 +1673,7 @@ mod tests {
         ))
         .expect("serialize tool catalog");
 
-        assert_eq!(server.list_tools().len(), 74, "public tool count changed");
+        assert_eq!(server.list_tools().len(), 79, "public tool count changed");
         // The fixture is a deliberate tripwire on the public tool surface, so a
         // real change to a tool signature has to be re-blessed on purpose:
         // `UPDATE_TOOL_CATALOG=1 cargo test -p turbovault --lib`. Without this
@@ -1701,7 +1704,7 @@ mod tests {
                 String::from_utf8_lossy(&actual_bytes[start..actual_end]),
             );
         }
-        assert_eq!(server.tool_routes.len(), 74);
+        assert_eq!(server.tool_routes.len(), 79);
         assert!(
             server.server_info().description.is_none(),
             "default server must not inject plugin guidance"

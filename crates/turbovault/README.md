@@ -1131,7 +1131,7 @@ cargo check -p turbovault-server
 │  ┌────────────────────────────────────────────────┐    │
 │  │  tools.rs + tools/providers.rs                 │    │
 │  │  - Shared state and MCP tool wrappers          │    │
-│  │  - 74 tools grouped into focused providers     │    │
+│  │  - 79 tools grouped into focused providers     │    │
 │  │  - Stable flat public names                    │    │
 │  │  - Error conversion (Error → McpError)         │    │
 │  └────────────────────────────────────────────────┘    │

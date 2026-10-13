@@ -14,8 +14,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use turbovault_core::prelude::*;
 use turbovault_core::Precondition;
+use turbovault_core::prelude::*;
 use turbovault_parser::{Canvas, CanvasReference, parse_canvas};
 use turbovault_vault::VaultManager;
 
@@ -303,7 +303,12 @@ mod tests {
         assert!(error.to_string().contains(".canvas"), "{error}");
 
         tools
-            .write("b.canvas", &Canvas::default(), Precondition::ExpectAbsent, "w")
+            .write(
+                "b.canvas",
+                &Canvas::default(),
+                Precondition::ExpectAbsent,
+                "w",
+            )
             .await
             .unwrap();
         let (read, hash) = tools.read("b.canvas").await.unwrap();

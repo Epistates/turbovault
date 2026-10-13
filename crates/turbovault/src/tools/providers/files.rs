@@ -464,7 +464,7 @@ impl FileProvider {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note. Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
+        description = "Move or rename a note. Git-backed vaults update inbound links (wikilinks, Markdown links and canvas references) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
         title = "Move Note",
         tags = ["write"],
         read_only = false,

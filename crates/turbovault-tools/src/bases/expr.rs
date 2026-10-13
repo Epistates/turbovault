@@ -83,28 +83,66 @@ pub const FUNCTIONS: &[&str] = &[
 /// Methods TurboVault evaluates, on whichever types have them.
 pub const METHODS: &[&str] = &[
     // any
-    "isTruthy", "isType", "toString",
+    "isTruthy",
+    "isType",
+    "toString",
     // string
-    "contains", "containsAll", "containsAny", "startsWith", "endsWith", "isEmpty", "lower",
-    "title", "trim", "replace", "repeat", "reverse", "slice", "split",
+    "contains",
+    "containsAll",
+    "containsAny",
+    "startsWith",
+    "endsWith",
+    "isEmpty",
+    "lower",
+    "title",
+    "trim",
+    "replace",
+    "repeat",
+    "reverse",
+    "slice",
+    "split",
     // number
-    "abs", "ceil", "floor", "round", "toFixed",
+    "abs",
+    "ceil",
+    "floor",
+    "round",
+    "toFixed",
     // list
-    "filter", "map", "reduce", "join", "sort", "unique", "flat",
+    "filter",
+    "map",
+    "reduce",
+    "join",
+    "sort",
+    "unique",
+    "flat",
     // date
-    "date", "format", "time",
+    "date",
+    "format",
+    "time",
     // file
-    "hasTag", "inFolder", "hasLink", "hasProperty", "asLink",
+    "hasTag",
+    "inFolder",
+    "hasLink",
+    "hasProperty",
+    "asLink",
     // link
-    "asFile", "linksTo",
+    "asFile",
+    "linksTo",
     // object
-    "keys", "values",
+    "keys",
+    "values",
 ];
 
 /// Bases functions and methods TurboVault does not evaluate. Named here so
 /// the error can say so rather than calling them unknown.
 const UNSUPPORTED: &[&str] = &[
-    "escapeHTML", "html", "image", "icon", "random", "relative", "matches",
+    "escapeHTML",
+    "html",
+    "image",
+    "icon",
+    "random",
+    "relative",
+    "matches",
 ];
 
 /// Parse `source` into an expression.
@@ -134,7 +172,9 @@ pub fn check(expr: &Expr, source: &str) -> Result<(), String> {
             };
             if !known {
                 problem = Some(if UNSUPPORTED.contains(&name.as_str()) {
-                    format!("{name}() in {source:?} is a Bases function TurboVault doesn't evaluate")
+                    format!(
+                        "{name}() in {source:?} is a Bases function TurboVault doesn't evaluate"
+                    )
                 } else if target.is_some() {
                     format!("{name}() in {source:?} is not a Bases method TurboVault knows")
                 } else {
@@ -186,8 +226,8 @@ impl fmt::Display for Token {
 }
 
 const OPERATORS: &[&str] = &[
-    "||", "&&", "==", "!=", "<=", ">=", "<", ">", "+", "-", "*", "/", "%", "!", "(", ")", "[",
-    "]", ",", ".",
+    "||", "&&", "==", "!=", "<=", ">=", "<", ">", "+", "-", "*", "/", "%", "!", "(", ")", "[", "]",
+    ",", ".",
 ];
 
 fn lex(source: &str) -> Result<Vec<Token>, String> {
@@ -208,10 +248,10 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
                 i += 1;
             }
             let text: String = chars[start..i].iter().collect();
-            tokens.push(Token::Number(
-                text.parse()
-                    .map_err(|_| format!("{text:?} is not a number in {source:?}"))?,
-            ));
+            tokens
+                .push(Token::Number(text.parse().map_err(|_| {
+                    format!("{text:?} is not a number in {source:?}")
+                })?));
         } else if c == '"' || c == '\'' {
             let mut text = String::new();
             i += 1;
@@ -242,7 +282,8 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
             tokens.push(Token::Str(text));
         } else if c.is_alphabetic() || c == '_' || c == '$' {
             let start = i;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$')
+            while i < chars.len()
+                && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '$')
             {
                 i += 1;
             }
@@ -317,7 +358,10 @@ impl Parser {
     }
 
     fn equality(&mut self) -> Result<Expr, String> {
-        self.binary(&[("==", BinaryOp::Eq), ("!=", BinaryOp::Ne)], Self::comparison)
+        self.binary(
+            &[("==", BinaryOp::Eq), ("!=", BinaryOp::Ne)],
+            Self::comparison,
+        )
     }
 
     fn comparison(&mut self) -> Result<Expr, String> {
@@ -333,12 +377,19 @@ impl Parser {
     }
 
     fn additive(&mut self) -> Result<Expr, String> {
-        self.binary(&[("+", BinaryOp::Add), ("-", BinaryOp::Sub)], Self::multiplicative)
+        self.binary(
+            &[("+", BinaryOp::Add), ("-", BinaryOp::Sub)],
+            Self::multiplicative,
+        )
     }
 
     fn multiplicative(&mut self) -> Result<Expr, String> {
         self.binary(
-            &[("*", BinaryOp::Mul), ("/", BinaryOp::Div), ("%", BinaryOp::Rem)],
+            &[
+                ("*", BinaryOp::Mul),
+                ("/", BinaryOp::Div),
+                ("%", BinaryOp::Rem),
+            ],
             Self::unary,
         )
     }
@@ -457,7 +508,11 @@ mod tests {
         };
         assert_eq!(
             *eq,
-            Expr::Binary(BinaryOp::Ne, ident("status"), Box::new(Expr::Str("done".into())))
+            Expr::Binary(
+                BinaryOp::Ne,
+                ident("status"),
+                Box::new(Expr::Str("done".into()))
+            )
         );
         assert_eq!(
             *call,
@@ -495,7 +550,10 @@ mod tests {
                 args: vec![Expr::Number(2.0)],
             }
         );
-        assert!(matches!(parse("note[\"my key\"]").unwrap(), Expr::Index(..)));
+        assert!(matches!(
+            parse("note[\"my key\"]").unwrap(),
+            Expr::Index(..)
+        ));
     }
 
     #[test]
@@ -509,7 +567,10 @@ mod tests {
     fn check_names_unsupported_calls() {
         let source = "file.name.matches(x)";
         let error = check(&parse(source).unwrap(), source).unwrap_err();
-        assert!(error.contains("matches()") && error.contains("doesn't evaluate"), "{error}");
+        assert!(
+            error.contains("matches()") && error.contains("doesn't evaluate"),
+            "{error}"
+        );
         let source = "frobnicate(1)";
         let error = check(&parse(source).unwrap(), source).unwrap_err();
         assert!(error.contains("not a Bases function"), "{error}");

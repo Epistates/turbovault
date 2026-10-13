@@ -75,6 +75,7 @@ turbovault-core = { workspace = true, features = ["schemars"] }
 turbovault-vault = { workspace = true, features = ["schemars"] }
 turbovault-audit = { workspace = true, features = ["schemars"] }
 turbovault-tools = { workspace = true, features = ["schemars"] }
+turbovault-parser = { workspace = true, features = ["schemars"] }
 turbovault-plugin-api = { workspace = true, optional = true }
 turbovault-plugin-vector = { workspace = true, optional = true }
 
@@ -86,6 +87,7 @@ turbomcp-server = { workspace = true }
 turbomcp-types = { workspace = true }
 
 schemars = { workspace = true }
+chrono = { workspace = true }
 shellexpand = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
