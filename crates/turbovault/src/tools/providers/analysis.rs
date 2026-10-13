@@ -37,12 +37,57 @@ struct VisualizePayload {
     summary: VisualizationResult,
 }
 
+/// What `note_quality` returns: one note's score, or the vault's report.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum NoteQualityPayload {
+    /// With `path`: that note's score.
+    Note(QualityScore),
+    /// Without `path`: every note scored and summarized.
+    Vault(VaultQualityReport),
+}
+
+/// What `analyze_grounding` returns: one note's claims and citations, or a
+/// page of the vault's notes that cite nothing.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum GroundingPayload {
+    /// With `path`: that note's claims, citations and signals.
+    Note(GroundingAnalysis),
+    /// Without `path`: notes with claims and no citations, most claims first.
+    Ungrounded(UngroundedReport),
+}
+
+/// What `compare_notes` returns: how alike the two notes' contents are, and
+/// how strongly the link graph connects them.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ComparePayload {
+    #[serde(flatten)]
+    content: CompareResult,
+    link_strength: LinkStrength,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct LinkStrength {
+    /// From 0.0 (unconnected) to 1.0.
+    strength: f64,
+    components: LinkStrengthComponents,
+    interpretation: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct LinkStrengthComponents {
+    direct_links: usize,
+    backlinks: usize,
+    shared_references: usize,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl AnalysisProvider {
-    // ─── DIFF TOOLS ──────────────────────────────────────────────────
+    // ─── DIFF ────────────────────────────────────────────────────────
 
     #[tool(
-        description = "Diff two notes: a unified diff, line and word changes, and a similarity score. Use compare_notes for a similarity verdict without the diff.",
+        description = "Diff a note against another note (`right`), or against how it was before an operation in the audit trail (`operation_id`, from audit_log): a unified diff, line and word changes, and a similarity score. Give exactly one of the two. Versions aren't available on Git-backed vaults, whose history is in Git. compare_notes gives a similarity verdict without the diff.",
         title = "Diff Notes",
         tags = ["read"],
         read_only = true,
@@ -54,233 +99,201 @@ impl AnalysisProvider {
     async fn diff_notes(
         &self,
         #[description(
-            "Vault-relative path of the first note, including the extension, such as `drafts/Plan.md`."
+            "Vault-relative path of the note, including the extension, such as `drafts/Plan.md`."
         )]
         left: String,
-        #[description("Vault-relative path of the second note, including the extension.")]
-        right: String,
+        #[description(
+            "Vault-relative path of the note to diff against. Give this or operation_id."
+        )]
+        right: Option<String>,
+        #[description(
+            "The `id` of an audit_log entry that changed `left`: diff its current content against how it was before that operation. Give this or right."
+        )]
+        operation_id: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = DiffTools::new(manager);
-        let result = tools
-            .diff_notes(&left, &right)
-            .await
-            .map_err(to_mcp_error)?;
+        let result = match (right, operation_id) {
+            (Some(right), None) => DiffTools::new(manager)
+                .diff_notes(&left, &right)
+                .await
+                .map_err(to_mcp_error)?,
+            (None, Some(operation_id)) => {
+                self.refuse_audit_on_git_backend("diff_notes with operation_id")
+                    .await?;
+                let audit_tools = self.get_audit_tools().await?;
+                let entry = audit_tools
+                    .audit_log()
+                    .get_entry(&operation_id)
+                    .await
+                    .map_err(to_mcp_error)?
+                    .ok_or_else(|| {
+                        McpError::new(
+                            turbomcp_core::error::ErrorKind::ResourceNotFound,
+                            format!(
+                                "Audit entry not found: {operation_id}. Use audit_log to list operation ids"
+                            ),
+                        )
+                    })?;
+                let snapshot_id = entry
+                    .before_snapshot_id
+                    .as_ref()
+                    .or(entry.after_snapshot_id.as_ref())
+                    .ok_or_else(|| {
+                        McpError::new(
+                            turbomcp_core::error::ErrorKind::ResourceNotFound,
+                            "No snapshot was kept for this operation".to_string(),
+                        )
+                    })?;
+                let snapshot_content = audit_tools
+                    .snapshot_store()
+                    .retrieve(snapshot_id)
+                    .await
+                    .map_err(to_mcp_error)?;
+                let current_content = manager
+                    .read_file(&std::path::PathBuf::from(&left))
+                    .await
+                    .map_err(to_mcp_error)?;
+                DiffTools::diff_content(
+                    &snapshot_content,
+                    &current_content,
+                    &format!(
+                        "{} (version {})",
+                        left,
+                        &operation_id[..8.min(operation_id.len())]
+                    ),
+                    &format!("{} (current)", left),
+                )
+            }
+            _ => {
+                return Err(McpError::invalid_params(
+                    "give exactly one of `right` (another note) or `operation_id` (an audit_log entry)"
+                        .to_string(),
+                ));
+            }
+        };
         StandardResponse::new(&vault_name, "diff_notes", &result)
             .with_duration(start.elapsed().as_millis() as u64)
             .with_next_steps(&["read_note", "edit_note", "compare_notes"])
             .to_json()
     }
 
-    #[tool(
-        description = "Diff a note's current content against how it was before an operation in the audit trail. Find the operation_id with audit_log. Not available on Git-backed vaults, whose history is in Git.",
-        title = "Diff Note Version",
-        tags = ["read", "audit"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<DiffResult>,
-    )]
-    async fn diff_note_version(
-        &self,
-        #[description(
-            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
-        )]
-        path: String,
-        #[description("The `id` of an audit_log entry that changed this note.")]
-        operation_id: String,
-    ) -> McpResult<serde_json::Value> {
-        self.refuse_audit_on_git_backend("diff_note_version")
-            .await?;
-        let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let audit_tools = self.get_audit_tools().await?;
-
-        // Get the snapshot from the audit entry
-        let entry = audit_tools
-            .audit_log()
-            .get_entry(&operation_id)
-            .await
-            .map_err(to_mcp_error)?
-            .ok_or_else(|| {
-                McpError::new(
-                    turbomcp_core::error::ErrorKind::ResourceNotFound,
-                    format!(
-                        "Audit entry not found: {operation_id}. Use audit_log to list operation ids"
-                    ),
-                )
-            })?;
-
-        let snapshot_id = entry
-            .before_snapshot_id
-            .as_ref()
-            .or(entry.after_snapshot_id.as_ref())
-            .ok_or_else(|| {
-                McpError::new(
-                    turbomcp_core::error::ErrorKind::ResourceNotFound,
-                    "No snapshot was kept for this operation".to_string(),
-                )
-            })?;
-
-        let snapshot_content = audit_tools
-            .snapshot_store()
-            .retrieve(snapshot_id)
-            .await
-            .map_err(to_mcp_error)?;
-
-        // Read current content
-        let current_content = manager
-            .read_file(&std::path::PathBuf::from(&path))
-            .await
-            .map_err(to_mcp_error)?;
-
-        let result = DiffTools::diff_content(
-            &snapshot_content,
-            &current_content,
-            &format!(
-                "{} (version {})",
-                path,
-                &operation_id[..8.min(operation_id.len())]
-            ),
-            &format!("{} (current)", path),
-        );
-
-        StandardResponse::new(&vault_name, "diff_note_version", &result)
-            .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["audit_log", "rollback_note", "read_note"])
-            .to_json()
-    }
-
-    // ─── QUALITY TOOLS ───────────────────────────────────────────────
+    // ─── QUALITY ─────────────────────────────────────────────────────
 
     #[tool(
-        description = "Score one note's quality from 0 to 100 on readability, structure, completeness and staleness, plus a weighted overall score and suggestions to improve it.",
-        title = "Evaluate Note Quality",
+        description = "Score note quality from 0 to 100 on readability, structure, completeness and staleness, with a weighted overall score and suggestions. With `path`, one note. Without it, every note: the average and distribution, per-dimension averages, the lowest- and highest-scoring notes and recommendations; slow on a large vault.",
+        title = "Note Quality",
         tags = ["read", "health"],
         read_only = true,
         destructive = false,
         idempotent = true,
         open_world = false,
-        output_schema = StandardResponse<QualityScore>,
+        output_schema = StandardResponse<NoteQualityPayload>,
     )]
-    async fn evaluate_note_quality(
+    async fn note_quality(
         &self,
         #[description(
-            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+            "Vault-relative path of one note to score, such as `projects/Plan.md`. Omit to score the whole vault."
         )]
-        path: String,
-    ) -> McpResult<serde_json::Value> {
-        let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = QualityTools::new(manager);
-        let result = tools.evaluate_note(&path).await.map_err(to_mcp_error)?;
-        StandardResponse::new(&vault_name, "evaluate_note_quality", &result)
-            .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["vault_quality_report", "edit_note", "find_stale_notes"])
-            .to_json()
-    }
-
-    #[tool(
-        description = "Score every note's quality and summarize: average and distribution, per-dimension averages, the lowest- and highest-scoring notes, and recommendations. Slow on a large vault; use evaluate_note_quality for one note.",
-        title = "Vault Quality Report",
-        tags = ["read", "health"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<VaultQualityReport>,
-    )]
-    async fn vault_quality_report(
-        &self,
+        path: Option<String>,
         #[description(
-            "How many of the lowest- and highest-scoring notes to list. Default 10, maximum 500."
+            "For the whole vault: how many of the lowest- and highest-scoring notes to list. Default 10, maximum 500."
         )]
         bottom_n: Option<usize>,
         ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
-        let mut stages = Stages::new(ctx, 1);
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
-        stages.next("Scoring every note").await?;
-        let result = tools
-            .vault_quality_report(clamp_count(bottom_n, 10, MAX_REPORT_ITEMS))
-            .await
-            .map_err(to_mcp_error)?;
-        stages.finish().await;
-        StandardResponse::new(&vault_name, "vault_quality_report", &result)
-            .with_count(result.total_notes)
+        let (payload, count) = match path {
+            Some(path) => {
+                let score = tools.evaluate_note(&path).await.map_err(to_mcp_error)?;
+                (NoteQualityPayload::Note(score), None)
+            }
+            None => {
+                let mut stages = Stages::new(ctx, 1);
+                stages.next("Scoring every note").await?;
+                let report = tools
+                    .vault_quality_report(clamp_count(bottom_n, 10, MAX_REPORT_ITEMS))
+                    .await
+                    .map_err(to_mcp_error)?;
+                stages.finish().await;
+                let total = report.total_notes;
+                (NoteQualityPayload::Vault(report), Some(total))
+            }
+        };
+        let mut response = StandardResponse::new(&vault_name, "note_quality", &payload)
             .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["evaluate_note_quality", "find_stale_notes"])
-            .to_json()
+            .with_next_steps(&["find_stale_notes", "edit_note"]);
+        if let Some(count) = count {
+            response = response.with_count(count);
+        }
+        response.to_json()
     }
 
     #[tool(
-        description = "Extract what a judge needs to check a note for hallucination, contradiction or redundancy: the factual claims in its prose, its declared citations (a `# Citations` section), structural signals (Schema and Examples sections), and an `uncited` flag for claims with no citations. TurboVault doesn't score grounding itself.",
-        title = "Analyze Note Grounding",
+        description = "Extract what a judge needs to check notes for hallucination, contradiction or redundancy. With `path`: that note's factual claims, its declared citations (a `# Citations` section), structural signals (Schema and Examples sections) and an `uncited` flag. Without it: the notes that make claims but cite nothing, most claims first, paged. TurboVault doesn't score grounding itself.",
+        title = "Analyze Grounding",
         tags = ["read", "quality", "okf"],
         read_only = true,
         destructive = false,
         idempotent = true,
         open_world = false,
-        output_schema = StandardResponse<GroundingAnalysis>,
+        output_schema = StandardResponse<GroundingPayload>,
     )]
-    async fn analyze_note_grounding(
+    async fn analyze_grounding(
         &self,
         #[description(
-            "Vault-relative path of the note, including the extension, such as `concepts/Revenue.md`."
+            "Vault-relative path of one note to analyze, such as `concepts/Revenue.md`. Omit to list the vault's ungrounded notes."
         )]
-        path: String,
-    ) -> McpResult<serde_json::Value> {
-        let start = std::time::Instant::now();
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = GroundingTools::new(manager);
-        let result = tools.analyze_note(&path).await.map_err(to_mcp_error)?;
-        StandardResponse::new(&vault_name, "analyze_note_grounding", &result)
-            .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["find_ungrounded_notes", "okf_validate"])
-            .to_json()
-    }
-
-    #[tool(
-        description = "List notes that make factual claims but declare no citations (no `# Citations` section), most claims first. These are the notes most worth a grounding review; analyze_note_grounding shows one note's claims.",
-        title = "Find Ungrounded Notes",
-        tags = ["read", "quality", "okf"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = Paged<UngroundedReport>,
-    )]
-    async fn find_ungrounded_notes(
-        &self,
-        #[description("Most notes to return. Default 50, maximum 500.")] limit: Option<usize>,
+        path: Option<String>,
+        #[description("Without `path`: most notes to return. Default 50, maximum 500.")]
+        limit: Option<usize>,
         #[description(
-            "How many notes to skip, for the next page. Default 0, at most 1000; use `meta.pagination.next_offset` from the previous call."
+            "Without `path`: how many notes to skip, for the next page. Default 0, at most 1000; use `meta.pagination.next_offset` from the previous call."
         )]
         offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GroundingTools::new(manager);
-        let request = PageRequest::ranked(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
-        let mut result = tools
-            .find_ungrounded_notes(request.fetch())
-            .await
-            .map_err(to_mcp_error)?;
-        let (notes, page) =
-            request.slice_leading(std::mem::take(&mut result.notes), result.ungrounded_count);
-        result.notes = notes;
-        StandardResponse::new(&vault_name, "find_ungrounded_notes", &result)
-            .with_page(page)
-            // This tool's `count` has always been every ungrounded note, not the
-            // page; `meta.pagination.returned` is the page.
-            .with_count(result.ungrounded_count)
-            .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["analyze_note_grounding", "read_note"])
-            .to_json()
+        match path {
+            Some(path) => {
+                let analysis = tools.analyze_note(&path).await.map_err(to_mcp_error)?;
+                StandardResponse::new(
+                    &vault_name,
+                    "analyze_grounding",
+                    GroundingPayload::Note(analysis),
+                )
+                .with_duration(start.elapsed().as_millis() as u64)
+                .with_next_steps(&["analyze_grounding", "okf_validate"])
+                .to_json()
+            }
+            None => {
+                let request =
+                    PageRequest::ranked(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+                let mut report = tools
+                    .find_ungrounded_notes(request.fetch())
+                    .await
+                    .map_err(to_mcp_error)?;
+                let (notes, page) = request
+                    .slice_leading(std::mem::take(&mut report.notes), report.ungrounded_count);
+                report.notes = notes;
+                let total = report.ungrounded_count;
+                StandardResponse::new(
+                    &vault_name,
+                    "analyze_grounding",
+                    GroundingPayload::Ungrounded(report),
+                )
+                .with_page(page)
+                // `count` is every ungrounded note, not the page;
+                // `meta.pagination.returned` is the page.
+                .with_count(total)
+                .with_duration(start.elapsed().as_millis() as u64)
+                .with_next_steps(&["analyze_grounding", "read_note"])
+                .to_json()
+            }
+        }
     }
 
     // ==================== Open Knowledge Format (OKF) ====================
@@ -551,15 +564,15 @@ impl AnalysisProvider {
         StandardResponse::new(&vault_name, "find_stale_notes", &result)
             .with_page(page)
             .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["evaluate_note_quality", "read_note", "edit_note"])
+            .with_next_steps(&["note_quality", "read_note", "edit_note"])
             .to_json()
     }
 
-    // ─── SIMILARITY TOOLS ────────────────────────────────────────────
+    // ─── SIMILARITY ──────────────────────────────────────────────────
 
     #[tool(
-        description = "Find notes about a topic even when they don't use your exact words, ranked by TF-IDF cosine similarity to the query. Use search for exact keywords and phrases.",
-        title = "Semantic Search",
+        description = "Find notes by meaning rather than exact words, ranked by TF-IDF cosine similarity: notes about a topic (`query`), or notes most like a given note (`path`). Give exactly one. Use search for exact keywords and phrases, and find_duplicates to scan the vault for near copies.",
+        title = "Find Similar",
         tags = ["read", "search", "semantic"],
         read_only = true,
         destructive = false,
@@ -567,60 +580,40 @@ impl AnalysisProvider {
         open_world = false,
         output_schema = Paged<Vec<SimilarityResult>>,
     )]
-    async fn semantic_search(
-        &self,
-        #[description("What to look for, in plain words, such as `quarterly revenue forecast`.")]
-        query: String,
-        #[description("Most notes to return. Default 10, maximum 100.")] limit: Option<usize>,
-        #[description("How many top results to skip, for the next page. Default 0, at most 1000.")]
-        offset: Option<usize>,
-    ) -> McpResult<serde_json::Value> {
-        let start = std::time::Instant::now();
-        let vault_name = self.get_active_vault_name().await?;
-        let engine = self.get_similarity_engine().await?;
-        let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
-        let (results, page) = request.slice_ranked(engine.semantic_search(&query, request.fetch()));
-        StandardResponse::new(&vault_name, "semantic_search", &results)
-            .with_page(page)
-            .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["read_note", "find_similar_notes", "advanced_search"])
-            .to_json()
-    }
-
-    #[tool(
-        description = "Find the notes whose content is most like a given note's, ranked by TF-IDF cosine similarity. Use find_duplicates to scan the whole vault for near copies.",
-        title = "Find Similar Notes",
-        tags = ["read", "search", "semantic"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = Paged<Vec<SimilarityResult>>,
-    )]
-    async fn find_similar_notes(
+    async fn find_similar(
         &self,
         #[description(
-            "Vault-relative path of the note to compare against, including the extension, such as `projects/Plan.md`."
+            "What to look for, in plain words, such as `quarterly revenue forecast`. Give this or path."
         )]
-        path: String,
+        query: Option<String>,
+        #[description(
+            "Vault-relative path of a note to find look-alikes of, such as `projects/Plan.md`. Give this or query."
+        )]
+        path: Option<String>,
         #[description("Most notes to return. Default 10, maximum 100.")] limit: Option<usize>,
         #[description("How many top results to skip, for the next page. Default 0, at most 1000.")]
         offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
+        let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
         let vault_name = self.get_active_vault_name().await?;
         let engine = self.get_similarity_engine().await?;
-        let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
-        let (results, page) =
-            request.slice_ranked(engine.find_similar_notes(&path, request.fetch()));
-        StandardResponse::new(&vault_name, "find_similar_notes", &results)
+        let results = match (query, path) {
+            (Some(query), None) => engine.semantic_search(&query, request.fetch()),
+            (None, Some(path)) => engine.find_similar_notes(&path, request.fetch()),
+            _ => {
+                return Err(McpError::invalid_params(
+                    "give exactly one of `query` (a topic) or `path` (a note)".to_string(),
+                ));
+            }
+        };
+        let (results, page) = request.slice_ranked(results);
+        StandardResponse::new(&vault_name, "find_similar", &results)
             .with_page(page)
             .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["read_note", "semantic_search", "get_backlinks"])
+            .with_next_steps(&["read_note", "compare_notes", "search"])
             .to_json()
     }
-
-    // ─── DUPLICATE TOOLS ─────────────────────────────────────────────
 
     #[tool(
         description = "Scan the whole vault for pairs of notes with nearly the same content, each with its similarity score, most similar first. Slow on a large vault; compare_notes checks one pair.",
@@ -665,14 +658,14 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Compare two notes for overlap: a similarity score, the terms they share, a short diff summary, and a recommendation such as merging them. Use diff_notes for the full line-by-line diff.",
+        description = "Compare two notes: how alike their content is (a similarity score, the terms they share, a short diff summary and a recommendation such as merging them) and how strongly the link graph connects them (`link_strength`, 0.0 to 1.0, from links in each direction and notes linking to both). diff_notes gives the full line-by-line diff.",
         title = "Compare Notes",
         tags = ["read", "semantic"],
         read_only = true,
         destructive = false,
         idempotent = true,
         open_world = false,
-        output_schema = StandardResponse<CompareResult>,
+        output_schema = StandardResponse<ComparePayload>,
     )]
     async fn compare_notes(
         &self,
@@ -686,13 +679,26 @@ impl AnalysisProvider {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = self.get_similarity_engine().await?;
-        let result = DuplicateTools::new(manager)
+        let content = DuplicateTools::new(manager.clone())
             .compare_notes_with(&engine, &left, &right)
             .await
             .map_err(to_mcp_error)?;
-        StandardResponse::new(&vault_name, "compare_notes", &result)
-            .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["diff_notes", "read_note", "find_duplicates"])
-            .to_json()
+        let strength = RelationshipTools::new(manager)
+            .get_link_strength(&left, &right)
+            .await
+            .map_err(to_mcp_error)?;
+        let link_strength: LinkStrength = serde_json::from_value(strength)
+            .map_err(|error| McpError::internal(error.to_string()))?;
+        StandardResponse::new(
+            &vault_name,
+            "compare_notes",
+            ComparePayload {
+                content,
+                link_strength,
+            },
+        )
+        .with_duration(start.elapsed().as_millis() as u64)
+        .with_next_steps(&["diff_notes", "read_note", "find_duplicates"])
+        .to_json()
     }
 }

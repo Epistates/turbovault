@@ -124,23 +124,23 @@ pub(crate) fn get(name: &str, arguments: Option<&Value>) -> McpResult<PromptResu
             )?;
             let steps = match focus.as_str() {
                 "links" => {
-                    "1. Call quick_health_check for the overall picture.\n\
-                            2. Call get_broken_links and group the results by the missing target.\n\
+                    "1. Call vault_health for the overall picture.\n\
+                            2. Call graph_report with kind `broken_links` and group the results by the missing target.\n\
                             3. For each group, use search to find the note that was probably meant."
                 }
                 "orphans" => {
-                    "1. Call quick_health_check for the overall picture.\n\
-                              2. Call get_isolated_clusters and get_dead_end_notes.\n\
+                    "1. Call vault_health for the overall picture.\n\
+                              2. Call graph_report with kind `isolated_clusters`, then with kind `dead_ends`.\n\
                               3. For the most important orphans, call suggest_links to find where they belong."
                 }
                 "structure" => {
                     "1. Call explain_vault for the folder structure and hub notes.\n\
-                                2. Call get_hub_notes and get_centrality_ranking to see what the vault is organized around.\n\
+                                2. Call graph_report with kind `hubs`, then with kind `centrality`, to see what the vault is organized around.\n\
                                 3. Look for folders that hold unrelated notes, and hubs that are missing."
                 }
                 _ => {
-                    "1. Call get_vault_context, then quick_health_check.\n\
-                      2. Call get_broken_links, get_dead_end_notes and get_isolated_clusters.\n\
+                    "1. Call get_vault_context, then vault_health.\n\
+                      2. Call graph_report with kinds `broken_links`, `dead_ends` and `isolated_clusters`.\n\
                       3. Call explain_vault for the structure and the hub notes."
                 }
             };
@@ -157,10 +157,12 @@ pub(crate) fn get(name: &str, arguments: Option<&Value>) -> McpResult<PromptResu
         "repair_broken_links" => {
             let scope = match argument("note") {
                 Some(note) => {
-                    format!("Call get_broken_links and keep only those whose source is `{note}`.")
+                    format!(
+                        "Call graph_report with kind `broken_links` and keep only those whose source is `{note}`."
+                    )
                 }
-                None => "Call get_broken_links and work through every page of results \
-                         (meta.pagination.next_offset)."
+                None => "Call graph_report with kind `broken_links` and work through every \
+                         page of results (meta.pagination.next_offset)."
                     .to_string(),
             };
             (
@@ -196,7 +198,7 @@ pub(crate) fn get(name: &str, arguments: Option<&Value>) -> McpResult<PromptResu
                      1. Call audit_log to see the notes changed in the last {days} day(s).\n\
                      2. Read the most significant ones with read_note.\n\
                      3. Call find_stale_notes for notes that were active and have gone quiet.\n\
-                     4. Call get_broken_links for anything the changes left broken.\n\n\
+                     4. Call graph_report with kind `broken_links` for anything the changes left broken.\n\n\
                      Summarize what moved forward, what is stale, and the three things that \
                      most need attention, linking each note with [[wikilinks]]."
                 ),
@@ -209,7 +211,7 @@ pub(crate) fn get(name: &str, arguments: Option<&Value>) -> McpResult<PromptResu
                 format!(
                     "Summarize the note `{path}` in the context of this Obsidian vault.\n\n\
                      1. Call read_note for `{path}`.\n\
-                     2. Call get_backlinks and get_forward_links for it.\n\
+                     2. Call get_links for it, once with direction `incoming` and once with `outgoing`.\n\
                      3. Call get_related_notes for notes connected to it more than one link away.\n\n\
                      Write a short summary of what the note says, then what links to it and \
                      why, and what it builds on. Link every note you mention with [[wikilinks]]."
@@ -225,8 +227,8 @@ pub(crate) fn get(name: &str, arguments: Option<&Value>) -> McpResult<PromptResu
                 "Check a draft against the vault",
                 format!(
                     "Ground this draft against my Obsidian vault{scope}.\n\n\
-                     For each claim in it, call search (and semantic_search if it is \
-                     available) to find notes that support or contradict it, and read the \
+                     For each claim in it, call search (and find_similar with the claim as \
+                     `query`) to find notes that support or contradict it, and read the \
                      best matches with read_note. Then return the draft with a [[wikilink]] \
                      citation after each supported claim, and a list of the claims the vault \
                      contradicts or has nothing on.\n\n\

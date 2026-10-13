@@ -107,7 +107,7 @@ impl BatchProvider {
             .with_success(success)
             .with_count(op_count)
             .with_meta("execution_mode", serde_json::json!(execution_mode))
-            .with_next_step("quick_health_check");
+            .with_next_step("vault_health");
 
         if execution_mode == "sequential_direct" && !success {
             response = response.with_warning(

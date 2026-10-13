@@ -276,7 +276,7 @@ async fn workflow_prompts_list_and_build() {
         .unwrap();
     let text = prompt.messages[0].content.as_text().unwrap();
     assert!(
-        text.contains("projects/Plan.md") && text.contains("get_backlinks"),
+        text.contains("projects/Plan.md") && text.contains("get_links"),
         "{text}"
     );
 
@@ -367,14 +367,14 @@ impl turbomcp_core::session::Cancellable for Cancelled {
 #[tokio::test]
 async fn slow_tools_report_progress_to_a_client_that_asks() {
     let (_vault, server) = server_with_vault().await;
-    for tool in [
-        "explain_vault",
-        "full_health_analysis",
-        "vault_quality_report",
+    for (tool, arguments) in [
+        ("explain_vault", json!({})),
+        ("vault_health", json!({"depth": "full"})),
+        ("note_quality", json!({})),
     ] {
         let session = RecordingSession::plain();
         let ctx = context(&session).with_progress_token(json!(format!("{tool}-token")));
-        let result = server.call_tool(tool, json!({}), &ctx).await.unwrap();
+        let result = server.call_tool(tool, arguments, &ctx).await.unwrap();
         assert!(!result.is_error(), "{tool}");
 
         let progress = session.sent("notifications/progress");

@@ -54,7 +54,8 @@ struct MarkdownDialect {
     name: &'static str,
     base: [&'static str; 2],
     resources: OfmPointers,
-    tools: OfmPointers,
+    /// The tool returning the same guides, for clients without resources.
+    tool: &'static str,
     note: &'static str,
     key_features: [&'static str; 7],
     important_notes: [&'static str; 4],
@@ -70,13 +71,14 @@ struct OfmPointers {
 
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct ToolGroups {
-    file_operations: [&'static str; 7],
+    file_operations: [&'static str; 8],
     search: [&'static str; 4],
-    link_analysis: [&'static str; 5],
+    link_analysis: [&'static str; 4],
     analysis: [&'static str; 4],
     vault_management: [&'static str; 4],
-    templates: [&'static str; 4],
-    metadata: [&'static str; 4],
+    templates: [&'static str; 3],
+    metadata: [&'static str; 3],
+    obsidian: [&'static str; 5],
     batch: [&'static str; 1],
 }
 
@@ -88,12 +90,8 @@ const MARKDOWN_DIALECT: MarkdownDialect = MarkdownDialect {
         quick_ref: "obsidian://syntax/quick-ref",
         examples: "obsidian://examples/sample-note",
     },
-    tools: OfmPointers {
-        complete_guide: "get_ofm_syntax_guide",
-        quick_ref: "get_ofm_quick_ref",
-        examples: "get_ofm_examples",
-    },
-    note: "Use MCP resources if supported by client, otherwise use tools as fallback",
+    tool: "get_ofm_guide",
+    note: "Use MCP resources if supported by client, otherwise get_ofm_guide as a fallback",
     key_features: [
         "Wikilinks: [[note]] and [[note|alias]]",
         "Embeds: ![[image.png]] and ![[note#section]]",
@@ -120,43 +118,44 @@ const TOOL_GROUPS: ToolGroups = ToolGroups {
         "move_note",
         "move_file",
         "get_notes_info",
+        "diff_notes",
     ],
     search: [
         "search",
-        "advanced_search",
-        "recommend_related",
-        "find_notes_from_template",
+        "find_similar",
+        "query_metadata",
+        "query_frontmatter_sql",
     ],
     link_analysis: [
-        "get_backlinks",
-        "get_forward_links",
+        "get_links",
         "get_related_notes",
-        "get_hub_notes",
-        "get_dead_end_notes",
+        "suggest_links",
+        "graph_report",
     ],
     analysis: [
-        "quick_health_check",
-        "full_health_analysis",
-        "get_broken_links",
-        "detect_cycles",
+        "vault_health",
+        "explain_vault",
+        "note_quality",
+        "find_stale_notes",
     ],
     vault_management: [
-        "add_vault",
         "list_vaults",
+        "add_vault",
         "set_active_vault",
-        "get_active_vault",
+        "remove_vault",
     ],
     templates: [
         "list_templates",
-        "get_template",
         "create_from_template",
         "find_notes_from_template",
     ],
-    metadata: [
-        "get_metadata_value",
-        "query_metadata",
-        "update_frontmatter",
-        "manage_tags",
+    metadata: ["update_frontmatter", "manage_tags", "inspect_frontmatter"],
+    obsidian: [
+        "read_canvas",
+        "write_canvas",
+        "query_base",
+        "query_tasks",
+        "get_periodic_note",
     ],
     batch: ["batch_execute"],
 };
@@ -246,7 +245,7 @@ impl ContextProvider {
         .with_next_steps(if is_empty {
             &["add_vault", "list_vaults"]
         } else {
-            &["search", "quick_health_check", "get_hub_notes"]
+            &["search", "vault_health", "graph_report"]
         });
 
         response.to_json()

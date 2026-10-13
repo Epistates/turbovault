@@ -75,7 +75,12 @@ async fn search(server: &ObsidianMcpServer, query: &str) -> usize {
 }
 
 async fn forward_links(server: &ObsidianMcpServer, path: &str) -> Vec<String> {
-    let response = call(server, "get_forward_links", json!({"path": path})).await;
+    let response = call(
+        server,
+        "get_links",
+        json!({"direction": "outgoing", "path": path}),
+    )
+    .await;
     response["data"]
         .as_array()
         .map(|links| {

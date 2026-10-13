@@ -129,12 +129,12 @@ fn test_standard_response_next_steps_excluded_when_empty() {
 #[test]
 fn test_standard_response_next_steps_included_when_present() {
     let response = StandardResponse::new("vault", "op", json!({}))
-        .with_next_steps(&["write_note", "get_backlinks"])
+        .with_next_steps(&["write_note", "get_links"])
         .to_json();
 
     assert_eq!(response["next_steps"].as_array().unwrap().len(), 2);
     assert_eq!(response["next_steps"][0], "write_note");
-    assert_eq!(response["next_steps"][1], "get_backlinks");
+    assert_eq!(response["next_steps"][1], "get_links");
 }
 
 #[test]
@@ -232,7 +232,7 @@ fn test_next_steps_provide_context_aware_guidance() {
     let orphaned_count = 16;
 
     let suggested_steps = if orphaned_count > 0 {
-        vec!["get_dead_end_notes"]
+        vec!["graph_report"]
     } else {
         vec!["search"]
     };
@@ -241,5 +241,5 @@ fn test_next_steps_provide_context_aware_guidance() {
         .with_next_steps(&suggested_steps)
         .to_json();
 
-    assert_eq!(response["next_steps"][0], "get_dead_end_notes");
+    assert_eq!(response["next_steps"][0], "graph_report");
 }

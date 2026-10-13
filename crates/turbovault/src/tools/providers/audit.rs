@@ -21,19 +21,29 @@ impl Deref for AuditProvider {
     }
 }
 
+/// What `audit_log` returns: a page of entries, or the trail's statistics.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum AuditLogPayload {
+    /// The newest matching entries first.
+    Entries(Vec<turbovault_audit::AuditEntry>),
+    /// With `summary: true`.
+    Summary(turbovault_audit::AuditStats),
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl AuditProvider {
     // ─── AUDIT TOOLS ─────────────────────────────────────────────────
 
     #[tool(
-        description = "List the changes TurboVault made to the active vault, newest first: each operation's id, type, path, time and content hashes. Use an id with diff_note_version, rollback_preview or rollback_note. Not available on Git-backed vaults, whose history is in Git.",
+        description = "List the changes TurboVault made to the vault, newest first: each operation's id, type, path, time and content hashes. Use an id with diff_notes (operation_id), rollback_preview or rollback_note. With `summary: true`, return the trail's statistics instead: operations of each type, snapshot storage used, the time span covered and whether the entries' hash chain is intact. Not available on Git-backed vaults, whose history is in Git.",
         title = "Audit Log",
         tags = ["read", "audit"],
         read_only = true,
         destructive = false,
         idempotent = true,
         open_world = false,
-        output_schema = Paged<Vec<turbovault_audit::AuditEntry>>,
+        output_schema = StandardResponse<AuditLogPayload>,
     )]
     async fn audit_log(
         &self,
@@ -45,6 +55,10 @@ impl AuditProvider {
             "Only operations of this type: `CREATE`, `UPDATE`, `DELETE`, `MOVE` or `ROLLBACK`."
         )]
         operation: Option<String>,
+        #[description(
+            "Return the trail's statistics instead of its entries. Default false; the filters and paging don't apply to it."
+        )]
+        summary: Option<bool>,
         #[description("Most entries to return. Default 50, maximum 1000.")] limit: Option<usize>,
         #[description(
             "How many of the newest matching entries to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
@@ -55,6 +69,18 @@ impl AuditProvider {
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;
+
+        if summary == Some(true) {
+            let stats = audit_tools.stats().await.map_err(to_mcp_error)?;
+            return StandardResponse::new(
+                &vault_name,
+                "audit_log",
+                AuditLogPayload::Summary(stats),
+            )
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["audit_log", "explain_vault"])
+            .to_json();
+        }
 
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_AUDIT_ENTRIES);
         let mut filter = AuditFilter::new().with_limit(if request.limit == 0 {
@@ -84,10 +110,10 @@ impl AuditProvider {
 
         let entries = audit_tools.query_log(&filter).await.map_err(to_mcp_error)?;
         let (entries, page) = request.slice_ranked(entries);
-        StandardResponse::new(&vault_name, "audit_log", &entries)
+        StandardResponse::new(&vault_name, "audit_log", AuditLogPayload::Entries(entries))
             .with_page(page)
             .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["rollback_preview", "diff_note_version", "audit_stats"])
+            .with_next_steps(&["rollback_preview", "diff_notes"])
             .to_json()
     }
 
@@ -192,28 +218,6 @@ impl AuditProvider {
         StandardResponse::new(&vault_name, "rollback_note", &result)
             .with_duration(start.elapsed().as_millis() as u64)
             .with_next_steps(&["read_note", "audit_log"])
-            .to_json()
-    }
-
-    #[tool(
-        description = "Summarize the audit trail: how many operations of each type, how much snapshot storage it uses, and the time span it covers. Not available on Git-backed vaults.",
-        title = "Audit Statistics",
-        tags = ["read", "audit"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<turbovault_audit::AuditStats>,
-    )]
-    async fn audit_stats(&self) -> McpResult<serde_json::Value> {
-        self.refuse_audit_on_git_backend("audit_stats").await?;
-        let start = std::time::Instant::now();
-        let vault_name = self.get_active_vault_name().await?;
-        let audit_tools = self.get_audit_tools().await?;
-        let result = audit_tools.stats().await.map_err(to_mcp_error)?;
-        StandardResponse::new(&vault_name, "audit_stats", &result)
-            .with_duration(start.elapsed().as_millis() as u64)
-            .with_next_steps(&["audit_log", "explain_vault"])
             .to_json()
     }
 }

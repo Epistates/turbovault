@@ -68,7 +68,7 @@ pub struct Args {
     #[arg(long, env = "TURBOVAULT_SOCKET_PATH")]
     socket_path: Option<String>,
 
-    /// Comma-separated directories `add_vault` and `create_vault` may
+    /// Comma-separated directories `add_vault` may
     /// register vaults inside. Without it, runtime registration accepts any
     /// directory on stdio and none on a network transport. The home
     /// directory, its hidden and application-data directories, and system
@@ -862,7 +862,7 @@ fn restorable(
         .map_err(|error| error.to_string())
 }
 
-/// `<base>-fanout-<8 hex>`, the name `begin_fanout` registers its scratch
+/// `<base>-fanout-<8 hex>`, the name `fanout` (action `begin`) registers its scratch
 /// worktree under.
 fn is_fanout_vault_name(name: &str) -> bool {
     name.rsplit_once("-fanout-").is_some_and(|(base, id)| {

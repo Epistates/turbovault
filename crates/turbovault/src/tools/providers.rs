@@ -121,12 +121,7 @@ const LIST_PAGE_SIZE: usize = 500;
 /// Tools whose results are notes, each answered with a `resource_link` to
 /// every note it returns after the JSON text, so a client can open, attach
 /// or subscribe to one without composing its URI.
-const RESOURCE_LINK_TOOLS: &[&str] = &[
-    "search",
-    "advanced_search",
-    "search_by_frontmatter",
-    "recommend_related",
-];
+const RESOURCE_LINK_TOOLS: &[&str] = &["search", "find_similar"];
 
 /// Core tools that don't work inside one vault: they manage the vault
 /// registry, return reference material, or take a vault argument of their
@@ -945,7 +940,7 @@ impl ObsidianMcpServer {
         self.core.init_cache().await
     }
 
-    /// Restrict which directories `add_vault` and `create_vault` accept.
+    /// Restrict which directories `add_vault` accept.
     pub fn set_vault_root_policy(&self, policy: turbovault_tools::VaultRootPolicy) {
         self.core.set_vault_root_policy(policy);
     }
@@ -957,7 +952,7 @@ impl ObsidianMcpServer {
         self.core.set_confirm_destructive(enabled);
     }
 
-    /// The policy `add_vault` and `create_vault` check paths against.
+    /// The policy `add_vault` check paths against.
     pub fn vault_root_policy(&self) -> turbovault_tools::VaultRootPolicy {
         self.core.vault_root_policy()
     }
@@ -1659,7 +1654,7 @@ mod tests {
             .expect("select vault");
 
         let advertised = server.list_tools();
-        assert_eq!(advertised.len(), 80);
+        assert_eq!(advertised.len(), 52);
         assert!(
             advertised
                 .iter()
@@ -1910,7 +1905,7 @@ mod tests {
         ))
         .expect("serialize tool catalog");
 
-        assert_eq!(server.list_tools().len(), 79, "public tool count changed");
+        assert_eq!(server.list_tools().len(), 51, "public tool count changed");
         // The fixture is a deliberate tripwire on the public tool surface, so a
         // real change to a tool signature has to be re-blessed on purpose:
         // `UPDATE_TOOL_CATALOG=1 cargo test -p turbovault --lib`. Without this
@@ -1941,7 +1936,7 @@ mod tests {
                 String::from_utf8_lossy(&actual_bytes[start..actual_end]),
             );
         }
-        assert_eq!(server.tool_routes.len(), 79);
+        assert_eq!(server.tool_routes.len(), 51);
         assert!(
             server.server_info().description.is_none(),
             "default server must not inject plugin guidance"
@@ -2123,8 +2118,8 @@ mod tests {
         let links = structured(
             server
                 .call_tool(
-                    "get_forward_links",
-                    serde_json::json!({"path": "shared.md"}),
+                    "get_links",
+                    serde_json::json!({"path": "shared.md", "direction": "outgoing"}),
                     &ctx,
                 )
                 .await
@@ -2149,7 +2144,7 @@ mod tests {
 
         let audit = structured(
             server
-                .call_tool("audit_stats", serde_json::json!({}), &ctx)
+                .call_tool("audit_log", serde_json::json!({"summary": true}), &ctx)
                 .await
                 .expect("audit provider should share runtime vault state"),
         );

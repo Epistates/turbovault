@@ -146,20 +146,20 @@ async fn visibility_layer_disabled_name_blocks_tool() {
 #[tokio::test]
 async fn visibility_layer_hidden_name_omits_from_list_but_allows_call() {
     let settings = ToolVisibilitySettings {
-        hidden: vec!["full_health_analysis".to_string()],
+        hidden: vec!["graph_report".to_string()],
         ..Default::default()
     };
     let layer = settings.apply_to_layer(VisibilityLayer::new(make_server()));
 
     // Hidden from listing.
     assert!(
-        !tool_names(&layer).contains(&"full_health_analysis".to_string()),
+        !tool_names(&layer).contains(&"graph_report".to_string()),
         "hidden tool must not appear in list_tools"
     );
 
     // But still callable — it returns a vault-not-found error, not ToolNotFound.
     let result = layer
-        .call_tool("full_health_analysis", serde_json::json!({}), &ctx())
+        .call_tool("vault_health", serde_json::json!({"depth": "full"}), &ctx())
         .await;
     match result {
         Ok(_) => {}

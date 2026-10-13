@@ -252,10 +252,10 @@ Create hub notes that organize atomic notes by topic or project.
 
 ## Related Tools and Resources
 
-- `get_ofm_syntax_guide` — This syntax guide
-- `get_ofm_quick_ref` — Quick reference cheat sheet
-- `get_ofm_examples` — Comprehensive example note with all features
-- `obsidian://syntax/complete-guide` — Resource identifier for MCP clients
+- `get_ofm_guide` with `guide: syntax`: this syntax guide
+- `get_ofm_guide` with `guide: quick_ref`: the quick reference cheat sheet
+- `get_ofm_guide` with `guide: example`: an example note with every feature
+- `obsidian://syntax/complete-guide`: this guide as an MCP resource
 
 ## Compatibility Considerations
 

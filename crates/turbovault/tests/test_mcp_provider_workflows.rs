@@ -236,11 +236,11 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
 
     let value = call(
         &server,
-        "get_metadata_value",
-        json!({"file": "alpha.md", "key": "status"}),
+        "get_notes_info",
+        json!({"paths": ["alpha.md"], "frontmatter_keys": ["status"]}),
     )
     .await;
-    assert_eq!(value["data"]["value"], "draft");
+    assert_eq!(value["data"][0]["frontmatter"]["status"], "draft");
 
     let update = call(
         &server,
@@ -259,11 +259,11 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
 
     let nested = call(
         &server,
-        "get_metadata_value",
-        json!({"file": "alpha.md", "key": "owner.name"}),
+        "get_notes_info",
+        json!({"paths": ["alpha.md"], "frontmatter_keys": ["owner.name"]}),
     )
     .await;
-    assert_eq!(nested["data"]["value"], "Ada");
+    assert_eq!(nested["data"][0]["frontmatter"]["owner.name"], "Ada");
 
     call(
         &server,
@@ -277,11 +277,13 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
     .await;
     let tags = call(
         &server,
-        "manage_tags",
-        json!({"path": "alpha.md", "operation": "list"}),
+        "get_notes_info",
+        json!({"paths": ["alpha.md"], "include_tags": true}),
     )
     .await;
-    let all_tags = tags["data"]["all_tags"].as_array().expect("tag array");
+    let all_tags = tags["data"][0]["tags"]["all_tags"]
+        .as_array()
+        .expect("tag array");
     assert!(all_tags.contains(&json!("seed")));
     assert!(all_tags.contains(&json!("reviewed")));
     assert!(all_tags.contains(&json!("architecture")));
@@ -337,13 +339,14 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
     .await;
     assert_eq!(replaced["data"]["merge"], false);
     assert_eq!(replaced["data"]["keys_set"], json!(["status"]));
-    let removed_key = call_error(
+    // A key the note no longer has reads as null.
+    let removed_key = call(
         &server,
-        "get_metadata_value",
-        json!({"file": "gamma.md", "key": "type"}),
+        "get_notes_info",
+        json!({"paths": ["gamma.md"], "frontmatter_keys": ["type"]}),
     )
     .await;
-    assert!(removed_key.contains("Key not found"));
+    assert_eq!(removed_key["data"][0]["frontmatter"]["type"], Value::Null);
 
     call(
         &server,
@@ -357,25 +360,25 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
     .await;
     let tags_after_remove = call(
         &server,
-        "manage_tags",
-        json!({"path": "alpha.md", "operation": "list"}),
+        "get_notes_info",
+        json!({"paths": ["alpha.md"], "include_tags": true}),
     )
     .await;
     assert!(
-        !tags_after_remove["data"]["all_tags"]
+        !tags_after_remove["data"][0]["tags"]["all_tags"]
             .as_array()
             .expect("tag array after removal")
             .contains(&json!("reviewed"))
     );
 
     for (operation, expected) in [
-        ("toggle", "Invalid tag operation"),
-        ("add", "Tags array required"),
+        ("toggle", "operation must be `add` or `remove`"),
+        ("list", "get_notes_info with include_tags"),
     ] {
         let error = call_error(
             &server,
             "manage_tags",
-            json!({"path": "alpha.md", "operation": operation}),
+            json!({"path": "alpha.md", "operation": operation, "tags": ["x"]}),
         )
         .await;
         assert!(error.contains(expected), "unexpected tag error: {error}");
@@ -383,8 +386,8 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
 
     let search = call(
         &server,
-        "search_by_frontmatter",
-        json!({"key": "status", "value": "published"}),
+        "search",
+        json!({"frontmatter_filters": [{"key": "status", "value": "published"}]}),
     )
     .await;
     assert_eq!(search["count"], 1);
@@ -401,13 +404,8 @@ async fn metadata_discovery_and_export_work_through_the_public_facade() {
     assert_eq!(info["data"][2]["path"], "../outside.md");
     assert_eq!(info["data"][2]["exists"], false);
 
-    for tool in [
-        "export_health_report",
-        "export_broken_links",
-        "export_vault_stats",
-        "export_analysis_report",
-    ] {
-        let export = call(&server, tool, json!({"format": "json"})).await;
+    for tool in ["health", "broken_links", "stats", "analysis"] {
+        let export = call(&server, "export", json!({"report": tool, "format": "json"})).await;
         assert_eq!(export["data"]["format"], "json", "tool: {tool}");
         assert_eq!(export["meta"]["format"], "json", "tool: {tool}");
         let content = export["data"]["content"]
@@ -542,10 +540,7 @@ async fn file_lifecycle_and_concurrency_guards_work_through_the_public_facade() 
     let first_read = call(&server, "read_note", json!({"path": "notes/work.md"})).await;
     assert_eq!(first_read["data"]["path"], "notes/work.md");
     assert_eq!(first_read["data"]["content"], original);
-    assert_eq!(
-        first_read["next_steps"],
-        json!(["write_note", "get_backlinks"])
-    );
+    assert_eq!(first_read["next_steps"], json!(["write_note", "get_links"]));
     let initial_hash = first_read["data"]["hash"]
         .as_str()
         .expect("initial content hash")
@@ -668,7 +663,7 @@ Updated line.
     assert_eq!(moved["data"]["status"], "moved");
     assert_eq!(
         moved["next_steps"],
-        json!(["get_backlinks", "get_forward_links"])
+        json!(["get_links", "get_related_notes"])
     );
     assert_eq!(
         moved["warnings"].as_array().expect("move warnings").len(),
@@ -716,7 +711,7 @@ Updated line.
     )
     .await;
     assert_eq!(deleted["data"]["status"], "deleted");
-    assert_eq!(deleted["next_steps"], json!(["quick_health_check"]));
+    assert_eq!(deleted["next_steps"], json!(["vault_health"]));
     let missing = call_error(&server, "read_note", json!({"path": "archive/work.md"})).await;
     assert!(missing.contains("No such file") || missing.contains("not found"));
 }
@@ -848,15 +843,14 @@ async fn vault_lifecycle_works_through_the_public_facade() {
 
     let empty = call(&server, "list_vaults", json!({})).await;
     assert_eq!(empty["count"], 0);
-    assert_eq!(empty["data"], json!([]));
-    let no_active = call(&server, "get_active_vault", json!({})).await;
-    assert_eq!(no_active["data"]["active_vault"], "");
+    assert_eq!(empty["data"]["vaults"], json!([]));
+    // With no vault there is no active one to report.
+    assert_eq!(empty["data"]["active_vault"], Value::Null);
 
     let created = call(
         &server,
-        "create_vault",
-        json!({
-            "name": "created",
+        "add_vault",
+        json!({"create": true, "name": "created",
             "path": created_path.to_string_lossy(),
             "template": "research",
         }),
@@ -874,13 +868,13 @@ async fn vault_lifecycle_works_through_the_public_facade() {
         assert!(created_path.join(directory).is_dir(), "missing {directory}");
     }
 
-    let first_active = call(&server, "get_active_vault", json!({})).await;
+    let first_active = call(&server, "list_vaults", json!({})).await;
     assert_eq!(first_active["data"]["active_vault"], "created");
-    let config = call(&server, "get_vault_config", json!({"name": "created"})).await;
-    assert_eq!(config["data"]["name"], "created");
+    let config = call(&server, "list_vaults", json!({"name": "created"})).await;
+    assert_eq!(config["data"]["config"]["name"], "created");
     let canonical_created = created_path.canonicalize().expect("created canonical path");
     let configured_path = std::path::PathBuf::from(
-        config["data"]["path"]
+        config["data"]["config"]["path"]
             .as_str()
             .expect("configured vault path"),
     )
@@ -906,7 +900,7 @@ async fn vault_lifecycle_works_through_the_public_facade() {
 
     let listed = call(&server, "list_vaults", json!({})).await;
     assert_eq!(listed["count"], 2);
-    let names = listed["data"]
+    let names = listed["data"]["vaults"]
         .as_array()
         .expect("vault list")
         .iter()
@@ -930,9 +924,9 @@ async fn vault_lifecycle_works_through_the_public_facade() {
     assert_eq!(activated["data"]["status"], "activated");
     assert_eq!(
         activated["next_steps"],
-        json!(["get_vault_context", "quick_health_check"])
+        json!(["get_vault_context", "vault_health"])
     );
-    let second_active = call(&server, "get_active_vault", json!({})).await;
+    let second_active = call(&server, "list_vaults", json!({})).await;
     assert_eq!(second_active["data"]["active_vault"], "existing");
     let existing_note = call(&server, "read_note", json!({"path": "existing.md"})).await;
     assert_eq!(existing_note["data"]["content"], "# Existing\n");
@@ -940,7 +934,7 @@ async fn vault_lifecycle_works_through_the_public_facade() {
     let removed_active = call(&server, "remove_vault", json!({"name": "existing"})).await;
     assert_eq!(removed_active["data"]["status"], "removed");
     assert_eq!(removed_active["next_steps"], json!(["list_vaults"]));
-    let reassigned = call(&server, "get_active_vault", json!({})).await;
+    let reassigned = call(&server, "list_vaults", json!({})).await;
     assert_eq!(reassigned["data"]["active_vault"], "created");
     let created_note = call(&server, "read_note", json!({"path": "created.md"})).await;
     assert_eq!(
@@ -951,13 +945,13 @@ async fn vault_lifecycle_works_through_the_public_facade() {
     call(&server, "remove_vault", json!({"name": "created"})).await;
     assert_eq!(call(&server, "list_vaults", json!({})).await["count"], 0);
     assert_eq!(
-        call(&server, "get_active_vault", json!({})).await["data"]["active_vault"],
-        ""
+        call(&server, "list_vaults", json!({})).await["data"]["active_vault"],
+        Value::Null
     );
 
     for (tool, arguments) in [
         ("remove_vault", json!({"name": "created"})),
-        ("get_vault_config", json!({"name": "created"})),
+        ("list_vaults", json!({"name": "created"})),
         ("set_active_vault", json!({"name": "created"})),
     ] {
         let error = call_error(&server, tool, arguments).await;
@@ -979,9 +973,8 @@ async fn create_vault_rejects_bad_inputs_before_touching_the_filesystem() {
     let invalid_template_path = root.path().join("invalid-template");
     let invalid_template = call_error(
         &server,
-        "create_vault",
-        json!({
-            "name": "invalid-template",
+        "add_vault",
+        json!({"create": true, "name": "invalid-template",
             "path": invalid_template_path.to_string_lossy(),
             "template": "zettelkasten",
         }),
@@ -994,8 +987,8 @@ async fn create_vault_rejects_bad_inputs_before_touching_the_filesystem() {
         let path = root.path().join("invalid-name");
         let error = call_error(
             &server,
-            "create_vault",
-            json!({"name": name, "path": path.to_string_lossy()}),
+            "add_vault",
+            json!({"create": true, "name": name, "path": path.to_string_lossy()}),
         )
         .await;
         assert!(error.contains("Vault name"));
@@ -1008,8 +1001,8 @@ async fn create_vault_rejects_bad_inputs_before_touching_the_filesystem() {
         .expect("file fixture");
     let not_directory = call_error(
         &server,
-        "create_vault",
-        json!({"name": "file", "path": file_path.to_string_lossy()}),
+        "add_vault",
+        json!({"create": true, "name": "file", "path": file_path.to_string_lossy()}),
     )
     .await;
     assert!(not_directory.contains("not a directory"));
@@ -1031,11 +1024,11 @@ async fn templates_render_notes_and_preserve_template_provenance() {
     assert!(template_ids.contains(&"task"));
     assert!(template_ids.contains(&"research"));
 
-    let doc_template = call(&server, "get_template", json!({"template_id": "doc"})).await;
-    assert_eq!(doc_template["data"]["name"], "Documentation");
-    assert_eq!(doc_template["data"]["category"], "documentation");
+    let doc_template = call(&server, "list_templates", json!({"template_id": "doc"})).await;
+    assert_eq!(doc_template["data"][0]["name"], "Documentation");
+    assert_eq!(doc_template["data"][0]["category"], "documentation");
     assert_eq!(
-        doc_template["data"]["fields"]
+        doc_template["data"][0]["fields"]
             .as_array()
             .expect("template fields")
             .len(),
@@ -1075,11 +1068,11 @@ async fn templates_render_notes_and_preserve_template_provenance() {
 
     let provenance = call(
         &server,
-        "get_metadata_value",
-        json!({"file": "guides/authentication.md", "key": "template"}),
+        "get_notes_info",
+        json!({"paths": ["guides/authentication.md"], "frontmatter_keys": ["template"]}),
     )
     .await;
-    assert_eq!(provenance["data"]["value"], "doc");
+    assert_eq!(provenance["data"][0]["frontmatter"]["template"], "doc");
 
     let matches = call(
         &server,
@@ -1104,7 +1097,7 @@ async fn advanced_discovery_recommendations_and_sql_return_real_results() {
 
     let filtered = call(
         &server,
-        "advanced_search",
+        "search",
         json!({
             "query": "distributed systems",
             "tags": ["seed"],
@@ -1126,7 +1119,7 @@ async fn advanced_discovery_recommendations_and_sql_return_real_results() {
     );
     assert_eq!(filtered["data"][0]["tags"], json!(["seed"]));
 
-    let recommendations = call(&server, "recommend_related", json!({"path": "alpha.md"})).await;
+    let recommendations = call(&server, "search", json!({"related_to": "alpha.md"})).await;
     assert!(
         recommendations["count"]
             .as_u64()
@@ -1176,23 +1169,25 @@ async fn graph_navigation_and_topology_work_through_the_public_facade() {
     let (_temp, server) = registered_server("graph-topology").await;
     seed_graph_vault(&server).await;
 
-    let backlinks = call(&server, "get_backlinks", json!({"path": "beta.md"})).await;
+    let backlinks = call(&server, "get_links", json!({"path": "beta.md"})).await;
     assert_eq!(backlinks["count"], 2);
     assert!(string_array_contains_path(&backlinks["data"], "hub.md"));
     assert!(string_array_contains_path(&backlinks["data"], "alpha.md"));
-    assert_eq!(
-        backlinks["next_steps"],
-        json!(["get_forward_links", "get_related_notes"])
-    );
+    assert_eq!(backlinks["next_steps"], json!(["get_related_notes"]));
 
-    let no_backlinks = call(&server, "get_backlinks", json!({"path": "orphan.md"})).await;
+    let no_backlinks = call(&server, "get_links", json!({"path": "orphan.md"})).await;
     assert_eq!(no_backlinks["count"], 0);
     assert_eq!(
         no_backlinks["warnings"],
         json!(["Note has no incoming links"])
     );
 
-    let forward = call(&server, "get_forward_links", json!({"path": "hub.md"})).await;
+    let forward = call(
+        &server,
+        "get_links",
+        json!({"direction": "outgoing", "path": "hub.md"}),
+    )
+    .await;
     assert_eq!(forward["count"], 3);
     for path in ["alpha.md", "beta.md", "leaf.md"] {
         assert!(string_array_contains_path(&forward["data"], path));
@@ -1210,23 +1205,34 @@ async fn graph_navigation_and_topology_work_through_the_public_facade() {
     let default_related = call(&server, "get_related_notes", json!({"path": "hub.md"})).await;
     assert_eq!(default_related["meta"]["max_hops"], 2);
 
-    let hubs = call(&server, "get_hub_notes", json!({"top_n": 1})).await;
+    let hubs = call(&server, "graph_report", json!({"kind": "hubs", "limit": 1})).await;
     assert_eq!(hubs["count"], 1);
+    assert_eq!(hubs["data"]["kind"], "hubs");
     assert!(
-        hubs["data"][0][0]
+        hubs["data"]["items"][0]["path"]
             .as_str()
             .expect("hub path")
             .ends_with("hub.md")
     );
-    assert_eq!(hubs["data"][0][1], 5);
+    assert_eq!(hubs["data"]["items"][0]["connections"], 5);
 
-    let dead_ends = call(&server, "get_dead_end_notes", json!({})).await;
+    let dead_ends = call(&server, "graph_report", json!({"kind": "dead_ends"})).await;
     assert_eq!(dead_ends["count"], 1);
-    assert!(string_array_contains_path(&dead_ends["data"], "leaf.md"));
+    assert!(string_array_contains_path(
+        &dead_ends["data"]["items"],
+        "leaf.md"
+    ));
 
-    let clusters = call(&server, "get_isolated_clusters", json!({})).await;
+    let clusters = call(
+        &server,
+        "graph_report",
+        json!({"kind": "isolated_clusters"}),
+    )
+    .await;
     assert_eq!(clusters["count"], 1);
-    let island = clusters["data"][0].as_array().expect("isolated cluster");
+    let island = clusters["data"]["items"][0]
+        .as_array()
+        .expect("isolated cluster");
     assert!(
         island
             .iter()
@@ -1240,22 +1246,22 @@ async fn graph_navigation_and_topology_work_through_the_public_facade() {
             .any(|path| path.ends_with("islands/b.md"))
     );
 
-    let broken = call(&server, "get_broken_links", json!({})).await;
+    let broken = call(&server, "graph_report", json!({"kind": "broken_links"})).await;
     assert_eq!(broken["count"], 1);
-    assert_eq!(broken["data"][0]["target"], "missing");
+    assert_eq!(broken["data"]["items"][0]["target"], "missing");
     assert!(
-        broken["data"][0]["source_file"]
+        broken["data"]["items"][0]["source_file"]
             .as_str()
             .expect("broken-link source")
             .ends_with("hub.md")
     );
     assert_eq!(broken["warnings"], json!(["Found 1 broken links"]));
-    assert_eq!(broken["next_steps"], json!(["export_broken_links"]));
+    assert_eq!(broken["next_steps"], json!(["export"]));
 
-    let cycles = call(&server, "detect_cycles", json!({})).await;
+    let cycles = call(&server, "graph_report", json!({"kind": "cycles"})).await;
     assert!(cycles["count"].as_u64().expect("cycle count") >= 2);
     assert_eq!(cycles["warnings"], json!(["Cycles detected in link graph"]));
-    assert_eq!(cycles["next_steps"], json!(["get_broken_links"]));
+    assert!(cycles["next_steps"].is_null());
 }
 
 #[tokio::test]
@@ -1263,23 +1269,24 @@ async fn graph_health_and_explanation_return_actionable_public_responses() {
     let (temp, server) = registered_server("graph-health").await;
     seed_graph_vault(&server).await;
 
-    let quick = call(&server, "quick_health_check", json!({})).await;
+    let quick = call(&server, "vault_health", json!({})).await;
     assert_eq!(quick["data"]["total_notes"], 7);
     assert_eq!(quick["data"]["total_links"], 8);
     assert_eq!(quick["data"]["broken_links_count"], 1);
     assert_eq!(quick["data"]["orphaned_notes_count"], 1);
-    assert_eq!(quick["next_steps"][0], "full_health_analysis");
+    assert_eq!(quick["meta"]["depth"], "quick");
+    assert_eq!(
+        quick["next_steps"],
+        json!(["graph_report", "suggest_links"])
+    );
 
-    let full = call(&server, "full_health_analysis", json!({})).await;
+    let full = call(&server, "vault_health", json!({"depth": "full"})).await;
     assert_eq!(full["data"]["total_notes"], 7);
     assert_eq!(full["data"]["broken_links_count"], 1);
     assert_eq!(full["data"]["orphaned_notes_count"], 1);
     assert_eq!(full["data"]["dead_end_notes_count"], 1);
-    assert_eq!(full["meta"]["analysis_type"], "comprehensive");
-    assert_eq!(
-        full["next_steps"],
-        json!(["get_broken_links", "suggest_links"])
-    );
+    assert_eq!(full["meta"]["depth"], "full");
+    assert_eq!(full["next_steps"], json!(["graph_report", "suggest_links"]));
 
     let explanation = call(&server, "explain_vault", json!({})).await;
     assert_eq!(explanation["data"]["quick_facts"]["total_files"], 7);
@@ -1304,10 +1311,7 @@ async fn graph_health_and_explanation_return_actionable_public_responses() {
         "public explanation should not expose the absolute vault path"
     );
     assert_eq!(explanation["meta"]["view_type"], "holistic_gestalt");
-    assert_eq!(
-        explanation["next_steps"],
-        json!(["get_dead_end_notes", "get_broken_links"])
-    );
+    assert_eq!(explanation["next_steps"], json!(["graph_report", "search"]));
 }
 
 #[tokio::test]
@@ -1324,30 +1328,20 @@ async fn analysis_and_relationship_tools_share_the_seeded_vault() {
     assert_eq!(diff["success"], true);
     assert!(diff["data"].is_object());
 
-    let quality = call(
-        &server,
-        "evaluate_note_quality",
-        json!({"path": "alpha.md"}),
-    )
-    .await;
+    let quality = call(&server, "note_quality", json!({"path": "alpha.md"})).await;
     assert_eq!(quality["success"], true);
     assert!(quality["data"].is_object());
 
-    let report = call(&server, "vault_quality_report", json!({"bottom_n": 2})).await;
+    let report = call(&server, "note_quality", json!({"bottom_n": 2})).await;
     assert_eq!(report["count"], 3);
 
-    let grounding = call(
-        &server,
-        "analyze_note_grounding",
-        json!({"path": "gamma.md"}),
-    )
-    .await;
+    let grounding = call(&server, "analyze_grounding", json!({"path": "gamma.md"})).await;
     assert_eq!(grounding["success"], true);
     assert!(grounding["data"].is_object());
 
     let semantic = call(
         &server,
-        "semantic_search",
+        "find_similar",
         json!({"query": "distributed systems consensus", "limit": 3}),
     )
     .await;
@@ -1355,7 +1349,7 @@ async fn analysis_and_relationship_tools_share_the_seeded_vault() {
 
     let similar = call(
         &server,
-        "find_similar_notes",
+        "find_similar",
         json!({"path": "alpha.md", "limit": 2}),
     )
     .await;
@@ -1377,17 +1371,9 @@ async fn analysis_and_relationship_tools_share_the_seeded_vault() {
     .await;
     assert!(comparison["data"].is_object());
 
-    let strength = call(
-        &server,
-        "get_link_strength",
-        json!({"source": "alpha.md", "target": "beta.md"}),
-    )
-    .await;
-    assert_eq!(strength["data"]["source"], "alpha.md");
-    assert_eq!(strength["data"]["target"], "beta.md");
-    assert!(strength["data"]["strength"].is_object());
+    assert!(comparison["data"]["link_strength"].is_object());
 
-    let ranking = call(&server, "get_centrality_ranking", json!({})).await;
+    let ranking = call(&server, "graph_report", json!({"kind": "centrality"})).await;
     assert_eq!(ranking["success"], true);
     assert!(ranking["data"].is_object());
 }
@@ -1399,22 +1385,19 @@ async fn relationship_scoring_and_suggestions_use_the_public_graph_contract() {
 
     let strength = call(
         &server,
-        "get_link_strength",
-        json!({"source": "source.md", "target": "target.md"}),
+        "compare_notes",
+        json!({"left": "source.md", "right": "target.md"}),
     )
     .await;
-    assert_eq!(strength["data"]["source"], "source.md");
-    assert_eq!(strength["data"]["target"], "target.md");
-    assert_eq!(strength["data"]["strength"]["strength"], 1.0);
+    assert_eq!(strength["data"]["link_strength"]["strength"], 1.0);
     assert_eq!(
-        strength["data"]["strength"]["components"],
+        strength["data"]["link_strength"]["components"],
         json!({
             "direct_links": 1,
             "backlinks": 1,
             "shared_references": 1
         })
     );
-    assert_eq!(strength["meta"]["metric"], "link_strength");
 
     let suggestions = call(
         &server,
@@ -1450,15 +1433,11 @@ async fn relationship_scoring_and_suggestions_use_the_public_graph_contract() {
             .is_empty()
     );
 
-    let ranking = call(&server, "get_centrality_ranking", json!({})).await;
+    let ranking = call(&server, "graph_report", json!({"kind": "centrality"})).await;
     assert_eq!(ranking["count"], 7);
-    assert_eq!(ranking["data"]["total_files"], 7);
-    assert_eq!(
-        ranking["meta"]["metrics"],
-        json!(["betweenness", "closeness", "eigenvector"])
-    );
+    assert_eq!(ranking["meta"]["pagination"]["total"], 7);
     assert!(
-        ranking["data"]["rankings"]
+        ranking["data"]["items"]
             .as_array()
             .expect("centrality rankings")
             .iter()
@@ -1472,8 +1451,8 @@ async fn relationship_scoring_and_suggestions_use_the_public_graph_contract() {
 
     for (tool, arguments) in [
         (
-            "get_link_strength",
-            json!({"source": "../outside.md", "target": "target.md"}),
+            "compare_notes",
+            json!({"left": "../outside.md", "right": "target.md"}),
         ),
         (
             "suggest_links",
@@ -1488,9 +1467,9 @@ async fn relationship_scoring_and_suggestions_use_the_public_graph_contract() {
     }
 
     let (_empty_temp, empty_server) = registered_server("relationship-empty").await;
-    let empty_ranking = call(&empty_server, "get_centrality_ranking", json!({})).await;
+    let empty_ranking = call(&empty_server, "graph_report", json!({"kind": "centrality"})).await;
     assert_eq!(empty_ranking["count"], 0);
-    assert_eq!(empty_ranking["data"]["total_files"], 0);
+    assert_eq!(empty_ranking["meta"]["pagination"]["total"], 0);
     let empty_suggestions = call(
         &empty_server,
         "suggest_links",
@@ -1506,7 +1485,7 @@ async fn okf_maintenance_grounding_visualization_and_staleness_are_public_workfl
     let (temp, server) = registered_server("okf-analysis").await;
     seed_okf_vault(&server).await;
 
-    let ungrounded = call(&server, "find_ungrounded_notes", json!({"limit": 1})).await;
+    let ungrounded = call(&server, "analyze_grounding", json!({"limit": 1})).await;
     assert_eq!(ungrounded["data"]["total_notes"], 3);
     assert_eq!(ungrounded["data"]["ungrounded_count"], 2);
     assert_eq!(ungrounded["count"], 2);
@@ -1686,8 +1665,8 @@ async fn audit_preview_diff_and_rollback_restore_the_previous_note() {
 
     let version_diff = call(
         &server,
-        "diff_note_version",
-        json!({"path": "release.md", "operation_id": operation_id}),
+        "diff_notes",
+        json!({"left": "release.md", "operation_id": operation_id}),
     )
     .await;
     assert_eq!(version_diff["success"], true);
@@ -1727,7 +1706,7 @@ async fn audit_preview_diff_and_rollback_restore_the_previous_note() {
         operation_id
     );
 
-    let stats = call(&server, "audit_stats", json!({})).await;
+    let stats = call(&server, "audit_log", json!({"summary": true})).await;
     assert!(
         stats["data"]["total_operations"]
             .as_u64()
@@ -1750,7 +1729,7 @@ async fn audit_entries_name_the_tool_call_and_chain() {
     assert!(newest["context"]["request_id"].is_string());
     assert!(newest["prev_hash"].is_string());
 
-    let stats = call(&server, "audit_stats", json!({})).await;
+    let stats = call(&server, "audit_log", json!({"summary": true})).await;
     assert_eq!(stats["data"]["chain"]["broken_at"], Value::Null);
     assert_eq!(stats["data"]["chain"]["entries"], 2);
 }
@@ -1840,7 +1819,7 @@ async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consist
     );
     let missing_created = call_error(&server, "read_note", json!({"path": "created.md"})).await;
     assert!(missing_created.contains("not found") || missing_created.contains("No such file"));
-    let health_after_delete = call(&server, "quick_health_check", json!({})).await;
+    let health_after_delete = call(&server, "vault_health", json!({})).await;
     assert_eq!(health_after_delete["data"]["total_notes"], 1);
 
     write_note(&server, "deleted.md", "# Deleted\n\n[[target]]\n").await;
@@ -1873,13 +1852,18 @@ async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consist
     call(&server, "rollback_note", json!({"operation_id": delete_id})).await;
     let restored = call(&server, "read_note", json!({"path": "deleted.md"})).await;
     assert_eq!(restored["data"]["content"], "# Deleted\n\n[[target]]\n");
-    let restored_links = call(&server, "get_forward_links", json!({"path": "deleted.md"})).await;
+    let restored_links = call(
+        &server,
+        "get_links",
+        json!({"direction": "outgoing", "path": "deleted.md"}),
+    )
+    .await;
     assert_eq!(restored_links["count"], 1);
     assert!(string_array_contains_path(
         &restored_links["data"],
         "target.md"
     ));
-    let health_after_restore = call(&server, "quick_health_check", json!({})).await;
+    let health_after_restore = call(&server, "vault_health", json!({})).await;
     assert_eq!(health_after_restore["data"]["total_notes"], 2);
 
     write_note(&server, "move.md", "# Move\n").await;
@@ -1944,7 +1928,7 @@ async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consist
         assert!(missing.contains("Audit entry not found"));
     }
 
-    let stats = call(&server, "audit_stats", json!({})).await;
+    let stats = call(&server, "audit_log", json!({"summary": true})).await;
     assert_eq!(stats["data"]["total_operations"], 8);
     assert_eq!(stats["data"]["operations_by_type"]["CREATE"], 4);
     assert_eq!(stats["data"]["operations_by_type"]["DELETE"], 1);
@@ -1986,7 +1970,7 @@ async fn read_note_partial_reads_omit_the_hash_and_report_what_was_returned() {
     assert!(whole["data"]["truncated"].is_null());
     assert_eq!(
         whole["next_steps"],
-        json!(["write_note", "get_backlinks"]),
+        json!(["write_note", "get_links"]),
         "whole-file next_steps must not change"
     );
 
@@ -2011,7 +1995,7 @@ async fn read_note_partial_reads_omit_the_hash_and_report_what_was_returned() {
         tail["data"]["sections"].is_null(),
         "line slices carry no section metadata"
     );
-    assert_eq!(tail["next_steps"], json!(["edit_note", "get_backlinks"]));
+    assert_eq!(tail["next_steps"], json!(["edit_note", "get_links"]));
 
     // Section slice from the end. The level-3 subheading stays inside its
     // level-2 parent rather than ending it.

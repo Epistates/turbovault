@@ -29,7 +29,7 @@ impl TemplateProvider {
 
     /// List available templates
     #[tool(
-        description = "List the note templates create_from_template can use, with each one's id, name and fields. get_template shows one in detail.",
+        description = "List the note templates create_from_template can use, each with its id, name, fields (which are required, their types and defaults) and the note it produces. Give template_id to get just that one.",
         title = "List Templates",
         tags = ["read", "template"],
         read_only = true,
@@ -38,46 +38,30 @@ impl TemplateProvider {
         open_world = false,
         output_schema = StandardResponse<Vec<TemplateDefinition>>,
     )]
-    async fn list_templates(&self) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let engine = TemplateEngine::new(manager);
-        let templates = engine.list_templates();
-
-        let count = templates.len();
-        let response =
-            StandardResponse::new(vault_name, "list_templates", templates).with_count(count);
-
-        response.to_json()
-    }
-
-    /// Get template details
-    #[tool(
-        description = "Show one template: its fields (which are required, their types and defaults) and the note it produces. Use it to fill `fields` for create_from_template.",
-        title = "Get Template",
-        tags = ["read", "template"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<TemplateDefinition>,
-    )]
-    async fn get_template(
+    async fn list_templates(
         &self,
-        #[description("The template's id, as list_templates shows it.")] template_id: String,
+        #[description("One template's id, to get only that template. Omit to list them all.")]
+        template_id: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = TemplateEngine::new(manager);
-        let template = engine.get_template(&template_id).ok_or_else(|| {
-            McpError::new(
-                turbomcp_core::error::ErrorKind::ResourceNotFound,
-                format!("Template {template_id} not found. Use list_templates to see the ids"),
-            )
-        })?;
+        let templates = match template_id {
+            Some(template_id) => vec![engine.get_template(&template_id).ok_or_else(|| {
+                McpError::new(
+                    turbomcp_core::error::ErrorKind::ResourceNotFound,
+                    format!(
+                        "Template {template_id} not found. Call list_templates without an id to see them"
+                    ),
+                )
+            })?],
+            None => engine.list_templates(),
+        };
 
-        let response = StandardResponse::new(vault_name, "get_template", template)
-            .with_next_step("create_from_template");
-
-        response.to_json()
+        let count = templates.len();
+        StandardResponse::new(vault_name, "list_templates", templates)
+            .with_count(count)
+            .with_next_step("create_from_template")
+            .to_json()
     }
 
     /// Create note from template
@@ -99,7 +83,7 @@ impl TemplateProvider {
         )]
         file_path: String,
         #[description(
-            "The field values as a JSON object string, such as `{\"title\": \"Weekly sync\", \"date\": \"2026-10-13\"}`. get_template lists the fields."
+            "The field values as a JSON object string, such as `{\"title\": \"Weekly sync\", \"date\": \"2026-10-13\"}`. list_templates lists the fields."
         )]
         fields: String, // JSON string
         #[description(

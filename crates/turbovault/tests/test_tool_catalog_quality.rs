@@ -11,7 +11,7 @@ use turbovault::ObsidianMcpServer;
 fn every_tool_is_fully_annotated() {
     let server = ObsidianMcpServer::new().expect("server");
     let tools = server.list_tools();
-    assert!(tools.len() >= 79, "catalog shrank to {}", tools.len());
+    assert!(tools.len() >= 51, "catalog shrank to {}", tools.len());
 
     for tool in &tools {
         let name = &tool.name;

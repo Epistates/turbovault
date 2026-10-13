@@ -21,7 +21,21 @@ impl Deref for ExportProvider {
     }
 }
 
-/// Response payload for the export tools: the document, and its format.
+/// Which report `export` writes out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ExportReport {
+    /// Score, counts, broken links and orphans.
+    Health,
+    /// Every broken link.
+    BrokenLinks,
+    /// Note, link, orphan and word counts, and averages per note.
+    Stats,
+    /// Health, statistics, links and clusters together: the largest.
+    Analysis,
+}
+
+/// Response payload for `export`: the document, and its format.
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct ExportPayload {
     /// The JSON or CSV document, as text.
@@ -33,10 +47,10 @@ struct ExportPayload {
 impl ExportProvider {
     // ==================== Export Operations ====================
 
-    /// Export health report as JSON or CSV
+    /// Export a vault report as JSON or CSV.
     #[tool(
-        description = "The vault's link-health report (score, counts, broken links, orphans) as one JSON or CSV document in `content`, to save or hand to another tool. To act on the findings, the get_* graph tools return them as data.",
-        title = "Export Health Report",
+        description = "One report about the vault as a single JSON or CSV document in `content`, to save or hand to another tool. `health`: link-health score, counts, broken links and orphans. `broken_links`: every broken link. `stats`: note, link, orphan and word counts and averages. `analysis`: health, statistics, links and clusters together, the largest. To act on findings, vault_health and graph_report return them as data.",
+        title = "Export Report",
         tags = ["read", "export"],
         read_only = true,
         destructive = false,
@@ -44,148 +58,35 @@ impl ExportProvider {
         open_world = false,
         output_schema = StandardResponse<ExportPayload>,
     )]
-    async fn export_health_report(
+    async fn export(
         &self,
         ctx: &RequestContext,
+        #[description("Which report: `health`, `broken_links`, `stats` or `analysis`.")]
+        report: ExportReport,
         #[description("`json` or `csv`.")] format: String,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = ExportTools::new(manager);
         let mut stages = Stages::new(ctx, 1);
         stages.next("Analyzing the vault").await?;
-        let report = tools
-            .export_health_report(&format)
-            .await
-            .map_err(to_mcp_error)?;
+        let content = match report {
+            ExportReport::Health => tools.export_health_report(&format).await,
+            ExportReport::BrokenLinks => tools.export_broken_links(&format).await,
+            ExportReport::Stats => tools.export_vault_stats(&format).await,
+            ExportReport::Analysis => tools.export_analysis_report(&format).await,
+        }
+        .map_err(to_mcp_error)?;
         stages.finish().await;
 
-        let response = StandardResponse::new(
+        StandardResponse::new(
             vault_name,
-            "export_health_report",
+            "export",
             ExportPayload {
-                content: report,
+                content,
                 format: format.clone(),
             },
         )
-        .with_meta("format", serde_json::json!(format));
-
-        response.to_json()
-    }
-
-    /// Export broken links as JSON or CSV
-    #[tool(
-        description = "Every broken link in the vault as one JSON or CSV document in `content`, to save or share. get_broken_links returns them page by page as data.",
-        title = "Export Broken Links",
-        tags = ["read", "export"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<ExportPayload>,
-    )]
-    async fn export_broken_links(
-        &self,
-        ctx: &RequestContext,
-        #[description("`json` or `csv`.")] format: String,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = ExportTools::new(manager);
-        let mut stages = Stages::new(ctx, 1);
-        stages.next("Analyzing the vault").await?;
-        let links = tools
-            .export_broken_links(&format)
-            .await
-            .map_err(to_mcp_error)?;
-        stages.finish().await;
-
-        let response = StandardResponse::new(
-            vault_name,
-            "export_broken_links",
-            ExportPayload {
-                content: links,
-                format: format.clone(),
-            },
-        )
-        .with_meta("format", serde_json::json!(format));
-
-        response.to_json()
-    }
-
-    /// Export vault statistics as JSON or CSV
-    #[tool(
-        description = "Vault statistics (note, link, orphan and word counts, and averages per note) as one JSON or CSV document in `content`, to save or share.",
-        title = "Export Vault Statistics",
-        tags = ["read", "export"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<ExportPayload>,
-    )]
-    async fn export_vault_stats(
-        &self,
-        ctx: &RequestContext,
-        #[description("`json` or `csv`.")] format: String,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = ExportTools::new(manager);
-        let mut stages = Stages::new(ctx, 1);
-        stages.next("Analyzing the vault").await?;
-        let stats = tools
-            .export_vault_stats(&format)
-            .await
-            .map_err(to_mcp_error)?;
-        stages.finish().await;
-
-        let response = StandardResponse::new(
-            vault_name,
-            "export_vault_stats",
-            ExportPayload {
-                content: stats,
-                format: format.clone(),
-            },
-        )
-        .with_meta("format", serde_json::json!(format));
-
-        response.to_json()
-    }
-
-    /// Export full analysis report
-    #[tool(
-        description = "A combined analysis report (health, statistics, links and clusters) as one JSON or CSV document in `content`. The largest export; use it for a full snapshot to save.",
-        title = "Export Analysis Report",
-        tags = ["read", "export"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<ExportPayload>,
-    )]
-    async fn export_analysis_report(
-        &self,
-        ctx: &RequestContext,
-        #[description("`json` or `csv`.")] format: String,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = ExportTools::new(manager);
-        let mut stages = Stages::new(ctx, 1);
-        stages.next("Analyzing the vault").await?;
-        let report = tools
-            .export_analysis_report(&format)
-            .await
-            .map_err(to_mcp_error)?;
-        stages.finish().await;
-
-        let response = StandardResponse::new(
-            vault_name,
-            "export_analysis_report",
-            ExportPayload {
-                content: report,
-                format: format.clone(),
-            },
-        )
-        .with_meta("format", serde_json::json!(format));
-
-        response.to_json()
+        .with_meta("format", serde_json::json!(format))
+        .to_json()
     }
 }

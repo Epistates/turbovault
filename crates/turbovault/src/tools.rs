@@ -635,7 +635,7 @@ impl<T: serde::Serialize> StandardResponse<T> {
 
     /// Add common next step pattern for read operations
     pub fn with_read_next_steps(self) -> Self {
-        self.with_next_steps(&["write_note", "get_backlinks"])
+        self.with_next_steps(&["write_note", "get_links"])
     }
 
     /// Add common next step pattern for write operations
@@ -645,12 +645,12 @@ impl<T: serde::Serialize> StandardResponse<T> {
 
     /// Add common next step pattern for search operations
     pub fn with_search_next_steps(self) -> Self {
-        self.with_next_steps(&["advanced_search", "recommend_related"])
+        self.with_next_steps(&["search", "find_similar"])
     }
 
     /// Add common next step pattern for analysis operations
     pub fn with_analysis_next_steps(self) -> Self {
-        self.with_next_steps(&["quick_health_check", "full_health_analysis"])
+        self.with_next_steps(&["vault_health", "graph_report"])
     }
 }
 
@@ -729,7 +729,7 @@ pub(super) struct CoreToolHandler {
     search_engines: Arc<EngineSlots<SearchEngine>>,
     /// GWS.13 active fanouts, keyed by **base vault name**
     /// (the original vault, NOT the auto-registered fanout vault). At most
-    /// one active fanout per base vault — `begin_fanout` errors loudly
+    /// one active fanout per base vault — `fanout` (action `begin`) errors loudly
     /// on a second concurrent attempt.
     active_fanouts: Arc<RwLock<HashMap<String, ActiveFanoutRecord>>>,
     /// Where observed vault changes are reported.
@@ -739,7 +739,7 @@ pub(super) struct CoreToolHandler {
     /// know whether a consumer exists. `None` until installed, and no sink at
     /// all when the server is built without the plugin boundary.
     event_sink: Arc<std::sync::OnceLock<Arc<dyn VaultEventSink>>>,
-    /// Which directories `add_vault` and `create_vault` may register. Set
+    /// Which directories `add_vault` may register. Set
     /// once at startup from `--allowed-vault-roots` and the transport, and
     /// shared by every clone.
     vault_root_policy: Arc<std::sync::RwLock<VaultRootPolicy>>,
@@ -833,7 +833,7 @@ impl CoreToolHandler {
         })
     }
 
-    /// Restrict which directories `add_vault` and `create_vault` accept.
+    /// Restrict which directories `add_vault` accept.
     pub fn set_vault_root_policy(&self, policy: VaultRootPolicy) {
         *self
             .vault_root_policy
@@ -841,7 +841,7 @@ impl CoreToolHandler {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
     }
 
-    /// The policy `add_vault` and `create_vault` check paths against.
+    /// The policy `add_vault` check paths against.
     pub fn vault_root_policy(&self) -> VaultRootPolicy {
         self.vault_root_policy
             .read()
@@ -1890,7 +1890,7 @@ impl CoreToolHandler {
             let fanouts = self.active_fanouts.read().await;
             if let Some(record) = fanouts.get(name) {
                 return Err(McpError::invalid_params(format!(
-                    "vault {name} has an active fanout (fanout_id={}); abandon_fanout first",
+                    "vault {name} has an active fanout (fanout_id={}); call fanout with action `abandon` first",
                     record.fanout_id
                 )));
             }
@@ -1899,7 +1899,7 @@ impl CoreToolHandler {
                 .find(|record| record.fanout_vault_name == name)
             {
                 return Err(McpError::invalid_params(format!(
-                    "vault {name} is a fanout worktree (fanout_id={}); abandon_fanout from the base vault first",
+                    "vault {name} is a fanout worktree (fanout_id={}); call fanout with action `abandon` from the base vault first",
                     record.fanout_id
                 )));
             }
@@ -1928,7 +1928,7 @@ impl CoreToolHandler {
 
     /// Test-only: install an `active_fanouts` entry so tests can
     /// observe the remove_vault refusal without driving the full
-    /// `begin_fanout` MCP wire path. Used by turbovault-1ne.
+    /// `fanout` (action `begin`) MCP wire path. Used by turbovault-1ne.
     pub async fn register_active_fanout_test(
         &self,
         base_vault: &str,
