@@ -103,23 +103,57 @@ async fn batch_response_reports_partial_failure_contract() {
 }
 
 #[tokio::test]
-async fn visibility_layer_empty_settings_exposes_all_tools() {
+async fn default_settings_list_the_core_tools_and_keep_advanced_ones_callable() {
     let layer =
         ToolVisibilitySettings::default().apply_to_layer(VisibilityLayer::new(make_server()));
     let names = tool_names(&layer);
-    // A minimal set of expected tools — confirm nothing was accidentally hidden.
-    for expected in &[
+    for expected in [
         "read_note",
         "write_note",
         "delete_note",
         "search",
-        "audit_log",
+        "get_links",
     ] {
         assert!(
             names.contains(&expected.to_string()),
-            "expected tool {expected:?} to be listed with empty settings"
+            "expected core tool {expected:?} to be listed by default"
         );
     }
+    for advanced in turbovault::tool_visibility::ADVANCED_TOOLS {
+        assert!(
+            !names.contains(&advanced.to_string()),
+            "advanced tool {advanced:?} should not be listed by default"
+        );
+    }
+    // Hidden, not disabled: an advanced tool is still callable by name.
+    let result = layer
+        .call_tool("audit_log", serde_json::json!({}), &ctx())
+        .await;
+    if let Err(error) = result {
+        assert_ne!(error.kind, ErrorKind::ToolNotFound, "got: {error}");
+    }
+}
+
+#[tokio::test]
+async fn show_advanced_tools_lists_every_tool() {
+    let settings = ToolVisibilitySettings {
+        show_advanced_tools: true,
+        ..Default::default()
+    };
+    let layer = settings.apply_to_layer(VisibilityLayer::new(make_server()));
+    assert_eq!(tool_names(&layer).len(), make_server().list_tools().len());
+}
+
+#[tokio::test]
+async fn an_allowed_list_lists_the_advanced_tools_it_names() {
+    let settings = ToolVisibilitySettings {
+        allowed: vec!["read_note".to_string(), "audit_log".to_string()],
+        ..Default::default()
+    };
+    let layer = settings.apply_to_layer(VisibilityLayer::new(make_server()));
+    let mut names = tool_names(&layer);
+    names.sort();
+    assert_eq!(names, ["audit_log", "read_note"]);
 }
 
 #[tokio::test]
@@ -159,7 +193,7 @@ async fn visibility_layer_hidden_name_omits_from_list_but_allows_call() {
 
     // But still callable — it returns a vault-not-found error, not ToolNotFound.
     let result = layer
-        .call_tool("vault_health", serde_json::json!({"depth": "full"}), &ctx())
+        .call_tool("graph_report", serde_json::json!({"kind": "hubs"}), &ctx())
         .await;
     match result {
         Ok(_) => {}

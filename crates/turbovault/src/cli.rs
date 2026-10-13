@@ -213,6 +213,15 @@ pub struct Args {
     )]
     require_read_only_tools: bool,
 
+    /// List the advanced tools as well as the core set. They are callable by
+    /// name either way; this only puts them in tools/list.
+    #[arg(
+        long,
+        env = "TURBOVAULT_SHOW_ADVANCED_TOOLS",
+        action = clap::ArgAction::SetTrue
+    )]
+    show_advanced_tools: bool,
+
     /// Comma-separated compiled-in plugins to enable, by ID (e.g.
     /// `vector_search`). None are enabled unless named here, so a binary
     /// built with every plugin behaves like one built with none by default.
@@ -742,6 +751,7 @@ async fn load_tool_visibility_with_default(
         // The read-only profile is the same gate as --require-read-only-tools:
         // unannotated or mutating tools are hidden and refused, failing closed.
         require_read_only: args.require_read_only_tools || args.profile.is_read_only(),
+        show_advanced_tools: args.show_advanced_tools,
     });
 
     Ok(settings)
