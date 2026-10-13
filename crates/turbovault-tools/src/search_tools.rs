@@ -49,29 +49,23 @@ impl SearchTools {
             .collect())
     }
 
-    /// Search for files by name pattern (simple substring match)
+    /// Search for files by name pattern (simple substring match).
+    ///
+    /// Only the files the vault scan sees are searched: protected and
+    /// excluded directories are skipped and symlinks are not followed, so
+    /// this can't list what lies in `.git` or outside the vault.
     pub async fn search_files(&self, pattern: &str) -> Result<Vec<String>> {
-        let vault_path = self.manager.vault_path();
-        let mut results = Vec::new();
-
-        // Walk vault directory
-        let mut stack = vec![vault_path.clone()];
-        while let Some(dir) = stack.pop() {
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-
-                    if path.is_dir() {
-                        stack.push(path);
-                    } else if let Some(name) = path.file_name().and_then(|n| n.to_str())
-                        && name.contains(pattern)
-                    {
-                        results.push(self.manager.relative_path(&path));
-                    }
-                }
-            }
-        }
-
-        Ok(results)
+        Ok(self
+            .manager
+            .scan_vault()
+            .await?
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.contains(pattern))
+            })
+            .map(|path| self.manager.relative_path(&path))
+            .collect())
     }
 }
