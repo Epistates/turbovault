@@ -51,6 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Semantic search finds the true nearest chunks in a small vault.** An HNSW search is approximate, and on a graph of a few dozen chunks it missed the nearest one now and then, returning a far worse match in its place. Up to 4,096 chunks the dense index now compares the query with every vector, which is exact and takes about a millisecond; past that it searches the graph as before.
+
 - **Search results report their backlinks.** `backlink_count` was always 0: it looked the note up in the link graph by its vault-relative path, and the graph is keyed by absolute path.
 - **Re-parsing a note no longer leaves stale links in the graph.** An edge the note no longer declared could survive, showing as phantom backlinks, wrong hub and orphan counts, and `delete_note` refusing over a link that no longer existed.
 - **Deleting a note shows its links as broken right away**, or re-points them to another note of the same name. An alias removed from a note's frontmatter stops resolving to it.
