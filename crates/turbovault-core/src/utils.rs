@@ -184,23 +184,6 @@ impl PathValidator {
     pub fn validate_path_in_vault(vault_root: &Path, path: &Path) -> Result<PathBuf> {
         Ok(Self::resolve_in_vault(vault_root, path)?.path)
     }
-
-    /// Ensure a path exists in the vault
-    pub fn validate_path_exists(vault_root: &Path, path: &Path) -> Result<PathBuf> {
-        let full_path = Self::validate_path_in_vault(vault_root, path)?;
-        if !full_path.exists() {
-            return Err(Error::file_not_found(&full_path));
-        }
-        Ok(full_path)
-    }
-
-    /// Get multiple paths and validate them all
-    pub fn validate_multiple(vault_root: &Path, paths: &[&str]) -> Result<Vec<PathBuf>> {
-        paths
-            .iter()
-            .map(|p| Self::validate_path_in_vault(vault_root, Path::new(p)))
-            .collect()
-    }
 }
 
 /// Resolve `.` and `..` in a path by its text alone, without touching the

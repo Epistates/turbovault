@@ -494,15 +494,6 @@ impl SearchEngine {
         query.build_results(self).await
     }
 
-    /// Search by tag
-    pub async fn search_by_tags(&self, tags: Vec<String>) -> Result<Vec<SearchResultInfo>> {
-        SearchQuery::new("*")
-            .with_tags(tags)
-            .limit(100)
-            .build_results(self)
-            .await
-    }
-
     /// Search by frontmatter property
     pub async fn search_by_frontmatter(
         &self,
