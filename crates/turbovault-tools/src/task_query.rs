@@ -141,7 +141,7 @@ pub async fn query_tasks(manager: &Arc<VaultManager>, query: &TaskQuery) -> Resu
         .filter(|path| !path.is_empty());
 
     let mut matches = Vec::new();
-    for file in manager.vault_files_validated().await {
+    for file in manager.notes_validated().await {
         let path = manager.relative_path(&file.path);
         if let Some(scope) = &scope
             && path != *scope

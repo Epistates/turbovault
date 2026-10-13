@@ -281,20 +281,16 @@ impl<'e, 'a> Row<'e, 'a> {
                         let mut sources: Vec<String> = self
                             .env
                             .graph
-                            .backlinks(&file.full_path)
-                            .map(|found| {
-                                found
-                                    .into_iter()
-                                    .filter_map(|(path, _)| {
-                                        self.env
-                                            .files
-                                            .iter()
-                                            .find(|f| f.full_path == path)
-                                            .map(|f| f.path.clone())
-                                    })
-                                    .collect()
+                            .backlink_sources(&file.full_path)
+                            .into_iter()
+                            .filter_map(|path| {
+                                self.env
+                                    .files
+                                    .iter()
+                                    .find(|f| &f.full_path == path)
+                                    .map(|f| f.path.clone())
                             })
-                            .unwrap_or_default();
+                            .collect();
                         sources.sort();
                         Value::List(
                             sources

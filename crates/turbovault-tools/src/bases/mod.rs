@@ -381,7 +381,7 @@ pub async fn query_base(
         view.order.clone()
     };
 
-    let notes = manager.vault_files_validated().await;
+    let notes = manager.notes_validated().await;
     let mut files: Vec<FileInfo> = notes.iter().map(|note| file_info(manager, note)).collect();
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let base_full = manager.vault_path().join(base_path);
