@@ -137,6 +137,37 @@ impl FileFingerprint {
     }
 }
 
+/// A note's fingerprint, and whether it is enough to tell a later edit apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Observed {
+    fingerprint: FileFingerprint,
+    /// Read before its mtime tick was over. A filesystem keeps mtimes to some
+    /// granularity (2 s on FAT and exFAT, 1 s on HFS+ and many network
+    /// mounts), so an edit that keeps the size and lands in the same tick
+    /// leaves the fingerprint as it was: a checkbox toggle, `[ ]` to `[x]`, is
+    /// exactly that. The sweep checks a racy note by content instead, until a
+    /// read after the tick clears it. Git does the same for the index entries
+    /// it calls "racily clean".
+    racy: bool,
+}
+
+/// How long after its mtime a note's fingerprint is racy: the coarsest tick
+/// in common use, plus slack for the clocks to disagree.
+const RACY_WINDOW: Duration = Duration::from_millis(2_100);
+
+impl Observed {
+    /// The observation of a read that finished at `read_at`.
+    fn at(fingerprint: FileFingerprint, read_at: SystemTime) -> Self {
+        let racy = fingerprint.modified.is_some_and(|modified| {
+            // An mtime ahead of our clock is racy until our clock passes it.
+            read_at
+                .duration_since(modified)
+                .map_or(true, |age| age < RACY_WINDOW)
+        });
+        Self { fingerprint, racy }
+    }
+}
+
 /// One note in the cache: what was parsed, and the revision it was parsed from.
 #[derive(Debug, Clone)]
 struct CacheEntry {
@@ -144,7 +175,7 @@ struct CacheEntry {
     /// The fingerprint of the bytes `file` was parsed from, when it could be
     /// established. `None` means "unknown", which no scan result can equal, so
     /// the next sweep re-parses the note. Unknown resolves to "assume stale".
-    observed: Option<FileFingerprint>,
+    observed: Option<Observed>,
 }
 
 /// Never reconcile more often than this, however cheap the sweep turns out to
@@ -398,14 +429,19 @@ fn is_note(path: &Path) -> bool {
 async fn read_note_with_fingerprint(
     path: &Path,
     expected: Option<FileFingerprint>,
-) -> std::io::Result<(String, Option<FileFingerprint>)> {
+) -> std::io::Result<(String, Option<Observed>)> {
     let before = match expected {
         Some(fingerprint) => Some(fingerprint),
         None => FileFingerprint::observe(path).await,
     };
     let content = tokio::fs::read_to_string(path).await?;
     let after = FileFingerprint::observe(path).await;
-    Ok((content, if before == after { after } else { None }))
+    let read_at = SystemTime::now();
+    let observed = if before == after { after } else { None };
+    Ok((
+        content,
+        observed.map(|fingerprint| Observed::at(fingerprint, read_at)),
+    ))
 }
 
 /// Main vault manager with file operations and watching
@@ -919,17 +955,29 @@ impl VaultManager {
         }
 
         let mut changed: Vec<(PathBuf, bool)> = Vec::new();
+        // Matching fingerprints that can't vouch for the bytes on their own.
+        let mut racy: Vec<(PathBuf, FileFingerprint, String)> = Vec::new();
         {
             let cache = self.file_cache.read().await;
             for (path, entry) in cache.iter() {
-                match on_disk.remove(path) {
-                    // Same revision we parsed. Nothing to do.
-                    Some(found) if entry.observed == Some(found) => {}
+                match (on_disk.remove(path), entry.observed) {
+                    // Same revision we parsed, read too close to its mtime
+                    // for the fingerprint alone to say so.
+                    (Some(found), Some(observed)) if observed.fingerprint == found => {
+                        if observed.racy {
+                            racy.push((path.clone(), found, entry.file.metadata.checksum.clone()));
+                        }
+                    }
                     // Still there, but not the bytes we parsed.
-                    Some(_) => changed.push((path.clone(), true)),
+                    (Some(_), _) => changed.push((path.clone(), true)),
                     // Gone from the vault.
-                    None => changed.push((path.clone(), false)),
+                    (None, _) => changed.push((path.clone(), false)),
                 }
+            }
+        }
+        for (path, found, checksum) in racy {
+            if let Some(edited) = self.recheck_racy(&path, found, &checksum).await {
+                changed.push((path, edited));
             }
         }
         // Whatever the scan found that the cache had never heard of was created
@@ -952,6 +1000,37 @@ impl VaultManager {
         );
         self.sync_index(&changed).await;
         changed
+    }
+
+    /// Check a racy note (see [`Observed::racy`]) by content. `Some(present)`
+    /// when it changed and belongs in the sweep's diff. When the bytes are
+    /// the ones we parsed, the entry takes this read's observation instead,
+    /// which stops being racy once the read is past the note's mtime tick.
+    async fn recheck_racy(
+        &self,
+        path: &Path,
+        found: FileFingerprint,
+        checksum: &str,
+    ) -> Option<bool> {
+        match read_note_with_fingerprint(path, Some(found)).await {
+            Ok((content, observed)) if turbovault_core::compute_hash(&content) == checksum => {
+                let mut cache = self.file_cache.write().await;
+                // Unless a write recorded a newer revision meanwhile.
+                if let Some(entry) = cache.get_mut(path)
+                    && entry.observed.map(|o| o.fingerprint) == Some(found)
+                {
+                    entry.observed = observed;
+                }
+                None
+            }
+            Ok(_) => Some(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+            // Left racy, so the next pass looks again.
+            Err(e) => {
+                log::debug!("freshness sweep: re-reading {}: {e}", path.display());
+                None
+            }
+        }
     }
 
     /// Vault-relative, `/`-separated — the spelling a git diff produces, and so
@@ -1627,12 +1706,7 @@ impl VaultManager {
     /// Recording the fingerprint here is what keeps the freshness sweep quiet
     /// about this process's own writes: the next scan finds exactly what this
     /// entry says it saw, so the note never enters the diff.
-    async fn insert_cache_entry(
-        &self,
-        path: PathBuf,
-        file: VaultFile,
-        observed: Option<FileFingerprint>,
-    ) {
+    async fn insert_cache_entry(&self, path: PathBuf, file: VaultFile, observed: Option<Observed>) {
         let mut cache = self.file_cache.write().await;
         cache.insert(path, CacheEntry { file, observed });
     }
@@ -3086,6 +3160,64 @@ mod tests {
             a.content.contains("now links to"),
             "the cache must hold the new revision, not the parsed original"
         );
+    }
+
+    /// Rewrite `path` with `content`, then put its mtime back to `mtime`.
+    fn write_keeping_mtime(path: &Path, content: &str, mtime: std::time::SystemTime) {
+        std::fs::write(path, content).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    /// An edit that keeps the size and lands in the same mtime tick as the
+    /// revision we parsed (FAT and exFAT keep 2 s, HFS+ and many network
+    /// mounts 1 s) has the fingerprint we recorded. Read that close to its
+    /// mtime, a note is checked by content until the tick has passed, the
+    /// rule git uses for its "racily clean" index entries.
+    #[tokio::test]
+    async fn reconcile_sees_a_same_size_edit_within_the_mtime_tick() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        let path = temp_dir.path().join("task.md");
+        let tick = std::time::SystemTime::now();
+        write_keeping_mtime(&path, "- [ ] ship it\n", tick);
+        manager.initialize().await.unwrap();
+
+        // A checkbox toggle: same size, and on a coarse filesystem, same mtime.
+        write_keeping_mtime(&path, "- [x] ship it\n", tick);
+        manager.reconcile_now().await;
+
+        let cached = manager.all_cached_vault_files().await;
+        assert_eq!(cached[0].content, "- [x] ship it\n");
+    }
+
+    /// The content check is only for notes read inside their mtime tick, and
+    /// it finds nothing to report when the bytes are the same.
+    #[tokio::test]
+    async fn reconcile_is_silent_about_an_unchanged_note_read_within_its_tick() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("fresh.md"), "# Fresh\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        let captured: Arc<StdMutex<Vec<(String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
+            Box::pin(async {})
+        }));
+        manager.reconcile_now().await;
+        assert!(captured.lock().unwrap().is_empty());
     }
 
     /// A note deleted by somebody else leaves the graph and the cache.
