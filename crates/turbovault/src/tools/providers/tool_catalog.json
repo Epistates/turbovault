@@ -712,7 +712,7 @@
     "annotations": {
       "readOnlyHint": true
     },
-    "description": "Execute arbitrary SQL against a 'files' table built from all vault note frontmatter. Each note becomes a row with 'path' + all frontmatter keys as columns. Supports WHERE, JOIN, GROUP BY, ORDER BY, LIMIT, subqueries, and aggregations",
+    "description": "Run a read-only SQL SELECT against a 'files' table built from all vault note frontmatter, plus 'tags' (path, tag) and 'links' (source, target, link_type, is_valid). Each note becomes a row with 'path' + all frontmatter keys as columns. Supports WHERE, JOIN, GROUP BY, ORDER BY, LIMIT, subqueries, and aggregations. Only SELECT runs; results stop at 1000 rows (marked truncated, with total_rows) and a query has 10 seconds",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,

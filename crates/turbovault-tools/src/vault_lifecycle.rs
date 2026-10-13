@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use turbovault_core::VaultRootPolicy;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
 use turbovault_core::prelude::*;
 use turbovault_git::VaultRepo;
@@ -37,12 +38,27 @@ pub fn direct_over_git_repo_warning(config: &VaultConfig) -> Option<String> {
 pub struct VaultLifecycleTools {
     /// Multi-vault manager for registration/switching
     multi_manager: Arc<MultiVaultManager>,
+    /// Which directories `create_vault` and `add_vault_from_path` accept.
+    root_policy: VaultRootPolicy,
 }
 
 impl VaultLifecycleTools {
-    /// Create new lifecycle tools
+    /// Create new lifecycle tools. Registration may point anywhere except
+    /// the directories [`VaultRootPolicy`] always refuses; see
+    /// [`Self::with_root_policy`] to restrict it further.
     pub fn new(multi_manager: Arc<MultiVaultManager>) -> Self {
-        Self { multi_manager }
+        Self {
+            multi_manager,
+            root_policy: VaultRootPolicy::anywhere(),
+        }
+    }
+
+    /// Check every path `create_vault` and `add_vault_from_path` are given
+    /// against `policy`.
+    #[must_use]
+    pub fn with_root_policy(mut self, policy: VaultRootPolicy) -> Self {
+        self.root_policy = policy;
+        self
     }
 
     /// Create a new vault at the specified path
@@ -109,12 +125,13 @@ impl VaultLifecycleTools {
             )));
         }
 
-        // Expand tilde and convert to absolute path
-        let expanded_path = Self::expand_path(path)?;
+        // Expand tilde and convert to absolute path, then check it against
+        // the root policy before anything is created there.
+        let expanded_path = self.root_policy.check(&Self::expand_path(path)?)?;
 
         // Build the config before touching the filesystem: a rejected backend
         // selection must not leave a half-created vault directory behind.
-        let config = Self::build_config(name, &expanded_path, write_backend, backend_opts)?;
+        let mut config = Self::build_config(name, &expanded_path, write_backend, backend_opts)?;
 
         // If path doesn't exist, create it
         if !expanded_path.exists() {
@@ -131,6 +148,12 @@ impl VaultLifecycleTools {
                 expanded_path.display()
             )));
         }
+        // Register the directory as it now resolves, the way an existing
+        // vault's path is registered.
+        let expanded_path = expanded_path
+            .canonicalize()
+            .map_err(|e| Error::invalid_path(format!("Failed to resolve path: {}", e)))?;
+        config.path = expanded_path.clone();
 
         // Create .obsidian directory (marks directory as Obsidian vault)
         let obsidian_dir = expanded_path.join(".obsidian");
@@ -190,8 +213,10 @@ impl VaultLifecycleTools {
             )));
         }
 
-        // Expand tilde and convert to absolute path
-        let expanded_path = Self::expand_path(path)?;
+        // Expand tilde and convert to absolute path, then check it against
+        // the root policy first, so a refused path's existence isn't revealed
+        // either.
+        let expanded_path = self.root_policy.check(&Self::expand_path(path)?)?;
 
         // Registration is intentionally distinct from creation: a typoed path
         // must not silently become a new empty vault.
@@ -349,17 +374,18 @@ impl VaultLifecycleTools {
 
     // Private helpers
 
-    /// Expand tilde and environment variables in path, then canonicalize to absolute path
+    /// Expand a leading `~` in path, then canonicalize to absolute path.
     ///
-    /// Uses shellexpand for tilde/env expansion (best-in-class library)
+    /// The path comes from a tool caller, so `$VAR` is deliberately left as
+    /// written: expanding it would read the server's environment into a
+    /// directory name or an error message the caller sees. The operator's own
+    /// paths (`--vault`, the config file) still get full expansion.
     fn expand_path(path: &Path) -> Result<PathBuf> {
         let path_str = path
             .to_str()
             .ok_or_else(|| Error::invalid_path("Path contains invalid UTF-8".to_string()))?;
 
-        // Expand tilde and environment variables
-        let expanded = shellexpand::full(path_str)
-            .map_err(|e| Error::invalid_path(format!("Failed to expand path: {}", e)))?;
+        let expanded = shellexpand::tilde(path_str);
 
         let expanded_path = PathBuf::from(expanded.as_ref());
 
@@ -471,5 +497,141 @@ mod tests {
         assert!(expanded.is_absolute());
         assert!(!expanded.to_string_lossy().contains('~'));
         assert!(!expanded.exists(), "test must not create anything in home");
+    }
+
+    /// A tool caller chooses this path, so expanding `$VAR` in it would read
+    /// the server's environment and echo it back in an error or a directory
+    /// name. Only `~` is expanded; a variable stays as written.
+    #[test]
+    fn expand_path_leaves_environment_variables_alone() {
+        let expanded =
+            VaultLifecycleTools::expand_path(Path::new("/turbovault-no-such-dir/$HOME/${PATH}"))
+                .expect("expansion");
+
+        // On Windows a path without a drive is not absolute, so it is
+        // resolved against the current directory; the variables still stay
+        // as written.
+        assert!(
+            expanded.ends_with(Path::new("turbovault-no-such-dir/$HOME/${PATH}")),
+            "environment variables must not be expanded in tool input: {}",
+            expanded.display()
+        );
+    }
+
+    #[tokio::test]
+    async fn add_vault_error_does_not_reveal_the_environment() {
+        let tools = VaultLifecycleTools::new(Arc::new(
+            MultiVaultManager::new(ServerConfig::default()).unwrap(),
+        ));
+        let error = tools
+            .add_vault_from_path(
+                "probe",
+                Path::new("/turbovault-no-such-dir/$HOME"),
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .expect_err("the path does not exist");
+
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert!(
+            home.is_empty() || !error.to_string().contains(&home),
+            "error echoed $HOME's value: {error}"
+        );
+    }
+
+    /// The registered path is the directory create_vault made, not a second
+    /// expansion of it by the config builder.
+    #[tokio::test]
+    async fn create_vault_registers_the_path_it_created() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let tools = VaultLifecycleTools::new(Arc::new(
+            MultiVaultManager::new(ServerConfig::default()).unwrap(),
+        ));
+        let requested = temp.path().join("$HOME");
+        let info = tools
+            .create_vault("probe", &requested, None, WriteBackend::Direct, None)
+            .await
+            .unwrap();
+
+        assert!(requested.is_dir());
+        assert_eq!(info.path, requested.canonicalize().unwrap());
+
+        // And an existing one registers as itself too.
+        let info = tools
+            .add_vault_from_path("again", &requested, WriteBackend::Direct, None)
+            .await
+            .unwrap();
+        assert_eq!(info.path, requested.canonicalize().unwrap());
+    }
+
+    /// `add_vault("~")` then `read_note(".ssh/id_rsa")` was the whole attack.
+    #[tokio::test]
+    async fn the_home_directory_cannot_be_registered() {
+        let manager = Arc::new(MultiVaultManager::new(ServerConfig::default()).unwrap());
+        let tools = VaultLifecycleTools::new(manager.clone());
+        for path in ["~", "~/.ssh"] {
+            let error = tools
+                .add_vault_from_path("home", Path::new(path), WriteBackend::Direct, None)
+                .await
+                .expect_err("home is never a vault");
+            assert!(
+                error.to_string().contains("cannot be registered"),
+                "{error}"
+            );
+        }
+        let error = tools
+            .create_vault(
+                "dot",
+                Path::new("~/.turbovault-test-never-created"),
+                None,
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .expect_err("a hidden directory in home is never a vault");
+        assert!(error.to_string().contains("hidden directory"), "{error}");
+        assert!(manager.list_vaults().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn registration_stays_inside_the_allowed_roots() {
+        let allowed = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        let tools = VaultLifecycleTools::new(Arc::new(
+            MultiVaultManager::new(ServerConfig::default()).unwrap(),
+        ))
+        .with_root_policy(VaultRootPolicy::within([allowed.path()]).unwrap());
+
+        tools
+            .create_vault(
+                "inside",
+                &allowed.path().join("Vault"),
+                None,
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .unwrap();
+        let error = tools
+            .add_vault_from_path("outside", other.path(), WriteBackend::Direct, None)
+            .await
+            .expect_err("outside the roots");
+        assert!(error.to_string().contains("allowed_vault_roots"), "{error}");
+        let error = tools
+            .create_vault(
+                "outside",
+                &other.path().join("New"),
+                None,
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .expect_err("outside the roots");
+        assert!(error.to_string().contains("allowed_vault_roots"), "{error}");
+        assert!(
+            !other.path().join("New").exists(),
+            "a refused create_vault must not create the directory"
+        );
     }
 }

@@ -754,6 +754,16 @@ impl ObsidianMcpServer {
         self.core.init_cache().await
     }
 
+    /// Restrict which directories `add_vault` and `create_vault` accept.
+    pub fn set_vault_root_policy(&self, policy: turbovault_tools::VaultRootPolicy) {
+        self.core.set_vault_root_policy(policy);
+    }
+
+    /// The policy `add_vault` and `create_vault` check paths against.
+    pub fn vault_root_policy(&self) -> turbovault_tools::VaultRootPolicy {
+        self.core.vault_root_policy()
+    }
+
     /// Get the shared multi-vault manager.
     pub fn multi_vault(&self) -> Arc<MultiVaultManager> {
         self.core.multi_vault()

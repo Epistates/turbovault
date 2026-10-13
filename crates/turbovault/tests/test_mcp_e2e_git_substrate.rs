@@ -540,3 +540,39 @@ async fn e2e_create_from_template_routed_through_substrate() {
 //   underlying `watch_ref_changes`/drain guarantees are unit-tested in
 //   `turbovault-vault/src/reindex.rs`, and every derived-state assertion
 //   in the wire suite already exercises the manager's self-flushing reads.
+
+/// A fanout's scratch worktree is a copy of the vault, so it goes in a
+/// fresh private (0700) directory with an unguessable name, not a
+/// predictable path in the shared temp directory, and that directory goes
+/// when the fanout ends.
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial]
+async fn e2e_fanout_scratch_worktree_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_tmp, _name, server) = setup_git_vault().await;
+    let begun = call(&server, "begin_fanout", serde_json::json!({})).await;
+    let worktree = std::path::PathBuf::from(
+        begun["data"]["worktree_path"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no worktree_path in {begun}")),
+    );
+    let container = worktree.parent().unwrap().to_path_buf();
+
+    assert!(worktree.is_dir(), "{}", worktree.display());
+    let mode = std::fs::metadata(&container).unwrap().permissions().mode();
+    assert_eq!(mode & 0o077, 0, "scratch directory is shared: {mode:o}");
+    let name = container.file_name().unwrap().to_string_lossy();
+    assert!(
+        !name.contains(&std::process::id().to_string()),
+        "scratch directory name is predictable: {name}"
+    );
+
+    call(&server, "abandon_fanout", serde_json::json!({})).await;
+    assert!(
+        !container.exists(),
+        "{} was left behind",
+        container.display()
+    );
+}

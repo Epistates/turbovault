@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Runtime vault registration is confined.** `add_vault` and `create_vault` never accept a filesystem root, the home directory or anything containing it, hidden directories under home (`~/.ssh`, `~/.config`), application data (`~/Library` apart from the iCloud and cloud storage folders vaults sync through, `AppData`), or system directories. `--allowed-vault-roots` (or `security.allowed_vault_roots`) limits registration to chosen directories. Without it, registration is open on stdio and off on the network transports. Vaults restored from the cache are held to the same rules, and fanout scratch vaults are no longer saved to it.
+- **Tool-supplied vault paths no longer expand environment variables.** `add_vault("/x/$AWS_SECRET_ACCESS_KEY")` echoed the secret in its error. Only `~` is expanded now, in the tools and in `VaultConfig::builder`; `--vault` and config-file paths keep full expansion.
+- **The HTTP transport can require authentication**, with `--auth-mode bearer` (shared tokens of at least 32 characters) or `jwt` (issuer, audience, expiry and signature checked against a JWKS, plus required scopes). It's served as an OAuth protected resource with RFC 9728 metadata, and gains a per-client rate limit, allowed origins and trusted proxies. It refuses to listen beyond loopback without authentication. WebSocket and TCP, which TurboMCP can't authenticate, listen on loopback only. `--allow-unauthenticated-network` overrides both for a deployment that authenticates in a proxy in front.
+- **The unix socket defaults to a private directory** under `$XDG_RUNTIME_DIR` or `~/.turbovault/run`, instead of `/tmp/turbovault.sock`.
+- **Template frontmatter is written as YAML**, so a title with a newline can no longer add keys. Placeholders are filled once, so a value can't pull in another field.
+- **Fanout scratch worktrees go in a fresh private directory** with a random name, instead of a predictable path in the temp directory.
+- **`SearchTools::search_files` stays inside the vault.** It no longer follows symlinks or lists protected and excluded directories.
+
 ### Fixed
+
+- **Result counts are capped at every tool.** `advanced_search` with `limit: 0` panicked, and a huge limit could abort the process. Zero still means no results.
+- **`query_frontmatter_sql` is bounded.** It runs only `SELECT` statements, on a blocking thread, for at most 10 seconds, and returns at most 1000 rows, with `truncated` and `total_rows` when cut.
+- **`SELECT *` from the `files` table returns its rows.** It came back as `{"type": "other"}`.
 
 - **Moving a note rewrites reference links to it.** A reference link, `[text][ref]`, `[ref][]` or `[ref]`, takes its destination from a definition elsewhere in the note, `[ref]: old.md`, and that definition was left pointing at the old path. It's now re-pointed the way an inline Markdown link is, keeping its form, escaping, fragment and title, so every link through it follows the move. Deleting a note marks its reference links stale as well, and `[ref][]` is now struck through whole rather than as `~~[ref]~~[]`. `parse_reference_definitions` is new in `turbovault-parser`.
 - **A wikilink is no longer also a Markdown link when a definition shares its name.** CommonMark reads the `[Note]` inside `[[Note]]` as a shortcut reference whenever the note defines `[note]: ...`, so the wikilink was reported a second time, as a link to that definition's destination, adding a backlink to whatever it pointed at.

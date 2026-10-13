@@ -71,7 +71,7 @@ impl VaultProvider {
         backend_opts: Option<HashMap<String, serde_json::Value>>,
     ) -> McpResult<serde_json::Value> {
         let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
-        let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
+        let tools = self.lifecycle_tools();
         let vault_info = tools
             .create_vault(
                 &name,
@@ -107,7 +107,7 @@ impl VaultProvider {
         backend_opts: Option<HashMap<String, serde_json::Value>>,
     ) -> McpResult<serde_json::Value> {
         let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
-        let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
+        let tools = self.lifecycle_tools();
         let vault_info = tools
             .add_vault_from_path(&name, Path::new(&path), write_backend, backend_opts)
             .await
@@ -163,7 +163,7 @@ impl VaultProvider {
         read_only = true,
     )]
     async fn list_vaults(&self) -> McpResult<serde_json::Value> {
-        let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
+        let tools = self.lifecycle_tools();
         let vaults = tools.list_vaults().await.map_err(to_mcp_error)?;
 
         let count = vaults.len();
@@ -184,7 +184,7 @@ impl VaultProvider {
         read_only = true,
     )]
     async fn get_vault_config(&self, name: String) -> McpResult<serde_json::Value> {
-        let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
+        let tools = self.lifecycle_tools();
         let config = tools.get_vault_config(&name).await.map_err(to_mcp_error)?;
 
         let response = StandardResponse::new(
@@ -203,7 +203,7 @@ impl VaultProvider {
         tags = ["write", "admin"],
     )]
     async fn set_active_vault(&self, name: String) -> McpResult<serde_json::Value> {
-        let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
+        let tools = self.lifecycle_tools();
         tools.set_active_vault(&name).await.map_err(to_mcp_error)?;
 
         let response = StandardResponse::new(
@@ -230,7 +230,7 @@ impl VaultProvider {
         read_only = true,
     )]
     async fn get_active_vault(&self) -> McpResult<serde_json::Value> {
-        let tools = VaultLifecycleTools::new(self.multi_vault_mgr.clone());
+        let tools = self.lifecycle_tools();
         let active = tools.get_active_vault().await.map_err(to_mcp_error)?;
 
         let response = StandardResponse::new(

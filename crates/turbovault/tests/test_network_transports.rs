@@ -157,3 +157,93 @@ async fn websocket_serves_an_mcp_session() {
     .await;
     assert_session_works(&client).await;
 }
+
+/// Send one HTTP/1.1 request to `addr` and return the status line and
+/// headers, or `None` while nothing is listening yet.
+#[cfg(feature = "http")]
+async fn raw_post(addr: &str, authorization: Option<&str>) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.ok()?;
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"probe","version":"0"}}}"#;
+    let auth = authorization
+        .map(|value| format!("Authorization: {value}\r\n"))
+        .unwrap_or_default();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\n\
+         Accept: application/json, text/event-stream\r\n{auth}Content-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.ok()?;
+    let mut response = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut response)).await;
+    let text = String::from_utf8_lossy(&response).into_owned();
+    Some(
+        text.split("\r\n\r\n")
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+    )
+}
+
+/// With `--auth-mode bearer`, a request without the token is refused with a
+/// challenge that points at the protected resource metadata, and one with it
+/// is served.
+#[cfg(feature = "http")]
+#[tokio::test]
+async fn http_bearer_auth_refuses_requests_without_the_token() {
+    use turbovault::security::{AuthMode, AuthSettings, SecuritySettings};
+
+    let token = "k".repeat(turbovault::security::MIN_BEARER_TOKEN_LENGTH);
+    let dir = tempfile::TempDir::new().unwrap();
+    let token_file = dir.path().join("tokens");
+    std::fs::write(&token_file, format!("{token}\n")).unwrap();
+    let settings = SecuritySettings {
+        auth: AuthSettings {
+            mode: AuthMode::Bearer,
+            token_file: Some(token_file),
+            ..AuthSettings::default()
+        },
+        ..SecuritySettings::default()
+    };
+    let port = free_port();
+    let addr = format!("127.0.0.1:{port}");
+    let config = turbovault::security::http_server_config(&settings, "127.0.0.1", port).unwrap();
+
+    let server = ObsidianMcpServer::new().expect("server");
+    let serve_addr = addr.clone();
+    tokio::spawn(async move {
+        let _ = server
+            .builder()
+            .with_config(config)
+            .transport(turbomcp::Transport::http(&serve_addr))
+            .serve()
+            .await;
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let refused = loop {
+        if let Some(head) = raw_post(&addr, None).await {
+            break head;
+        }
+        assert!(Instant::now() < deadline, "server never started");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+    assert!(
+        refused
+            .to_ascii_lowercase()
+            .contains("www-authenticate: bearer"),
+        "{refused}"
+    );
+
+    let wrong = raw_post(&addr, Some(&format!("Bearer {}", "x".repeat(40))))
+        .await
+        .unwrap();
+    assert!(wrong.starts_with("HTTP/1.1 401"), "{wrong}");
+
+    let served = raw_post(&addr, Some(&format!("Bearer {token}")))
+        .await
+        .unwrap();
+    assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+}

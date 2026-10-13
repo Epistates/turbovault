@@ -212,3 +212,26 @@ async fn test_concurrent_searches() {
         assert!(result.is_ok());
     }
 }
+
+/// search_files walks the vault the way the scan does: not into protected
+/// directories (`.obsidian`, `.git`, `.turbovault`) and not through a
+/// symlink to somewhere outside the vault.
+#[tokio::test]
+async fn test_search_files_stays_out_of_protected_and_linked_directories() {
+    let (temp_dir, manager) = setup_test_vault_with_links().await;
+    let vault = temp_dir.path();
+    for dir in [".obsidian", ".git", ".turbovault"] {
+        std::fs::create_dir_all(vault.join(dir)).unwrap();
+        std::fs::write(vault.join(dir).join("secret-note.md"), "hidden").unwrap();
+    }
+    let outside = TempDir::new().unwrap();
+    std::fs::write(outside.path().join("secret-outside.md"), "outside").unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(outside.path(), vault.join("linked")).unwrap();
+
+    let files = SearchTools::new(manager)
+        .search_files("secret")
+        .await
+        .unwrap();
+    assert!(files.is_empty(), "{files:?}");
+}

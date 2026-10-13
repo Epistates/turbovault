@@ -1,15 +1,28 @@
 //! Core SQL engine: session management, table building, query execution
 
 use crate::convert::{json_type_name, payload_to_json};
+use gluesql::core::plan::StatementPlan;
 use gluesql::params;
 use gluesql::prelude::{Glue, MemoryStorage, ParamLiteral, Payload};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::instrument;
 use turbovault_core::prelude::*;
 use turbovault_core::property_tags;
 use turbovault_vault::VaultManager;
+
+/// Most rows a query returns. A larger result is cut to this many and
+/// reported with `truncated: true` and its `total_rows`.
+pub const MAX_RESULT_ROWS: usize = 1000;
+
+/// How long a query may run before the caller gets an error instead.
+///
+/// GlueSQL cannot be interrupted, so a query past this keeps its blocking
+/// thread until it finishes on its own; the caller and the async runtime are
+/// released at the deadline, and the session's tables go with the query.
+pub const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// SQL-based frontmatter query engine backed by GlueSQL.
 ///
@@ -230,13 +243,42 @@ impl FrontmatterSqlEngine {
 
 impl SqlSession {
     /// Execute a SQL query against the pre-built tables.
+    ///
+    /// Only `SELECT` (and `SHOW COLUMNS`) statements run: the tool that
+    /// calls this is read-only, and the tables are a view of the vault, not
+    /// somewhere to keep data. The query runs on a blocking thread for at
+    /// most [`QUERY_TIMEOUT`], and each result keeps its first
+    /// [`MAX_RESULT_ROWS`] rows.
     pub async fn query(&mut self, sql: &str) -> Result<Value> {
-        let payloads = exec(&mut self.glue, sql)?;
+        // The tables move to the blocking thread with the query and come
+        // back with its result. A query that times out keeps them.
+        let mut glue = std::mem::replace(&mut self.glue, Glue::new(MemoryStorage::default()));
+        let owned_sql = sql.to_string();
+        let task = tokio::task::spawn_blocking(move || {
+            let payloads = run_select(&mut glue, &owned_sql);
+            (glue, payloads)
+        });
+        let payloads = match tokio::time::timeout(QUERY_TIMEOUT, task).await {
+            Ok(Ok((glue, payloads))) => {
+                self.glue = glue;
+                payloads?
+            }
+            Ok(Err(join_error)) => {
+                return Err(Error::other(format!("SQL query failed: {join_error}")));
+            }
+            Err(_) => {
+                return Err(Error::other(format!(
+                    "SQL query did not finish within {}s; narrow it with WHERE or LIMIT. \
+                     This session's tables went with it",
+                    QUERY_TIMEOUT.as_secs()
+                )));
+            }
+        };
 
         let result = if payloads.len() == 1 {
-            payload_to_json(payloads.into_iter().next().unwrap())
+            capped_json(payloads.into_iter().next().unwrap())
         } else {
-            Value::Array(payloads.into_iter().map(payload_to_json).collect())
+            Value::Array(payloads.into_iter().map(capped_json).collect())
         };
 
         Ok(json!({
@@ -252,6 +294,58 @@ struct SchemaInfo {
     type_name: String,
     count: usize,
     nullable: bool,
+}
+
+/// Plan `sql` and run it if every statement is a query.
+fn run_select(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>> {
+    let plans = glue
+        .plan(sql)
+        .map_err(|e| Error::config_error(format!("SQL error: {e}")))?;
+    if plans.is_empty() {
+        return Err(Error::config_error("SQL error: no statement".to_string()));
+    }
+    if !plans.iter().all(|plan| {
+        matches!(
+            plan,
+            StatementPlan::Query(_) | StatementPlan::ShowColumns { .. }
+        )
+    }) {
+        return Err(Error::config_error(
+            "query_frontmatter_sql only runs SELECT statements: the tables are a read-only \
+             view of the vault"
+                .to_string(),
+        ));
+    }
+    plans
+        .iter()
+        .map(|plan| {
+            glue.execute_stmt(plan)
+                .map_err(|e| Error::config_error(format!("SQL error: {e}")))
+        })
+        .collect()
+}
+
+/// [`payload_to_json`] with at most [`MAX_RESULT_ROWS`] rows.
+fn capped_json(payload: Payload) -> Value {
+    let (payload, total_rows) = match payload {
+        Payload::Select { labels, mut rows } => {
+            let total = rows.len();
+            rows.truncate(MAX_RESULT_ROWS);
+            (Payload::Select { labels, rows }, total)
+        }
+        Payload::SelectMap(mut rows) => {
+            let total = rows.len();
+            rows.truncate(MAX_RESULT_ROWS);
+            (Payload::SelectMap(rows), total)
+        }
+        other => return payload_to_json(other),
+    };
+    let mut value = payload_to_json(payload);
+    if total_rows > MAX_RESULT_ROWS {
+        value["truncated"] = json!(true);
+        value["total_rows"] = json!(total_rows);
+    }
+    value
 }
 
 /// Execute a SQL statement, mapping errors to `turbovault_core::Error`.

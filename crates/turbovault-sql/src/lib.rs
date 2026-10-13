@@ -30,4 +30,4 @@
 mod convert;
 mod engine;
 
-pub use engine::{FrontmatterSqlEngine, SqlSession};
+pub use engine::{FrontmatterSqlEngine, MAX_RESULT_ROWS, QUERY_TIMEOUT, SqlSession};

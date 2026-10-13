@@ -254,10 +254,13 @@ impl VaultConfigBuilder {
 
     /// Build and validate
     pub fn build(self) -> Result<VaultConfig> {
-        // Expand tilde and environment variables in the path
-        let expanded_path = shellexpand::full(&self.path.to_string_lossy())
-            .map(|p| PathBuf::from(p.into_owned()))
-            .unwrap_or(self.path);
+        // Expand a leading `~` only. A runtime-registered vault's path comes
+        // from a tool caller, and expanding `$VAR` here would read the
+        // server's environment into it after the caller's own expansion
+        // deliberately left it alone. Operator paths (`--vault`, the config
+        // file) are fully expanded before they reach the builder.
+        let expanded_path =
+            PathBuf::from(shellexpand::tilde(&self.path.to_string_lossy()).as_ref());
 
         let config = VaultConfig {
             name: self.name,

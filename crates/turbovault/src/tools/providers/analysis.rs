@@ -148,7 +148,7 @@ impl AnalysisProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
         let result = tools
-            .vault_quality_report(bottom_n.unwrap_or(10))
+            .vault_quality_report(clamp_count(bottom_n, 10, MAX_REPORT_ITEMS))
             .await
             .map_err(to_mcp_error)?;
         StandardResponse::new(
@@ -192,7 +192,7 @@ impl AnalysisProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GroundingTools::new(manager);
         let result = tools
-            .find_ungrounded_notes(limit.unwrap_or(50))
+            .find_ungrounded_notes(clamp_count(limit, 50, MAX_REPORT_ITEMS))
             .await
             .map_err(to_mcp_error)?;
         let count = result.ungrounded_count;
@@ -408,7 +408,10 @@ impl AnalysisProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
         let result = tools
-            .find_stale_notes(threshold_days.unwrap_or(90), limit.unwrap_or(20))
+            .find_stale_notes(
+                threshold_days.unwrap_or(90),
+                clamp_count(limit, 20, MAX_REPORT_ITEMS),
+            )
             .await
             .map_err(to_mcp_error)?;
         let count = result.len();
@@ -438,7 +441,7 @@ impl AnalysisProvider {
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let engine = self.get_similarity_engine().await?;
-        let results = engine.semantic_search(&query, limit.unwrap_or(10));
+        let results = engine.semantic_search(&query, clamp_count(limit, 10, MAX_SEARCH_RESULTS));
         let count = results.len();
         StandardResponse::new(
             &vault_name,
@@ -464,7 +467,7 @@ impl AnalysisProvider {
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let engine = self.get_similarity_engine().await?;
-        let results = engine.find_similar_notes(&path, limit.unwrap_or(10));
+        let results = engine.find_similar_notes(&path, clamp_count(limit, 10, MAX_SEARCH_RESULTS));
         let count = results.len();
         StandardResponse::new(
             &vault_name,
@@ -493,7 +496,10 @@ impl AnalysisProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = DuplicateTools::new(manager);
         let result = tools
-            .find_duplicates(threshold.unwrap_or(0.8), limit.unwrap_or(20))
+            .find_duplicates(
+                threshold.unwrap_or(0.8),
+                clamp_count(limit, 20, MAX_REPORT_ITEMS),
+            )
             .await
             .map_err(to_mcp_error)?;
         let count = result.len();

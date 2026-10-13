@@ -12,8 +12,40 @@ impl FanoutProvider {
         Self(core)
     }
 
-    fn scratch_path(id: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("turbovault-fanout-{}-{id}", std::process::id()))
+    /// A path for a fanout's scratch worktree: `worktree` inside a new
+    /// directory only this user can enter, under the project's cache
+    /// directory (the system temp directory without one). The worktree is a
+    /// full copy of the vault, so its directory is created fresh, with an
+    /// unguessable name, and fails rather than reuse anything already there.
+    async fn scratch_path(&self) -> McpResult<PathBuf> {
+        let parent = match self.persistent_cache.read().await.as_ref() {
+            Some(cache) => cache.project_cache_dir().join("fanout"),
+            None => std::env::temp_dir(),
+        };
+        tokio::task::spawn_blocking(move || create_private_scratch_dir(&parent))
+            .await
+            .map_err(|error| McpError::internal(error.to_string()))?
+            .map(|dir| dir.join("worktree"))
+            .map_err(|error| {
+                McpError::internal(format!("cannot create a fanout scratch directory: {error}"))
+            })
+    }
+
+    /// Remove the directory [`Self::scratch_path`] made for `worktree`,
+    /// once the worktree inside it is gone.
+    fn remove_scratch_dir(worktree: &Path) {
+        if let Some(dir) = worktree.parent().filter(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("turbovault-fanout-"))
+        }) {
+            let _ = std::fs::remove_dir_all(worktree);
+            if let Err(error) = std::fs::remove_dir(dir) {
+                log::warn!(
+                    "fanout scratch directory {} was not removed: {error}",
+                    dir.display()
+                );
+            }
+        }
     }
 
     fn parse_strategy(value: Option<&str>) -> McpResult<Option<GitMergeStrategy>> {
@@ -88,19 +120,26 @@ impl FanoutProvider {
         }
 
         let fanout_id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-        let scratch_path = Self::scratch_path(&fanout_id);
+        let scratch_path = self.scratch_path().await?;
         let locks = self.get_or_init_git_locks(&base_vault).await;
         let repo_path = base_config.path.clone();
         let scratch_for_task = scratch_path.clone();
         let id_for_task = fanout_id.clone();
-        let info = tokio::task::spawn_blocking(move || {
+        let opened = tokio::task::spawn_blocking(move || {
             let repo = VaultRepo::open_with_locks(&repo_path, locks)
                 .map_err(|error| McpError::internal(error.to_string()))?;
             repo.open_fanout_worktree(&id_for_task, &scratch_for_task)
                 .map_err(|error| McpError::internal(error.to_string()))
         })
         .await
-        .map_err(|error| McpError::internal(error.to_string()))??;
+        .map_err(|error| McpError::internal(error.to_string()))?;
+        let info = match opened {
+            Ok(info) => info,
+            Err(error) => {
+                Self::remove_scratch_dir(&scratch_path);
+                return Err(error);
+            }
+        };
 
         let fanout_vault = format!("{base_vault}-fanout-{fanout_id}");
         let config = VaultConfig::builder(&fanout_vault, &scratch_path)
@@ -162,6 +201,7 @@ impl FanoutProvider {
         let locks = self.get_or_init_git_locks(&base_vault).await;
         let path = base_config.path.clone();
         let info = record.info.clone();
+        let worktree = info.worktree_path.clone();
         let result = tokio::task::spawn_blocking(move || {
             let repo = VaultRepo::open_with_locks(&path, locks)
                 .map_err(|error| McpError::internal(error.to_string()))?;
@@ -170,6 +210,9 @@ impl FanoutProvider {
         })
         .await
         .map_err(|error| McpError::internal(error.to_string()))??;
+        // merge_fanout_back removes the worktree whether or not the merge
+        // landed; its private directory goes with it.
+        Self::remove_scratch_dir(&worktree);
 
         let _ = self
             .multi_vault_mgr
@@ -212,6 +255,7 @@ impl FanoutProvider {
         let locks = self.get_or_init_git_locks(&base_vault).await;
         let path = config.path.clone();
         let info = record.info.clone();
+        let worktree = info.worktree_path.clone();
         tokio::task::spawn_blocking(move || {
             let repo = VaultRepo::open_with_locks(&path, locks)
                 .map_err(|error| McpError::internal(error.to_string()))?;
@@ -220,6 +264,7 @@ impl FanoutProvider {
         })
         .await
         .map_err(|error| McpError::internal(error.to_string()))??;
+        Self::remove_scratch_dir(&worktree);
         let _ = self
             .multi_vault_mgr
             .remove_vault(&record.fanout_vault_name)
@@ -250,4 +295,22 @@ impl FanoutProvider {
         )
         .to_json()
     }
+}
+
+/// Create a new directory under `parent` that only this user can enter, with
+/// a random name, failing if anything already has that name.
+fn create_private_scratch_dir(parent: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(parent)?;
+    let dir = parent.join(format!(
+        "turbovault-fanout-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&dir)?;
+    Ok(dir)
 }

@@ -17,7 +17,7 @@ use turbovault_tools::{
     ExportTools, FanoutInfo, FileTools, GitMergeStrategy, GraphTools, GroundingTools,
     MetadataTools, OkfTools, QualityTools, RelationshipTools, SearchEngine, SearchQuery,
     SearchTools, SimilarityEngine, SliceResult, SliceSpec, TemplateEngine, VaultLifecycleTools,
-    VaultRepo, ViewerTools, WriteMode, obsidian_uri, slice_content,
+    VaultRepo, VaultRootPolicy, ViewerTools, WriteMode, obsidian_uri, slice_content,
 };
 use turbovault_vault::{ChangeListener, CommitOrigin, VaultManager};
 
@@ -46,6 +46,22 @@ fn to_mcp_error(e: Error) -> McpError {
     // Log full error for server-side debugging before sanitizing for client
     log::warn!("MCP error: {:?}", e);
     McpError::internal(e.to_string())
+}
+
+/// Most results a search-style tool returns in one call.
+const MAX_SEARCH_RESULTS: usize = 100;
+/// Most items a vault-wide report returns in one call.
+const MAX_REPORT_ITEMS: usize = 500;
+/// Most audit entries `audit_log` returns in one call.
+const MAX_AUDIT_ENTRIES: usize = 1000;
+
+/// A result-count argument as the tool uses it: `default` when absent, and
+/// otherwise at most `max`. A huge value can overflow arithmetic or ask for
+/// an allocation that aborts the whole process, so no count reaches the
+/// engines unclamped. Zero still means no results; a tool whose engine
+/// can't take zero answers it without asking.
+fn clamp_count(requested: Option<usize>, default: usize, max: usize) -> usize {
+    requested.unwrap_or(default).min(max)
 }
 
 /// Extract count from serde_json::Value array (eliminates DRY violation)
@@ -332,6 +348,10 @@ pub(super) struct CoreToolHandler {
     /// know whether a consumer exists. `None` until installed, and no sink at
     /// all when the server is built without the plugin boundary.
     event_sink: Arc<std::sync::OnceLock<Arc<dyn VaultEventSink>>>,
+    /// Which directories `add_vault` and `create_vault` may register. Set
+    /// once at startup from `--allowed-vault-roots` and the transport, and
+    /// shared by every clone.
+    vault_root_policy: Arc<std::sync::RwLock<VaultRootPolicy>>,
 }
 
 /// One row of `ObsidianMcpServer.active_fanouts`.
@@ -380,7 +400,30 @@ impl CoreToolHandler {
             git_locks: Arc::new(RwLock::new(HashMap::new())),
             active_fanouts: Arc::new(RwLock::new(HashMap::new())),
             event_sink: Arc::new(std::sync::OnceLock::new()),
+            vault_root_policy: Arc::new(std::sync::RwLock::new(VaultRootPolicy::anywhere())),
         })
+    }
+
+    /// Restrict which directories `add_vault` and `create_vault` accept.
+    pub fn set_vault_root_policy(&self, policy: VaultRootPolicy) {
+        *self
+            .vault_root_policy
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
+    }
+
+    /// The policy `add_vault` and `create_vault` check paths against.
+    pub fn vault_root_policy(&self) -> VaultRootPolicy {
+        self.vault_root_policy
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Lifecycle tools that check paths against this server's root policy.
+    pub(super) fn lifecycle_tools(&self) -> VaultLifecycleTools {
+        VaultLifecycleTools::new(self.multi_vault_mgr.clone())
+            .with_root_policy(self.vault_root_policy())
     }
 
     /// Install the sink that observed vault changes are reported to.
@@ -437,8 +480,22 @@ impl CoreToolHandler {
     async fn persist_vault_state(&self) -> Result<()> {
         if let Some(cache) = self.persistent_cache.read().await.as_ref() {
             // Get current vaults and active vault
+            // A fanout vault is a scratch worktree that lives only as long as
+            // this process's fanout does; restoring it in a later session
+            // would register a directory nothing is tracking any more.
+            let fanout_vaults: std::collections::HashSet<String> = self
+                .active_fanouts
+                .read()
+                .await
+                .values()
+                .map(|record| record.fanout_vault_name.clone())
+                .collect();
             let vaults_lock = self.multi_vault_mgr.list_vaults().await?;
-            let vault_configs: Vec<_> = vaults_lock.iter().map(|v| v.config.clone()).collect();
+            let vault_configs: Vec<_> = vaults_lock
+                .iter()
+                .filter(|v| !fanout_vaults.contains(&v.name))
+                .map(|v| v.config.clone())
+                .collect();
             let active_vault = self.multi_vault_mgr.get_active_vault().await;
 
             // Save to cache

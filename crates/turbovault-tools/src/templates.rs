@@ -399,24 +399,25 @@ impl TemplateEngine {
                 .map_err(crate::Error::validation_error)?;
         }
 
-        let mut frontmatter = template.frontmatter_template.clone();
+        // Sorted, so the same fields always write the same note.
+        let mut frontmatter: std::collections::BTreeMap<String, String> = template
+            .frontmatter_template
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
         frontmatter.insert("template".to_string(), template_id.to_string());
         if let Some(title) = field_values.get("title") {
             frontmatter.insert("title".to_string(), title.clone());
         }
 
-        let mut content = template.content_template.clone();
-        for (key, value) in &field_values {
-            content = content.replace(&format!("{{{}}}", key), value);
-        }
+        let content = fill_placeholders(&template.content_template, &field_values);
 
-        let mut frontmatter_yaml = String::from("---\n");
-        for (key, value) in frontmatter {
-            frontmatter_yaml.push_str(&format!("{}: {}\n", key, value));
-        }
-        frontmatter_yaml.push_str("---\n");
-
-        let full_content = format!("{}{}", frontmatter_yaml, content);
+        // Serialized, never formatted by hand: a value holding a newline or
+        // `: ` is quoted as a string rather than becoming more keys.
+        let frontmatter_yaml = yaml_serde::to_string(&frontmatter).map_err(|error| {
+            crate::Error::other(format!("cannot write the note's frontmatter: {error}"))
+        })?;
+        let full_content = format!("---\n{frontmatter_yaml}---\n{content}");
 
         let info = CreatedNoteInfo {
             path: file_path.to_string(),
@@ -450,6 +451,34 @@ impl TemplateEngine {
 
         Ok(results)
     }
+}
+
+/// `template` with each `{name}` that `values` has a value for replaced by
+/// it, in one pass: text a value brings in is not searched for placeholders
+/// again, so a value can't pull another field's value into itself.
+fn fill_placeholders(template: &str, values: &HashMap<String, String>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after
+            .find(['{', '}'])
+            .filter(|&end| after.as_bytes()[end] == b'}')
+            .and_then(|end| values.get(&after[..end]).map(|value| (end, value)))
+        {
+            Some((end, value)) => {
+                out.push_str(value);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]
@@ -527,5 +556,78 @@ mod tests {
         assert!(engine.get_template("doc").is_some());
         assert!(engine.get_template("task").is_some());
         assert!(engine.get_template("research").is_some());
+    }
+
+    fn test_engine() -> (tempfile::TempDir, TemplateEngine) {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut config = turbovault_core::ServerConfig::new();
+        config.vaults.push(
+            turbovault_core::VaultConfig::builder("test", temp_dir.path())
+                .build()
+                .unwrap(),
+        );
+        let manager = turbovault_vault::VaultManager::new(config).unwrap();
+        (temp_dir, TemplateEngine::new(Arc::new(manager)))
+    }
+
+    fn frontmatter_of(content: &str) -> serde_json::Map<String, serde_json::Value> {
+        let yaml = content
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .map(|(yaml, _)| yaml)
+            .expect("frontmatter block");
+        yaml_serde::from_str(yaml).expect("frontmatter is valid YAML")
+    }
+
+    /// A field value is data. A newline or `: ` in a title must not add
+    /// keys to the note's frontmatter or break its YAML.
+    #[tokio::test]
+    async fn field_values_cannot_inject_frontmatter() {
+        let (_dir, engine) = test_engine();
+        let fields = HashMap::from([
+            (
+                "title".to_string(),
+                "Plan: phase 1\nstatus: published\ntemplate: other".to_string(),
+            ),
+            ("summary".to_string(), "Summary".to_string()),
+        ]);
+        let (content, _) = engine
+            .compute_from_template("doc", "plan.md", fields)
+            .await
+            .unwrap();
+
+        let frontmatter = frontmatter_of(&content);
+        assert_eq!(frontmatter["status"], "draft");
+        assert_eq!(frontmatter["template"], "doc");
+        assert_eq!(
+            frontmatter["title"],
+            "Plan: phase 1\nstatus: published\ntemplate: other"
+        );
+    }
+
+    /// Placeholders are filled once: a value that itself contains
+    /// `{summary}` is written as is, not filled in turn.
+    #[tokio::test]
+    async fn placeholders_are_filled_in_one_pass() {
+        let (_dir, engine) = test_engine();
+        let fields = HashMap::from([
+            ("title".to_string(), "About {summary}".to_string()),
+            ("summary".to_string(), "Short {title}".to_string()),
+        ]);
+        let (content, _) = engine
+            .compute_from_template("doc", "about.md", fields)
+            .await
+            .unwrap();
+
+        assert!(content.contains("# About {summary}\n"), "{content}");
+        assert!(content.contains("\nShort {title}\n"), "{content}");
+    }
+    #[test]
+    fn fill_placeholders_leaves_unknown_braces() {
+        let values = HashMap::from([("a".to_string(), "1".to_string())]);
+        assert_eq!(
+            fill_placeholders("{a} {b} {{a}} { {", &values),
+            "1 {b} {1} { {"
+        );
     }
 }

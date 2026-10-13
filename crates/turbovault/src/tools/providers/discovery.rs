@@ -65,7 +65,7 @@ impl DiscoveryProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
 
-        let result_limit = limit.unwrap_or(10);
+        let result_limit = clamp_count(limit, 10, MAX_SEARCH_RESULTS);
         let mut search_query = SearchQuery::new(query).limit(result_limit);
 
         if let Some(tags) = tags {
@@ -80,10 +80,15 @@ impl DiscoveryProvider {
             search_query = search_query.exclude(excludes);
         }
 
-        let results = engine
-            .advanced_search(search_query)
-            .await
-            .map_err(to_mcp_error)?;
+        // tantivy refuses a limit of 0, and the answer is known anyway.
+        let results = if result_limit == 0 {
+            Vec::new()
+        } else {
+            engine
+                .advanced_search(search_query)
+                .await
+                .map_err(to_mcp_error)?
+        };
         let result_data =
             serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?;
         let count = extract_count(&result_data);
@@ -180,7 +185,7 @@ impl DiscoveryProvider {
 
     /// Execute SQL query against frontmatter
     #[tool(
-        description = "Execute arbitrary SQL against a 'files' table built from all vault note frontmatter. Each note becomes a row with 'path' + all frontmatter keys as columns. Supports WHERE, JOIN, GROUP BY, ORDER BY, LIMIT, subqueries, and aggregations",
+        description = "Run a read-only SQL SELECT against a 'files' table built from all vault note frontmatter, plus 'tags' (path, tag) and 'links' (source, target, link_type, is_valid). Each note becomes a row with 'path' + all frontmatter keys as columns. Supports WHERE, JOIN, GROUP BY, ORDER BY, LIMIT, subqueries, and aggregations. Only SELECT runs; results stop at 1000 rows (marked truncated, with total_rows) and a query has 10 seconds",
         tags = ["read", "frontmatter", "sql"],
         read_only = true,
     )]

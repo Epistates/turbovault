@@ -41,7 +41,7 @@ impl AuditProvider {
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;
 
-        let mut filter = AuditFilter::new().with_limit(limit.unwrap_or(50));
+        let mut filter = AuditFilter::new().with_limit(clamp_count(limit, 50, MAX_AUDIT_ENTRIES));
         if let Some(p) = path {
             filter = filter.with_path(p);
         }
