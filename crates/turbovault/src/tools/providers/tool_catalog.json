@@ -12199,6 +12199,41 @@
     "name": "audit_log",
     "outputSchema": {
       "$defs": {
+        "AuditContext": {
+          "properties": {
+            "client_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tool": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "user_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "AuditEntry": {
           "properties": {
             "after_hash": {
@@ -12225,6 +12260,16 @@
                 "null"
               ]
             },
+            "context": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AuditContext"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "id": {
               "type": "string"
             },
@@ -12240,6 +12285,12 @@
             },
             "path": {
               "type": "string"
+            },
+            "prev_hash": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "timestamp": {
               "type": "string"
@@ -12659,6 +12710,9 @@
       "$defs": {
         "AuditStats": {
           "properties": {
+            "chain": {
+              "$ref": "#/$defs/ChainVerification"
+            },
             "newest_entry": {
               "type": [
                 "string",
@@ -12687,7 +12741,29 @@
           "required": [
             "total_operations",
             "operations_by_type",
-            "total_snapshot_size_bytes"
+            "total_snapshot_size_bytes",
+            "chain"
+          ],
+          "type": "object"
+        },
+        "ChainVerification": {
+          "properties": {
+            "broken_at": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "entries": {
+              "type": "integer"
+            },
+            "unchained": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "entries",
+            "unchained"
           ],
           "type": "object"
         }

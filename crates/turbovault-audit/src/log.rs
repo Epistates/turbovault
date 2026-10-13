@@ -67,6 +67,7 @@ pub struct AuditEntry {
 /// the client that asked. Run the operation inside [`AuditContext::scope`]
 /// and the audit entries recorded while it runs carry the context.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct AuditContext {
     /// The MCP tool that made the change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,6 +199,7 @@ pub struct AuditStats {
 
 /// The result of checking an audit log's hash chain.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ChainVerification {
     /// Lines in the log.
     pub entries: usize,
