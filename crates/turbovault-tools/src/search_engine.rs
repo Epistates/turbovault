@@ -386,7 +386,7 @@ impl SearchQuery {
 
         let query = query_parser
             .parse_query(&query_str)
-            .map_err(|e| Error::config_error(format!("Failed to parse query: {}", e)))?;
+            .map_err(|e| Error::validation_error(format!("Failed to parse query: {}", e)))?;
 
         // Execute search
         let top_docs = searcher

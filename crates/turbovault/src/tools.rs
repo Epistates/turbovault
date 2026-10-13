@@ -203,12 +203,87 @@ fn clamp_count(requested: Option<usize>, default: usize, max: usize) -> usize {
     requested.unwrap_or(default).min(max)
 }
 
-/// Extract count from serde_json::Value array (eliminates DRY violation)
-#[inline]
-fn extract_count(value: &serde_json::Value) -> usize {
-    match value {
-        serde_json::Value::Array(arr) => arr.len(),
-        _ => 0,
+/// How many items a list-returning tool gives back when the caller doesn't
+/// say: enough for an overview, and never megabytes by accident.
+const DEFAULT_PAGE_SIZE: usize = 50;
+/// Furthest a ranked list (search results, suggestions) can be paged into.
+const MAX_RANKED_OFFSET: usize = 1000;
+
+/// Where one page of a list sits in the whole, reported under
+/// `meta.pagination`. Every list-returning tool takes the same two inputs:
+/// `limit` (how many to return, capped per tool) and `offset` (how many to
+/// skip, default 0). `next_offset` is the `offset` that returns the next
+/// page, and is absent on the last one. `total` is absent where counting
+/// every match would cost what the tool exists to avoid, such as a ranked
+/// search.
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+struct Page {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<usize>,
+    offset: usize,
+    limit: usize,
+    returned: usize,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<usize>,
+}
+
+/// The `offset` and `limit` a tool asked for, resolved: `limit` defaults to
+/// `default` and is capped at `max`, as [`clamp_count`] does.
+#[derive(Debug, Clone, Copy)]
+struct PageRequest {
+    offset: usize,
+    limit: usize,
+}
+
+impl PageRequest {
+    fn new(offset: Option<usize>, limit: Option<usize>, default: usize, max: usize) -> Self {
+        Self {
+            offset: offset.unwrap_or(0),
+            limit: clamp_count(limit, default, max),
+        }
+    }
+
+    /// A request against a ranked source, which has to produce every item
+    /// up to the end of the page: the offset stops at [`MAX_RANKED_OFFSET`]
+    /// so no request can make it rank without bound.
+    fn ranked(offset: Option<usize>, limit: Option<usize>, default: usize, max: usize) -> Self {
+        let mut request = Self::new(offset, limit, default, max);
+        request.offset = request.offset.min(MAX_RANKED_OFFSET);
+        request
+    }
+
+    /// How many leading items a ranked source must produce to fill this
+    /// page and tell whether another follows.
+    fn fetch(&self) -> usize {
+        self.offset.saturating_add(self.limit).saturating_add(1)
+    }
+
+    /// This page of `items`, the whole list.
+    fn slice<T>(&self, items: Vec<T>) -> (Vec<T>, Page) {
+        let total = items.len();
+        self.take(items, Some(total))
+    }
+
+    /// This page of `items`, the first [`Self::fetch`] items of a list whose
+    /// full length is unknown.
+    fn slice_ranked<T>(&self, items: Vec<T>) -> (Vec<T>, Page) {
+        self.take(items, None)
+    }
+
+    fn take<T>(&self, items: Vec<T>, total: Option<usize>) -> (Vec<T>, Page) {
+        let mut rest = items.into_iter().skip(self.offset);
+        let page: Vec<T> = rest.by_ref().take(self.limit).collect();
+        let more = rest.next().is_some();
+        let info = Page {
+            total,
+            offset: self.offset,
+            limit: self.limit,
+            returned: page.len(),
+            truncated: more,
+            next_offset: more.then(|| self.offset + self.limit),
+        };
+        (page, info)
     }
 }
 
@@ -415,6 +490,25 @@ impl<T: serde::Serialize> StandardResponse<T> {
     /// Set success flag
     pub fn with_success(mut self, success: bool) -> Self {
         self.success = success;
+        self
+    }
+
+    /// Record which page of a longer list `data` is: `count` becomes the
+    /// number returned, `meta.pagination` says where it sits in the whole,
+    /// and a cut list gets a warning naming the offset to continue from.
+    fn with_page(mut self, page: Page) -> Self {
+        self.count = Some(page.returned);
+        if let Some(next) = page.next_offset {
+            let of = page
+                .total
+                .map_or_else(String::new, |total| format!(" of {total}"));
+            self.warnings.push(format!(
+                "Showing {}{of}. Call again with offset {next} for more",
+                page.returned
+            ));
+        }
+        self.meta
+            .insert("pagination".to_string(), serde_json::json!(page));
         self
     }
 
