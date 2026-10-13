@@ -186,6 +186,7 @@ mod search_directory;
 pub mod search_engine;
 pub mod search_tools;
 pub mod similarity_engine;
+pub mod task_query;
 pub mod templates;
 pub mod validation_tools;
 pub mod vault_lifecycle;
