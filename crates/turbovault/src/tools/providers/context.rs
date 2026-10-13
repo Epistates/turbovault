@@ -183,7 +183,9 @@ impl ContextProvider {
         )]
         response_format: Option<ResponseFormat>,
     ) -> McpResult<serde_json::Value> {
-        let active_vault = self.multi_vault_mgr.get_active_vault().await;
+        // The vault the call named, or the active one; none is not an error
+        // here, the context then says there's no vault yet.
+        let active_vault = self.get_active_vault_name().await.unwrap_or_default();
         let vaults = self
             .multi_vault_mgr
             .list_vaults()

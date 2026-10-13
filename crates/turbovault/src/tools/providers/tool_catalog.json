@@ -37,6 +37,10 @@
             }
           ],
           "description": "`detailed` (default) or `concise`. Concise leaves out `markdown_dialect` and `tools`, which are the same on every call; ask for them once."
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -493,6 +497,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -712,6 +720,10 @@
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`. Missing folders are created.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -842,6 +854,10 @@
         },
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -998,6 +1014,10 @@
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `drafts/Old.md`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -1135,6 +1155,10 @@
             "boolean",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -1264,6 +1288,10 @@
         },
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -1415,6 +1443,10 @@
         },
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -1576,6 +1608,10 @@
         "path": {
           "description": "Vault-relative path of the note to start from, including the extension, such as `projects/Plan.md`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -1723,6 +1759,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -1877,6 +1917,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -2021,6 +2065,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -2150,6 +2198,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "quick_health_check",
@@ -2264,6 +2318,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "full_health_analysis",
@@ -2396,6 +2456,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -2566,6 +2630,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -2715,6 +2783,10 @@
             }
           ],
           "description": "`detailed` (default) or `concise`. Concise leaves out `structure` (every folder and its note count, which grows with the vault) and `meta.alternatives`."
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -2975,6 +3047,10 @@
             }
           ],
           "description": "`detailed` (default) or `concise`. Concise leaves out each result's `preview`, `outgoing_links`, `word_count` and `char_count`, keeping the path, title, score, snippet, tags and backlink count."
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -3256,6 +3332,10 @@
             "array",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -3493,6 +3573,10 @@
         "value": {
           "description": "Value to look for in that key; a note matches when its value contains this text.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -3727,6 +3811,10 @@
             }
           ],
           "description": "`detailed` (default) or `concise`. Concise leaves out each result's `preview`, `outgoing_links`, `word_count` and `char_count`, keeping the path, title, score, snippet, tags and backlink count."
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -3917,6 +4005,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "inspect_frontmatter",
@@ -4071,6 +4165,10 @@
         "sql": {
           "description": "One SQL SELECT, such as `SELECT path, status FROM files WHERE status = 'draft' ORDER BY path`. Quote frontmatter keys with spaces or dashes in double quotes.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -4171,6 +4269,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "list_templates",
@@ -4375,6 +4479,10 @@
       "properties": {
         "template_id": {
           "description": "The template's id, as list_templates shows it.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -4605,6 +4713,10 @@
         "template_id": {
           "description": "The template's id, as list_templates shows it.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -4713,6 +4825,10 @@
         "template_id": {
           "description": "The template's id, as list_templates shows it.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -4816,6 +4932,10 @@
             "string",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         },
         "write_backend": {
           "description": "How writes land: `direct` (default) writes files; `git` commits each change.",
@@ -5703,6 +5823,10 @@
         "name": {
           "description": "Name of the vault, as list_vaults shows it.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -6019,6 +6143,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "get_active_vault",
@@ -6440,6 +6570,10 @@
             "$ref": "#/$defs/BatchOperation"
           },
           "type": "array"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -6612,6 +6746,10 @@
             "string",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -6725,6 +6863,10 @@
             "string",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -6826,6 +6968,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "abandon_fanout",
@@ -7045,6 +7193,10 @@
         "format": {
           "description": "`json` or `csv`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -7142,6 +7294,10 @@
       "properties": {
         "format": {
           "description": "`json` or `csv`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -7241,6 +7397,10 @@
         "format": {
           "description": "`json` or `csv`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -7338,6 +7498,10 @@
       "properties": {
         "format": {
           "description": "`json` or `csv`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -7454,6 +7618,10 @@
         },
         "pattern": {
           "description": "One condition: `status: \"draft\"` (equals), `tags: contains(\"work\")` (text contains), `priority > 3` or `priority < 3` (numbers).",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -7627,6 +7795,10 @@
         "key": {
           "description": "The frontmatter key. Use dots for nested keys, such as `author.name`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -7753,6 +7925,10 @@
         },
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -7892,6 +8068,10 @@
             "array",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -8040,6 +8220,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -8184,6 +8368,10 @@
         "to": {
           "description": "Vault-relative path to move it to, including the extension.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -8315,6 +8503,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -8489,6 +8681,10 @@
         "target": {
           "description": "Vault-relative path of the second note, including the extension.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -8652,6 +8848,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -8827,6 +9027,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "get_ofm_syntax_guide",
@@ -8936,6 +9142,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "get_ofm_quick_ref",
@@ -9045,6 +9257,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "get_ofm_examples",
@@ -9161,6 +9379,10 @@
         },
         "right": {
           "description": "Vault-relative path of the second note, including the extension.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -9348,6 +9570,10 @@
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -9529,6 +9755,10 @@
       "properties": {
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -9789,6 +10019,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -10135,6 +10369,10 @@
         "path": {
           "description": "Vault-relative path of the note, including the extension, such as `concepts/Revenue.md`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -10314,6 +10552,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -10482,6 +10724,10 @@
             "string",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -10714,6 +10960,10 @@
             "boolean",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -10863,6 +11113,10 @@
         "text": {
           "description": "The entry's text, one line of prose.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -10987,6 +11241,10 @@
             "string",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -11128,6 +11386,10 @@
             "integer",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -11448,6 +11710,10 @@
         "query": {
           "description": "What to look for, in plain words, such as `quarterly revenue forecast`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -11630,6 +11896,10 @@
         "path": {
           "description": "Vault-relative path of the note to compare against, including the extension, such as `projects/Plan.md`.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -11807,6 +12077,10 @@
             "number",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -11934,6 +12208,10 @@
         },
         "right": {
           "description": "Vault-relative path of the second note, including the extension.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -12108,6 +12386,10 @@
             "string",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -12353,6 +12635,10 @@
         "operation_id": {
           "description": "The `id` of the audit_log entry to undo.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -12513,6 +12799,10 @@
         "operation_id": {
           "description": "The `id` of the audit_log entry to undo.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -12619,6 +12909,12 @@
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
+      "properties": {
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "name": "audit_stats",
@@ -12773,6 +13069,10 @@
         },
         "path": {
           "description": "Vault-relative path of the canvas, ending in .canvas, such as `boards/Plan.canvas`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },
@@ -13131,6 +13431,10 @@
         "path": {
           "description": "Vault-relative path of the canvas, ending in .canvas, such as `boards/Plan.canvas`. Missing folders are created.",
           "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "required": [
@@ -13259,6 +13563,10 @@
         },
         "path": {
           "description": "Vault-relative path of the base, ending in .base, such as `Reading.base`.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         },
         "view": {
@@ -13566,6 +13874,10 @@
             "string",
             "null"
           ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
         }
       },
       "type": "object"
@@ -13836,6 +14148,10 @@
         },
         "period": {
           "description": "daily, weekly, monthly, quarterly or yearly.",
+          "type": "string"
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
           "type": "string"
         }
       },

@@ -752,6 +752,23 @@ pub(super) struct CoreToolHandler {
     confirm_destructive: Arc<std::sync::atomic::AtomicBool>,
 }
 
+tokio::task_local! {
+    /// The vault a tool call named in its `vault` argument, for the length of
+    /// that call. Every vault-scoped tool resolves its vault through
+    /// `get_active_vault_name`, which answers with this when it's set.
+    static REQUESTED_VAULT: String;
+}
+
+/// Run `call` against `vault_name` instead of the active vault. The server's
+/// active vault is untouched, so concurrent calls naming different vaults
+/// don't disturb each other or anyone relying on the active one.
+pub(super) async fn in_requested_vault<F: std::future::Future>(
+    vault_name: String,
+    call: F,
+) -> F::Output {
+    REQUESTED_VAULT.scope(vault_name, call).await
+}
+
 /// What the server holds for one vault. Each part is filled when first
 /// needed: the Git lock registry can be wanted before the vault's manager
 /// is built (cleaning up an orphaned fanout), and the audit state attaches
@@ -1608,8 +1625,41 @@ impl CoreToolHandler {
             })
     }
 
-    /// Helper to get active vault name
+    /// `vault_name` if it names a registered vault; otherwise an invalid
+    /// params error listing the names there are.
+    pub(super) async fn registered_vault(&self, vault_name: &str) -> McpResult<String> {
+        if self
+            .multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .is_ok()
+        {
+            return Ok(vault_name.to_string());
+        }
+        let names = self
+            .multi_vault_mgr
+            .list_vaults()
+            .await
+            .map(|vaults| {
+                vaults
+                    .into_iter()
+                    .map(|vault| vault.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        Err(McpError::invalid_params(format!(
+            "no vault named {vault_name:?}. Registered vaults: {}",
+            if names.is_empty() { "none" } else { &names }
+        )))
+    }
+
+    /// The vault this call works on: the one it named in its `vault`
+    /// argument (see [`in_requested_vault`]), or else the active vault.
     async fn get_active_vault_name(&self) -> McpResult<String> {
+        if let Ok(vault_name) = REQUESTED_VAULT.try_with(String::clone) {
+            return Ok(vault_name);
+        }
         let vault_name = self.multi_vault_mgr.get_active_vault().await;
         if vault_name.is_empty() {
             return Err(McpError::unavailable(
