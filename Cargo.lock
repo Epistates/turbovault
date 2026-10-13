@@ -5843,6 +5843,7 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "regex",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "tokio",
