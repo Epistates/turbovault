@@ -114,7 +114,7 @@ impl VaultLifecycleTools {
 
         // Build the config before touching the filesystem: a rejected backend
         // selection must not leave a half-created vault directory behind.
-        let config = Self::build_config(name, &expanded_path, write_backend, backend_opts)?;
+        let mut config = Self::build_config(name, &expanded_path, write_backend, backend_opts)?;
 
         // If path doesn't exist, create it
         if !expanded_path.exists() {
@@ -131,6 +131,12 @@ impl VaultLifecycleTools {
                 expanded_path.display()
             )));
         }
+        // Register the directory as it now resolves, the way an existing
+        // vault's path is registered.
+        let expanded_path = expanded_path
+            .canonicalize()
+            .map_err(|e| Error::invalid_path(format!("Failed to resolve path: {}", e)))?;
+        config.path = expanded_path.clone();
 
         // Create .obsidian directory (marks directory as Obsidian vault)
         let obsidian_dir = expanded_path.join(".obsidian");
@@ -510,5 +516,30 @@ mod tests {
             home.is_empty() || !error.to_string().contains(&home),
             "error echoed $HOME's value: {error}"
         );
+    }
+
+    /// The registered path is the directory create_vault made, not a second
+    /// expansion of it by the config builder.
+    #[tokio::test]
+    async fn create_vault_registers_the_path_it_created() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let tools = VaultLifecycleTools::new(Arc::new(
+            MultiVaultManager::new(ServerConfig::default()).unwrap(),
+        ));
+        let requested = temp.path().join("$HOME");
+        let info = tools
+            .create_vault("probe", &requested, None, WriteBackend::Direct, None)
+            .await
+            .unwrap();
+
+        assert!(requested.is_dir());
+        assert_eq!(info.path, requested.canonicalize().unwrap());
+
+        // And an existing one registers as itself too.
+        let info = tools
+            .add_vault_from_path("again", &requested, WriteBackend::Direct, None)
+            .await
+            .unwrap();
+        assert_eq!(info.path, requested.canonicalize().unwrap());
     }
 }
