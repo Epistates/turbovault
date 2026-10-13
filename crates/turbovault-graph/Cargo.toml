@@ -18,12 +18,12 @@ turbovault-core = { workspace = true }
 petgraph = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-schemars = { workspace = true, optional = true }
 
 [features]
 default = []
-# JSON Schemas for the graph reports the server returns (see turbovault-core).
-schemars = ["dep:schemars", "turbovault-core/schemars"]
+# JSON Schemas for the graph reports the server returns. The report types
+# live in turbovault-core, so this turns its schemas on.
+schemars = ["turbovault-core/schemars"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

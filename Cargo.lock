@@ -5798,7 +5798,6 @@ name = "turbovault-graph"
 version = "3.3.0"
 dependencies = [
  "petgraph",
- "schemars 1.2.2",
  "serde",
  "serde_json",
  "tokio",
