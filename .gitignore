@@ -35,6 +35,11 @@ htmlcov/
 !docs/**/*.md
 !CHANGELOG.md
 !CONTRIBUTORS.md
+!CONTRIBUTING.md
+!SECURITY.md
+!CODE_OF_CONDUCT.md
+# Issue and pull request templates.
+!.github/**/*.md
 !RELEASE*.md
 !PUBLISH*.md
 # Crate-level READMEs are packaged by Cargo (readme = "README.md"), so an

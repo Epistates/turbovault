@@ -1,0 +1,21 @@
+name: Feature request
+description: Something you'd like TurboVault to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you're trying to do
+      description: The task or workflow, and where TurboVault falls short today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help
+      description: The tool, option or behavior you have in mind, if you have one.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you've tried
+      description: Workarounds or other tools you've used for this.
