@@ -64,6 +64,8 @@ vaults:
     allowed_extensions:
       - .md
       - .markdown
+      - .canvas   # so backlinks, delete_note and move_note see canvases
+      - .base
 
     # Excluded paths - directory names the note APIs may never traverse
     # (matched against every path component, relative to vault root).

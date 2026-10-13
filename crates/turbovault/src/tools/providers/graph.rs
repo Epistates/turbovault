@@ -90,7 +90,7 @@ impl GraphProvider {
 
     /// Find all notes that link to this note
     #[tool(
-        description = "List the notes that link to a note (its backlinks), as vault-relative paths. Use before renaming or deleting a note to see what depends on it; get_forward_links gives the other direction.",
+        description = "List the notes that link to a note (its backlinks), and the canvases that point at it, as vault-relative paths. Use before renaming or deleting a note to see what depends on it; get_forward_links gives the other direction.",
         title = "Get Backlinks",
         tags = ["read", "graph"],
         read_only = true,
@@ -113,7 +113,15 @@ impl GraphProvider {
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = SearchTools::new(manager.clone());
-        let backlinks = tools.find_backlinks(&path).await.map_err(to_mcp_error)?;
+        let mut backlinks = tools.find_backlinks(&path).await.map_err(to_mcp_error)?;
+        // Canvases are not in the link graph; the ones that point at the
+        // note are its backlinks too.
+        backlinks.extend(
+            turbovault_tools::CanvasTools::new(manager.clone())
+                .canvases_referencing(&path)
+                .await
+                .map_err(to_mcp_error)?,
+        );
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (backlinks, page) = request.slice(relative_paths(&manager, backlinks));
 

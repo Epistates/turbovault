@@ -903,6 +903,26 @@ async fn test_plan_move_rewrites_markdown_links() {
     );
 }
 
+/// A canvas pointing at the moved note follows it in the same plan: its
+/// file node and the links in its text nodes.
+#[tokio::test]
+async fn test_plan_move_rewrites_canvas_references() {
+    let board = r#"{"nodes":[{"id":"f","type":"file","file":"wiki/Old.md","x":0,"y":0,"width":10,"height":10},{"id":"t","type":"text","text":"See [[Old]]","x":0,"y":20,"width":10,"height":10}],"edges":[]}"#;
+    let (_temp_dir, manager) =
+        setup_vault_with_files(&[("wiki/Old.md", "# Old\n"), ("boards/Board.canvas", board)]).await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("wiki/Old.md", "archive/New.md", None, "move")
+        .await
+        .unwrap();
+
+    let moved = planned_content(&plan, "boards/Board.canvas").expect("the canvas is rewritten");
+    let canvas = turbovault_parser::parse_canvas(&moved).unwrap();
+    assert_eq!(canvas.nodes[0].file.as_deref(), Some("archive/New.md"));
+    assert_eq!(canvas.nodes[1].text.as_deref(), Some("See [[New]]"));
+}
+
 /// A reference link moves with the definition it goes through; a wikilink
 /// whose text happens to match a definition's label is still one wikilink.
 #[tokio::test]

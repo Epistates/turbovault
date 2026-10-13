@@ -433,22 +433,38 @@ impl FileProvider {
         );
         self.after_write(&vault_name, changes, WriteAttribution::host("delete_note"))
             .await;
-        StandardResponse::new(
+        // A canvas's file card can't be struck through; it shows the note as
+        // missing until someone edits the canvas.
+        let canvases: Vec<&String> = backlinks
+            .iter()
+            .filter(|source| turbovault_tools::canvas_tools::is_canvas(source))
+            .collect();
+        let mut response = StandardResponse::new(
             vault_name,
             "delete_note",
             DeletedPayload {
-                path,
+                path: path.clone(),
                 status: "deleted",
                 link_sources_updated: updated_sources,
             },
         )
-        .with_next_step("quick_health_check")
-        .to_json()
+        .with_next_step("quick_health_check");
+        if !canvases.is_empty() {
+            response = response.with_warning(format!(
+                "These canvases still point at {path} and now show it as missing: {}. Edit them with read_canvas and write_canvas.",
+                canvases
+                    .iter()
+                    .map(|c| c.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        response.to_json()
     }
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note. Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
+        description = "Move or rename a note. Git-backed vaults update inbound links (wikilinks, Markdown links and canvas references) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
         title = "Move Note",
         tags = ["write"],
         read_only = false,
@@ -562,14 +578,24 @@ impl FileProvider {
 ///
 /// Passes the gate undebounced first: a link added in Obsidian a moment ago
 /// is exactly what the refusal is there to protect.
-async fn inbound_backlinks(manager: &VaultManager, path: &str) -> McpResult<Vec<String>> {
+///
+/// Canvases that point at the note count too: deleting it would leave a
+/// missing-file card on each.
+async fn inbound_backlinks(manager: &Arc<VaultManager>, path: &str) -> McpResult<Vec<String>> {
     manager.ensure_fresh_now().await;
     let full = manager
         .get_backlinks(std::path::Path::new(path))
         .await
         .map_err(to_mcp_error)?;
-    Ok(full
+    let mut sources: Vec<String> = full
         .into_iter()
         .map(|p| manager.relative_path(&p))
-        .collect())
+        .collect();
+    sources.extend(
+        turbovault_tools::CanvasTools::new(manager.clone())
+            .canvases_referencing(path)
+            .await
+            .map_err(to_mcp_error)?,
+    );
+    Ok(sources)
 }

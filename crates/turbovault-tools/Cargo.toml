@@ -57,6 +57,7 @@ sql = ["dep:turbovault-sql"]
 schemars = [
     "dep:schemars",
     "turbovault-core/schemars",
+    "turbovault-parser/schemars",
     "turbovault-graph/schemars",
     "turbovault-vault/schemars",
     "turbovault-audit/schemars",

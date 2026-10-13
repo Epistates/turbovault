@@ -529,7 +529,7 @@ impl Default for ServerConfig {
             profile: "default".to_string(),
             reconcile_external_changes: true,
             max_file_size: 10 * 1024 * 1024, // 10MB
-            allowed_extensions: [".md", ".txt", ".canvas"]
+            allowed_extensions: [".md", ".txt", ".canvas", ".base"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),

@@ -1095,7 +1095,7 @@
       "readOnlyHint": false,
       "title": "Move Note"
     },
-    "description": "Move or rename a note. Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
+    "description": "Move or rename a note. Git-backed vaults update inbound links (wikilinks, Markdown links and canvas references) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1239,7 +1239,7 @@
       "readOnlyHint": true,
       "title": "Get Backlinks"
     },
-    "description": "List the notes that link to a note (its backlinks), as vault-relative paths. Use before renaming or deleting a note to see what depends on it; get_forward_links gives the other direction.",
+    "description": "List the notes that link to a note (its backlinks), and the canvases that point at it, as vault-relative paths. Use before renaming or deleting a note to see what depends on it; get_forward_links gives the other direction.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -12817,5 +12817,1247 @@
       "type": "object"
     },
     "title": "Audit Statistics"
+  },
+  {
+    "_meta": {
+      "tags": [
+        "read",
+        "canvas"
+      ]
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Read Canvas"
+    },
+    "description": "Read an Obsidian canvas (.canvas, JSON Canvas 1.0): its nodes (text, file, link, group), edges, and the notes it points at. A read that returns every node also returns the `hash` write_canvas takes as expected_hash. Large canvases come back a page of nodes at a time.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Most nodes to return. Default 200, maximum 1000.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "How many nodes to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Vault-relative path of the canvas, ending in .canvas, such as `boards/Plan.canvas`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "read_canvas",
+    "outputSchema": {
+      "$defs": {
+        "CanvasEdge": {
+          "additionalProperties": true,
+          "properties": {
+            "color": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fromEnd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fromNode": {
+              "type": "string"
+            },
+            "fromSide": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "toEnd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "toNode": {
+              "type": "string"
+            },
+            "toSide": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "fromNode",
+            "toNode"
+          ],
+          "type": "object"
+        },
+        "CanvasNode": {
+          "additionalProperties": true,
+          "properties": {
+            "background": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "backgroundStyle": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "color": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "height": {
+              "type": "number"
+            },
+            "id": {
+              "type": "string"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "subpath": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "width": {
+              "type": "number"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "x",
+            "y",
+            "width",
+            "height"
+          ],
+          "type": "object"
+        },
+        "CanvasPage": {
+          "properties": {
+            "edge_count": {
+              "type": "integer"
+            },
+            "edges": {
+              "items": {
+                "$ref": "#/$defs/CanvasEdge"
+              },
+              "type": "array"
+            },
+            "hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "node_count": {
+              "type": "integer"
+            },
+            "nodes": {
+              "items": {
+                "$ref": "#/$defs/CanvasNode"
+              },
+              "type": "array"
+            },
+            "path": {
+              "type": "string"
+            },
+            "references": {
+              "items": {
+                "$ref": "#/$defs/CanvasRef"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "path",
+            "node_count",
+            "edge_count",
+            "nodes",
+            "edges",
+            "references"
+          ],
+          "type": "object"
+        },
+        "CanvasRef": {
+          "properties": {
+            "kind": {
+              "type": "string"
+            },
+            "node_id": {
+              "type": "string"
+            },
+            "resolved": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "node_id",
+            "kind",
+            "target"
+          ],
+          "type": "object"
+        },
+        "Page": {
+          "properties": {
+            "limit": {
+              "type": "integer"
+            },
+            "next_offset": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "returned": {
+              "type": "integer"
+            },
+            "total": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "offset",
+            "limit",
+            "returned",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "PagedMeta": {
+          "additionalProperties": true,
+          "properties": {
+            "pagination": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "pagination"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/CanvasPage"
+        },
+        "meta": {
+          "$ref": "#/$defs/PagedMeta"
+        },
+        "next_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "took_ms": {
+          "type": "integer"
+        },
+        "vault": {
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "vault",
+        "operation",
+        "success",
+        "data",
+        "took_ms",
+        "meta"
+      ],
+      "type": "object"
+    },
+    "title": "Read Canvas"
+  },
+  {
+    "_meta": {
+      "tags": [
+        "write",
+        "canvas"
+      ]
+    },
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Write Canvas"
+    },
+    "description": "Create or replace an Obsidian canvas (.canvas) with a whole JSON Canvas 1.0 document, validated first: unique ids, the fields each node type needs, integer positions and sizes, edges between existing nodes. Replacing an existing canvas needs the expected_hash from a read_canvas that returned every node. Written the way Obsidian writes canvases.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "canvas": {
+          "allOf": [
+            true
+          ],
+          "description": "The whole canvas: `{\"nodes\": [...], \"edges\": [...]}`. A node has id, type (text, file, link or group), integer x, y, width and height, optional color (\"1\" to \"6\" or a hex color), and text (text nodes), file and optional subpath starting with # (file nodes), url (link nodes) or optional label, background and backgroundStyle (groups). An edge has id, fromNode, toNode, and optional fromSide/toSide (top, right, bottom, left), fromEnd/toEnd (none, arrow), color and label."
+        },
+        "commit_message": {
+          "description": "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expected_hash": {
+          "description": "The canvas's `hash` from a read_canvas that returned every node. Required to replace an existing canvas, and the write is refused if it changed since. `blind` replaces without checking; `absent` insists the canvas doesn't exist yet.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Vault-relative path of the canvas, ending in .canvas, such as `boards/Plan.canvas`. Missing folders are created.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "canvas"
+      ],
+      "type": "object"
+    },
+    "name": "write_canvas",
+    "outputSchema": {
+      "$defs": {
+        "CanvasWritten": {
+          "properties": {
+            "bytes": {
+              "type": "integer"
+            },
+            "edges": {
+              "type": "integer"
+            },
+            "nodes": {
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "status",
+            "bytes",
+            "nodes",
+            "edges"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/CanvasWritten"
+        },
+        "meta": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "next_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "took_ms": {
+          "type": "integer"
+        },
+        "vault": {
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "vault",
+        "operation",
+        "success",
+        "data",
+        "took_ms"
+      ],
+      "type": "object"
+    },
+    "title": "Write Canvas"
+  },
+  {
+    "_meta": {
+      "tags": [
+        "read",
+        "bases"
+      ]
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Query Base"
+    },
+    "description": "Run an Obsidian base (.base file): its filters, formulas, sort, grouping and limit over the vault's notes, returning the chosen view's rows and columns. Evaluates the Bases expression language (note and file properties, file.hasTag, file.inFolder, file.hasLink, if, date arithmetic, string, number, list and date methods); a function it doesn't evaluate is refused by name. For ad hoc frontmatter queries without a .base file, use query_frontmatter_sql.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Most rows to return. Default 50, maximum 500.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "How many rows to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Vault-relative path of the base, ending in .base, such as `Reading.base`.",
+          "type": "string"
+        },
+        "view": {
+          "description": "The view's name. Default: the base's first view; the result lists every view's name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "query_base",
+    "outputSchema": {
+      "$defs": {
+        "BaseColumn": {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
+          ],
+          "type": "object"
+        },
+        "BaseResult": {
+          "properties": {
+            "base": {
+              "type": "string"
+            },
+            "columns": {
+              "items": {
+                "$ref": "#/$defs/BaseColumn"
+              },
+              "type": "array"
+            },
+            "group_by": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rows": {
+              "items": {
+                "$ref": "#/$defs/BaseRow"
+              },
+              "type": "array"
+            },
+            "view": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "view_type": {
+              "type": "string"
+            },
+            "views": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "warnings": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "base",
+            "view_type",
+            "views",
+            "columns",
+            "rows"
+          ],
+          "type": "object"
+        },
+        "BaseRow": {
+          "properties": {
+            "group": {},
+            "path": {
+              "type": "string"
+            },
+            "values": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          },
+          "required": [
+            "path",
+            "values"
+          ],
+          "type": "object"
+        },
+        "Page": {
+          "properties": {
+            "limit": {
+              "type": "integer"
+            },
+            "next_offset": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "returned": {
+              "type": "integer"
+            },
+            "total": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "offset",
+            "limit",
+            "returned",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "PagedMeta": {
+          "additionalProperties": true,
+          "properties": {
+            "pagination": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "pagination"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/BaseResult"
+        },
+        "meta": {
+          "$ref": "#/$defs/PagedMeta"
+        },
+        "next_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "took_ms": {
+          "type": "integer"
+        },
+        "vault": {
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "vault",
+        "operation",
+        "success",
+        "data",
+        "took_ms",
+        "meta"
+      ],
+      "type": "object"
+    },
+    "title": "Query Base"
+  },
+  {
+    "_meta": {
+      "tags": [
+        "read",
+        "tasks"
+      ]
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Query Tasks"
+    },
+    "description": "Find tasks (Markdown checkboxes) across the vault by status, due and scheduled dates, tag, folder, priority and text, reading Tasks plugin emoji (📅 due, ⏳ scheduled, 🛫 start, ✅ done, 🔺⏫🔼🔽⏬ priority) and Dataview fields ([due:: 2026-10-20]). Sorted by due date (undated last), then priority, then note and line. Every filter given must match.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "due_after": {
+          "description": "Only tasks due on or after this date, YYYY-MM-DD.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "due_before": {
+          "description": "Only tasks due on or before this date, YYYY-MM-DD.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Most tasks to return. Default 50, maximum 500.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offset": {
+          "description": "How many tasks to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Only tasks in this note (vault-relative path) or folder, at any depth, such as `projects`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "description": "Priorities to include: highest, high, medium, normal, low, lowest. Default: all.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scheduled_after": {
+          "description": "Only tasks scheduled on or after this date, YYYY-MM-DD.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scheduled_before": {
+          "description": "Only tasks scheduled on or before this date, YYYY-MM-DD.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "description": "Statuses to include: todo `[ ]`, done `[x]`, in_progress `[/]`, cancelled `[-]`, other (a custom checkbox character). Default: all.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tag": {
+          "description": "Only tasks carrying this tag, with or without #. `work` also matches `#work/client`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "description": "Only tasks whose description contains this text, ignoring case.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "query_tasks",
+    "outputSchema": {
+      "$defs": {
+        "Page": {
+          "properties": {
+            "limit": {
+              "type": "integer"
+            },
+            "next_offset": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "returned": {
+              "type": "integer"
+            },
+            "total": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "offset",
+            "limit",
+            "returned",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "PagedMeta": {
+          "additionalProperties": true,
+          "properties": {
+            "pagination": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "pagination"
+          ],
+          "type": "object"
+        },
+        "Priority": {
+          "enum": [
+            "lowest",
+            "low",
+            "normal",
+            "medium",
+            "high",
+            "highest"
+          ],
+          "type": "string"
+        },
+        "TaskMatch": {
+          "properties": {
+            "block_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cancelled": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "done": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "due": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "line": {
+              "type": "integer"
+            },
+            "path": {
+              "type": "string"
+            },
+            "priority": {
+              "$ref": "#/$defs/Priority"
+            },
+            "recurrence": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scheduled": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "start": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/$defs/TaskState"
+            },
+            "status_char": {
+              "type": "string"
+            },
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "line",
+            "status",
+            "status_char",
+            "text",
+            "priority"
+          ],
+          "type": "object"
+        },
+        "TaskState": {
+          "oneOf": [
+            {
+              "const": "todo",
+              "type": "string"
+            },
+            {
+              "const": "done",
+              "type": "string"
+            },
+            {
+              "const": "in_progress",
+              "type": "string"
+            },
+            {
+              "const": "cancelled",
+              "type": "string"
+            },
+            {
+              "const": "other",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "data": {
+          "items": {
+            "$ref": "#/$defs/TaskMatch"
+          },
+          "type": "array"
+        },
+        "meta": {
+          "$ref": "#/$defs/PagedMeta"
+        },
+        "next_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "took_ms": {
+          "type": "integer"
+        },
+        "vault": {
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "vault",
+        "operation",
+        "success",
+        "data",
+        "took_ms",
+        "meta"
+      ],
+      "type": "object"
+    },
+    "title": "Query Tasks"
+  },
+  {
+    "_meta": {
+      "tags": [
+        "write",
+        "periodic"
+      ]
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Get Periodic Note"
+    },
+    "description": "Find the daily, weekly, monthly, quarterly or yearly note for a date, named and placed by the vault's own Daily notes or Periodic Notes settings, and return its markdown and hash. With create, a missing note is made from the configured template, its {{date}}, {{title}} and {{time}} variables filled; an existing note is never replaced.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "commit_message": {
+          "description": "Commit message on a Git-backed vault when creating. Required there when the vault sets git.require_commit_message; otherwise derived from the path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "create": {
+          "description": "True to create the note from its template when it doesn't exist. Default false, which only reports where it would be.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "date": {
+          "description": "A date in the period, YYYY-MM-DD. Default: today, on the server's clock.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "period": {
+          "description": "daily, weekly, monthly, quarterly or yearly.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "period"
+      ],
+      "type": "object"
+    },
+    "name": "get_periodic_note",
+    "outputSchema": {
+      "$defs": {
+        "Period": {
+          "enum": [
+            "daily",
+            "weekly",
+            "monthly",
+            "quarterly",
+            "yearly"
+          ],
+          "type": "string"
+        },
+        "PeriodSettings": {
+          "properties": {
+            "folder": {
+              "type": "string"
+            },
+            "format": {
+              "type": "string"
+            },
+            "source": {
+              "type": "string"
+            },
+            "template": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "folder",
+            "format",
+            "source"
+          ],
+          "type": "object"
+        },
+        "PeriodicNote": {
+          "properties": {
+            "content": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "created": {
+              "type": "boolean"
+            },
+            "date": {
+              "type": "string"
+            },
+            "exists": {
+              "type": "boolean"
+            },
+            "hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": "string"
+            },
+            "period": {
+              "$ref": "#/$defs/Period"
+            },
+            "settings": {
+              "$ref": "#/$defs/PeriodSettings"
+            }
+          },
+          "required": [
+            "period",
+            "date",
+            "path",
+            "exists",
+            "created",
+            "settings"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/PeriodicNote"
+        },
+        "meta": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "next_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "took_ms": {
+          "type": "integer"
+        },
+        "vault": {
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "vault",
+        "operation",
+        "success",
+        "data",
+        "took_ms"
+      ],
+      "type": "object"
+    },
+    "title": "Get Periodic Note"
   }
 ]

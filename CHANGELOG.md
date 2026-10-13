@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Canvases:** `read_canvas` and `write_canvas` read and write Obsidian canvases (JSON Canvas 1.0). Writes are validated against the spec and keep Obsidian's own layout, and fields the spec doesn't define are preserved.
+- **Bases:** `query_base` runs an Obsidian base's filters, formulas, sort, grouping and limit over the vault's notes. A Bases function TurboVault doesn't evaluate is refused by name rather than guessed at.
+- **Tasks:** `query_tasks` finds tasks across the vault by status, due and scheduled dates, tag, folder, priority and text. It reads Tasks plugin emoji and Dataview fields.
+- **Periodic notes:** `get_periodic_note` finds or creates the daily, weekly, monthly, quarterly or yearly note where the vault's Daily notes or Periodic Notes settings put it. A new note is filled from its template.
 - **Audit entries say which tool call made them, chain to each other, and are synced to disk.** Each entry records the tool, request, client, user and session behind it, and the hash of the entry before it, so `audit_stats` can report whether any entry but the last was edited or removed since. Two processes writing one vault extend one chain. `snapshot_retention` in the server config bounds the snapshots rollback restores from, by count or by age; both are off by default, so nothing is deleted unless asked.
 - **`rollback_note` takes `force`.**
 - **Every tool advertises an `outputSchema`**, so a client can rely on the shape of `structuredContent` rather than discovering it. The schemas are derived from the types the tools return, and a test calls all 74 tools on a real vault and checks each result against its schema, so the two can't drift apart.
@@ -25,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Canvases count as links to the notes they show.** `get_backlinks` lists them, `delete_note` counts them before refusing, and moving a note re-points their file cards and text links in the same change.
+- **A task keeps its checkbox character,** so in-progress `[/]` and cancelled `[-]` tasks are distinguishable from open ones. `TaskItem` gains a `status` field.
 - **Every tool tells an agent how to call it.** Every parameter, including each `batch_execute` operation's fields, has a description of what it takes, its default and its limits, and every tool has a title and complete read-only, destructive, idempotent and open-world hints. Tool descriptions say when to use a tool rather than its neighbor.
 - **List-returning tools page their results.** They take `limit` and `offset` and report `meta.pagination` (`total` where known, `returned`, `truncated`, `next_offset`), and a cut list says which offset continues it. Lists return 50 items unless asked for more, so a large vault no longer hands back megabytes: `get_centrality_ranking` was 44 MB at 100k notes. `search_by_frontmatter` returns 50 matches by default instead of 100, and `count` on a paged tool is the number returned.
 - **A tool result's text block is compact JSON.** It was the same result pretty-printed, with indentation a third or more of its tokens. `structuredContent` is unchanged, and a plugin's text is left as the plugin wrote it. `explain_vault` lists its folders in sorted order.

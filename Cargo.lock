@@ -5720,6 +5720,7 @@ version = "3.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "criterion",
  "futures",
@@ -5744,6 +5745,7 @@ dependencies = [
  "turbomcp-types",
  "turbovault-audit",
  "turbovault-core",
+ "turbovault-parser",
  "turbovault-plugin-api",
  "turbovault-plugin-vector",
  "turbovault-tools",
@@ -5843,6 +5845,7 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "regex",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "tokio",

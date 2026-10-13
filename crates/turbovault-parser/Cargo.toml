@@ -13,9 +13,6 @@ keywords.workspace = true
 categories.workspace = true
 documentation = "https://docs.rs/turbovault-parser"
 
-[features]
-default = []
-
 [dependencies]
 turbovault-core = { workspace = true }
 serde = { workspace = true }
@@ -26,6 +23,12 @@ regex = { workspace = true }
 # 2025 diligence: OFM parsing with best-in-class libraries
 pulldown-cmark = { workspace = true }      # CommonMark parser with OFM extensions
 percent-encoding = { workspace = true }
+schemars = { workspace = true, optional = true }
+
+[features]
+default = []
+# JSON Schemas for the parsed types the server returns (canvas documents).
+schemars = ["dep:schemars"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

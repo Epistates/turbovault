@@ -25,10 +25,10 @@ Build your own applications, search engines, or custom MCP servers using our mod
 - **SOTA Standards**: Fully supports Obsidian-flavored Markdown (wikilinks, embeds, callouts).
 
 ### 2. As a Ready-to-Use MCP Server (For Users)
-Transform your Obsidian vault into an intelligent knowledge system immediately. Connect TurboVault to Claude Desktop or any MCP-compatible client to gain **74 specialized tools** for your notes.
+Transform your Obsidian vault into an intelligent knowledge system immediately. Connect TurboVault to Claude Desktop or any MCP-compatible client to gain **79 specialized tools** for your notes.
 
 - **Zero Coding Required**: Install the binary and point it at your vault.
-- **74 Specialized Tools**: Searching, link analysis, atomic Git-backed writes, SQL frontmatter queries, health checks, and more.
+- **79 Specialized Tools**: Searching, link analysis, atomic Git-backed writes, SQL frontmatter queries, health checks, and more.
 - **Multi-Vault Support**: Switch between personal and work notes seamlessly at runtime.
 
 ---
@@ -43,7 +43,7 @@ TurboVault is a modular system composed of specialized crates. You can depend on
 | **[turbovault-parser](crates/turbovault-parser)** | High-speed .md & .ofm parser | [![Docs.rs](https://docs.rs/turbovault-parser/badge.svg)](https://docs.rs/turbovault-parser) |
 | **[turbovault-graph](crates/turbovault-graph)** | Link graph analysis & relationship discovery | [![Docs.rs](https://docs.rs/turbovault-graph/badge.svg)](https://docs.rs/turbovault-graph) |
 | **[turbovault-vault](crates/turbovault-vault)** | Vault management, file I/O & atomic writes | [![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault) |
-| **[turbovault-tools](crates/turbovault-tools)** | 74 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
+| **[turbovault-tools](crates/turbovault-tools)** | 79 MCP tool implementations | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
 | **[turbovault-plugin-api](crates/turbovault-plugin-api)** | Stable facade, provider contract & bounded hooks for compiled-in plugins | [![Docs.rs](https://docs.rs/turbovault-plugin-api/badge.svg)](https://docs.rs/turbovault-plugin-api) |
 | **[turbovault-sql](crates/turbovault-sql)** | SQL frontmatter queries (GlueSQL) | [![Docs.rs](https://docs.rs/turbovault-sql/badge.svg)](https://docs.rs/turbovault-sql) |
 | **[turbovault-batch](crates/turbovault-batch)** | Validated fail-fast operation batches | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
@@ -226,14 +226,14 @@ You: "Based on my vault, what notes should I link this to?"
 Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 ```
 
-## 74 MCP Tools Organized by Category
+## 79 MCP Tools Organized by Category
 
 ### File Operations & Batch (8)
 - `read_note` — Get note content with hash for conflict detection
 - `write_note` — Create/overwrite notes (auto-creates directories)
 - `edit_note` — Surgical edits via SEARCH/REPLACE blocks
 - `delete_note` — Safe deletion with link tracking
-- `move_note` — Rename/relocate a note; Git-backed vaults atomically rewrite incoming wikilinks
+- `move_note`: Rename/relocate a note; Git-backed vaults atomically rewrite incoming wikilinks, Markdown links and canvas references
 - `move_file` — Move/rename non-note files (e.g. attachments, images)
 - `get_notes_info` — Metadata for multiple notes in a single call
 - `batch_execute` — One all-or-nothing commit with `write_backend: git`; direct stays sequential
@@ -250,7 +250,7 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `manage_tags` — Add, remove, or list note tags
 
 ### Link Analysis (6)
-- `get_backlinks` — All notes that link TO this note
+- `get_backlinks`: All notes that link TO this note, and the canvases that point at it
 - `get_forward_links` — All notes this note links TO
 - `get_related_notes` — Multi-hop graph traversal (find non-obvious connections)
 - `get_hub_notes` — Top 10 most connected notes (key concepts)
@@ -290,6 +290,13 @@ Claude: suggest_links() -> get_link_strength() -> recommend cross-references
 - `find_stale_notes` — Notes not modified within a threshold of days
 - `analyze_note_grounding` — Grounding primitives for a note (claims, citations, uncited flag) to feed an external LLM judge
 - `find_ungrounded_notes` — Find hallucination-risk notes that make claims but cite no source
+
+### Canvases, Bases, Tasks & Periodic Notes (5)
+- `read_canvas`: Read a `.canvas` (JSON Canvas 1.0): nodes, edges and the notes it points at
+- `write_canvas`: Create or replace a canvas, validated against the spec and written the way Obsidian writes it
+- `query_base`: Run a `.base` file's filters, formulas, sort, grouping and limit over the vault's notes
+- `query_tasks`: Find tasks by status, due and scheduled dates, tag, folder, priority and text (Tasks plugin emoji and Dataview fields)
+- `get_periodic_note`: Find or create the daily, weekly, monthly, quarterly or yearly note, using the vault's Daily notes or Periodic Notes settings
 
 ### Open Knowledge Format (4)
 - `okf_validate` — Validate the vault as an [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog) v0.1 bundle (conformance + concept `type` vocabulary); usable as a CI/pre-publish gate
@@ -509,7 +516,7 @@ turbovault-vault       — Vault operations, file I/O, atomic writes
 turbovault-batch       — Validated sequential batch operations
 turbovault-export      — JSON/CSV/Markdown export
 turbovault-sql         — SQL frontmatter queries (GlueSQL, feature-gated)
-turbovault-tools       — 74 MCP tool implementations
+turbovault-tools:      79 MCP tool implementations
 turbovault-plugin-api  — Curated plugin facade, provider contract, event hooks
 turbovault (binary)    — CLI and MCP server entry point
 ```
