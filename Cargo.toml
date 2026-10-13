@@ -94,6 +94,7 @@ clap = { version = "4.6", features = ["derive", "env"] }
 # Testing utilities
 tempfile = "3"
 criterion = "0.8"
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 
 # Logging
 log = "0.4"

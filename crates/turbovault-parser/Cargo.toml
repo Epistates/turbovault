@@ -29,6 +29,7 @@ percent-encoding = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
+proptest = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
