@@ -9,7 +9,7 @@ use turbomcp::prelude::*;
 use turbovault_audit::{AuditFilter, AuditLog, OperationType, SnapshotStore};
 use turbovault_core::ServerConfig;
 use turbovault_core::config::{GitMergeStrategy as ConfigMergeStrategy, VaultConfig, WriteBackend};
-use turbovault_core::error::Error;
+use turbovault_core::error::{Error, ErrorCategory};
 use turbovault_core::events::{VaultChange, VaultEventSink, WriteAttribution};
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
@@ -44,11 +44,147 @@ pub struct FrontmatterFilter {
     pub value: String,
 }
 
-/// Helper to convert internal Error to McpError
+/// Turn a domain error into the error a tool returns.
+///
+/// The MCP error kind follows [`Error::category`], so a client can tell a
+/// missing note from bad input from a fault in the server (TurboMCP carries
+/// the kind in the result's `_meta`, and `data` below with it). The message
+/// says what to do next where there is something to do, since a model reads
+/// it to decide its next call. Paths in it are made vault-relative, and a
+/// missing note gets suggestions, where the result leaves the server (see
+/// `ObsidianMcpServer::call_tool`): only that knows which vault is meant.
 fn to_mcp_error(e: Error) -> McpError {
-    // Log full error for server-side debugging before sanitizing for client
     log::warn!("MCP error: {:?}", e);
-    McpError::internal(e.to_string())
+    let category = e.category();
+    let message = match error_hint(&e) {
+        Some(hint) => format!("{e}. {hint}"),
+        None => e.to_string(),
+    };
+    let mut data = serde_json::json!({ "category": category_name(category) });
+    if let Some(path) = error_path(&e) {
+        data["path"] = serde_json::json!(turbovault_core::path_to_slash(path));
+    }
+    let error = match category {
+        ErrorCategory::NotFound => {
+            McpError::new(turbomcp_core::error::ErrorKind::ResourceNotFound, message)
+        }
+        // A stale `expected_hash` is a request to retry with different
+        // arguments, which is what invalid params tells a client.
+        ErrorCategory::InvalidInput | ErrorCategory::Conflict => McpError::invalid_params(message),
+        ErrorCategory::PermissionDenied => McpError::permission_denied(message),
+        ErrorCategory::Unavailable => McpError::unavailable(message),
+        _ => McpError::internal(message),
+    };
+    error.with_data(data)
+}
+
+/// The snake_case name an [`ErrorCategory`] goes by in error `data`.
+fn category_name(category: ErrorCategory) -> &'static str {
+    match category {
+        ErrorCategory::NotFound => "not_found",
+        ErrorCategory::InvalidInput => "invalid_input",
+        ErrorCategory::PermissionDenied => "permission_denied",
+        ErrorCategory::Conflict => "conflict",
+        ErrorCategory::Unavailable => "unavailable",
+        _ => "internal",
+    }
+}
+
+/// The path an error is about, if it names one.
+fn error_path(error: &Error) -> Option<&Path> {
+    match error {
+        Error::FileNotFound { path }
+        | Error::PathTraversalAttempt { path }
+        | Error::ProtectedPath { path, .. }
+        | Error::FileTooLarge { path, .. } => Some(path),
+        _ => None,
+    }
+}
+
+/// What a caller can do about `error`, for the ones where that is known.
+fn error_hint(error: &Error) -> Option<String> {
+    let hint = match error {
+        Error::FileNotFound { .. } | Error::NotFound { .. } => {
+            "Paths are relative to the vault root and include the extension, such as \
+             `projects/Plan.md`. Use search to find a note by name"
+        }
+        Error::PathTraversalAttempt { .. } => {
+            "Use a path relative to the vault root, with no leading `/` and no `..` that leaves \
+             the vault"
+        }
+        Error::ProtectedPath { component, .. } => {
+            return Some(format!(
+                "`{component}` holds {}, so the note tools never read or write it",
+                protected_contents(component)
+            ));
+        }
+        Error::FileTooLarge { .. } => {
+            "The server's max_file_size setting caps what the note tools read and write"
+        }
+        Error::ConcurrencyError { .. } => {
+            "The note changed since you read it. Read it again for its current hash, then retry \
+             with that hash as expected_hash"
+        }
+        _ => return None,
+    };
+    Some(hint.to_string())
+}
+
+/// `text` with every path under one of `roots` written relative to it.
+fn relativize_paths(text: &str, roots: &[PathBuf]) -> String {
+    let mut text = text.to_string();
+    for root in roots {
+        let root = root.to_string_lossy();
+        let root = root.trim_end_matches(['/', '\\']);
+        if root.is_empty() {
+            continue;
+        }
+        for separator in ['/', '\\'] {
+            text = text.replace(&format!("{root}{separator}"), "");
+        }
+    }
+    text
+}
+
+/// The `limit` paths among `candidates` whose file names are closest to the
+/// one `missing` names, closest first. A same-named note in another folder
+/// ranks first; nothing that is not at least a near match is offered.
+fn closest_paths(missing: &str, candidates: &[String], limit: usize) -> Vec<String> {
+    fn stem(path: &str) -> String {
+        let name = path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(path)
+            .to_lowercase();
+        name.strip_suffix(".md").map(str::to_string).unwrap_or(name)
+    }
+    let wanted = stem(missing);
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(f64, &String)> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let score = strsim::normalized_levenshtein(&wanted, &stem(candidate));
+            (score >= 0.6).then_some((score, candidate))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, path)| path.clone())
+        .collect()
+}
+
+/// What a protected directory holds, for [`error_hint`].
+fn protected_contents(component: &str) -> &'static str {
+    match component.to_ascii_lowercase().as_str() {
+        ".obsidian" => "Obsidian's settings and plugin code",
+        ".git" => "the vault's Git repository",
+        ".turbovault" => "TurboVault's audit trail and state",
+        _ => "files this vault's excluded_paths keep out of reach",
+    }
 }
 
 /// Most results a search-style tool returns in one call.
@@ -742,6 +878,80 @@ impl CoreToolHandler {
         self.activate_vault_manager(&vault_name).await
     }
 
+    /// Finish a failed tool result for the model that reads it. A path under
+    /// a registered vault is written relative to it, so no absolute server
+    /// path leaves the server, and a note that was not found gets up to
+    /// three close matches from the active vault. Other results pass through.
+    async fn polish_error_result(&self, mut result: ToolResult) -> ToolResult {
+        if result.is_error != Some(true) {
+            return result;
+        }
+        let roots = self.vault_roots().await;
+        for content in &mut result.content {
+            if let Content::Text(text) = content {
+                text.text = relativize_paths(&text.text, &roots);
+            }
+        }
+
+        let Some(data) = result
+            .meta
+            .as_mut()
+            .and_then(|meta| meta.get_mut(turbomcp_core::meta_keys::ERROR_DATA))
+        else {
+            return result;
+        };
+        let Some(path) = data
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(|path| relativize_paths(path, &roots))
+        else {
+            return result;
+        };
+        data["path"] = serde_json::json!(path);
+        if data["category"] != "not_found" {
+            return result;
+        }
+        let suggestions = self.closest_note_paths(&path).await;
+        if suggestions.is_empty() {
+            return result;
+        }
+        data["suggestions"] = serde_json::json!(suggestions);
+        if let Some(Content::Text(text)) = result.content.first_mut() {
+            text.text = format!("{}. Did you mean: {}?", text.text, suggestions.join(", "));
+        }
+        result
+    }
+
+    /// Every registered vault's root, as configured and as it resolves.
+    async fn vault_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        for vault in self.multi_vault_mgr.list_vaults().await.unwrap_or_default() {
+            if let Ok(real) = vault.path.canonicalize()
+                && real != vault.path
+            {
+                roots.push(real);
+            }
+            roots.push(vault.path);
+        }
+        roots
+    }
+
+    /// Up to three notes in the active vault whose names are closest to
+    /// `missing`, for a not-found error.
+    async fn closest_note_paths(&self, missing: &str) -> Vec<String> {
+        let Ok(manager) = self.get_active_vault_manager().await else {
+            return Vec::new();
+        };
+        let Ok(files) = manager.scan_vault().await else {
+            return Vec::new();
+        };
+        let candidates: Vec<String> = files
+            .iter()
+            .map(|file| manager.relative_path(file))
+            .collect();
+        closest_paths(missing, &candidates, 3)
+    }
+
     /// turbovault-qae.5.5: THE activation path — the ONE place that builds a
     /// `VaultManager` and publishes it into `vault_managers`.
     ///
@@ -1000,8 +1210,10 @@ impl CoreToolHandler {
     async fn get_active_vault_name(&self) -> McpResult<String> {
         let vault_name = self.multi_vault_mgr.get_active_vault().await;
         if vault_name.is_empty() {
-            return Err(McpError::internal(
-                "No active vault. Use add_vault() to register a vault.".to_string(),
+            return Err(McpError::unavailable(
+                "No active vault. Call list_vaults and then set_active_vault, or add_vault to \
+                 register one"
+                    .to_string(),
             ));
         }
         Ok(vault_name)

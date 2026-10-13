@@ -69,6 +69,52 @@ pub enum Error {
 /// Convenient Result type alias
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// What kind of failure an [`Error`] is, from the caller's side: whether
+/// asking again differently can succeed, and how. Each protocol TurboVault
+/// speaks (MCP tool results, the plugin API) maps these to its own codes, so
+/// a missing note reads as "not found" everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ErrorCategory {
+    /// The note, file or graph entry asked for does not exist.
+    NotFound,
+    /// The request itself is malformed: a bad path, an invalid value, input
+    /// that does not parse.
+    InvalidInput,
+    /// The request is well formed but policy refuses it, such as a path in a
+    /// protected directory.
+    PermissionDenied,
+    /// The target changed since the caller last saw it.
+    Conflict,
+    /// The server is not set up to answer it, such as no active vault.
+    Unavailable,
+    /// Something failed inside the server.
+    Internal,
+}
+
+impl Error {
+    /// The [`ErrorCategory`] this error belongs to.
+    pub fn category(&self) -> ErrorCategory {
+        match self {
+            Error::FileNotFound { .. } | Error::NotFound { .. } => ErrorCategory::NotFound,
+            Error::Io(io_error) if io_error.kind() == io::ErrorKind::NotFound => {
+                ErrorCategory::NotFound
+            }
+            // A protected path is a policy refusal, not a malformed request:
+            // the path is well formed and may well exist.
+            Error::ProtectedPath { .. } => ErrorCategory::PermissionDenied,
+            Error::InvalidPath { .. }
+            | Error::PathTraversalAttempt { .. }
+            | Error::FileTooLarge { .. }
+            | Error::ParseError { .. }
+            | Error::ValidationError { .. } => ErrorCategory::InvalidInput,
+            Error::ConcurrencyError { .. } => ErrorCategory::Conflict,
+            Error::ConfigError { .. } => ErrorCategory::Unavailable,
+            Error::Io(_) | Error::Other(_) | Error::Wrapped(_) => ErrorCategory::Internal,
+        }
+    }
+}
+
 impl Error {
     /// Create an IO error
     pub fn io(err: io::Error) -> Self {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use turbovault_core::config::WriteBackend;
-use turbovault_core::error::Error;
+use turbovault_core::error::{Error, ErrorCategory};
 use turbovault_core::events::{VaultChange, WriteAttribution};
 use turbovault_plugin_api::{
     NoteListing, NoteSnapshot, PluginError, PluginResult, VaultDescriptor, VaultHost,
@@ -53,26 +53,14 @@ impl PluginVaultHost {
 }
 
 fn map_core_error(error: Error) -> PluginError {
-    match error {
-        Error::FileNotFound { .. } | Error::NotFound { .. } => {
-            PluginError::not_found(error.to_string())
-        }
-        Error::Io(ref io_error) if io_error.kind() == std::io::ErrorKind::NotFound => {
-            PluginError::not_found(error.to_string())
-        }
-        // A protected path is a policy refusal, not a malformed request: the
-        // path is well-formed and may well exist.
-        Error::ProtectedPath { .. } => PluginError::permission_denied(error.to_string()),
-        Error::InvalidPath { .. }
-        | Error::PathTraversalAttempt { .. }
-        | Error::FileTooLarge { .. }
-        | Error::ParseError { .. }
-        | Error::ValidationError { .. } => PluginError::invalid_input(error.to_string()),
-        Error::ConcurrencyError { .. } => PluginError::conflict(error.to_string()),
-        Error::ConfigError { .. } => PluginError::unavailable(error.to_string()),
-        Error::Io(_) | Error::Other(_) | Error::Wrapped(_) => {
-            PluginError::internal(error.to_string())
-        }
+    let message = error.to_string();
+    match error.category() {
+        ErrorCategory::NotFound => PluginError::not_found(message),
+        ErrorCategory::PermissionDenied => PluginError::permission_denied(message),
+        ErrorCategory::InvalidInput => PluginError::invalid_input(message),
+        ErrorCategory::Conflict => PluginError::conflict(message),
+        ErrorCategory::Unavailable => PluginError::unavailable(message),
+        _ => PluginError::internal(message),
     }
 }
 

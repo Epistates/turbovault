@@ -990,13 +990,14 @@ impl McpHandler for ObsidianMcpServer {
             let call = std::panic::AssertUnwindSafe(
                 audit_context.scope(self.composite.call_tool(routed, args, ctx)),
             );
-            call.catch_unwind().await.unwrap_or_else(|panic| {
+            let result = call.catch_unwind().await.unwrap_or_else(|panic| {
                 let detail = panic_message(&panic);
                 log::error!("tool {name:?} panicked: {detail}");
                 Err(McpError::internal(format!(
                     "tool {name:?} failed with an internal error: {detail}"
                 )))
-            })
+            })?;
+            Ok(self.core.polish_error_result(result).await)
         }
     }
 
