@@ -958,7 +958,7 @@
       "readOnlyHint": false,
       "title": "Delete Note"
     },
-    "description": "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_backlinks shows what links to it.",
+    "description": "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_backlinks shows what links to it. A client that supports elicitation asks the user to confirm first.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -1095,7 +1095,7 @@
       "readOnlyHint": false,
       "title": "Move Note"
     },
-    "description": "Move or rename a note. Git-backed vaults update inbound links (wikilinks, Markdown links and canvas references) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
+    "description": "Move or rename a note. Git-backed vaults update inbound links (wikilinks, Markdown links and canvas references) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so, and then a client that supports elicitation asks the user to confirm. For attachments and other files, use move_file.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -12582,7 +12582,7 @@
       "readOnlyHint": false,
       "title": "Roll Back Note"
     },
-    "description": "Undo one operation from the audit trail: restore the note to its content before it, or remove a note it created. Refuses if the note changed since that operation, since the later change would be lost; check rollback_preview, then pass force to roll back anyway. A rollback is itself recorded, so it can be rolled back. Not available on Git-backed vaults.",
+    "description": "Undo one operation from the audit trail: restore the note to its content before it, or remove a note it created. Refuses if the note changed since that operation, since the later change would be lost; check rollback_preview, then pass force to roll back anyway (a client that supports elicitation asks the user to confirm). A rollback is itself recorded, so it can be rolled back. Not available on Git-backed vaults.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
