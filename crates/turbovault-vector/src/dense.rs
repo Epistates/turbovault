@@ -2,18 +2,18 @@
 //! embeddings, backed by [`hnsw_rs`].
 //!
 //! `hnsw_rs`'s `Hnsw` has no point-removal API (confirmed against 0.3.4's
-//! public surface; upstream tracks this as a known gap, unlike `usearch`,
-//! which the prototype this crate is based on used and which does support
-//! removal via tombstoning). This index therefore keeps the actual vectors in
-//! a plain map as the source of truth and treats the HNSW graph itself as a
-//! disposable, rebuildable cache: an upsert or a removal marks the graph
-//! dirty, and the next search rebuilds it from the current vector set before
-//! querying. For a vault-sized corpus (thousands of chunks, not millions) a
-//! full rebuild is milliseconds to low seconds, and it is paid at most once
-//! per batch of changes rather than once per change, since the engine
-//! reconciles a whole batch of edited notes before the next search.
+//! public surface). This index keeps the actual vectors in a plain map as the
+//! source of truth and keeps the graph current around that gap:
+//!
+//! - A new chunk is inserted into the existing graph, so an edit costs its
+//!   own chunks, not a rebuild of every vector in the vault.
+//! - A removed chunk stays in the graph as a tombstone, and searches skip it
+//!   with a filter, so the top `k` live chunks still come back.
+//! - Replacing a vector already in the graph (the same id with new values),
+//!   or tombstones passing a quarter of the graph, rebuilds it, inserting in
+//!   parallel.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use hnsw_rs::prelude::{DistCosine, Hnsw};
 
@@ -28,6 +28,11 @@ const MAX_LAYER: usize = 16;
 pub struct DenseIndex {
     vectors: HashMap<u64, Vec<f32>>,
     graph: Option<Hnsw<'static, f32, DistCosine>>,
+    /// Ids the graph holds a point for, live or tombstoned.
+    in_graph: HashSet<u64>,
+    /// Points in the graph whose vector has since been removed.
+    tombstones: usize,
+    /// The graph must be rebuilt before the next search.
     dirty: bool,
     dims: usize,
     max_nb_connection: usize,
@@ -46,6 +51,8 @@ impl DenseIndex {
         Self {
             vectors: HashMap::new(),
             graph: None,
+            in_graph: HashSet::new(),
+            tombstones: 0,
             dirty: false,
             dims,
             max_nb_connection,
@@ -63,15 +70,25 @@ impl DenseIndex {
                 self.dims
             )));
         }
+        match &self.graph {
+            // A point under this id already has its old values in the graph,
+            // which can't remove it.
+            Some(_) if self.in_graph.contains(&id) => self.dirty = true,
+            Some(graph) if !self.dirty => {
+                graph.insert_slice((vector.as_slice(), id as usize));
+                self.in_graph.insert(id);
+            }
+            _ => self.dirty = true,
+        }
         self.vectors.insert(id, vector);
-        self.dirty = true;
         Ok(())
     }
 
-    /// Remove a chunk's vector, if present. Marks the graph stale.
+    /// Remove a chunk's vector, if present. It stays in the graph, skipped
+    /// by searches, until the next rebuild.
     pub fn remove(&mut self, id: u64) {
-        if self.vectors.remove(&id).is_some() {
-            self.dirty = true;
+        if self.vectors.remove(&id).is_some() && self.in_graph.contains(&id) {
+            self.tombstones += 1;
         }
     }
 
@@ -86,22 +103,30 @@ impl DenseIndex {
     }
 
     fn rebuild_if_dirty(&mut self) {
-        if !self.dirty {
+        let worn = self.tombstones * 4 > self.in_graph.len();
+        if !self.dirty && !worn && (self.graph.is_some() || self.vectors.is_empty()) {
             return;
         }
+        self.in_graph.clear();
+        self.tombstones = 0;
         if self.vectors.is_empty() {
             self.graph = None;
         } else {
             let graph = Hnsw::<f32, DistCosine>::new(
                 self.max_nb_connection,
-                self.vectors.len(),
+                // A capacity hint; later inserts grow past it.
+                self.vectors.len().max(1024),
                 MAX_LAYER,
                 self.ef_construction,
                 DistCosine {},
             );
-            for (id, vector) in &self.vectors {
-                graph.insert((vector.as_slice(), *id as usize));
-            }
+            let points: Vec<(&[f32], usize)> = self
+                .vectors
+                .iter()
+                .map(|(id, vector)| (vector.as_slice(), *id as usize))
+                .collect();
+            graph.parallel_insert_slice(&points);
+            self.in_graph.extend(self.vectors.keys().copied());
             self.graph = Some(graph);
         }
         self.dirty = false;
@@ -123,8 +148,12 @@ impl DenseIndex {
         let Some(graph) = &self.graph else {
             return Ok(Vec::new());
         };
+        let vectors = &self.vectors;
+        let live = |id: &usize| vectors.contains_key(&(*id as u64));
+        let filter: Option<&dyn hnsw_rs::prelude::FilterT> =
+            (self.tombstones > 0).then_some(&live as &dyn hnsw_rs::prelude::FilterT);
         let mut results: Vec<(u64, f32)> = graph
-            .search(query, top_k, self.ef_search)
+            .search_filter(query, top_k, self.ef_search, filter)
             .into_iter()
             .map(|neighbour| (neighbour.d_id as u64, 1.0 - neighbour.distance))
             .collect();
@@ -166,6 +195,36 @@ mod tests {
         index.remove(1);
         let results = index.search(&unit_vector(4, 0), 2).unwrap();
         assert!(results.iter().all(|(id, _)| *id != 1));
+    }
+
+    /// Chunks added, replaced and removed between searches come back exactly
+    /// as a freshly built index would return them.
+    #[test]
+    fn incremental_changes_match_a_rebuild() {
+        let mut index = DenseIndex::new(8, 16, 100, 50);
+        for axis in 0..8u64 {
+            index.upsert(axis, unit_vector(8, axis as usize)).unwrap();
+        }
+        assert_eq!(index.search(&unit_vector(8, 2), 1).unwrap()[0].0, 2);
+
+        index.remove(2);
+        index.upsert(20, unit_vector(8, 2)).unwrap();
+        index.upsert(5, unit_vector(8, 6)).unwrap();
+        let mut fresh = DenseIndex::new(8, 16, 100, 50);
+        for (id, vector) in &index.vectors {
+            fresh.upsert(*id, vector.clone()).unwrap();
+        }
+        for axis in 0..8 {
+            let found = index.search(&unit_vector(8, axis), 2).unwrap();
+            let expected = fresh.search(&unit_vector(8, axis), 2).unwrap();
+            assert!(found.iter().all(|r| r.0 != 2), "removed chunk returned");
+            // Ties (several exact matches, or none) can fall either way, so
+            // what must agree is how near the nearest is.
+            assert!(
+                (found[0].1 - expected[0].1).abs() < 1e-5,
+                "nearest to axis {axis}: {found:?} vs {expected:?}"
+            );
+        }
     }
 
     #[test]

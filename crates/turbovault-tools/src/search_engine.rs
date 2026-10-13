@@ -6,18 +6,29 @@
 //! - Field-specific search (content, title, tags)
 //! - Fuzzy/approximate queries via regex
 //! - Fast searching even on large vaults
+//!
+//! The index is built from the vault manager's parsed note cache and kept in
+//! step with it by [`SearchEngine::apply_changes`]. [`SearchEngine::for_vault`]
+//! persists it under TurboVault's cache directory (never inside the vault),
+//! with each note's content hash, so a new process re-indexes only the notes
+//! whose content changed since the index was last written.
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
+use tantivy::directory::{Directory, INDEX_WRITER_LOCK};
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
-use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, doc};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 use tracing::instrument;
 use turbovault_core::prelude::*;
 use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
+
+use crate::search_directory::CacheDirectory;
 
 /// Search result metadata for LLM consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +129,9 @@ impl SearchQuery {
 pub struct SearchEngine {
     pub manager: Arc<VaultManager>,
     index: Index,
+    /// One reader for the engine's life, reloaded after every commit, rather
+    /// than one opened per query.
+    reader: IndexReader,
     /// Tantivy allows one writer per index, so the engine keeps the one it
     /// built with and every change report goes through it in turn.
     writer: tokio::sync::Mutex<IndexWriter>,
@@ -126,110 +140,65 @@ pub struct SearchEngine {
     field_title: Field,
     field_content: Field,
     field_tags: Field,
+    /// The indexed note's content hash, so a persisted index can tell which
+    /// notes changed while no process was running.
+    field_checksum: Field,
 }
 
-impl SearchEngine {
-    /// Create new search engine and index all vault files
-    pub async fn new(manager: Arc<VaultManager>) -> Result<Self> {
-        // Define schema: fields to index
-        let mut schema_builder = Schema::builder();
-        // turbovault-2ag: `path` is a raw STRING (not tokenized TEXT) so that
-        // `apply_changes`' `delete_term(Term::from_field_text(path, rel))`
-        // matches the exact path and removes the prior doc on edit. A TEXT
-        // field tokenizes "a/b.md" into terms, so delete_term never matched
-        // and every edit left a stale duplicate. The query parser only
-        // searches title/content/tags, so path is never full-text queried.
-        schema_builder.add_text_field("path", STRING | STORED);
-        schema_builder.add_text_field("title", TEXT | STORED);
-        schema_builder.add_text_field("content", TEXT);
-        schema_builder.add_text_field("tags", TEXT | STORED);
-        let schema = schema_builder.build();
+/// Bumped whenever what goes into a document changes (fields, title rules,
+/// plain-text conversion), so a persisted index from an older layout is
+/// rebuilt rather than trusted.
+const SEARCH_INDEX_VERSION: u32 = 1;
 
-        // Resolve field handles once at construction time — panic here is a programmer error
-        // (schema was just built with these exact field names above)
-        let field_path = schema
-            .get_field("path")
-            .expect("schema built with 'path' field");
-        let field_title = schema
-            .get_field("title")
-            .expect("schema built with 'title' field");
-        let field_content = schema
-            .get_field("content")
-            .expect("schema built with 'content' field");
-        let field_tags = schema
-            .get_field("tags")
-            .expect("schema built with 'tags' field");
+/// The file in a persisted index directory saying what it indexes.
+const INDEX_MARKER: &str = "turbovault-index.json";
 
-        // Create in-memory index
-        let index = Index::create_in_ram(schema.clone());
+/// Set to `memory` to keep every vault's search index in RAM only, built
+/// afresh by each process, instead of persisting it under the cache
+/// directory.
+pub const SEARCH_INDEX_ENV: &str = "TURBOVAULT_SEARCH_INDEX";
 
-        let index_writer = index
-            .writer(50_000_000)
-            .map_err(|e| Error::config_error(format!("Failed to create index writer: {}", e)))?;
+#[derive(Serialize, Deserialize, PartialEq)]
+struct IndexMarker {
+    version: u32,
+    turbovault: String,
+    vault: PathBuf,
+}
 
-        let engine = Self {
-            manager,
-            index,
-            writer: tokio::sync::Mutex::new(index_writer),
-            field_path,
-            field_title,
-            field_content,
-            field_tags,
-        };
+fn schema() -> Schema {
+    let mut schema_builder = Schema::builder();
+    // turbovault-2ag: `path` is a raw STRING (not tokenized TEXT) so that
+    // `apply_changes`' `delete_term(Term::from_field_text(path, rel))`
+    // matches the exact path and removes the prior doc on edit. A TEXT
+    // field tokenizes "a/b.md" into terms, so delete_term never matched
+    // and every edit left a stale duplicate. The query parser only
+    // searches title/content/tags, so path is never full-text queried.
+    schema_builder.add_text_field("path", STRING | STORED);
+    schema_builder.add_text_field("title", TEXT | STORED);
+    schema_builder.add_text_field("content", TEXT);
+    schema_builder.add_text_field("tags", TEXT | STORED);
+    schema_builder.add_text_field("checksum", STRING | STORED);
+    schema_builder.build()
+}
 
-        // Index all files
-        let files = engine.manager.scan_vault().await?;
-        {
-            let mut writer = engine.writer.lock().await;
-            for file_path in files {
-                // turbovault-2ag: index docs by VAULT-RELATIVE path so the
-                // field_path key matches `apply_changes` (which uses the
-                // git-diff relative path). Keying the initial build by the
-                // absolute path made `apply_changes`'s relative `delete_term`
-                // miss, leaving a stale duplicate doc on every edit.
-                let rel_path = engine.manager.relative_path(&file_path);
-                if let Some(document) = engine.document_for(&rel_path).await {
-                    writer
-                        .add_document(document)
-                        .map_err(|e| Error::config_error(format!("Failed to index: {e}")))?;
-                }
-            }
-            writer
-                .commit()
-                .map_err(|e| Error::config_error(format!("Failed to commit index: {}", e)))?;
-        }
+/// What indexing needs of one note, worked out off any lock.
+struct NoteDocument {
+    rel_path: String,
+    title: String,
+    content: String,
+    tags: String,
+    checksum: String,
+}
 
-        Ok(engine)
-    }
-
-    /// The document for the note at `rel_path` as it is on disk now, or
-    /// `None` when there is no note there to index: it isn't markdown, it
-    /// is gone, or it could not be read or parsed (logged, so one bad file
-    /// costs only its own entry).
-    async fn document_for(&self, rel_path: &str) -> Option<TantivyDocument> {
-        // tlx.7: markdown only, the same for a cold build as for a change
-        // report, or a path indexed by one vanishes on the other.
-        if !turbovault_core::is_note(std::path::Path::new(rel_path)) {
-            return None;
-        }
-        let vault_file = match self
-            .manager
-            .parse_file(std::path::Path::new(rel_path))
-            .await
-        {
-            Ok(vault_file) => vault_file,
-            Err(e) => {
-                log::debug!("search index skips {rel_path}: {e}");
-                return None;
-            }
-        };
+impl NoteDocument {
+    fn new(rel_path: String, vault_file: &VaultFile) -> Self {
         let title = vault_file
             .frontmatter
             .as_ref()
             .and_then(|fm| fm.data.get("title"))
             .and_then(|v| v.as_str())
             .unwrap_or_else(|| {
-                std::path::Path::new(rel_path)
+                std::path::Path::new(&rel_path)
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("")
@@ -240,21 +209,249 @@ impl SearchEngine {
             .as_ref()
             .map(|fm| fm.tags().join(" "))
             .unwrap_or_default();
-        // Plain text, so markdown syntax and URLs are not indexed as words.
-        Some(doc!(
-            self.field_path => rel_path.to_string(),
-            self.field_title => title,
-            self.field_content => to_plain_text(&vault_file.content),
-            self.field_tags => tags,
-        ))
+        Self {
+            title,
+            // Plain text, so markdown syntax and URLs are not indexed as words.
+            content: to_plain_text(&vault_file.content),
+            tags,
+            checksum: vault_file.metadata.checksum.clone(),
+            rel_path,
+        }
+    }
+}
+
+impl SearchEngine {
+    /// Create new search engine and index all vault files, in memory.
+    pub async fn new(manager: Arc<VaultManager>) -> Result<Self> {
+        let index = Index::create_in_ram(schema());
+        let engine = Self::with_index(manager, index)?;
+        engine.reindex_all().await?;
+        Ok(engine)
+    }
+
+    /// The search engine for `manager`'s vault, its index persisted in the
+    /// cache directory so a restart re-indexes only the notes that changed
+    /// meanwhile. Falls back to an in-memory index when that directory can't
+    /// be used (including when another process is writing the same vault's
+    /// index), or when [`SEARCH_INDEX_ENV`] is `memory`.
+    pub async fn for_vault(manager: Arc<VaultManager>) -> Result<Self> {
+        if std::env::var(SEARCH_INDEX_ENV).is_ok_and(|v| v.eq_ignore_ascii_case("memory")) {
+            return Self::new(manager).await;
+        }
+        match default_index_dir(manager.vault_path()) {
+            Some(dir) => match Self::open(Arc::clone(&manager), &dir).await {
+                Ok(engine) => return Ok(engine),
+                Err(e) => log::info!(
+                    "search index at {} not usable ({e}); indexing in memory",
+                    dir.display()
+                ),
+            },
+            None => log::info!("no cache directory for the search index; indexing in memory"),
+        }
+        Self::new(manager).await
+    }
+
+    /// Open the index persisted in `dir`, or create it there, and bring it up
+    /// to date with the vault: notes whose content changed since it was last
+    /// written are re-indexed, new ones added, and gone ones removed.
+    pub async fn open(manager: Arc<VaultManager>, dir: &std::path::Path) -> Result<Self> {
+        Self::open_counting(manager, dir)
+            .await
+            .map(|(engine, _)| engine)
+    }
+
+    /// [`Self::open`], with how many notes it had to re-index.
+    async fn open_counting(
+        manager: Arc<VaultManager>,
+        dir: &std::path::Path,
+    ) -> Result<(Self, usize)> {
+        let marker = IndexMarker {
+            version: SEARCH_INDEX_VERSION,
+            turbovault: env!("CARGO_PKG_VERSION").to_string(),
+            vault: manager.vault_path().clone(),
+        };
+        let index = {
+            let dir = dir.to_path_buf();
+            tokio::task::spawn_blocking(move || open_index_dir(&dir, &marker))
+                .await
+                .map_err(|e| Error::other(format!("search index task failed: {e}")))??
+        };
+        let engine = Self::with_index(manager, index)?;
+        let reindexed = engine.reconcile().await?;
+        Ok((engine, reindexed))
+    }
+
+    fn with_index(manager: Arc<VaultManager>, index: Index) -> Result<Self> {
+        let schema = index.schema();
+        let field = |name: &str| {
+            schema
+                .get_field(name)
+                .map_err(|e| Error::config_error(format!("search index has no {name} field: {e}")))
+        };
+        let (field_path, field_title, field_content, field_tags, field_checksum) = (
+            field("path")?,
+            field("title")?,
+            field("content")?,
+            field("tags")?,
+            field("checksum")?,
+        );
+        let writer = index
+            .writer(50_000_000)
+            .map_err(|e| Error::config_error(format!("Failed to create index writer: {}", e)))?;
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|e| Error::config_error(format!("Failed to create reader: {}", e)))?;
+        Ok(Self {
+            manager,
+            index,
+            reader,
+            writer: tokio::sync::Mutex::new(writer),
+            field_path,
+            field_title,
+            field_content,
+            field_tags,
+            field_checksum,
+        })
+    }
+
+    /// Every note in the cache, as indexing needs it, built in parallel.
+    async fn note_documents(&self) -> Result<Vec<NoteDocument>> {
+        let notes = self.manager.notes_validated().await;
+        let notes: Vec<(String, Arc<VaultFile>)> = notes
+            .into_iter()
+            .filter(|file| turbovault_core::is_note(&file.path))
+            // turbovault-2ag: index docs by VAULT-RELATIVE path so the
+            // field_path key matches `apply_changes` (which uses the
+            // git-diff relative path). Keying the initial build by the
+            // absolute path made `apply_changes`'s relative `delete_term`
+            // miss, leaving a stale duplicate doc on every edit.
+            .map(|file| (self.manager.relative_path(&file.path), file))
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            notes
+                .into_par_iter()
+                .map(|(rel_path, file)| NoteDocument::new(rel_path, &file))
+                .collect()
+        })
+        .await
+        .map_err(|e| Error::other(format!("search index task failed: {e}")))
+    }
+
+    fn document(&self, note: NoteDocument) -> TantivyDocument {
+        doc!(
+            self.field_path => note.rel_path,
+            self.field_title => note.title,
+            self.field_content => note.content,
+            self.field_tags => note.tags,
+            self.field_checksum => note.checksum,
+        )
+    }
+
+    /// Commit the writer and make what it wrote visible to searches.
+    fn commit(&self, writer: &mut IndexWriter) -> Result<()> {
+        writer
+            .commit()
+            .map_err(|e| Error::config_error(format!("Failed to commit index: {}", e)))?;
+        self.reader
+            .reload()
+            .map_err(|e| Error::config_error(format!("Failed to reload index reader: {e}")))
+    }
+
+    /// Index every note, replacing whatever the index held.
+    async fn reindex_all(&self) -> Result<()> {
+        let notes = self.note_documents().await?;
+        let mut writer = self.writer.lock().await;
+        writer
+            .delete_all_documents()
+            .map_err(|e| Error::config_error(format!("Failed to clear index: {e}")))?;
+        for note in notes {
+            writer
+                .add_document(self.document(note))
+                .map_err(|e| Error::config_error(format!("Failed to index: {e}")))?;
+        }
+        self.commit(&mut writer)
+    }
+
+    /// Bring a persisted index into agreement with the vault, touching only
+    /// the notes whose content hash differs from what was indexed. Returns
+    /// how many notes it re-indexed or removed.
+    async fn reconcile(&self) -> Result<usize> {
+        let indexed = self.indexed_checksums()?;
+        let notes = self.note_documents().await?;
+        let mut writer = self.writer.lock().await;
+        let mut remaining = indexed;
+        let mut changed = 0usize;
+        for note in notes {
+            match remaining.remove(&note.rel_path) {
+                Some(checksum) if checksum == note.checksum => {}
+                _ => {
+                    writer.delete_term(tantivy::Term::from_field_text(
+                        self.field_path,
+                        &note.rel_path,
+                    ));
+                    writer
+                        .add_document(self.document(note))
+                        .map_err(|e| Error::config_error(format!("Failed to index: {e}")))?;
+                    changed += 1;
+                }
+            }
+        }
+        for gone in remaining.keys() {
+            writer.delete_term(tantivy::Term::from_field_text(self.field_path, gone));
+            changed += 1;
+        }
+        log::debug!("search index: {changed} note(s) re-indexed since it was last written");
+        self.commit(&mut writer)?;
+        Ok(changed)
+    }
+
+    /// Each indexed path with the content hash it was indexed at.
+    fn indexed_checksums(&self) -> Result<HashMap<String, String>> {
+        let searcher = self.reader.searcher();
+        let mut out = HashMap::new();
+        for segment in searcher.segment_readers() {
+            let store = segment
+                .get_store_reader(1)
+                .map_err(|e| Error::config_error(format!("Failed to read index store: {e}")))?;
+            for document in store.iter::<TantivyDocument>(segment.alive_bitset()) {
+                let document = document
+                    .map_err(|e| Error::config_error(format!("Failed to read index store: {e}")))?;
+                let text = |field| {
+                    document
+                        .get_first(field)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                };
+                out.insert(text(self.field_path), text(self.field_checksum));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The document for the note at `rel_path` as the note cache holds it
+    /// now, or `None` when there is no note there to index: it isn't
+    /// markdown, or it is gone (or out of the scan's reach, so not cached).
+    async fn document_for(&self, rel_path: &str) -> Option<NoteDocument> {
+        // tlx.7: markdown only, the same for a cold build as for a change
+        // report, or a path indexed by one vanishes on the other.
+        if !turbovault_core::is_note(std::path::Path::new(rel_path)) {
+            return None;
+        }
+        let full_path = self.manager.vault_path().join(rel_path);
+        let vault_file = self.manager.cached_note(&full_path).await?;
+        Some(NoteDocument::new(rel_path.to_string(), &vault_file))
     }
 
     /// GWS.14c — apply an incremental change set to the tantivy index.
     ///
-    /// Each reported path is re-indexed as it is on disk now: its old doc is
-    /// deleted (a no-op if it had none) and, if a note is there to read, the
-    /// new one added. The `present` half of a report is not trusted over the
-    /// disk, which makes a report idempotent and order-independent: one held
+    /// Each reported path is re-indexed as the note cache holds it now (the
+    /// manager updates the cache before it reports): its old doc is deleted
+    /// (a no-op if it had none) and, if the cache has a note there, the new
+    /// one added. The `present` half of a report is not trusted over the
+    /// cache, which makes a report idempotent and order-independent: one held
     /// back while a cold build ran can be applied after a newer one without
     /// undoing it. Unreadable files are logged and skipped per path, so one
     /// malformed file does not brick the whole drain pass. All changes commit
@@ -276,16 +473,13 @@ impl SearchEngine {
         for (rel_path, _present) in changes {
             let term = tantivy::Term::from_field_text(self.field_path, &rel_path);
             writer.delete_term(term);
-            if let Some(document) = self.document_for(&rel_path).await {
-                writer.add_document(document).map_err(|e| {
+            if let Some(note) = self.document_for(&rel_path).await {
+                writer.add_document(self.document(note)).map_err(|e| {
                     Error::config_error(format!("apply_changes: index {rel_path}: {e}"))
                 })?;
             }
         }
-        writer
-            .commit()
-            .map_err(|e| Error::config_error(format!("apply_changes: writer commit: {}", e)))?;
-        Ok(())
+        self.commit(&mut writer)
     }
 
     /// Simple keyword search
@@ -325,8 +519,8 @@ impl SearchEngine {
     /// Find related notes (by link proximity + content similarity)
     #[instrument(skip(self), fields(path = path, limit = limit), name = "search_find_related")]
     pub async fn find_related(&self, path: &str, limit: usize) -> Result<Vec<SearchResultInfo>> {
-        // Parse the note to extract keywords
-        let vault_file = self.manager.parse_file(&PathBuf::from(path)).await?;
+        // The note's parsed form, from the cache when it's there
+        let vault_file = self.note(path).await?;
 
         // Extract key terms from plain text content (excludes URLs, markdown syntax)
         let plain_content = to_plain_text(&vault_file.content);
@@ -350,6 +544,123 @@ impl SearchEngine {
     pub async fn recommend_related(&self, path: &str) -> Result<Vec<SearchResultInfo>> {
         self.find_related(path, 5).await
     }
+
+    /// The parsed note at vault-relative `path`: the cached copy, or parsed
+    /// from disk when the cache has none (and erroring as that read does).
+    async fn note(&self, path: &str) -> Result<Arc<VaultFile>> {
+        let full_path = self.manager.vault_path().join(path);
+        match self.manager.cached_note(&full_path).await {
+            Some(file) => Ok(file),
+            None => Ok(Arc::new(
+                self.manager.parse_file(&PathBuf::from(path)).await?,
+            )),
+        }
+    }
+}
+
+/// Where `vault`'s search index is persisted: a directory under the cache
+/// root named for the vault's path. Index directories whose vault no longer
+/// exists are removed on the way.
+pub fn default_index_dir(vault: &std::path::Path) -> Option<PathBuf> {
+    let root = turbovault_core::cache::VaultCache::cache_root()
+        .ok()?
+        .join("search");
+    let key = turbovault_core::compute_hash(&vault.to_string_lossy());
+    let dir = root.join(&key[..16]);
+    remove_orphaned_indexes(&root, &dir);
+    Some(dir)
+}
+
+/// Remove index directories under `root` whose vault is gone, sparing
+/// `keep`. Best effort: anything unreadable is left alone.
+fn remove_orphaned_indexes(root: &std::path::Path, keep: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if dir == keep {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(dir.join(INDEX_MARKER)) else {
+            continue;
+        };
+        if let Ok(marker) = serde_json::from_str::<IndexMarker>(&text)
+            && !marker.vault.exists()
+        {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
+/// Open the index in `dir` if it was written for `marker` (this vault, this
+/// layout, this TurboVault), or start a new one there.
+fn open_index_dir(dir: &std::path::Path, marker: &IndexMarker) -> Result<Index> {
+    let io = |e: std::io::Error| Error::io_at(dir.display().to_string(), e);
+    let tantivy = |e: tantivy::TantivyError| Error::config_error(format!("search index: {e}"));
+    create_private_dir(dir).map_err(io)?;
+    let directory = CacheDirectory::open(dir).map_err(tantivy)?;
+
+    // Another process writing this index owns it; leave it alone and let
+    // the caller index in memory instead.
+    let lock = directory
+        .acquire_lock(&INDEX_WRITER_LOCK)
+        .map_err(|e| Error::config_error(format!("search index is in use: {e}")))?;
+
+    let marker_path = dir.join(INDEX_MARKER);
+    let current = std::fs::read_to_string(&marker_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<IndexMarker>(&text).ok())
+        .is_some_and(|found| &found == marker);
+    // Written without fsync (see `search_directory`), so its checksums are
+    // what tells whether a power loss left it damaged.
+    if current
+        && let Ok(index) = Index::open(directory.clone())
+        && index.schema() == schema()
+        && index
+            .validate_checksum()
+            .is_ok_and(|damaged| damaged.is_empty())
+    {
+        drop(lock);
+        return Ok(index);
+    }
+
+    // Anything else in the directory is an older, foreign or damaged index.
+    for entry in std::fs::read_dir(dir).map_err(io)? {
+        let path = entry.map_err(io)?.path();
+        if path.file_name() == Some(INDEX_WRITER_LOCK.filepath.as_os_str()) {
+            continue;
+        }
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(io)?;
+        } else {
+            std::fs::remove_file(&path).map_err(io)?;
+        }
+    }
+    let index =
+        Index::create(directory, schema(), tantivy::IndexSettings::default()).map_err(tantivy)?;
+    let text = serde_json::to_string(marker).map_err(|e| Error::other(e.to_string()))?;
+    std::fs::write(&marker_path, text).map_err(io)?;
+    drop(lock);
+    Ok(index)
+}
+
+/// Create `dir` and its parents, readable by this user only: the index
+/// holds the vault's text.
+fn create_private_dir(dir: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
 }
 
 impl SearchQuery {
@@ -357,16 +668,10 @@ impl SearchQuery {
     async fn build_results(self, engine: &SearchEngine) -> Result<Vec<SearchResultInfo>> {
         let (query_str, filter, limit) = self.build();
 
-        let reader = engine
-            .index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()
-            .map_err(|e| Error::config_error(format!("Failed to create reader: {}", e)))?;
-
-        let searcher = reader.searcher();
+        // Gate first: whatever the gate finds changed reaches the index
+        // before the searcher below is taken from it.
         let graph = engine.manager.link_graph_flushed().await;
-        let graph_read = graph.read().await;
+        let searcher = engine.reader.searcher();
 
         // Parse query using tantivy's QueryParser with fuzzy search enabled
         let mut query_parser = QueryParser::for_index(
@@ -441,84 +746,89 @@ impl SearchQuery {
                 continue;
             }
 
+            // The note as parsed, from the cache; a hit whose note can't be
+            // had is skipped.
+            let Ok(vault_file) = engine.note(&path).await else {
+                continue;
+            };
+
             // Apply frontmatter filters
             if let Some(fm_filters) = &filter.frontmatter_filters {
-                let file_path = PathBuf::from(&path);
-                if let Ok(vault_file) = engine.manager.parse_file(&file_path).await {
-                    let mut matches_all = true;
-                    if let Some(fm) = &vault_file.frontmatter {
-                        for (key, value) in fm_filters {
-                            if let Some(fm_value) = fm.data.get(key) {
-                                let fm_str = fm_value.to_string();
-                                if !fm_str.contains(value) {
-                                    matches_all = false;
-                                    break;
-                                }
-                            } else {
+                let mut matches_all = true;
+                if let Some(fm) = &vault_file.frontmatter {
+                    for (key, value) in fm_filters {
+                        if let Some(fm_value) = fm.data.get(key) {
+                            let fm_str = fm_value.to_string();
+                            if !fm_str.contains(value) {
                                 matches_all = false;
                                 break;
                             }
+                        } else {
+                            matches_all = false;
+                            break;
                         }
-                    } else {
-                        matches_all = false;
-                    }
-                    if !matches_all {
-                        continue;
                     }
                 } else {
+                    matches_all = false;
+                }
+                if !matches_all {
                     continue;
                 }
             }
 
-            // Get full content for preview and snippet
-            let file_path = PathBuf::from(&path);
-            if let Ok(vault_file) = engine.manager.parse_file(&file_path).await {
-                // Extract plain text for preview, snippet, and metrics
-                let plain_content = to_plain_text(&vault_file.content);
+            // Extract plain text for preview, snippet, and metrics
+            let plain_content = to_plain_text(&vault_file.content);
 
-                // Generate preview from plain text (first line, up to 200 chars)
-                let preview = plain_content
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .chars()
-                    .take(200)
-                    .collect::<String>();
+            // Generate preview from plain text (first line, up to 200 chars)
+            let preview = plain_content
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(200)
+                .collect::<String>();
 
-                // Extract snippet from plain text (no markdown syntax in results)
-                let snippet = extract_snippet(&plain_content, &query_str);
-                let backlink_count = graph_read.backlinks(&file_path).unwrap_or_default().len();
+            // Extract snippet from plain text (no markdown syntax in results)
+            let snippet = extract_snippet(&plain_content, &query_str);
 
-                // Calculate content metrics from plain text
-                let word_count = plain_content.split_whitespace().count();
-                let char_count = plain_content.chars().count();
+            // Calculate content metrics from plain text
+            let word_count = plain_content.split_whitespace().count();
+            let char_count = plain_content.chars().count();
 
-                // Get outgoing links
-                let outgoing_links: Vec<String> =
-                    vault_file.links.iter().map(|l| l.target.clone()).collect();
+            // Get outgoing links
+            let outgoing_links: Vec<String> =
+                vault_file.links.iter().map(|l| l.target.clone()).collect();
 
-                // Normalize Tantivy's BM25 score to 0.0-1.0 range
-                // Typical BM25 scores range 0-10+, so we use sigmoid-like normalization
-                let score_f64 = score as f64;
-                let normalized_score = (1.0 / (1.0 + (-score_f64 / 2.0).exp())).clamp(0.0, 1.0);
+            // Normalize Tantivy's BM25 score to 0.0-1.0 range
+            // Typical BM25 scores range 0-10+, so we use sigmoid-like normalization
+            let score_f64 = score as f64;
+            let normalized_score = (1.0 / (1.0 + (-score_f64 / 2.0).exp())).clamp(0.0, 1.0);
 
-                results.push(SearchResultInfo {
-                    path,
-                    title,
-                    preview,
-                    score: normalized_score,
-                    snippet,
-                    tags: file_tags,
-                    outgoing_links,
-                    backlink_count,
-                    word_count,
-                    char_count,
-                });
-            }
+            results.push(SearchResultInfo {
+                path,
+                title,
+                preview,
+                score: normalized_score,
+                snippet,
+                tags: file_tags,
+                outgoing_links,
+                // Counted below, under one short hold of the graph.
+                backlink_count: 0,
+                word_count,
+                char_count,
+            });
 
             if results.len() >= limit {
                 break;
             }
+        }
+
+        // The graph is keyed by absolute path; counting by the vault-relative
+        // path found nothing, so every result said it had no backlinks.
+        let graph_read = graph.read().await;
+        for result in &mut results {
+            let full_path = engine.manager.vault_path().join(&result.path);
+            result.backlink_count = graph_read.backlink_source_count(&full_path);
         }
 
         Ok(results)
@@ -736,8 +1046,10 @@ mod tests {
             "alphaword indexed by the initial build"
         );
 
-        // Edit the file on disk, then incrementally reindex just that path.
+        // Edit the file on disk, let the manager see it as its sweep would,
+        // then incrementally reindex just that path.
         std::fs::write(tmp.path().join("s.md"), "# S\n\nbetaword content here\n").unwrap();
+        manager.reconcile_now().await;
         engine
             .apply_changes(vec![("s.md".to_string(), true)])
             .await
@@ -778,6 +1090,7 @@ mod tests {
         let (tmp, engine) = engine_over(&[("a.md", "# A\n"), ("b.md", "# B\n")]).await;
         std::fs::write(tmp.path().join("a.md"), "# A\n\ndeltaword\n").unwrap();
         std::fs::write(tmp.path().join("b.md"), "# B\n\nepsilonword\n").unwrap();
+        engine.manager.reconcile_now().await;
 
         let (a, b) = tokio::join!(
             engine.apply_changes(vec![("a.md".to_string(), true)]),
@@ -790,11 +1103,12 @@ mod tests {
         assert_eq!(engine.search("epsilonword").await.unwrap().len(), 1);
     }
 
-    /// A change report is applied as what is on disk now, so two reports for
-    /// one path give the same index whichever lands last. A report kept while
-    /// a cold build ran can be applied after a newer one without undoing it.
+    /// A change report is applied as the vault is now (as the manager, which
+    /// sends every report, has recorded it), so two reports for one path give
+    /// the same index whichever lands last. A report kept while a cold build
+    /// ran can be applied after a newer one without undoing it.
     #[tokio::test]
-    async fn apply_changes_follows_the_disk_not_the_report() {
+    async fn apply_changes_follows_the_vault_not_the_report() {
         let (tmp, engine) = engine_over(&[("a.md", "# A\n\nzetaword\n")]).await;
 
         // Deleted, then created again before the older report was applied.
@@ -813,6 +1127,7 @@ mod tests {
         );
 
         std::fs::remove_file(tmp.path().join("a.md")).unwrap();
+        engine.manager.reconcile_now().await;
         engine
             .apply_changes(vec![("a.md".to_string(), true)])
             .await
@@ -970,5 +1285,163 @@ mod tests {
                 );
             }
         }
+    }
+
+    async fn vault_with(notes: &[(&str, &str)]) -> (tempfile::TempDir, Arc<VaultManager>) {
+        let temp = tempfile::TempDir::new().unwrap();
+        for (path, content) in notes {
+            std::fs::write(temp.path().join(path), content).unwrap();
+        }
+        let mut config = turbovault_core::ConfigProfile::Development.create_config();
+        config.vaults.push(
+            turbovault_core::VaultConfig::builder("search", temp.path())
+                .build()
+                .unwrap(),
+        );
+        let manager = VaultManager::new(config).unwrap();
+        manager.initialize().await.unwrap();
+        (temp, Arc::new(manager))
+    }
+
+    fn paths(results: &[SearchResultInfo]) -> Vec<String> {
+        let mut paths: Vec<String> = results.iter().map(|r| r.path.clone()).collect();
+        paths.sort();
+        paths
+    }
+
+    /// A persisted index picks up what changed while no process held it,
+    /// and re-indexes only that.
+    #[tokio::test]
+    async fn a_reopened_index_reindexes_only_what_changed() {
+        let (vault, manager) = vault_with(&[
+            ("kept.md", "# Kept\n\nthe walrus stays\n"),
+            ("edited.md", "# Edited\n\nthe walrus leaves\n"),
+            ("deleted.md", "# Deleted\n\nthe walrus vanishes\n"),
+        ])
+        .await;
+        let index_dir = tempfile::TempDir::new().unwrap();
+        let dir = index_dir.path().join("index");
+
+        let (engine, reindexed) = SearchEngine::open_counting(Arc::clone(&manager), &dir)
+            .await
+            .unwrap();
+        assert_eq!(reindexed, 3, "a new index indexes every note");
+        assert_eq!(paths(&engine.search("walrus").await.unwrap()).len(), 3);
+        drop(engine);
+
+        std::fs::write(
+            vault.path().join("edited.md"),
+            "# Edited\n\nthe narwhal arrives\n",
+        )
+        .unwrap();
+        std::fs::remove_file(vault.path().join("deleted.md")).unwrap();
+        std::fs::write(
+            vault.path().join("added.md"),
+            "# Added\n\nthe walrus returns\n",
+        )
+        .unwrap();
+        manager.reconcile_now().await;
+
+        let (engine, reindexed) = SearchEngine::open_counting(Arc::clone(&manager), &dir)
+            .await
+            .unwrap();
+        assert_eq!(reindexed, 3, "edited, deleted and added; kept is untouched");
+        assert_eq!(
+            paths(&engine.search("walrus").await.unwrap()),
+            ["added.md", "kept.md"]
+        );
+        assert_eq!(
+            paths(&engine.search("narwhal").await.unwrap()),
+            ["edited.md"]
+        );
+    }
+
+    /// Only one process writes a persisted index; a second is refused, and
+    /// `for_vault` falls back to memory rather than failing.
+    #[tokio::test]
+    async fn a_second_writer_is_refused() {
+        let (_vault, manager) = vault_with(&[("a.md", "# A\n\nwalrus\n")]).await;
+        let index_dir = tempfile::TempDir::new().unwrap();
+        let dir = index_dir.path().join("index");
+        let _first = SearchEngine::open(Arc::clone(&manager), &dir)
+            .await
+            .unwrap();
+        assert!(
+            SearchEngine::open(Arc::clone(&manager), &dir)
+                .await
+                .is_err()
+        );
+    }
+
+    /// An index written for another layout or vault is rebuilt.
+    #[tokio::test]
+    async fn a_foreign_index_is_rebuilt() {
+        let (_vault, manager) = vault_with(&[("a.md", "# A\n\nwalrus\n")]).await;
+        let index_dir = tempfile::TempDir::new().unwrap();
+        let dir = index_dir.path().join("index");
+        drop(
+            SearchEngine::open(Arc::clone(&manager), &dir)
+                .await
+                .unwrap(),
+        );
+        std::fs::write(
+            dir.join(INDEX_MARKER),
+            r#"{"version":0,"turbovault":"0.0.0","vault":"/elsewhere"}"#,
+        )
+        .unwrap();
+        let (engine, reindexed) = SearchEngine::open_counting(Arc::clone(&manager), &dir)
+            .await
+            .unwrap();
+        assert_eq!(reindexed, 1);
+        assert_eq!(paths(&engine.search("walrus").await.unwrap()), ["a.md"]);
+    }
+
+    /// The index is written without fsync, so a power loss can leave a file
+    /// short. Its checksums catch that on the next open, and it is rebuilt.
+    #[tokio::test]
+    async fn a_damaged_index_is_rebuilt() {
+        let (_vault, manager) =
+            vault_with(&[("a.md", "# A\n\nwalrus\n"), ("b.md", "# B\n\nwalrus\n")]).await;
+        let index_dir = tempfile::TempDir::new().unwrap();
+        let dir = index_dir.path().join("index");
+        drop(
+            SearchEngine::open(Arc::clone(&manager), &dir)
+                .await
+                .unwrap(),
+        );
+
+        let segment_file = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "idx"))
+            .expect("a segment file");
+        let bytes = std::fs::read(&segment_file).unwrap();
+        std::fs::write(&segment_file, &bytes[..bytes.len() / 2]).unwrap();
+
+        let (engine, reindexed) = SearchEngine::open_counting(Arc::clone(&manager), &dir)
+            .await
+            .unwrap();
+        assert_eq!(reindexed, 2, "rebuilt from every note");
+        assert_eq!(
+            paths(&engine.search("walrus").await.unwrap()),
+            ["a.md", "b.md"]
+        );
+    }
+
+    /// Results count the notes linking to them. The graph is keyed by
+    /// absolute path, and looking it up by the vault-relative path always
+    /// found none.
+    #[tokio::test]
+    async fn results_count_their_backlinks() {
+        let (_vault, manager) = vault_with(&[
+            ("target.md", "# Target\n\nwalrus\n"),
+            ("one.md", "[[target]] and [[target]] again\n"),
+            ("two.md", "see [[target]]\n"),
+        ])
+        .await;
+        let engine = SearchEngine::new(manager).await.unwrap();
+        let results = engine.search("walrus").await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].backlink_count, 2);
     }
 }

@@ -185,18 +185,36 @@ impl PathValidator {
     /// The resolved path is still the one as addressed, not the real one, so a
     /// vault registered through a symlinked directory keeps its own paths.
     pub fn resolve_in_vault(vault_root: &Path, path: &Path) -> Result<ResolvedPath> {
+        Self::resolve_in_vault_at(vault_root, &Self::real_root(vault_root)?, path)
+    }
+
+    /// Where `vault_root` really is, every symlink to it followed: what
+    /// [`Self::resolve_in_vault_at`] takes as `real_root`.
+    pub fn real_root(vault_root: &Path) -> Result<PathBuf> {
+        Ok(soft_canonicalize::soft_canonicalize(lexically_normalize(
+            vault_root,
+        ))?)
+    }
+
+    /// [`Self::resolve_in_vault`] for a caller that has already resolved where
+    /// the vault root really is (`real_root`, every symlink to it followed),
+    /// which costs a walk of the root's own path on each call.
+    pub fn resolve_in_vault_at(
+        vault_root: &Path,
+        real_root: &Path,
+        path: &Path,
+    ) -> Result<ResolvedPath> {
         let root = lexically_normalize(vault_root);
         let addressed = lexically_normalize(&root.join(path));
         if !addressed.starts_with(&root) {
             return Err(Error::path_traversal(addressed));
         }
 
-        let real_root = soft_canonicalize::soft_canonicalize(&root)?;
         // A path the filesystem cannot resolve (a symlink loop, a directory
         // that cannot be read) cannot be shown to stay inside, so it does not.
         let real = soft_canonicalize::soft_canonicalize(&addressed)
             .map_err(|_| Error::path_traversal(&addressed))?;
-        let Ok(real_relative) = real.strip_prefix(&real_root) else {
+        let Ok(real_relative) = real.strip_prefix(real_root) else {
             return Err(Error::path_traversal(addressed));
         };
 

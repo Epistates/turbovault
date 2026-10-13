@@ -2,6 +2,7 @@
 
 use crate::reindex::CommitOrigin;
 use futures::StreamExt;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -219,7 +220,9 @@ impl Observed {
 /// One note in the cache: what was parsed, and the revision it was parsed from.
 #[derive(Debug, Clone)]
 struct CacheEntry {
-    file: VaultFile,
+    /// Shared, so handing the cache's notes to a reader copies pointers,
+    /// not the vault.
+    file: Arc<VaultFile>,
     /// The fingerprint of the bytes `file` was parsed from, when it could be
     /// established. `None` means "unknown", which no scan result can equal, so
     /// the next sweep re-parses the note. Unknown resolves to "assume stale".
@@ -251,6 +254,24 @@ const RECONCILE_DUTY_DIVISOR: u32 = 20;
 /// latency on a slow or network disk, few enough to stay well inside the open
 /// file limit.
 const INITIAL_READ_CONCURRENCY: usize = 64;
+
+/// How many notes `initialize` reads before parsing them, so at most this
+/// many notes' raw text is held at once.
+const INITIAL_PARSE_CHUNK: usize = 2048;
+
+/// How many notes `sync_index` applies per hold of the graph and the cache,
+/// so a reader waits on a slice of a large batch, never all of it.
+const SYNC_CHUNK: usize = 512;
+
+/// What `sync_index` does to the index for one changed note.
+enum IndexUpdate {
+    /// Parse result to put in the graph and the cache.
+    Upsert(Arc<VaultFile>, Option<Observed>),
+    /// Gone, or out of the scan's reach: drop it.
+    Remove,
+    /// Leave the index as it is.
+    Skip,
+}
 
 /// The reconcile schedule.
 #[derive(Debug)]
@@ -531,34 +552,46 @@ fn parse_note(parser: &Parser, path: &Path, read: &NoteRead) -> Result<VaultFile
     Ok(file)
 }
 
-/// The note cache and link graph for a vault, from initialization's reads.
+/// A parsed note and what its read observed, ready for the index.
+type ParsedNote = (PathBuf, VaultFile, Option<Observed>);
+
+/// Parse a chunk of initialization's reads, in parallel and in order,
+/// dropping (with a warning) any note that couldn't be read or parsed.
+fn parse_reads(
+    parser: &Parser,
+    reads: Vec<(PathBuf, std::io::Result<NoteRead>)>,
+) -> Vec<ParsedNote> {
+    reads
+        .into_par_iter()
+        .filter_map(|(file_path, read)| {
+            let read = match read {
+                Ok(read) => read,
+                Err(e) => {
+                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
+                    return None;
+                }
+            };
+            match parse_note(parser, &file_path, &read) {
+                Ok(vault_file) => Some((file_path, vault_file, read.observed)),
+                Err(e) => {
+                    log::warn!("Failed to parse {}: {}", file_path.display(), e);
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// The note cache and link graph for a vault, from its parsed notes.
 ///
 /// Two passes: every note is added to the graph before any link is resolved,
 /// so a link finds its target regardless of scan order.
-fn build_index(
-    parser: &Parser,
-    reads: Vec<(PathBuf, std::io::Result<NoteRead>)>,
-) -> (HashMap<PathBuf, CacheEntry>, LinkGraph) {
-    let mut cache = HashMap::with_capacity(reads.len());
+fn build_index(parsed: Vec<ParsedNote>) -> (HashMap<PathBuf, CacheEntry>, LinkGraph) {
+    let mut cache = HashMap::with_capacity(parsed.len());
     let mut graph = LinkGraph::new();
-    let mut parsed_files = Vec::with_capacity(reads.len());
+    let mut in_order = Vec::with_capacity(parsed.len());
 
-    for (file_path, read) in reads {
-        log::debug!("Processing file: {:?}", file_path);
-        let read = match read {
-            Ok(read) => read,
-            Err(e) => {
-                log::warn!("Failed to read file {}: {}", file_path.display(), e);
-                continue;
-            }
-        };
-        let vault_file = match parse_note(parser, &file_path, &read) {
-            Ok(vault_file) => vault_file,
-            Err(e) => {
-                log::warn!("Failed to parse {}: {}", file_path.display(), e);
-                continue;
-            }
-        };
+    for (file_path, vault_file, observed) in parsed {
         log::debug!(
             "Parsed {}: {} links extracted",
             file_path.display(),
@@ -567,17 +600,12 @@ fn build_index(
         if let Err(e) = graph.add_file(&vault_file) {
             log::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
         }
-        cache.insert(
-            file_path,
-            CacheEntry {
-                file: vault_file.clone(),
-                observed: read.observed,
-            },
-        );
-        parsed_files.push(vault_file);
+        let file = Arc::new(vault_file);
+        in_order.push(Arc::clone(&file));
+        cache.insert(file_path, CacheEntry { file, observed });
     }
 
-    for vault_file in &parsed_files {
+    for vault_file in &in_order {
         if let Err(e) = graph.update_links(vault_file) {
             log::warn!("Graph update_links failed: {}", e);
         }
@@ -598,9 +626,6 @@ struct NoteRead {
 pub struct VaultManager {
     config: ServerConfig,
     vault_path: PathBuf,
-    /// `vault_path` as the filesystem resolves it, for paths that reach the
-    /// manager already resolved (on Windows, `\\?\C:\...`). Set on first use.
-    resolved_vault_path: OnceLock<PathBuf>,
     parser: Parser,
     link_graph: Arc<RwLock<LinkGraph>>,
     file_cache: Arc<RwLock<HashMap<PathBuf, CacheEntry>>>,
@@ -637,6 +662,14 @@ pub struct VaultManager {
     reconcile: tokio::sync::Mutex<ReconcileState>,
     /// Vault-relative paths with a write in flight. See [`WriteClaim`].
     write_claims: StdMutex<HashMap<String, usize>>,
+    /// `vault_path` as the filesystem resolves it, every symlink to it
+    /// followed (on Windows, `\\?\C:\...`): what path resolution checks real
+    /// locations against, and what paths that reach the manager already
+    /// resolved start with. Worked out once, by the first use that succeeds.
+    real_root: OnceLock<PathBuf>,
+    /// The protected directory names, folded the way `protected_component`
+    /// compares them, once rather than on every path component.
+    protected_names: Vec<String>,
 }
 
 impl VaultManager {
@@ -756,11 +789,18 @@ impl VaultManager {
         };
 
         let scan_spec = Arc::new(ScanSpec::new(&config, vault_path.clone()));
+        let protected_names = PROTECTED_COMPONENTS
+            .iter()
+            .copied()
+            .chain(config.excluded_paths.iter().map(String::as_str))
+            .map(str::to_lowercase)
+            .collect();
 
         Ok(Self {
+            real_root: OnceLock::new(),
+            protected_names,
             config,
             vault_path,
-            resolved_vault_path: OnceLock::new(),
             parser,
             link_graph: Arc::new(RwLock::new(LinkGraph::new())),
             file_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -1354,9 +1394,7 @@ impl VaultManager {
     /// `path` is not under the vault root.
     pub fn relative_path(&self, path: &Path) -> String {
         let rendered = path_to_slash(path);
-        let resolved = self.resolved_vault_path.get_or_init(|| {
-            std::fs::canonicalize(&self.vault_path).unwrap_or_else(|_| self.vault_path.clone())
-        });
+        let resolved = self.real_root().unwrap_or(&self.vault_path);
         for root in [&self.vault_path, resolved] {
             let root = path_to_slash(root);
             if let Some(relative) = rendered
@@ -1417,22 +1455,36 @@ impl VaultManager {
         // one at a time is most of what startup costs on a large vault or a
         // slow disk. `buffered` hands them back in scan order, so the cache and
         // graph are built in the same order as before.
+        //
+        // Parsing is CPU work, seconds of it on a large vault, so each chunk
+        // of reads is parsed in parallel on the blocking pool, and only its
+        // parsed notes are kept: the whole vault's raw text is never held at
+        // once.
         let notes = scanned.into_iter().filter(|note| is_note(&note.path));
-        let reads: Vec<_> = futures::stream::iter(notes)
+        let mut reads = futures::stream::iter(notes)
             .map(|note| async move {
                 let fingerprint = note.fingerprint();
                 let read = read_note_with_fingerprint(&note.path, Some(fingerprint)).await;
                 (note.path, read)
             })
-            .buffered(INITIAL_READ_CONCURRENCY)
-            .collect()
-            .await;
+            .buffered(INITIAL_READ_CONCURRENCY);
+        let parser = Arc::new(Parser::new(self.vault_path.clone()));
+        let mut parsed = Vec::new();
+        loop {
+            let chunk: Vec<_> = reads.by_ref().take(INITIAL_PARSE_CHUNK).collect().await;
+            if chunk.is_empty() {
+                break;
+            }
+            let parser = Arc::clone(&parser);
+            let notes = tokio::task::spawn_blocking(move || parse_reads(&parser, chunk))
+                .await
+                .map_err(|e| Error::other(format!("vault parse task failed: {e}")))?;
+            parsed.extend(notes);
+        }
 
-        // Parsing and linking are CPU work, seconds of it on a large vault,
-        // so they run on the blocking pool too, and build the cache and graph
-        // off to the side. Neither lock is held until they are swapped in.
-        let parser = Parser::new(self.vault_path.clone());
-        let (cache, graph) = tokio::task::spawn_blocking(move || build_index(&parser, reads))
+        // Linking builds the cache and graph off to the side, on the blocking
+        // pool too. Neither lock is held until they are swapped in.
+        let (cache, graph) = tokio::task::spawn_blocking(move || build_index(parsed))
             .await
             .map_err(|e| Error::other(format!("vault index task failed: {e}")))?;
 
@@ -1827,7 +1879,7 @@ impl VaultManager {
     /// again to where it really lands, since a symlink inside the vault can
     /// reach `.git` without the path ever naming it.
     pub fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
-        let resolved = PathValidator::resolve_in_vault(&self.vault_path, path)?;
+        let resolved = self.resolve_in_vault(path)?;
         self.ensure_path_is_not_protected(&resolved.path)?;
         if let Some(component) = self.protected_component(&resolved.real_relative) {
             return Err(Error::protected_path(resolved.path, component));
@@ -1842,7 +1894,23 @@ impl VaultManager {
     /// that is the plugin host's config-read capability. Prefer
     /// [`Self::resolve_path`] everywhere else.
     pub fn resolve_path_bypassing_policy(&self, path: &Path) -> Result<PathBuf> {
-        Ok(PathValidator::resolve_in_vault(&self.vault_path, path)?.path)
+        Ok(self.resolve_in_vault(path)?.path)
+    }
+
+    /// [`PathValidator::resolve_in_vault`], with the vault root's real
+    /// location worked out once rather than on every call.
+    fn resolve_in_vault(&self, path: &Path) -> Result<turbovault_core::ResolvedPath> {
+        PathValidator::resolve_in_vault_at(&self.vault_path, self.real_root()?, path)
+    }
+
+    /// The vault root's real location (see the `real_root` field). Only a
+    /// successful resolution is kept, so a failure is retried next time.
+    fn real_root(&self) -> Result<&PathBuf> {
+        if let Some(real_root) = self.real_root.get() {
+            return Ok(real_root);
+        }
+        let real_root = PathValidator::real_root(&self.vault_path)?;
+        Ok(self.real_root.get_or_init(|| real_root))
     }
 
     /// Refuse a path that lies inside the vault but under a protected
@@ -1893,11 +1961,7 @@ impl VaultManager {
             };
             let name = raw.to_string_lossy();
             let folded = name.trim_end_matches(['.', ' ']).to_lowercase();
-            let protected = PROTECTED_COMPONENTS
-                .iter()
-                .copied()
-                .chain(self.config.excluded_paths.iter().map(String::as_str))
-                .any(|p| p.to_lowercase() == folded);
+            let protected = self.protected_names.contains(&folded);
             protected.then(|| name.into_owned())
         })
     }
@@ -1935,16 +1999,8 @@ impl VaultManager {
     /// entry says it saw, so the note never enters the diff.
     async fn insert_cache_entry(&self, path: PathBuf, file: VaultFile, observed: Option<Observed>) {
         let mut cache = self.file_cache.write().await;
+        let file = Arc::new(file);
         cache.insert(path, CacheEntry { file, observed });
-    }
-
-    /// Whether a scan would find `path` (see [`ScanSpec::admits`]).
-    async fn in_scope(&self, path: &Path) -> bool {
-        let spec = Arc::clone(&self.scan_spec);
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || spec.admits(&path))
-            .await
-            .unwrap_or(false)
     }
 
     /// [`parse_note`] with this manager's parser.
@@ -1965,78 +2021,144 @@ impl VaultManager {
     /// already-established `write_file` behavior. No existing caller relies
     /// on a non-markdown file appearing in the cache after a move.)
     async fn sync_index(&self, changed: &[(String, bool)]) {
-        for (rel_path, present) in changed {
-            let full_path = self.vault_path.join(rel_path);
-            if !is_note(&full_path) {
-                continue;
-            }
+        let notes: Vec<(PathBuf, bool)> = changed
+            .iter()
+            .map(|(rel_path, present)| (self.vault_path.join(rel_path), *present))
+            .filter(|(full_path, _)| is_note(full_path))
+            .collect();
+        if notes.is_empty() {
+            return;
+        }
 
-            let in_scope = self.in_scope(&full_path).await;
-            if *present && in_scope {
-                match read_note_with_fingerprint(&full_path, None).await {
-                    Ok(read) => match self.parse_read(&full_path, &read) {
-                        Ok(vault_file) => {
-                            let observed = read.observed;
-                            {
-                                let mut graph = self.link_graph.write().await;
-                                if let Err(e) = graph.add_file(&vault_file) {
-                                    log::warn!(
-                                        "Graph add_file failed for {}: {}",
-                                        full_path.display(),
-                                        e
-                                    );
-                                }
-                                if let Err(e) = graph.update_links(&vault_file) {
-                                    log::warn!(
-                                        "Graph update_links failed for {}: {}",
-                                        full_path.display(),
-                                        e
-                                    );
-                                }
+        // Where each note stands on disk, read with overlapping I/O: a pull
+        // or a sync that changes thousands of notes would otherwise wait on
+        // each read in turn. `buffered` keeps them in the order reported.
+        let spec = Arc::clone(&self.scan_spec);
+        let observed: Vec<(PathBuf, bool, Option<std::io::Result<NoteRead>>)> =
+            futures::stream::iter(notes)
+                .map(|(full_path, present)| {
+                    let spec = Arc::clone(&spec);
+                    async move {
+                        let path = full_path.clone();
+                        let in_scope = tokio::task::spawn_blocking(move || spec.admits(&path))
+                            .await
+                            .unwrap_or(false);
+                        let read = if present && in_scope {
+                            Some(read_note_with_fingerprint(&full_path, None).await)
+                        } else {
+                            None
+                        };
+                        (full_path, in_scope, read)
+                    }
+                })
+                .buffered(INITIAL_READ_CONCURRENCY)
+                .collect()
+                .await;
+
+        // Parsing is CPU work; it runs on the blocking pool, notes in
+        // parallel, and comes back in the same order.
+        let parser = Parser::new(self.vault_path.clone());
+        let updates = tokio::task::spawn_blocking(move || {
+            observed
+                .into_par_iter()
+                .map(|(full_path, in_scope, read)| {
+                    let update = match read {
+                        Some(Ok(read)) => match parse_note(&parser, &full_path, &read) {
+                            Ok(vault_file) => {
+                                IndexUpdate::Upsert(Arc::new(vault_file), read.observed)
                             }
-                            self.insert_cache_entry(full_path, vault_file, observed)
-                                .await;
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to parse {} after apply (graph not updated): {}",
+                                    full_path.display(),
+                                    e
+                                );
+                                IndexUpdate::Skip
+                            }
+                        },
+                        Some(Err(e)) => {
+                            log::warn!(
+                                "Failed to re-read {} after apply: {}",
+                                full_path.display(),
+                                e
+                            );
+                            IndexUpdate::Skip
                         }
-                        Err(e) => log::warn!(
-                            "Failed to parse {} after apply (graph not updated): {}",
-                            full_path.display(),
-                            e
-                        ),
-                    },
-                    Err(e) => log::warn!(
-                        "Failed to re-read {} after apply: {}",
-                        full_path.display(),
-                        e
-                    ),
+                        // Re-check disk state before evicting: `sync_index`
+                        // runs after `substrate.apply()` has already released
+                        // its write-lock, so a concurrent blind write that
+                        // recreated this path can land between this apply's
+                        // completion and this eviction. If the path exists
+                        // again, this "removed" notification is stale, so skip it
+                        // and let the write that recreated the path reconcile
+                        // the cache via its own present=true branch, instead of
+                        // clobbering a legitimately present file.
+                        // ponytail: narrows the race (check-then-evict is still
+                        // not atomic with the recreating write) rather than
+                        // closing it outright; a full fix serializes sync_index
+                        // with apply() per path, add if this ever proves
+                        // observable in practice.
+                        //
+                        // A note that is there but out of the scan's reach
+                        // (too large, or behind a symlinked folder) is evicted
+                        // however it was reported, so the cache never holds
+                        // what a sweep can't find.
+                        None if in_scope => IndexUpdate::Skip,
+                        None => IndexUpdate::Remove,
+                    };
+                    (full_path, update)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+
+        // Applied in the order reported, a chunk per hold of the graph and of
+        // the cache, so readers wait on a bounded slice of a large batch.
+        let mut updates = updates.into_iter();
+        loop {
+            let chunk: Vec<(PathBuf, IndexUpdate)> = updates.by_ref().take(SYNC_CHUNK).collect();
+            if chunk.is_empty() {
+                break;
+            }
+            {
+                let mut graph = self.link_graph.write().await;
+                for (full_path, update) in &chunk {
+                    match update {
+                        IndexUpdate::Upsert(vault_file, _) => {
+                            if let Err(e) = graph.add_file(vault_file) {
+                                log::warn!(
+                                    "Graph add_file failed for {}: {}",
+                                    full_path.display(),
+                                    e
+                                );
+                            }
+                            if let Err(e) = graph.update_links(vault_file) {
+                                log::warn!(
+                                    "Graph update_links failed for {}: {}",
+                                    full_path.display(),
+                                    e
+                                );
+                            }
+                        }
+                        IndexUpdate::Remove => {
+                            let _ = graph.remove_file(full_path);
+                        }
+                        IndexUpdate::Skip => {}
+                    }
                 }
-            } else {
-                // Re-check disk state before evicting: `sync_index` runs
-                // after `substrate.apply()` has already released its
-                // write-lock, so a concurrent blind write that recreated
-                // this path can land between this apply's completion and
-                // this eviction. If the path exists again, this "removed"
-                // notification is stale — skip it and let the write that
-                // recreated the path reconcile the cache via its own
-                // present=true branch, instead of clobbering a legitimately
-                // present file.
-                // ponytail: narrows the race (check-then-evict is still not
-                // atomic with the recreating write) rather than closing it
-                // outright; a full fix serializes sync_index with apply()
-                // per path, add if this ever proves observable in practice.
-                //
-                // A note that is there but out of the scan's reach (too
-                // large, or behind a symlinked folder) is evicted however it
-                // was reported, so the cache never holds what a sweep can't
-                // find.
-                if in_scope {
-                    continue;
+            }
+            let mut cache = self.file_cache.write().await;
+            for (full_path, update) in chunk {
+                match update {
+                    IndexUpdate::Upsert(file, observed) => {
+                        cache.insert(full_path, CacheEntry { file, observed });
+                    }
+                    IndexUpdate::Remove => {
+                        cache.remove(&full_path);
+                    }
+                    IndexUpdate::Skip => {}
                 }
-                {
-                    let mut graph = self.link_graph.write().await;
-                    let _ = graph.remove_file(&full_path);
-                }
-                let mut cache = self.file_cache.write().await;
-                cache.remove(&full_path);
             }
         }
     }
@@ -2132,9 +2254,33 @@ impl VaultManager {
     /// and can tolerate up-to-millisecond staleness should prefer this over
     /// `scan_vault()` + `parse_file()`, which issues a filesystem scan and N file
     /// reads on every call.
+    ///
+    /// Each note is copied in full; [`Self::cached_notes`] shares them instead.
     pub async fn all_cached_vault_files(&self) -> Vec<VaultFile> {
         let cache = self.file_cache.read().await;
-        cache.values().map(|e| e.file.clone()).collect()
+        cache.values().map(|e| VaultFile::clone(&e.file)).collect()
+    }
+
+    /// Every note in the cache, shared rather than copied, without passing
+    /// the freshness gate. Most readers want [`Self::notes_validated`].
+    pub async fn cached_notes(&self) -> Vec<Arc<VaultFile>> {
+        let cache = self.file_cache.read().await;
+        cache.values().map(|e| Arc::clone(&e.file)).collect()
+    }
+
+    /// The cached note at `path` (absolute, as the cache keys it), shared,
+    /// without passing the freshness gate.
+    pub async fn cached_note(&self, path: &Path) -> Option<Arc<VaultFile>> {
+        let cache = self.file_cache.read().await;
+        cache.get(path).map(|e| Arc::clone(&e.file))
+    }
+
+    /// Every note, after the freshness gate, shared rather than copied: the
+    /// same notes as [`Self::vault_files_validated`] without copying the
+    /// vault on every call.
+    pub async fn notes_validated(&self) -> Vec<Arc<VaultFile>> {
+        self.ensure_fresh().await;
+        self.cached_notes().await
     }
 
     /// Return every cached vault file, after bringing the cache into agreement

@@ -138,7 +138,7 @@ impl OkfTools {
     /// Cache-first (parsed notes validated against disk mtime, no re-scan) so it
     /// is cheap enough to fold into a first-contact discovery call.
     pub async fn bundle_info(&self) -> okf::BundleInfo {
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
         okf::detect_bundle(self.manager.vault_path().as_path(), &files)
     }
 
@@ -148,7 +148,7 @@ impl OkfTools {
     /// under it are examined.
     pub async fn validate(&self, subtree: Option<&str>) -> Result<OkfValidateReport> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
         let root = self.manager.vault_path();
         let filter_prefix = subtree.map(|s| root.join(s));
 
@@ -229,7 +229,7 @@ impl OkfTools {
     ) -> Result<GenerateIndexReport> {
         // Cache-first: parsed notes (validated against disk mtime) instead of a
         // fresh scan + re-parse of every file.
-        let validated = self.manager.vault_files_validated().await;
+        let validated = self.manager.notes_validated().await;
         let root = self.manager.vault_path().clone();
         let base = match directory {
             Some(d) => root.join(d),

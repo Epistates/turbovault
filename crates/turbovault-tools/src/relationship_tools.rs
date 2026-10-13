@@ -1,9 +1,15 @@
 //! Relationship analysis tools for link strength, suggestions, and centrality
+//!
+//! Each analysis walks the link graph on the blocking pool, so a large vault
+//! never ties up an async worker, and counts a note's neighbours without
+//! cloning its links.
 
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_core::prelude::*;
+use turbovault_graph::LinkGraph;
 use turbovault_vault::VaultManager;
 
 /// Result of link strength calculation
@@ -48,51 +54,49 @@ impl RelationshipTools {
         Self { manager }
     }
 
+    /// Run `analysis` over the link graph (after the freshness gate) on the
+    /// blocking pool.
+    async fn with_graph<T, F>(&self, analysis: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&LinkGraph, &VaultManager) -> T + Send + 'static,
+    {
+        let graph = self.manager.link_graph_flushed().await;
+        let manager = Arc::clone(&self.manager);
+        tokio::task::spawn_blocking(move || analysis(&graph.blocking_read(), &manager))
+            .await
+            .map_err(|e| Error::other(format!("graph analysis task failed: {e}")))
+    }
+
     /// Calculate link strength between two files (0.0-1.0)
     pub async fn get_link_strength(&self, source: &str, target: &str) -> Result<Value> {
-        let graph = self.manager.link_graph_flushed().await;
-        let read = graph.read().await;
-
-        // Count direct links from source to target
         let source_path = self.manager.resolve_path(std::path::Path::new(source))?;
         let target_path = self.manager.resolve_path(std::path::Path::new(target))?;
 
-        let mut direct_links = 0;
-        if let Ok(forward_links) = read.forward_links(&source_path) {
-            for (linked_file, _) in forward_links {
-                if linked_file == target_path {
-                    direct_links += 1;
-                }
-            }
-        }
+        let (direct_links, backlinks, shared_references) = self
+            .with_graph(move |read, _| {
+                // A direct link from source to target, and one back
+                let direct_links = usize::from(
+                    read.forward_link_targets(&source_path)
+                        .contains(&&target_path),
+                );
+                let backlinks = usize::from(
+                    read.forward_link_targets(&target_path)
+                        .contains(&&source_path),
+                );
 
-        // Count backlinks from target to source
-        let mut backlinks = 0;
-        if let Ok(back_links) = read.forward_links(&target_path) {
-            for (linked_file, _) in back_links {
-                if linked_file == source_path {
-                    backlinks += 1;
-                }
-            }
-        }
-
-        // Count shared references (files that link to both)
-        let mut shared_references = 0;
-        let all_files = read.all_files();
-
-        for file in all_files {
-            if file == source_path || file == target_path {
-                continue;
-            }
-
-            if let Ok(links) = read.forward_links(&file) {
-                let links_source = links.iter().any(|(f, _)| f == &source_path);
-                let links_target = links.iter().any(|(f, _)| f == &target_path);
-                if links_source && links_target {
-                    shared_references += 1;
-                }
-            }
-        }
+                // Shared references: the other notes that link to both
+                let to_target: HashSet<&PathBuf> =
+                    read.backlink_sources(&target_path).into_iter().collect();
+                let shared_references = read
+                    .backlink_sources(&source_path)
+                    .into_iter()
+                    .filter(|file| **file != source_path && **file != target_path)
+                    .filter(|file| to_target.contains(file))
+                    .count();
+                (direct_links, backlinks, shared_references)
+            })
+            .await?;
 
         // Calculate strength: direct*1.0 + backlinks*0.7 + shared*0.3
         let raw_strength = (direct_links as f64 * 1.0)
@@ -117,71 +121,11 @@ impl RelationshipTools {
 
     /// Suggest files to link from a given file
     pub async fn suggest_links(&self, file: &str, limit: usize) -> Result<Value> {
-        let graph = self.manager.link_graph_flushed().await;
-        let read = graph.read().await;
-
         let file_path = self.manager.resolve_path(std::path::Path::new(file))?;
-        let all_files = read.all_files();
 
-        // Get existing forward links to exclude
-        let mut existing_links = std::collections::HashSet::new();
-        if let Ok(forward_links) = read.forward_links(&file_path) {
-            for (linked_file, _) in forward_links {
-                existing_links.insert(linked_file);
-            }
-        }
-
-        let source_backlinks: std::collections::HashSet<_> = read
-            .backlinks(&file_path)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(path, _)| path)
-            .collect();
-
-        // Score each candidate
-        let mut suggestions: Vec<LinkSuggestion> = Vec::new();
-
-        for candidate in all_files {
-            // Skip self and existing links
-            if candidate == file_path || existing_links.contains(&candidate) {
-                continue;
-            }
-
-            // Calculate co-reference strength (shared backlinks)
-            let mut shared_refs = Vec::new();
-            if let Ok(target_backlinks) = read.backlinks(&candidate) {
-                let target_set: std::collections::HashSet<_> =
-                    target_backlinks.into_iter().map(|(path, _)| path).collect();
-
-                for intersection_file in source_backlinks.intersection(&target_set) {
-                    if let Some(name) = intersection_file.file_name() {
-                        shared_refs.push(name.to_string_lossy().to_string());
-                    }
-                }
-            }
-
-            let shared_count = shared_refs.len();
-            let strength = ((shared_count as f64) * 0.3).min(1.0);
-
-            if strength > 0.0 || shared_count > 0 {
-                let mut reasons = Vec::new();
-                if shared_count > 0 {
-                    reasons.push(format!("{} shared backlinks", shared_count));
-                }
-                if strength > 0.7 {
-                    reasons.push("Frequently co-referenced".to_string());
-                }
-                if reasons.is_empty() {
-                    reasons.push("Related file".to_string());
-                }
-
-                suggestions.push(LinkSuggestion {
-                    target: self.manager.relative_path(&candidate),
-                    strength,
-                    reasons,
-                });
-            }
-        }
+        let mut suggestions = self
+            .with_graph(move |read, manager| link_suggestions(read, manager, &file_path))
+            .await?;
 
         // Sort by strength descending (total_cmp is panic-free for f64)
         suggestions.sort_by(|a, b| {
@@ -211,41 +155,7 @@ impl RelationshipTools {
 
     /// Get centrality ranking for all files
     pub async fn get_centrality_ranking(&self) -> Result<Value> {
-        let graph = self.manager.link_graph_flushed().await;
-        let read = graph.read().await;
-
-        let all_files = read.all_files();
-        // Pre-compute all_count once outside the loop to avoid O(N²) Vec allocation
-        let all_count = all_files.len() as f64;
-
-        // Simple heuristic-based centrality calculation
-        let mut rankings: Vec<(String, f64, HashMap<&str, f64>)> = Vec::new();
-
-        for file in &all_files {
-            let file_str = self.manager.relative_path(file);
-
-            // Betweenness: count edges if this file connects two others
-            let forward = read.forward_links(file).unwrap_or_default().len() as f64;
-            let backward = read.backlinks(file).unwrap_or_default().len() as f64;
-            let betweenness = ((forward + backward) / 10.0).min(1.0);
-
-            // Closeness: ability to reach others (normalized edge count)
-            let closeness = (forward / all_count).min(1.0);
-
-            // Eigenvector: importance based on connection to important files
-            // Simplified: count backlinks (files that link to this one)
-            let eigenvector = (backward / all_count).min(1.0);
-
-            // Combined score (equal weighting)
-            let combined = (betweenness * 0.33 + closeness * 0.33 + eigenvector * 0.34) / 1.0;
-
-            let mut metrics = HashMap::new();
-            metrics.insert("betweenness", betweenness);
-            metrics.insert("closeness", closeness);
-            metrics.insert("eigenvector", eigenvector);
-
-            rankings.push((file_str, combined, metrics));
-        }
+        let mut rankings = self.with_graph(centrality_scores).await?;
 
         // Sort by combined score descending (total_cmp is panic-free for f64)
         // Ties broken by path, so the ranking and its pages are the same on
@@ -290,6 +200,98 @@ impl RelationshipTools {
     }
 }
 
+/// Every note `file_path` might link to, in graph order: those that notes
+/// linking to it also link to (shared backlinks), apart from itself and the
+/// notes it links to already.
+fn link_suggestions(
+    read: &LinkGraph,
+    manager: &VaultManager,
+    file_path: &PathBuf,
+) -> Vec<LinkSuggestion> {
+    // Get existing forward links to exclude
+    let existing_links: HashSet<&PathBuf> =
+        read.forward_link_targets(file_path).into_iter().collect();
+
+    // Co-reference strength: how many of the notes linking here also link
+    // to each candidate
+    let mut shared: HashMap<&PathBuf, usize> = HashMap::new();
+    for source in read.backlink_sources(file_path) {
+        for candidate in read.forward_link_targets(source) {
+            *shared.entry(candidate).or_insert(0) += 1;
+        }
+    }
+
+    // Score each candidate
+    let mut suggestions: Vec<LinkSuggestion> = Vec::new();
+    for (candidate, _, _) in read.degrees() {
+        // Skip self and existing links
+        if candidate == file_path || existing_links.contains(candidate) {
+            continue;
+        }
+
+        let shared_count = shared.get(candidate).copied().unwrap_or(0);
+        let strength = ((shared_count as f64) * 0.3).min(1.0);
+
+        if strength > 0.0 || shared_count > 0 {
+            let mut reasons = Vec::new();
+            if shared_count > 0 {
+                reasons.push(format!("{} shared backlinks", shared_count));
+            }
+            if strength > 0.7 {
+                reasons.push("Frequently co-referenced".to_string());
+            }
+            if reasons.is_empty() {
+                reasons.push("Related file".to_string());
+            }
+
+            suggestions.push(LinkSuggestion {
+                target: manager.relative_path(candidate),
+                strength,
+                reasons,
+            });
+        }
+    }
+    suggestions
+}
+
+/// Each note's path, combined centrality score and metrics, in graph order.
+fn centrality_scores(
+    read: &LinkGraph,
+    manager: &VaultManager,
+) -> Vec<(String, f64, HashMap<&'static str, f64>)> {
+    let all_count = read.node_count() as f64;
+
+    // Simple heuristic-based centrality calculation
+    let mut rankings = Vec::new();
+
+    for (file, _, _) in read.degrees() {
+        let file_str = manager.relative_path(file);
+
+        // Betweenness: count edges if this file connects two others
+        let forward = read.forward_link_targets(file).len() as f64;
+        let backward = read.backlink_source_count(file) as f64;
+        let betweenness = ((forward + backward) / 10.0).min(1.0);
+
+        // Closeness: ability to reach others (normalized edge count)
+        let closeness = (forward / all_count).min(1.0);
+
+        // Eigenvector: importance based on connection to important files
+        // Simplified: count backlinks (files that link to this one)
+        let eigenvector = (backward / all_count).min(1.0);
+
+        // Combined score (equal weighting)
+        let combined = (betweenness * 0.33 + closeness * 0.33 + eigenvector * 0.34) / 1.0;
+
+        let mut metrics = HashMap::new();
+        metrics.insert("betweenness", betweenness);
+        metrics.insert("closeness", closeness);
+        metrics.insert("eigenvector", eigenvector);
+
+        rankings.push((file_str, combined, metrics));
+    }
+    rankings
+}
+
 /// Interpret link strength as human-readable text
 fn interpret_strength(strength: f64) -> String {
     match strength {
@@ -312,5 +314,130 @@ mod tests {
         assert!(interpret_strength(0.5).contains("Moderate"));
         assert!(interpret_strength(0.3).contains("Weak"));
         assert!(interpret_strength(0.0).contains("No"));
+    }
+
+    /// A small vault where notes link each other with repeats, self links,
+    /// mutual links and missing targets.
+    async fn linked_vault() -> (tempfile::TempDir, Arc<VaultManager>) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut next = move |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        for i in 0..40 {
+            let links: Vec<String> = (0..next(7))
+                .map(|_| match next(10) {
+                    0 => "[[missing]]".to_string(),
+                    _ => format!("[[n{}]]", next(40)),
+                })
+                .collect();
+            std::fs::write(
+                tmp.path().join(format!("n{i}.md")),
+                format!("# n{i}\n\n{}\n", links.join(" ")),
+            )
+            .unwrap();
+        }
+        let mut config = turbovault_core::ServerConfig::new();
+        config.vaults.push(
+            turbovault_core::VaultConfig::builder("v", tmp.path())
+                .build()
+                .unwrap(),
+        );
+        let manager = Arc::new(VaultManager::new(config).unwrap());
+        manager.initialize().await.unwrap();
+        (tmp, manager)
+    }
+
+    /// The counts by distinct neighbour are the ones the old scans made
+    /// over every note's cloned links.
+    #[tokio::test]
+    async fn matches_scanning_every_note() {
+        let (_tmp, manager) = linked_vault().await;
+        let tools = RelationshipTools::new(Arc::clone(&manager));
+        let graph = manager.link_graph_flushed().await;
+        let read = graph.read().await;
+        let all = read.all_files();
+
+        let centrality = tools.get_centrality_ranking().await.unwrap();
+        for entry in centrality["rankings"].as_array().unwrap() {
+            let path = manager.vault_path().join(entry["file"].as_str().unwrap());
+            let forward = read.forward_links(&path).unwrap().len() as f64;
+            let backward = read.backlinks(&path).unwrap().len() as f64;
+            assert_eq!(
+                entry["betweenness"].as_f64().unwrap(),
+                ((forward + backward) / 10.0).min(1.0)
+            );
+            assert_eq!(
+                entry["closeness"].as_f64().unwrap(),
+                (forward / all.len() as f64).min(1.0)
+            );
+        }
+
+        for i in [0, 3, 11, 25] {
+            let file = manager.vault_path().join(format!("n{i}.md"));
+            let existing: HashSet<PathBuf> = read
+                .forward_links(&file)
+                .unwrap()
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
+            let sources: HashSet<PathBuf> = read
+                .backlinks(&file)
+                .unwrap()
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
+            let mut expected: Vec<(String, usize)> = all
+                .iter()
+                .filter(|c| **c != file && !existing.contains(*c))
+                .filter_map(|c| {
+                    let theirs: HashSet<PathBuf> = read
+                        .backlinks(c)
+                        .unwrap()
+                        .into_iter()
+                        .map(|(p, _)| p)
+                        .collect();
+                    let shared = sources.intersection(&theirs).count();
+                    (shared > 0).then(|| (manager.relative_path(c), shared))
+                })
+                .collect();
+            expected.sort();
+            let mut found: Vec<(String, usize)> = link_suggestions(&read, &manager, &file)
+                .into_iter()
+                .map(|s| {
+                    let count = s.reasons[0].split(' ').next().unwrap().parse().unwrap();
+                    (s.target, count)
+                })
+                .collect();
+            found.sort();
+            assert_eq!(found, expected, "suggestions for n{i}");
+
+            for j in [1, 7, 30] {
+                let other = manager.vault_path().join(format!("n{j}.md"));
+                let shared = all
+                    .iter()
+                    .filter(|f| **f != file && **f != other)
+                    .filter(|f| {
+                        let links = read.forward_links(f).unwrap();
+                        links.iter().any(|(t, _)| *t == file)
+                            && links.iter().any(|(t, _)| *t == other)
+                    })
+                    .count();
+                let strength = tools
+                    .get_link_strength(&format!("n{i}.md"), &format!("n{j}.md"))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    strength["components"]["shared_references"]
+                        .as_u64()
+                        .unwrap() as usize,
+                    shared,
+                    "n{i} and n{j}"
+                );
+            }
+        }
     }
 }

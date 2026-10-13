@@ -5899,6 +5899,7 @@ dependencies = [
  "git2",
  "log",
  "proptest",
+ "rayon",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -5931,6 +5932,7 @@ dependencies = [
  "log",
  "notify",
  "proptest",
+ "rayon",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -5947,7 +5949,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vector"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "bm25",

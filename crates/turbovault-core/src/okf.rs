@@ -292,7 +292,7 @@ pub struct BundleInfo {
 /// `root` is the vault/bundle root; `files` are its already-parsed documents
 /// (typically the cache-validated set). Reserved files (`index.md`/`log.md`)
 /// are excluded from the concept ratio — they are structural, not concepts.
-pub fn detect_bundle(root: &Path, files: &[VaultFile]) -> BundleInfo {
+pub fn detect_bundle<F: std::borrow::Borrow<VaultFile>>(root: &Path, files: &[F]) -> BundleInfo {
     let total_docs = files.len();
     let mut reserved_files = 0usize;
     let mut non_reserved = 0usize;
@@ -302,7 +302,7 @@ pub fn detect_bundle(root: &Path, files: &[VaultFile]) -> BundleInfo {
     let mut type_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
 
-    for vf in files {
+    for vf in files.iter().map(std::borrow::Borrow::borrow) {
         match reserved_file(&vf.path) {
             Some(kind) => {
                 reserved_files += 1;

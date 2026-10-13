@@ -509,15 +509,7 @@ impl GraphProvider {
 
         // Get all data efficiently (parallelizable)
         let files = manager.scan_vault().await.map_err(to_mcp_error)?;
-        let health = graph_tools
-            .quick_health_check()
-            .await
-            .map_err(to_mcp_error)?;
-        let hubs = graph_tools.get_hub_notes(10).await.map_err(to_mcp_error)?;
-        let dead_ends = graph_tools
-            .get_dead_end_notes()
-            .await
-            .map_err(to_mcp_error)?;
+        let (health, hubs, dead_ends) = graph_tools.overview(10).await.map_err(to_mcp_error)?;
         let stats = analysis_tools
             .get_vault_stats()
             .await

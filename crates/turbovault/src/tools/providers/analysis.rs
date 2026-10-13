@@ -641,14 +641,12 @@ impl AnalysisProvider {
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = DuplicateTools::new(manager);
-        let result = tools
-            .find_duplicates(
-                threshold.unwrap_or(0.8),
-                clamp_count(limit, 20, MAX_REPORT_ITEMS),
-            )
-            .await
-            .map_err(to_mcp_error)?;
+        let engine = self.get_similarity_engine().await?;
+        let result = DuplicateTools::new(manager).find_duplicates_with(
+            &engine,
+            threshold.unwrap_or(0.8),
+            clamp_count(limit, 20, MAX_REPORT_ITEMS),
+        );
         let count = result.len();
         StandardResponse::new(&vault_name, "find_duplicates", &result)
             .with_count(count)
@@ -678,9 +676,9 @@ impl AnalysisProvider {
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = DuplicateTools::new(manager);
-        let result = tools
-            .compare_notes(&left, &right)
+        let engine = self.get_similarity_engine().await?;
+        let result = DuplicateTools::new(manager)
+            .compare_notes_with(&engine, &left, &right)
             .await
             .map_err(to_mcp_error)?;
         StandardResponse::new(&vault_name, "compare_notes", &result)

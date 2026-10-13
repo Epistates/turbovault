@@ -60,16 +60,28 @@ impl HealthReport {
 
     /// Calculate health score based on issues
     pub fn calculate_score(&mut self) {
-        if self.total_notes == 0 {
-            self.health_score = 0;
-            return;
+        self.health_score = Self::score(&HealthCounts {
+            total_notes: self.total_notes,
+            total_links: self.total_links,
+            broken_links: self.broken_links.len(),
+            orphaned_notes: self.orphaned_notes.len(),
+            isolated_clusters: self.isolated_clusters.len(),
+            dead_end_notes: self.dead_end_notes.len(),
+        });
+    }
+
+    /// The health score for a vault with these counts, the same score
+    /// [`Self::calculate_score`] gives a report holding them.
+    pub fn score(counts: &HealthCounts) -> u8 {
+        if counts.total_notes == 0 {
+            return 0;
         }
 
         // Compute all penalties independently to avoid sequential saturation
-        let broken_ratio = self.broken_links.len() as f64 / self.total_links.max(1) as f64;
-        let orphaned_ratio = self.orphaned_notes.len() as f64 / self.total_notes as f64;
-        let isolated_ratio = self.isolated_clusters.len() as f64 / self.total_notes as f64;
-        let dead_end_ratio = self.dead_end_notes.len() as f64 / self.total_notes as f64;
+        let broken_ratio = counts.broken_links as f64 / counts.total_links.max(1) as f64;
+        let orphaned_ratio = counts.orphaned_notes as f64 / counts.total_notes as f64;
+        let isolated_ratio = counts.isolated_clusters as f64 / counts.total_notes as f64;
+        let dead_end_ratio = counts.dead_end_notes as f64 / counts.total_notes as f64;
 
         let total_penalty = (broken_ratio * 30.0
             + orphaned_ratio * 20.0
@@ -77,7 +89,7 @@ impl HealthReport {
             + dead_end_ratio * 10.0)
             .min(100.0);
 
-        self.health_score = 100u8.saturating_sub(total_penalty as u8);
+        100u8.saturating_sub(total_penalty as u8)
     }
 
     /// Check if vault is healthy (score >= 80)
@@ -90,6 +102,23 @@ impl Default for HealthReport {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// How many of each issue a vault has, which is all a health score needs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HealthCounts {
+    /// Total number of notes
+    pub total_notes: usize,
+    /// Total number of links
+    pub total_links: usize,
+    /// Broken links
+    pub broken_links: usize,
+    /// Notes with no links in or out
+    pub orphaned_notes: usize,
+    /// Groups of notes cut off from the main graph
+    pub isolated_clusters: usize,
+    /// Notes with incoming links but none out
+    pub dead_end_notes: usize,
 }
 
 /// Configuration for health analysis
@@ -169,50 +198,109 @@ impl<'a> HealthAnalyzer<'a> {
         Ok(report)
     }
 
+    /// Every broken link in the vault, each with up to five notes whose name
+    /// is close to its target.
+    pub fn broken_links(&self) -> Result<Vec<BrokenLink>> {
+        self.find_broken_links()
+    }
+
+    /// How many broken links the vault has, without working out suggestions.
+    pub fn broken_link_count(&self) -> usize {
+        let check_valid = self.files.is_some();
+        self.broken_link_sources()
+            .map(|(_, links)| {
+                links
+                    .iter()
+                    .filter(|link| !(check_valid && link.is_valid))
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Notes that are linked to but link nowhere.
+    pub fn dead_end_notes(&self) -> Vec<PathBuf> {
+        self.graph
+            .degrees()
+            .filter(|&(_, incoming, outgoing)| outgoing == 0 && incoming > 0)
+            .map(|(path, _, _)| path.clone())
+            .collect()
+    }
+
+    /// The `limit` most connected notes, with their link counts in and out.
+    pub fn hub_notes(&self, limit: usize) -> Vec<(PathBuf, usize)> {
+        let mut hubs: Vec<(&PathBuf, usize)> = self
+            .graph
+            .degrees()
+            .map(|(path, incoming, outgoing)| (path, incoming + outgoing))
+            .filter(|&(_, connections)| connections > 0)
+            .collect();
+        // Sort by connection count (descending); a stable sort keeps notes
+        // with the same count in graph order.
+        hubs.sort_by_key(|&(_, connections)| std::cmp::Reverse(connections));
+        hubs.truncate(limit);
+        hubs.into_iter()
+            .map(|(path, connections)| (path.clone(), connections))
+            .collect()
+    }
+
+    /// Groups of linked notes cut off from the largest group.
+    pub fn isolated_clusters(&self) -> Result<Vec<Vec<PathBuf>>> {
+        self.find_isolated_clusters()
+    }
+
+    /// The counts a health score is made of. Unlike [`Self::analyze`] it
+    /// lists nothing and suggests nothing, so it costs a pass over the graph.
+    pub fn counts(&self) -> Result<HealthCounts> {
+        Ok(HealthCounts {
+            total_notes: self.graph.node_count(),
+            total_links: self.graph.edge_count(),
+            broken_links: self.broken_link_count(),
+            orphaned_notes: self.graph.orphaned_notes().len(),
+            isolated_clusters: self.find_isolated_clusters()?.len(),
+            dead_end_notes: self.dead_end_notes().len(),
+        })
+    }
+
+    /// Where broken links are read from: the files' own links when given,
+    /// otherwise the links the graph could not resolve.
+    fn broken_link_sources(&self) -> impl Iterator<Item = (&PathBuf, &Vec<Link>)> {
+        self.files
+            .unwrap_or_else(|| self.graph.all_unresolved_links())
+            .iter()
+    }
+
     /// Find all broken links in the vault
     fn find_broken_links(&self) -> Result<Vec<BrokenLink>> {
         let mut broken = Vec::new();
-        let stems = self.note_stems();
+        let mut stems: Option<StemIndex> = None;
         // Broken links cluster on a few missing targets, so each target's
         // suggestions are worked out once.
         let mut suggested: HashMap<String, Vec<String>> = HashMap::new();
         let mut suggest = |target: &str| {
             suggested
                 .entry(target.to_string())
-                .or_insert_with(|| Self::suggest_targets(&stems, target))
+                .or_insert_with(|| {
+                    stems
+                        .get_or_insert_with(|| StemIndex::new(self.graph))
+                        .suggest(target)
+                })
                 .clone()
         };
 
-        // If we have access to raw file links, use those (more accurate)
-        if let Some(files) = self.files {
-            for (source, links) in files {
-                for link in links {
-                    if !link.is_valid {
-                        // Try to find similar targets for suggestions
-                        let suggestions = suggest(&link.target);
-
-                        broken.push(BrokenLink {
-                            source_file: source.clone(),
-                            target: link.target.clone(),
-                            line: link.position.line,
-                            suggestions,
-                        });
-                    }
+        // Raw file links, when given, mark which ones are broken; the graph's
+        // own unresolved links are all broken.
+        let check_valid = self.files.is_some();
+        for (source, links) in self.broken_link_sources() {
+            for link in links {
+                if check_valid && link.is_valid {
+                    continue;
                 }
-            }
-        } else {
-            // Fall back to graph's unresolved links (links that couldn't be resolved)
-            for (source, links) in self.graph.all_unresolved_links() {
-                for link in links {
-                    let suggestions = suggest(&link.target);
-
-                    broken.push(BrokenLink {
-                        source_file: source.clone(),
-                        target: link.target.clone(),
-                        line: link.position.line,
-                        suggestions,
-                    });
-                }
+                broken.push(BrokenLink {
+                    source_file: source.clone(),
+                    target: link.target.clone(),
+                    line: link.position.line,
+                    suggestions: suggest(&link.target),
+                });
             }
         }
 
@@ -221,41 +309,12 @@ impl<'a> HealthAnalyzer<'a> {
 
     /// Find notes with no outgoing links
     fn find_dead_end_notes(&self) -> Result<Vec<PathBuf>> {
-        let mut dead_ends = Vec::new();
-
-        for path in self.graph.all_files() {
-            let outgoing = self.graph.outgoing_links(&path)?;
-            if outgoing.is_empty() {
-                // Check if it has any incoming links (not completely orphaned)
-                let incoming = self.graph.incoming_links(&path)?;
-                if !incoming.is_empty() {
-                    dead_ends.push(path);
-                }
-            }
-        }
-
-        Ok(dead_ends)
+        Ok(self.dead_end_notes())
     }
 
     /// Find hub notes (notes with many connections)
     fn find_hub_notes(&self, limit: usize) -> Result<Vec<(PathBuf, usize)>> {
-        let mut hubs: Vec<(PathBuf, usize)> = Vec::new();
-
-        for path in self.graph.all_files() {
-            let incoming = self.graph.incoming_links(&path)?;
-            let outgoing = self.graph.outgoing_links(&path)?;
-            let total_connections = incoming.len() + outgoing.len();
-
-            if total_connections > 0 {
-                hubs.push((path, total_connections));
-            }
-        }
-
-        // Sort by connection count (descending)
-        hubs.sort_by_key(|b| std::cmp::Reverse(b.1));
-        hubs.truncate(limit);
-
-        Ok(hubs)
+        Ok(self.hub_notes(limit))
     }
 
     /// Find isolated clusters using weakly connected components analysis.
@@ -280,31 +339,6 @@ impl<'a> HealthAnalyzer<'a> {
         Ok(components.into_iter().filter(|c| c.len() > 1).collect())
     }
 
-    /// Every note's stem, as written and lowercased, for [`Self::suggest_targets`].
-    ///
-    /// Built once per report. Suggesting used to re-list and re-lowercase every
-    /// note for every broken link, so a check that is meant to be quick grew
-    /// with broken links times notes.
-    fn note_stems(&self) -> Vec<(String, String)> {
-        self.graph
-            .all_files()
-            .iter()
-            .filter_map(|path| path.file_stem().and_then(|s| s.to_str()))
-            .map(|stem| (stem.to_string(), stem.to_lowercase()))
-            .collect()
-    }
-
-    /// Suggest similar targets for a broken link, at most five.
-    fn suggest_targets(stems: &[(String, String)], target: &str) -> Vec<String> {
-        let target_lower = target.to_lowercase();
-        stems
-            .iter()
-            .filter(|(_, lower)| lower.contains(&target_lower) || target_lower.contains(lower))
-            .map(|(stem, _)| stem.clone())
-            .take(5)
-            .collect()
-    }
-
     /// Quick health check (just broken links and orphans)
     pub fn quick_check(&self) -> Result<HealthReport> {
         let mut report = HealthReport::new();
@@ -317,6 +351,123 @@ impl<'a> HealthAnalyzer<'a> {
         report.calculate_score();
 
         Ok(report)
+    }
+}
+
+/// The most suggestions a broken link gets.
+const MAX_SUGGESTIONS: usize = 5;
+
+/// Every note's stem, lowercased, indexed so a broken link's suggestions are
+/// found without comparing its target against every note.
+///
+/// A note is suggested for a target when either name contains the other,
+/// case-insensitively, and the first five such notes in graph order are
+/// kept. Names inside the target are its substrings, looked up directly;
+/// names containing the target share all of its character trigrams, so the
+/// candidates are the notes in every one of those trigrams' lists. Checking
+/// every note for every distinct broken target made a health check grow
+/// with broken targets times notes.
+struct StemIndex {
+    /// Each note's stem as written and lowercased, in graph order.
+    stems: Vec<(String, String)>,
+    /// Lowercased stem to the positions of the notes that have it.
+    by_stem: HashMap<String, Vec<usize>>,
+    /// Character trigram to the positions of the stems containing it, each
+    /// position once and in ascending order.
+    by_trigram: HashMap<[char; 3], Vec<usize>>,
+    /// The longest stem, in characters.
+    longest: usize,
+}
+
+impl StemIndex {
+    fn new(graph: &LinkGraph) -> Self {
+        let stems: Vec<(String, String)> = graph
+            .degrees()
+            .filter_map(|(path, _, _)| path.file_stem().and_then(|s| s.to_str()))
+            .map(|stem| (stem.to_string(), stem.to_lowercase()))
+            .collect();
+        let mut by_stem: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_trigram: HashMap<[char; 3], Vec<usize>> = HashMap::new();
+        let mut longest = 0;
+        for (position, (_, lower)) in stems.iter().enumerate() {
+            by_stem.entry(lower.clone()).or_default().push(position);
+            let chars: Vec<char> = lower.chars().collect();
+            longest = longest.max(chars.len());
+            for window in chars.windows(3) {
+                let list = by_trigram
+                    .entry([window[0], window[1], window[2]])
+                    .or_default();
+                if list.last() != Some(&position) {
+                    list.push(position);
+                }
+            }
+        }
+        Self {
+            stems,
+            by_stem,
+            by_trigram,
+            longest,
+        }
+    }
+
+    /// The first five stems, in graph order, that contain `target` or that
+    /// `target` contains, case-insensitively.
+    fn suggest(&self, target: &str) -> Vec<String> {
+        let target_lower = target.to_lowercase();
+        let chars: Vec<char> = target_lower.chars().collect();
+        let mut matches: Vec<usize> = Vec::new();
+
+        // Stems the target contains: every substring of the target no
+        // longer than the longest stem, the empty one included, looked up as
+        // a whole stem.
+        let boundaries: Vec<usize> = target_lower
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(target_lower.len()))
+            .collect();
+        for (a, &start) in boundaries.iter().enumerate() {
+            for &end in boundaries[a..].iter().take(self.longest + 1) {
+                if let Some(positions) = self.by_stem.get(&target_lower[start..end]) {
+                    matches.extend(positions);
+                }
+            }
+        }
+
+        // Stems that contain the target. A target shorter than a trigram
+        // has none to narrow by, so every stem is checked.
+        if chars.len() < 3 {
+            matches.extend(
+                self.stems
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, lower))| lower.contains(&target_lower))
+                    .map(|(position, _)| position),
+            );
+        } else {
+            // A trigram no stem has rules every stem out.
+            let lists: Option<Vec<&Vec<usize>>> = chars
+                .windows(3)
+                .map(|w| self.by_trigram.get(&[w[0], w[1], w[2]]))
+                .collect();
+            if let Some(mut lists) = lists {
+                lists.sort_by_key(|list| list.len());
+                if let Some((shortest, rest)) = lists.split_first() {
+                    matches.extend(shortest.iter().copied().filter(|&position| {
+                        rest.iter()
+                            .all(|list| list.binary_search(&position).is_ok())
+                            && self.stems[position].1.contains(&target_lower)
+                    }));
+                }
+            }
+        }
+
+        matches.sort_unstable();
+        matches.dedup();
+        matches
+            .into_iter()
+            .take(MAX_SUGGESTIONS)
+            .map(|position| self.stems[position].0.clone())
+            .collect()
     }
 }
 
@@ -530,8 +681,7 @@ mod tests {
         graph.add_file(&file1).unwrap();
         graph.add_file(&file2).unwrap();
 
-        let analyzer = HealthAnalyzer::new(&graph);
-        let suggestions = HealthAnalyzer::suggest_targets(&analyzer.note_stems(), "similar");
+        let suggestions = StemIndex::new(&graph).suggest("similar");
 
         // Should find both files
         assert!(!suggestions.is_empty());
@@ -866,5 +1016,95 @@ mod tests {
         );
         assert_eq!(broken[0].target, "missing");
         assert_eq!(broken[0].source_file, PathBuf::from("source.md"));
+    }
+
+    /// The suggestions the old scan gave: the first five stems in graph
+    /// order that contain the target or that the target contains.
+    fn suggest_by_scan(graph: &LinkGraph, target: &str) -> Vec<String> {
+        let target_lower = target.to_lowercase();
+        graph
+            .all_files()
+            .iter()
+            .filter_map(|path| path.file_stem().and_then(|s| s.to_str()))
+            .filter(|stem| {
+                let lower = stem.to_lowercase();
+                lower.contains(&target_lower) || target_lower.contains(&lower)
+            })
+            .map(str::to_string)
+            .take(MAX_SUGGESTIONS)
+            .collect()
+    }
+
+    #[test]
+    fn indexed_suggestions_match_the_exhaustive_scan() {
+        // A small xorshift, so the names are varied but the same every run.
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = move |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        let alphabet: Vec<char> = "abAB c-1éÉßİ".chars().collect();
+        let word = |next: &mut dyn FnMut(usize) -> usize| {
+            let len = next(9);
+            (0..len)
+                .map(|_| alphabet[next(alphabet.len())])
+                .collect::<String>()
+        };
+
+        let mut graph = LinkGraph::new();
+        for i in 0..400 {
+            let name = word(&mut next);
+            let file = create_test_file(&format!("d{}/{name}.md", i % 7));
+            graph.add_file(&file).unwrap();
+        }
+        let index = StemIndex::new(&graph);
+        for _ in 0..2000 {
+            let target = word(&mut next);
+            assert_eq!(
+                index.suggest(&target),
+                suggest_by_scan(&graph, &target),
+                "suggestions for {target:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn counts_match_the_full_analysis() {
+        let mut graph = LinkGraph::new();
+        let files = [
+            ("hub.md", vec!["a", "b", "missing"]),
+            ("a.md", vec!["hub"]),
+            ("b.md", vec![]),
+            ("lonely.md", vec![]),
+            ("x.md", vec!["y"]),
+            ("y.md", vec!["x", "gone"]),
+        ];
+        for (path, _) in &files {
+            graph.add_file(&create_test_file(path)).unwrap();
+        }
+        for (path, targets) in &files {
+            let links = targets
+                .iter()
+                .map(|t| create_test_link(path, t, false))
+                .collect();
+            graph
+                .update_links(&create_test_file_with_links(path, links))
+                .unwrap();
+        }
+
+        let analyzer = HealthAnalyzer::with_files(&graph, graph.all_unresolved_links());
+        let report = analyzer.analyze().unwrap();
+        let counts = analyzer.counts().unwrap();
+        assert_eq!(counts.broken_links, report.broken_links.len());
+        assert_eq!(counts.orphaned_notes, report.orphaned_notes.len());
+        assert_eq!(counts.dead_end_notes, report.dead_end_notes.len());
+        assert_eq!(counts.isolated_clusters, report.isolated_clusters.len());
+        assert_eq!(HealthReport::score(&counts), report.health_score);
+        assert_eq!(analyzer.hub_notes(10), report.hub_notes);
+        assert_eq!(analyzer.dead_end_notes(), report.dead_end_notes);
+        assert_eq!(counts.broken_links, 2);
+        assert_eq!(counts.orphaned_notes, 1);
     }
 }

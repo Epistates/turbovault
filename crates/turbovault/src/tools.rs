@@ -1336,9 +1336,14 @@ impl CoreToolHandler {
                         );
                         search_engines.remove(&name);
                     }
-                    // The similarity engine has no incremental update: a built
-                    // one is dropped, and a build in progress is marked stale.
-                    if similarity_engines.report(&name, &changed).is_some() {
+                    // The similarity engine takes the same report: only the
+                    // changed notes are re-tokenized, never the vault.
+                    if let Some(engine) = similarity_engines.report(&name, &changed)
+                        && let Err(e) = engine.apply_changes(changed).await
+                    {
+                        log::warn!(
+                            "change-listener: similarity apply failed for '{name}', evicting: {e}"
+                        );
                         similarity_engines.remove(&name);
                     }
                 })
@@ -1394,10 +1399,11 @@ impl CoreToolHandler {
         manager.ensure_fresh().await;
 
         // One build per vault however many callers arrive at once; the build
-        // indexes the entire vault via tantivy.
+        // opens the vault's persisted index and re-indexes what changed since
+        // it was written, or indexes the entire vault when there is none.
         let (engine, missed) = self
             .search_engines
-            .get_or_build(vault_name, || SearchEngine::new(manager.clone()))
+            .get_or_build(vault_name, || SearchEngine::for_vault(manager.clone()))
             .await
             .map_err(|e| McpError::internal(format!("Failed to build search engine: {}", e)))?;
         // Notes that changed after the build read them.
@@ -1421,9 +1427,9 @@ impl CoreToolHandler {
             .get_or_build(&vault_name, || SimilarityEngine::new(manager))
             .await
             .map_err(|e| McpError::internal(format!("Failed to build similarity engine: {}", e)))?;
-        // It has no incremental update, so an engine that missed a change
-        // answers this call and is not kept.
-        if !missed.is_empty() {
+        // Notes that changed after the build read them.
+        if let Err(e) = engine.apply_changes(missed).await {
+            log::warn!("similarity engine for '{vault_name}' missed changes, evicting: {e}");
             self.similarity_engines.remove(&vault_name);
         }
         Ok(engine)
@@ -1561,10 +1567,10 @@ impl CoreToolHandler {
     /// Every write tool ends here. Derived state is not kept here: every write
     /// goes through `VaultManager`, whose change-listener (wired for every
     /// backend in `wire_manager_indexes`) has already applied the change to the
-    /// search index and dropped the similarity engine before the write
-    /// returns. This used to evict both caches again as well, which threw away
-    /// the search index the listener had just updated and made the next search
-    /// rebuild it from every note in the vault.
+    /// search index and the similarity engine before the write returns. This
+    /// used to evict both caches again as well, which threw away the search
+    /// index the listener had just updated and made the next search rebuild it
+    /// from every note in the vault.
     ///
     /// `vault_name` is the vault that was WRITTEN, which is not necessarily the
     /// active vault by the time this runs — `set_active_vault` may land between

@@ -96,7 +96,7 @@ impl ViewerTools {
             .unwrap_or_else(|| "Vault".to_string());
 
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
 
         // Build nodes, and a path -> concept_id map for edge resolution.
         let mut nodes = Vec::with_capacity(files.len());

@@ -50,21 +50,24 @@ impl AnalysisTools {
 
     /// Detect cycles (mutual linking patterns)
     pub async fn detect_cycles(&self) -> Result<Vec<Vec<String>>> {
+        // Off the async workers: finding cycles walks the whole graph.
         let graph = self.manager.link_graph_flushed().await;
-        let graph_read = graph.read().await;
-
-        let cycles = graph_read
-            .cycles()
-            .into_iter()
-            .map(|cycle| {
-                cycle
-                    .into_iter()
-                    .map(|path| self.manager.relative_path(&path))
-                    .collect()
-            })
-            .collect();
-
-        Ok(cycles)
+        let manager = Arc::clone(&self.manager);
+        tokio::task::spawn_blocking(move || {
+            graph
+                .blocking_read()
+                .cycles()
+                .into_iter()
+                .map(|cycle| {
+                    cycle
+                        .into_iter()
+                        .map(|path| manager.relative_path(&path))
+                        .collect()
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| Error::other(format!("graph analysis task failed: {e}")))
     }
 
     /// Get link density (total links / possible links)
