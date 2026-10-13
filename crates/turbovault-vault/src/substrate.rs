@@ -70,11 +70,14 @@ impl ApplyOutcome {
 /// Dispatches a [`ChangePlan`] to whichever backend a vault is configured
 /// for (design §6.3's `WriteSubstrate` enum).
 pub enum WriteSubstrate {
+    /// Writes files directly: temp file and atomic rename.
     Direct(DirectSubstrate),
+    /// Commits each plan to Git, then writes it out.
     Git(GitSubstrate),
 }
 
 impl WriteSubstrate {
+    /// Apply `plan` with the configured backend.
     pub async fn apply(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         match self {
             WriteSubstrate::Direct(direct) => direct.apply(plan).await,
@@ -169,6 +172,7 @@ pub struct DirectSubstrate {
 }
 
 impl DirectSubstrate {
+    /// A direct substrate writing into `vault_path`.
     pub fn new(vault_path: PathBuf) -> Self {
         Self {
             vault_path,
@@ -208,6 +212,9 @@ impl DirectSubstrate {
         .map_err(Error::io)
     }
 
+    /// Apply `plan`: its preconditions are all checked before anything is
+    /// written, then its changes land in order. A failure partway leaves the
+    /// earlier changes in place and says which change failed.
     pub async fn apply(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         let _guard = self.write_lock.lock().await;
         // The in-process lock orders this process's writes; the file lock
@@ -553,6 +560,7 @@ impl GitSubstrate {
         }
     }
 
+    /// Apply `plan` as one commit: all of it lands or none of it does.
     pub async fn apply(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         let plan_owned = plan.clone();
         let include_ignored = self.include_ignored;

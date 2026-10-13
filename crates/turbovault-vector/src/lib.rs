@@ -10,6 +10,8 @@
 //! See the crate README for the stack this is built on and why, and for
 //! credit to the prototype this design started from.
 
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod chunk;
 pub mod config;
 pub mod dense;

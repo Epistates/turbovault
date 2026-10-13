@@ -27,6 +27,7 @@ pub struct CommitLocks {
 }
 
 impl CommitLocks {
+    /// An empty registry.
     pub fn new() -> Self {
         Self::default()
     }

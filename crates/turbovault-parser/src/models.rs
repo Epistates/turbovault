@@ -1,3 +1,5 @@
+//! Parser models that aren't shared through `turbovault-core`.
+
 use serde::{Deserialize, Serialize};
 
 /// Obsidian task checkbox states
@@ -15,10 +17,13 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// Whether the task is done (`[x]`). Cancelled tasks are not.
     pub fn is_completed(&self) -> bool {
         matches!(self, TaskStatus::Done)
     }
 
+    /// The status a checkbox character means: `x` done, `/` in progress,
+    /// `-` cancelled, anything else open.
     pub fn from_marker(c: char) -> Self {
         match c {
             'x' | 'X' => TaskStatus::Done,

@@ -38,12 +38,16 @@ pub struct FrontmatterSqlEngine {
 /// queries to avoid rebuilding the in-memory tables each time.
 pub struct SqlSession {
     glue: Glue<MemoryStorage>,
+    /// Rows in the `files` table.
     pub file_count: usize,
+    /// Rows in the `tags` table.
     pub tag_count: usize,
+    /// Rows in the `links` table.
     pub link_count: usize,
 }
 
 impl FrontmatterSqlEngine {
+    /// An engine over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }

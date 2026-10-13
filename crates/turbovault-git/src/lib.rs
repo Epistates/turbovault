@@ -17,6 +17,7 @@
 //!   rebuild-on-conflict (GWS.3).
 //! - (next) per-file precondition, materialization, changesets (GWS.4+).
 
+#![warn(missing_docs, unreachable_pub)]
 #![forbid(unsafe_code)]
 
 mod cas;

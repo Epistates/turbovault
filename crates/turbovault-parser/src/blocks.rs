@@ -1380,6 +1380,8 @@ fn normalize_heading_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// A heading's anchor: lowercased, with whitespace as `-` and anything
+/// else that isn't a letter or digit dropped.
 pub fn slugify(text: &str) -> String {
     text.to_lowercase()
         .chars()

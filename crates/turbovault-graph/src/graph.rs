@@ -787,9 +787,13 @@ fn is_attachment_ext(ext: &str) -> bool {
 /// Statistics about the graph
 #[derive(Debug, Clone)]
 pub struct GraphStats {
+    /// Notes in the graph.
     pub total_files: usize,
+    /// Links between notes.
     pub total_links: usize,
+    /// Notes with no links in or out.
     pub orphaned_files: usize,
+    /// `total_links / total_files`, or 0 for an empty graph.
     pub average_links_per_file: f64,
 }
 

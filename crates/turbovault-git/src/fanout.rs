@@ -54,10 +54,15 @@ pub struct MergeBackResult {
 /// ([`FanoutWorktree`]) wraps the same info for ergonomic borrowing.
 #[derive(Debug, Clone)]
 pub struct FanoutInfo {
+    /// The branch the fanout commits to.
     pub wip_branch: String,
+    /// The worktree's name in the repository.
     pub worktree_name: String,
+    /// Where the worktree is checked out.
     pub worktree_path: PathBuf,
+    /// The main branch's tip when the fanout started.
     pub parent_tip: Oid,
+    /// The branch the fanout merges back into.
     pub main_branch: String,
 }
 
@@ -330,8 +335,11 @@ impl VaultRepo {
 /// concern; the substrate just enumerates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrphanFanout {
+    /// The worktree's name in the repository.
     pub worktree_name: String,
+    /// The branch it commits to.
     pub wip_branch: String,
+    /// Where it is checked out.
     pub worktree_path: PathBuf,
 }
 

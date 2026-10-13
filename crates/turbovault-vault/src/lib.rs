@@ -76,6 +76,8 @@
 //! - Invalid paths
 //! - Encoding errors
 
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod edit;
 pub mod manager;
 pub mod reindex;
@@ -88,6 +90,7 @@ pub use reindex::{
 };
 pub use substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
 
+/// The vault types and core's prelude, for a glob import.
 pub mod prelude {
     pub use crate::edit::*;
     pub use crate::manager::*;

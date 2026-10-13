@@ -118,6 +118,8 @@
 //! - Fast pre-filters to skip regex when patterns aren't present
 //! - Excluded range tracking to avoid parsing inside code blocks
 
+#![warn(missing_docs, unreachable_pub)]
+
 // Core modules
 mod blocks;
 pub mod canvas;

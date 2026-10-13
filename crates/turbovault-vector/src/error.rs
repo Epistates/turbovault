@@ -1,3 +1,5 @@
+//! Errors the vector engine returns.
+
 use thiserror::Error;
 
 /// Errors raised by the vector search engine.
