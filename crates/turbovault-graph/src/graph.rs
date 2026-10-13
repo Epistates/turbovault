@@ -264,10 +264,12 @@ impl LinkGraph {
             idx
         };
 
-        // Remove old outgoing edges and unresolved links for this source
-        let outgoing: Vec<_> = self.graph.edges(source_idx).map(|e| e.id()).collect();
-        for edge_id in outgoing {
-            self.graph.remove_edge(edge_id);
+        // Remove old outgoing edges and unresolved links for this source.
+        // Edge ids can't be collected first: removing an edge moves the
+        // graph's last edge into its slot, so a collected id can come to name
+        // another edge, or none, and the old edge survives.
+        while let Some(edge) = self.graph.first_edge(source_idx, Outgoing) {
+            self.graph.remove_edge(edge);
         }
         self.unresolved_links.remove(source_path);
 
@@ -708,6 +710,73 @@ mod tests {
         );
         vault_file.links = parsed_links;
         vault_file
+    }
+
+    /// A small deterministic generator, so a failure reproduces exactly.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// The graph's edges out of `path`, as sorted target paths.
+    fn edge_targets(graph: &LinkGraph, path: &str) -> Vec<String> {
+        let mut targets: Vec<String> = graph
+            .forward_links(&PathBuf::from(path))
+            .unwrap()
+            .into_iter()
+            .flat_map(|(target, links)| {
+                std::iter::repeat_n(target.display().to_string(), links.len())
+            })
+            .collect();
+        targets.sort();
+        targets
+    }
+
+    /// Re-parsing notes in any order leaves each note with exactly the edges
+    /// its current links declare: none left over from an earlier parse.
+    #[test]
+    fn test_update_links_matches_declared_links_under_random_reparses() {
+        const NOTES: usize = 40;
+        let name = |i: usize| format!("n{i}.md");
+        let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
+        let mut graph = LinkGraph::new();
+        let mut declared: Vec<Vec<usize>> = vec![Vec::new(); NOTES];
+        for i in 0..NOTES {
+            graph.add_file(&create_test_file(&name(i), vec![])).unwrap();
+        }
+
+        for round in 0..4000 {
+            let source = rng.below(NOTES);
+            let count = rng.below(6);
+            let targets: Vec<usize> = (0..count)
+                .map(|_| rng.below(NOTES))
+                .filter(|&t| t != source)
+                .collect();
+            let target_names: Vec<String> = targets.iter().map(|&t| format!("n{t}")).collect();
+            let file = create_test_file(
+                &name(source),
+                target_names.iter().map(String::as_str).collect(),
+            );
+            graph.update_links(&file).unwrap();
+            declared[source] = targets;
+
+            let check = rng.below(NOTES);
+            let mut expected: Vec<String> = declared[check].iter().map(|&t| name(t)).collect();
+            expected.sort();
+            assert_eq!(
+                edge_targets(&graph, &name(check)),
+                expected,
+                "round {round}: n{check} has edges it no longer declares"
+            );
+        }
+        let total: usize = declared.iter().map(Vec::len).sum();
+        assert_eq!(graph.edge_count(), total);
     }
 
     #[test]
