@@ -60,10 +60,12 @@ jobs:
   # ── Publish Crates ───────────────────────────────────────────────────
   # Runs only on a `v*` tag, and only when CARGO_REGISTRY_TOKEN is present, so
   # a fork or a repo without the secret builds a release without publishing.
+  # Waits on the builds too, so a tag whose binaries fail to build or to
+  # start never reaches crates.io half-released.
   publish:
     name: Publish Crates
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, build]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,33 +118,44 @@ jobs:
       matrix:
         include:
           # Linux x86_64 (glibc)
+          # `smoke` marks the targets the runner can execute, so the built
+          # binary is started and driven over stdio before it ships. The
+          # ARM64 Linux ones are cross-compiled on x86_64 and cannot run
+          # there, and macos-latest is ARM64.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             use_cross: false
+            smoke: true
           # Linux x86_64 (musl - for Alpine/static linking)
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
             use_cross: true
+            smoke: true
           # Linux ARM64 (glibc)
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             use_cross: true
+            smoke: false
           # Linux ARM64 (musl - for Alpine/static linking)
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-latest
             use_cross: true
+            smoke: false
           # macOS x86_64
           - target: x86_64-apple-darwin
             runner: macos-latest
             use_cross: false
+            smoke: false
           # macOS ARM64 (Apple Silicon)
           - target: aarch64-apple-darwin
             runner: macos-latest
             use_cross: false
+            smoke: true
           # Windows x86_64
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             use_cross: false
+            smoke: true
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -176,6 +189,15 @@ jobs:
           ar = "aarch64-linux-gnu-ar"
           EOF
 
+      # cargo-auditable embeds the resolved dependency list in the binary, so
+      # `cargo audit bin` can check a shipped binary years later. It wraps
+      # cargo on the host, so the cross-compiled targets (built inside cross's
+      # container) go without; the release SBOM covers them.
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        if: ${{ !matrix.use_cross }}
+        with:
+          tool: cargo-auditable@0.7.7
+
       # Prebuilt binaries carry every feature (see `release` in
       # crates/turbovault/Cargo.toml); the unix socket transport exists only
       # off Windows.
@@ -186,9 +208,24 @@ jobs:
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
           else
-            cargo build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
+            cargo auditable build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
           fi
         shell: bash
+
+      # Start the binary that is about to ship and hold a real MCP session
+      # with it: --version, initialize, tools/list. A build that links but
+      # cannot start (a missing runtime library, a panic at startup) fails
+      # here instead of on a user's machine.
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          BIN="target/${{ matrix.target }}/release/turbovault"
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="${BIN}.exe"; fi
+          PYTHON=python3
+          command -v python3 >/dev/null 2>&1 || PYTHON=python
+          "$PYTHON" scripts/smoke_test.py "$BIN" "$VERSION"
 
       # macOS Code Signing (optional - requires secrets to be configured)
       - name: Import Apple Code Signing Certificate
@@ -234,7 +271,7 @@ jobs:
             spctl -a -v target/${{ matrix.target }}/release/turbovault || true
             echo "Binary signed and notarized"
           else
-            echo "Developer ID certificate not configured. Using ad-hoc signing..."
+            echo "::warning title=macOS binary not notarized::No Developer ID certificate is configured, so ${{ matrix.target }} is ad-hoc signed and Gatekeeper will warn users. Set the APPLE_* secrets to sign and notarize."
             codesign --remove-signature target/${{ matrix.target }}/release/turbovault || true
             codesign -s - target/${{ matrix.target }}/release/turbovault
             codesign -v target/${{ matrix.target }}/release/turbovault
@@ -253,13 +290,13 @@ jobs:
           # Create zip for Windows (tar.gz not common on Windows)
           Compress-Archive -Path $binary -DestinationPath "artifacts/$binary.zip"
 
-          # Generate SHA256
-          $hash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLower()
-          "$hash  $binary" | Out-File -FilePath "artifacts/$binary.sha256" -Encoding ascii -NoNewline
+          # Checksum the archive that ships, the same file SHA256SUMS covers
+          $hash = (Get-FileHash "artifacts/$binary.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $binary.zip" | Out-File -FilePath "artifacts/$binary.zip.sha256" -Encoding ascii -NoNewline
 
           Write-Host "Binary info:"
           Get-Item $binary | Format-List Length, LastWriteTime
-          Get-Content "artifacts/$binary.sha256"
+          Get-Content "artifacts/$binary.zip.sha256"
         shell: pwsh
 
       - name: Prepare artifacts (Unix)
@@ -272,13 +309,15 @@ jobs:
 
           # Create tar to preserve permissions and prevent corruption
           tar -czf "artifacts/$BINARY.tar.gz" "$BINARY"
+          # Checksum the archive that ships, the same file SHA256SUMS covers
+          cd artifacts
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$BINARY" > "artifacts/$BINARY.sha256"
+            sha256sum "$BINARY.tar.gz" > "$BINARY.tar.gz.sha256"
           else
-            shasum -a 256 "$BINARY" > "artifacts/$BINARY.sha256"
+            shasum -a 256 "$BINARY.tar.gz" > "$BINARY.tar.gz.sha256"
           fi
-          ls -lh "$BINARY"
-          cat "artifacts/$BINARY.sha256"
+          ls -lh "$BINARY.tar.gz"
+          cat "$BINARY.tar.gz.sha256"
         shell: bash
 
       - name: Upload artifacts
@@ -297,9 +336,21 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
+      # Sigstore-signed build provenance and SBOM attestations, stored by
+      # GitHub and checked with `gh attestation verify`.
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-cyclonedx@0.5.9
 
       - name: Download all artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -334,13 +385,37 @@ jobs:
           done
         shell: bash
 
+      # One CycloneDX SBOM for the binary as released: the `release` and
+      # `unix` features, dependencies for every target platform.
+      - name: Generate SBOM
+        run: |
+          cargo cyclonedx --manifest-path crates/turbovault/Cargo.toml \
+            --format json --spec-version 1.5 --features release,unix --target all \
+            --override-filename turbovault.cdx -q
+          cp crates/turbovault/turbovault.cdx.json "final-release/turbovault-${GITHUB_REF_NAME}.cdx.json"
+        shell: bash
+
       - name: Generate combined checksums
         run: |
           cd final-release
-          # Generate SHA256SUMS for archives (not individual binaries)
-          sha256sum *.tar.gz *.zip 2>/dev/null | grep -v "No such file" > SHA256SUMS || true
+          sha256sum -- *.tar.gz *.zip *.cdx.json > SHA256SUMS
           cat SHA256SUMS
         shell: bash
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            final-release/*.tar.gz
+            final-release/*.zip
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: |
+            final-release/*.tar.gz
+            final-release/*.zip
+          sbom-path: final-release/turbovault-${{ github.ref_name }}.cdx.json
 
       - name: Create Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -349,6 +424,7 @@ jobs:
             final-release/*.tar.gz
             final-release/*.zip
             final-release/*.sha256
+            final-release/*.cdx.json
             final-release/SHA256SUMS
           generate_release_notes: true
           draft: false

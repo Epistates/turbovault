@@ -46,3 +46,6 @@ htmlcov/
 !crates/*/tests/fixtures/*.md
 !/LICENSE*
 !LICENSE
+
+# CycloneDX SBOMs from cargo-cyclonedx (generated in the release workflow)
+*.cdx.json
