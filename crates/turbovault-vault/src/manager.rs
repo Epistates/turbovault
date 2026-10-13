@@ -523,6 +523,68 @@ async fn read_note_with_fingerprint(
     })
 }
 
+/// Parse what [`read_note_with_fingerprint`] read from `path`, with the
+/// file's own created and modified times, which the parser can't know.
+fn parse_note(parser: &Parser, path: &Path, read: &NoteRead) -> Result<VaultFile> {
+    let mut file = parser.parse_file(path, &read.content)?;
+    read.times.stamp(&mut file);
+    Ok(file)
+}
+
+/// The note cache and link graph for a vault, from initialization's reads.
+///
+/// Two passes: every note is added to the graph before any link is resolved,
+/// so a link finds its target regardless of scan order.
+fn build_index(
+    parser: &Parser,
+    reads: Vec<(PathBuf, std::io::Result<NoteRead>)>,
+) -> (HashMap<PathBuf, CacheEntry>, LinkGraph) {
+    let mut cache = HashMap::with_capacity(reads.len());
+    let mut graph = LinkGraph::new();
+    let mut parsed_files = Vec::with_capacity(reads.len());
+
+    for (file_path, read) in reads {
+        log::debug!("Processing file: {:?}", file_path);
+        let read = match read {
+            Ok(read) => read,
+            Err(e) => {
+                log::warn!("Failed to read file {}: {}", file_path.display(), e);
+                continue;
+            }
+        };
+        let vault_file = match parse_note(parser, &file_path, &read) {
+            Ok(vault_file) => vault_file,
+            Err(e) => {
+                log::warn!("Failed to parse {}: {}", file_path.display(), e);
+                continue;
+            }
+        };
+        log::debug!(
+            "Parsed {}: {} links extracted",
+            file_path.display(),
+            vault_file.links.len()
+        );
+        if let Err(e) = graph.add_file(&vault_file) {
+            log::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
+        }
+        cache.insert(
+            file_path,
+            CacheEntry {
+                file: vault_file.clone(),
+                observed: read.observed,
+            },
+        );
+        parsed_files.push(vault_file);
+    }
+
+    for vault_file in &parsed_files {
+        if let Err(e) = graph.update_links(vault_file) {
+            log::warn!("Graph update_links failed: {}", e);
+        }
+    }
+    (cache, graph)
+}
+
 /// What [`read_note_with_fingerprint`] read.
 struct NoteRead {
     content: String,
@@ -1313,23 +1375,17 @@ impl VaultManager {
     pub async fn initialize(&self) -> Result<()> {
         log::info!("Starting vault initialization for: {:?}", self.vault_path);
 
-        let mut cache = self.file_cache.write().await;
-        let mut graph = self.link_graph.write().await;
-
         // Scan for markdown files, keeping the metadata the scan already read:
         // it becomes each cache entry's fingerprint, so the first freshness
         // sweep after startup compares against the same observation the graph
-        // was built from and reports nothing.
-        let scanned = self.scan_files_with_metadata()?;
+        // was built from and reports nothing. The walk is blocking I/O, so it
+        // runs on the blocking pool.
+        let spec = Arc::clone(&self.scan_spec);
+        let scanned = tokio::task::spawn_blocking(move || spec.walk())
+            .await
+            .map_err(|e| Error::other(format!("vault scan task failed: {e}")))??;
         log::info!("Found {} markdown files", scanned.len());
 
-        // Two-pass initialization: first add all files to the graph index,
-        // then resolve links. This ensures every file is discoverable when
-        // resolving wikilink targets, regardless of scan order.
-        let mut parsed_files = Vec::with_capacity(scanned.len());
-
-        // Pass 1: parse all files, populate cache and graph nodes.
-        //
         // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
         // note file here (a `.txt`, a `.canvas`) would put it somewhere no
         // applier ever updates it, so every freshness sweep would report it
@@ -1350,53 +1406,23 @@ impl VaultManager {
             .collect()
             .await;
 
-        for (file_path, read) in reads {
-            log::debug!("Processing file: {:?}", file_path);
-            match read {
-                Ok(read) => match self.parse_read(&file_path, &read) {
-                    Ok(vault_file) => {
-                        let observed = read.observed;
-                        log::debug!(
-                            "Parsed {}: {} links extracted",
-                            file_path.display(),
-                            vault_file.links.len()
-                        );
-
-                        cache.insert(
-                            file_path.clone(),
-                            CacheEntry {
-                                file: vault_file.clone(),
-                                observed,
-                            },
-                        );
-
-                        if let Err(e) = graph.add_file(&vault_file) {
-                            log::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
-                        }
-                        parsed_files.push(vault_file);
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse {}: {}", file_path.display(), e);
-                    }
-                },
-                Err(e) => {
-                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
-                }
-            }
-        }
-
-        // Pass 2: resolve links (all files now in the index)
-        for vault_file in &parsed_files {
-            if let Err(e) = graph.update_links(vault_file) {
-                log::warn!("Graph update_links failed: {}", e);
-            }
-        }
+        // Parsing and linking are CPU work, seconds of it on a large vault,
+        // so they run on the blocking pool too, and build the cache and graph
+        // off to the side. Neither lock is held until they are swapped in.
+        let parser = Parser::new(self.vault_path.clone());
+        let (cache, graph) = tokio::task::spawn_blocking(move || build_index(&parser, reads))
+            .await
+            .map_err(|e| Error::other(format!("vault index task failed: {e}")))?;
 
         log::info!(
             "Vault initialization complete. Graph now has {} files, {} links",
             graph.node_count(),
             graph.edge_count()
         );
+        let mut cache_guard = self.file_cache.write().await;
+        let mut graph_guard = self.link_graph.write().await;
+        *cache_guard = cache;
+        *graph_guard = graph;
 
         Ok(())
     }
@@ -1564,16 +1590,16 @@ impl VaultManager {
 
         let vault_path = self.resolve_path(path)?;
 
-        // Acquire write lock on file cache to prevent TOCTOU
-        let _cache_guard = self.file_cache.write().await;
-
-        // Read current content
+        // Read current content. No lock is held from here to the write: the
+        // write is held to this exact pre-image (below), so an edit landing
+        // in between is refused rather than overwritten, and the fuzzy match
+        // doesn't stall every other reader and writer of the cache.
         let current_content = tokio::fs::read_to_string(&vault_path)
             .await
             .map_err(|e| Error::io_at(self.relative_path(&vault_path), e))?;
 
         // Preserve the exact pre-image that the edit was calculated from. The
-        // write below revalidates this hash after releasing the cache lock.
+        // write below revalidates this hash.
         // Mint the token via the active SUBSTRATE's convention (git blob-oid on
         // git, NFC-sha256 on direct) — the same token `edit`'s `expected`
         // precondition carries and the token the substrate re-checks at apply
@@ -1592,12 +1618,16 @@ impl VaultManager {
             });
         }
 
-        // Parse and apply edits
-        let engine = EditEngine::new();
-        let blocks = engine.parse_blocks(edits)?;
-
-        let (mut edit_result, new_content) =
-            engine.apply_edits(&current_content, &blocks, dry_run)?;
+        // Parse and apply edits. Fuzzy matching is CPU work bounded per block
+        // but not in the number of blocks, so it runs on the blocking pool.
+        let edits = edits.to_string();
+        let (mut edit_result, new_content) = tokio::task::spawn_blocking(move || {
+            let engine = EditEngine::new();
+            let blocks = engine.parse_blocks(&edits)?;
+            engine.apply_edits(&current_content, &blocks, dry_run)
+        })
+        .await
+        .map_err(|e| Error::other(format!("edit task failed: {e}")))??;
 
         // Report substrate-native version tokens (git blob-oid on git, NFC-
         // sha256 on direct) so the caller can round-trip `new_hash` as a
@@ -1611,9 +1641,6 @@ impl VaultManager {
         if dry_run {
             return Ok(edit_result);
         }
-
-        // Release cache guard before write (avoid deadlock)
-        drop(_cache_guard);
 
         // Re-check at write time so an intervening in-process or external
         // change is rejected instead of silently overwritten.
@@ -1898,12 +1925,9 @@ impl VaultManager {
             .unwrap_or(false)
     }
 
-    /// Parse what [`read_note_with_fingerprint`] read from `path`, with the
-    /// file's own created and modified times, which the parser can't know.
+    /// [`parse_note`] with this manager's parser.
     fn parse_read(&self, path: &Path, read: &NoteRead) -> Result<VaultFile> {
-        let mut file = self.parser.parse_file(path, &read.content)?;
-        read.times.stamp(&mut file);
-        Ok(file)
+        parse_note(&self.parser, path, read)
     }
 
     /// Bring the link graph + note cache into agreement with a substrate
@@ -2773,6 +2797,25 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// `initialize` builds the cache and graph from the vault as it is, so
+    /// running it again drops a note deleted since rather than keeping it.
+    #[tokio::test]
+    async fn initialize_again_reflects_the_vault_as_it_is() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        std::fs::write(temp_dir.path().join("gone.md"), "# Gone\n").unwrap();
+        std::fs::write(temp_dir.path().join("kept.md"), "See [[gone]].\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        std::fs::remove_file(temp_dir.path().join("gone.md")).unwrap();
+        manager.initialize().await.unwrap();
+
+        let cached = manager.all_cached_vault_files().await;
+        assert_eq!(cached.len(), 1);
+        assert!(cached[0].path.ends_with("kept.md"));
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
     }
 
     /// `Note.MD` is a note: cached, and parsed, so its links are backlinks.
