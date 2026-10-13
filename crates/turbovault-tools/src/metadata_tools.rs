@@ -110,8 +110,8 @@ fn parse_query(pattern: &str) -> Result<QueryFilter> {
         }
     }
 
-    Err(Error::config_error(format!(
-        "Unable to parse query pattern: {}",
+    Err(Error::validation_error(format!(
+        "Unable to parse query pattern: {}. Use `key: \"value\"`, `key: contains(\"text\")`, `key > 3` or `key < 3`",
         pattern
     )))
 }

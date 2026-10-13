@@ -26,22 +26,41 @@ impl AuditProvider {
     // ─── AUDIT TOOLS ─────────────────────────────────────────────────
 
     #[tool(
-        description = "View operation history for the active vault with optional filters by path, operation type (CREATE/UPDATE/DELETE/MOVE), and result limit",
+        description = "List the changes TurboVault made to the active vault, newest first: each operation's id, type, path, time and content hashes. Use an id with diff_note_version, rollback_preview or rollback_note. Not available on Git-backed vaults, whose history is in Git.",
+        title = "Audit Log",
         tags = ["read", "audit"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn audit_log(
         &self,
+        #[description(
+            "Only operations on paths containing this text, such as `projects/` or `Plan.md`."
+        )]
         path: Option<String>,
+        #[description(
+            "Only operations of this type: `CREATE`, `UPDATE`, `DELETE`, `MOVE` or `ROLLBACK`."
+        )]
         operation: Option<String>,
-        limit: Option<usize>,
+        #[description("Most entries to return. Default 50, maximum 1000.")] limit: Option<usize>,
+        #[description(
+            "How many of the newest matching entries to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("audit_log").await?;
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;
 
-        let mut filter = AuditFilter::new().with_limit(clamp_count(limit, 50, MAX_AUDIT_ENTRIES));
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_AUDIT_ENTRIES);
+        let mut filter = AuditFilter::new().with_limit(if request.limit == 0 {
+            0
+        } else {
+            request.fetch()
+        });
         if let Some(p) = path {
             filter = filter.with_path(p);
         }
@@ -53,7 +72,7 @@ impl AuditProvider {
                 "MOVE" => OperationType::Move,
                 "ROLLBACK" => OperationType::Rollback,
                 _ => {
-                    return Err(McpError::internal(format!(
+                    return Err(McpError::invalid_params(format!(
                         "Unknown operation type: {}. Use CREATE, UPDATE, DELETE, MOVE, or ROLLBACK",
                         op
                     )));
@@ -63,24 +82,31 @@ impl AuditProvider {
         }
 
         let entries = audit_tools.query_log(&filter).await.map_err(to_mcp_error)?;
-        let count = entries.len();
+        let (entries, page) = request.slice_ranked(entries);
         StandardResponse::new(
             &vault_name,
             "audit_log",
             serde_json::to_value(&entries).map_err(|e| McpError::internal(e.to_string()))?,
         )
-        .with_count(count)
+        .with_page(page)
         .with_duration(start.elapsed().as_millis() as u64)
         .with_next_steps(&["rollback_preview", "diff_note_version", "audit_stats"])
         .to_json()
     }
 
     #[tool(
-        description = "Preview what a rollback would change without applying it (dry run). Shows unified diff between current content and rollback target",
+        description = "Show what rollback_note would do for an operation, without doing it: the diff between the note now and the content it would be restored to, and any warnings. Not available on Git-backed vaults.",
+        title = "Preview Rollback",
         tags = ["read", "audit"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn rollback_preview(&self, operation_id: String) -> McpResult<serde_json::Value> {
+    async fn rollback_preview(
+        &self,
+        #[description("The `id` of the audit_log entry to undo.")] operation_id: String,
+    ) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("rollback_preview").await?;
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -104,13 +130,20 @@ impl AuditProvider {
     }
 
     #[tool(
-        description = "Restore a note to its state before a specific operation (identified by operation_id from audit_log). Refuses if the note changed since that operation, since the change would be lost; check rollback_preview, then pass force=true to roll back anyway. A rollback is itself recorded, so it can be rolled back",
+        description = "Undo one operation from the audit trail: restore the note to its content before it, or remove a note it created. Refuses if the note changed since that operation, since the later change would be lost; check rollback_preview, then pass force to roll back anyway. A rollback is itself recorded, so it can be rolled back. Not available on Git-backed vaults.",
+        title = "Roll Back Note",
         tags = ["write", "audit"],
+        read_only = false,
         destructive = true,
+        idempotent = false,
+        open_world = false,
     )]
     async fn rollback_note(
         &self,
-        operation_id: String,
+        #[description("The `id` of the audit_log entry to undo.")] operation_id: String,
+        #[description(
+            "Roll back even though the note changed since that operation, discarding the later change. Default false."
+        )]
         force: Option<bool>,
     ) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("rollback_note").await?;
@@ -154,9 +187,13 @@ impl AuditProvider {
     }
 
     #[tool(
-        description = "Get audit trail statistics including operation counts by type, total snapshot storage used, and time range of recorded operations",
+        description = "Summarize the audit trail: how many operations of each type, how much snapshot storage it uses, and the time span it covers. Not available on Git-backed vaults.",
+        title = "Audit Statistics",
         tags = ["read", "audit"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn audit_stats(&self) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("audit_stats").await?;

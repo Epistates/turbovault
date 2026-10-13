@@ -21,26 +21,6 @@ impl Deref for RelationshipProvider {
     }
 }
 
-/// Cut the array under `key` in `data` to `request`'s page.
-fn page_array(
-    data: &mut serde_json::Value,
-    key: &str,
-    request: &PageRequest,
-    ranked: bool,
-) -> Page {
-    let items = match data.get_mut(key).map(serde_json::Value::take) {
-        Some(serde_json::Value::Array(items)) => items,
-        _ => Vec::new(),
-    };
-    let (items, page) = if ranked {
-        request.slice_ranked(items)
-    } else {
-        request.slice(items)
-    };
-    data[key] = serde_json::Value::Array(items);
-    page
-}
-
 #[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
 impl RelationshipProvider {
     // ==================== Relationship Operations ====================
@@ -79,7 +59,7 @@ impl RelationshipProvider {
             .suggest_links(&file, request.fetch())
             .await
             .map_err(to_mcp_error)?;
-        let page = page_array(&mut result_data, "suggestions", &request, true);
+        let page = request.slice_field(&mut result_data, "suggestions", true);
 
         let response = StandardResponse::new(vault_name, "suggest_links", result_data)
             .with_page(page)
@@ -146,7 +126,7 @@ impl RelationshipProvider {
         let tools = RelationshipTools::new(manager);
         let mut result_data = tools.get_centrality_ranking().await.map_err(to_mcp_error)?;
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
-        let page = page_array(&mut result_data, "rankings", &request, false);
+        let page = request.slice_field(&mut result_data, "rankings", false);
 
         let response = StandardResponse::new(vault_name, "get_centrality_ranking", result_data)
             .with_page(page)

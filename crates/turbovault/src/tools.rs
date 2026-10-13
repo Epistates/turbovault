@@ -271,6 +271,28 @@ impl PageRequest {
         self.take(items, None)
     }
 
+    /// This page of `items`, the first [`Self::fetch`] items of a list of
+    /// `total` items.
+    fn slice_leading<T>(&self, items: Vec<T>, total: usize) -> (Vec<T>, Page) {
+        self.take(items, Some(total))
+    }
+
+    /// Cut the array under `key` in `data` to this page. `ranked` says the
+    /// array holds only the first [`Self::fetch`] items of a longer list.
+    fn slice_field(&self, data: &mut serde_json::Value, key: &str, ranked: bool) -> Page {
+        let items = match data.get_mut(key).map(serde_json::Value::take) {
+            Some(serde_json::Value::Array(items)) => items,
+            _ => Vec::new(),
+        };
+        let (items, page) = if ranked {
+            self.slice_ranked(items)
+        } else {
+            self.slice(items)
+        };
+        data[key] = serde_json::Value::Array(items);
+        page
+    }
+
     fn take<T>(&self, items: Vec<T>, total: Option<usize>) -> (Vec<T>, Page) {
         let mut rest = items.into_iter().skip(self.offset);
         let page: Vec<T> = rest.by_ref().take(self.limit).collect();
