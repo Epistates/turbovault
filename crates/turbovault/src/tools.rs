@@ -476,31 +476,42 @@ impl CoreToolHandler {
         Ok(())
     }
 
-    /// Helper to save vault state to cache
+    /// Helper to save vault state to cache. A fanout's transient vault is
+    /// not saved: it is gone once the fanout ends, and a restored one would
+    /// point at a scratch worktree that no longer exists. While one is
+    /// active, its base vault is saved as the active vault instead.
     async fn persist_vault_state(&self) -> Result<()> {
         if let Some(cache) = self.persistent_cache.read().await.as_ref() {
-            // Get current vaults and active vault
-            // A fanout vault is a scratch worktree that lives only as long as
-            // this process's fanout does; restoring it in a later session
-            // would register a directory nothing is tracking any more.
-            let fanout_vaults: std::collections::HashSet<String> = self
-                .active_fanouts
-                .read()
-                .await
-                .values()
-                .map(|record| record.fanout_vault_name.clone())
-                .collect();
-            let vaults_lock = self.multi_vault_mgr.list_vaults().await?;
-            let vault_configs: Vec<_> = vaults_lock
-                .iter()
-                .filter(|v| !fanout_vaults.contains(&v.name))
-                .map(|v| v.config.clone())
+            let fanouts = self.active_fanouts.read().await;
+            let base_of = |name: &str| {
+                fanouts
+                    .iter()
+                    .find(|(_, record)| record.fanout_vault_name == name)
+                    .map(|(base, _)| base.clone())
+            };
+            let vault_configs: Vec<_> = self
+                .multi_vault_mgr
+                .list_vaults()
+                .await?
+                .into_iter()
+                .filter(|vault| base_of(&vault.name).is_none())
+                .map(|vault| vault.config)
                 .collect();
             let active_vault = self.multi_vault_mgr.get_active_vault().await;
+            let active_vault = base_of(&active_vault).unwrap_or(active_vault);
 
-            // Save to cache
             cache.save_vaults(&vault_configs, &active_vault).await?;
             log::debug!("Vault state persisted to cache");
+        }
+        Ok(())
+    }
+
+    /// Drop a removed vault from the cache. Saving the remaining vaults
+    /// would not do it, since a save keeps vaults it doesn't list.
+    async fn forget_vault_state(&self, name: &str) -> Result<()> {
+        if let Some(cache) = self.persistent_cache.read().await.as_ref() {
+            let active_vault = self.multi_vault_mgr.get_active_vault().await;
+            cache.remove_vault(name, &active_vault).await?;
         }
         Ok(())
     }
@@ -1231,7 +1242,7 @@ impl CoreToolHandler {
         self.vault_managers.write().await.remove(name);
         self.git_locks.write().await.remove(name);
 
-        if let Err(error) = self.persist_vault_state().await {
+        if let Err(error) = self.forget_vault_state(name).await {
             log::warn!("Failed to persist vault state after removal: {error}");
         }
         StandardResponse::new(

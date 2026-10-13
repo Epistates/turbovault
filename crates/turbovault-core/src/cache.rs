@@ -201,17 +201,55 @@ impl VaultCache {
         ))
     }
 
-    /// Save vault configurations and metadata
+    /// Record `vaults` in the project's registry, and `active_vault` as the
+    /// active one. Each vault is added, or replaces the entry of the same
+    /// name. Vaults already in the registry are kept, including ones another
+    /// process registered since this one started, so processes sharing a
+    /// project (one per Claude Desktop conversation) never drop each other's
+    /// vaults. [`Self::remove_vault`] removes one.
     pub async fn save_vaults(&self, vaults: &[VaultConfig], active_vault: &str) -> Result<()> {
-        // Save vaults as YAML
-        let vaults_yaml = yaml_serde::to_string(vaults)
-            .map_err(|e| Error::config_error(format!("Failed to serialize vaults: {}", e)))?;
+        let vaults = vaults.to_vec();
+        let count = vaults.len();
+        self.update(active_vault, move |registry| {
+            for vault in vaults {
+                match registry.iter_mut().find(|known| known.name == vault.name) {
+                    Some(known) => *known = vault,
+                    None => registry.push(vault),
+                }
+            }
+        })
+        .await?;
+        log::debug!(
+            "Saved {} vaults to project cache {} (active: {})",
+            count,
+            self.project_id,
+            active_vault
+        );
+        Ok(())
+    }
 
-        fs::write(&self.vaults_file, vaults_yaml)
-            .await
-            .map_err(Error::io)?;
+    /// Remove the vault called `name` from the project's registry, and record
+    /// `active_vault` as the active one.
+    pub async fn remove_vault(&self, name: &str, active_vault: &str) -> Result<()> {
+        let name = name.to_string();
+        self.update(active_vault, move |registry| {
+            registry.retain(|vault| vault.name != name)
+        })
+        .await
+    }
 
-        // Save metadata as JSON
+    /// Read the registry, apply `change`, and write it and the metadata back,
+    /// all under the project's registry lock, so another process's update
+    /// lands wholly before or after this one and is never lost between a read
+    /// and a write. Both files are replaced atomically.
+    async fn update(
+        &self,
+        active_vault: &str,
+        change: impl FnOnce(&mut Vec<VaultConfig>) + Send + 'static,
+    ) -> Result<()> {
+        let vaults_file = self.vaults_file.clone();
+        let metadata_file = self.metadata_file.clone();
+        let lock_file = self.project_cache_dir.join("registry.lock");
         let metadata = CacheMetadata {
             active_vault: active_vault.to_string(),
             last_updated: Self::current_timestamp(),
@@ -220,38 +258,44 @@ impl VaultCache {
             working_dir: self.working_dir.to_string_lossy().to_string(),
         };
 
-        let metadata_json = serde_json::to_string_pretty(&metadata)
-            .map_err(|e| Error::config_error(format!("Failed to serialize metadata: {}", e)))?;
+        tokio::task::spawn_blocking(move || {
+            let lock = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&lock_file)
+                .map_err(Error::io)?;
+            lock.lock().map_err(Error::io)?;
 
-        fs::write(&self.metadata_file, metadata_json)
-            .await
-            .map_err(Error::io)?;
+            // A corrupt registry has been set aside by now; start afresh.
+            let mut registry = read_registry(&vaults_file)?.unwrap_or_default();
+            change(&mut registry);
 
-        log::debug!(
-            "Saved {} vaults to project cache {} (active: {})",
-            vaults.len(),
-            self.project_id,
-            active_vault
-        );
-
-        Ok(())
+            let vaults_yaml = yaml_serde::to_string(&registry)
+                .map_err(|e| Error::config_error(format!("Failed to serialize vaults: {}", e)))?;
+            crate::write_atomic(&vaults_file, vaults_yaml.as_bytes()).map_err(Error::io)?;
+            let metadata_json = serde_json::to_string_pretty(&metadata)
+                .map_err(|e| Error::config_error(format!("Failed to serialize metadata: {}", e)))?;
+            crate::write_atomic(&metadata_file, metadata_json.as_bytes()).map_err(Error::io)
+        })
+        .await
+        .map_err(|e| Error::other(format!("vault cache update failed: {e}")))?
     }
 
-    /// Load vault configurations from cache
+    /// Load vault configurations from cache. A registry that can't be read
+    /// is set aside (see [`read_registry`]) and reported as an error.
     pub async fn load_vaults(&self) -> Result<Vec<VaultConfig>> {
-        if !self.vaults_file.exists() {
-            return Ok(Vec::new()); // No cache yet
-        }
-
-        let content = fs::read_to_string(&self.vaults_file)
+        let vaults_file = self.vaults_file.clone();
+        let vaults = tokio::task::spawn_blocking(move || read_registry(&vaults_file))
             .await
-            .map_err(Error::io)?;
-
-        let vaults = yaml_serde::from_str(&content)
-            .map_err(|e| Error::config_error(format!("Invalid vaults cache format: {}", e)))?;
-
+            .map_err(|e| Error::other(format!("vault cache read failed: {e}")))??
+            .ok_or_else(|| {
+                Error::config_error(
+                    "Invalid vaults cache format; the unreadable file was kept as a backup \
+                     next to it",
+                )
+            })?;
         log::debug!("Loaded vaults from project cache {}", self.project_id);
-
         Ok(vaults)
     }
 
@@ -320,6 +364,44 @@ impl VaultCache {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0)
+    }
+}
+
+/// Read the vault registry at `path`: empty if there is none yet, `None` if
+/// it can't be parsed. An unparseable file is renamed aside to
+/// `vaults.yaml.corrupt-<time>` with an error logged, so a later save starts
+/// afresh without destroying the vaults it listed.
+fn read_registry(path: &Path) -> Result<Option<Vec<VaultConfig>>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Some(Vec::new())),
+        Err(error) => return Err(Error::io(error)),
+    };
+    let parsed = std::str::from_utf8(&bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|text| yaml_serde::from_str(text).map_err(|e| e.to_string()));
+    match parsed {
+        Ok(vaults) => Ok(Some(vaults)),
+        Err(reason) => {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let backup = path.with_extension(format!("yaml.corrupt-{stamp}"));
+            match std::fs::rename(path, &backup) {
+                Ok(()) => log::error!(
+                    "The vault registry {} could not be read ({reason}); kept it as {} \
+                     and started a new one",
+                    path.display(),
+                    backup.display()
+                ),
+                Err(error) => log::error!(
+                    "The vault registry {} could not be read ({reason}), nor kept aside: {error}",
+                    path.display()
+                ),
+            }
+            Ok(None)
+        }
     }
 }
 
@@ -420,6 +502,86 @@ mod tests {
 
         let meta = cache.load_metadata().await.unwrap();
         assert_eq!(meta.active_vault, "personal");
+    }
+
+    /// Two processes for the same project each register a vault; neither
+    /// save drops the other's.
+    #[tokio::test]
+    async fn saves_from_two_processes_keep_each_others_vaults() {
+        let temp = TempDir::new().unwrap();
+        let first = make_cache(&temp).await;
+        let second = make_cache(&temp).await;
+
+        first
+            .save_vaults(&[make_vault_config("a", &temp.path().join("a"))], "a")
+            .await
+            .unwrap();
+        second
+            .save_vaults(&[make_vault_config("b", &temp.path().join("b"))], "b")
+            .await
+            .unwrap();
+
+        let mut names: Vec<String> = first
+            .load_vaults()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(first.load_metadata().await.unwrap().active_vault, "b");
+    }
+
+    /// Removing a vault drops only that one.
+    #[tokio::test]
+    async fn remove_vault_drops_only_that_vault() {
+        let temp = TempDir::new().unwrap();
+        let cache = make_cache(&temp).await;
+        let vaults = [
+            make_vault_config("a", &temp.path().join("a")),
+            make_vault_config("b", &temp.path().join("b")),
+        ];
+        cache.save_vaults(&vaults, "a").await.unwrap();
+
+        cache.remove_vault("a", "b").await.unwrap();
+        let names: Vec<String> = cache
+            .load_vaults()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.name)
+            .collect();
+        assert_eq!(names, ["b"]);
+        assert_eq!(cache.load_metadata().await.unwrap().active_vault, "b");
+    }
+
+    /// A registry that can't be read is kept aside, not overwritten by the
+    /// next save, so nothing it listed is lost for good.
+    #[tokio::test]
+    async fn a_corrupt_registry_is_kept_as_a_backup() {
+        let temp = TempDir::new().unwrap();
+        let cache = make_cache(&temp).await;
+        let vaults_path = cache.project_cache_dir().join("vaults.yaml");
+        tokio::fs::write(&vaults_path, b"{ not: [valid: yaml")
+            .await
+            .unwrap();
+
+        assert!(cache.load_vaults().await.is_err());
+        cache
+            .save_vaults(&[make_vault_config("a", &temp.path().join("a"))], "a")
+            .await
+            .unwrap();
+
+        let backups: Vec<_> = std::fs::read_dir(cache.project_cache_dir())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("vaults.yaml.corrupt-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "{backups:?}");
+        let kept = std::fs::read(cache.project_cache_dir().join(&backups[0])).unwrap();
+        assert_eq!(kept, b"{ not: [valid: yaml");
+        assert_eq!(cache.load_vaults().await.unwrap().len(), 1);
     }
 
     #[tokio::test]
