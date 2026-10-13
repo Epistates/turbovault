@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use turbovault_core::prelude::*;
-use turbovault_graph::{AnalysisConfig, HealthAnalyzer};
+use turbovault_graph::{AnalysisConfig, HealthAnalyzer, HealthCounts, HealthReport, LinkGraph};
 use turbovault_vault::VaultManager;
 
 /// Graph tools context
@@ -48,10 +48,8 @@ impl GraphTools {
         let unresolved = graph.all_unresolved_links();
         let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
 
-        let report = analyzer.analyze()?;
-
-        Ok(report
-            .broken_links
+        Ok(analyzer
+            .broken_links()?
             .into_iter()
             .map(|bl| BrokenLinkInfo {
                 source_file: turbovault_core::path_to_slash(&bl.source_file),
@@ -68,19 +66,7 @@ impl GraphTools {
         let graph = graph_lock.read().await;
         let unresolved = graph.all_unresolved_links();
         let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
-
-        let report = analyzer.quick_check()?;
-
-        Ok(HealthInfo {
-            total_notes: report.total_notes,
-            total_links: report.total_links,
-            broken_links_count: report.broken_links.len(),
-            orphaned_notes_count: report.orphaned_notes.len(),
-            dead_end_notes_count: 0,
-            hub_notes_count: 0,
-            health_score: report.health_score,
-            is_healthy: report.is_healthy(),
-        })
+        Ok(quick_health(&analyzer, &graph))
     }
 
     /// Run comprehensive health analysis
@@ -90,17 +76,21 @@ impl GraphTools {
         let unresolved = graph.all_unresolved_links();
         let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
 
-        let report = analyzer.analyze()?;
-
+        // Counts only: the full analysis would also list every issue and
+        // suggest fixes for every broken link, none of which this reports.
+        let counts = analyzer.counts()?;
+        let health_score = HealthReport::score(&counts);
         Ok(HealthInfo {
-            total_notes: report.total_notes,
-            total_links: report.total_links,
-            broken_links_count: report.broken_links.len(),
-            orphaned_notes_count: report.orphaned_notes.len(),
-            dead_end_notes_count: report.dead_end_notes.len(),
-            hub_notes_count: report.hub_notes.len(),
-            health_score: report.health_score,
-            is_healthy: report.is_healthy(),
+            total_notes: counts.total_notes,
+            total_links: counts.total_links,
+            broken_links_count: counts.broken_links,
+            orphaned_notes_count: counts.orphaned_notes,
+            dead_end_notes_count: counts.dead_end_notes,
+            hub_notes_count: analyzer
+                .hub_notes(AnalysisConfig::default().hub_notes_limit)
+                .len(),
+            health_score,
+            is_healthy: health_score >= 80,
         })
     }
 
@@ -108,35 +98,30 @@ impl GraphTools {
     pub async fn get_hub_notes(&self, limit: usize) -> Result<Vec<(String, usize)>> {
         let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
-        let config = AnalysisConfig {
-            hub_notes_limit: limit,
-        };
-        // Pass None for unresolved links — hub detection only needs the resolved
-        // graph edges, not broken link data.
-        let analyzer = HealthAnalyzer::with_config(&graph, None, config);
-
-        let report = analyzer.analyze()?;
-
-        Ok(report
-            .hub_notes
-            .into_iter()
-            .map(|(path, count)| (turbovault_core::path_to_slash(&path), count))
-            .collect())
+        Ok(hub_notes(&HealthAnalyzer::new(&graph), limit))
     }
 
     /// Get dead-end notes (no outgoing links but have incoming)
     pub async fn get_dead_end_notes(&self) -> Result<Vec<String>> {
         let graph_lock = self.manager.link_graph_flushed().await;
         let graph = graph_lock.read().await;
-        let analyzer = HealthAnalyzer::new(&graph);
+        Ok(dead_end_notes(&HealthAnalyzer::new(&graph)))
+    }
 
-        let report = analyzer.analyze()?;
-
-        Ok(report
-            .dead_end_notes
-            .into_iter()
-            .map(|p| turbovault_core::path_to_slash(&p))
-            .collect())
+    /// The quick health check, the `limit` most connected notes and the
+    /// dead ends, read under one hold of the graph, for a vault overview.
+    pub async fn overview(
+        &self,
+        hub_limit: usize,
+    ) -> Result<(HealthInfo, Vec<(String, usize)>, Vec<String>)> {
+        let graph_lock = self.manager.link_graph_flushed().await;
+        let graph = graph_lock.read().await;
+        let analyzer = HealthAnalyzer::with_files(&graph, graph.all_unresolved_links());
+        Ok((
+            quick_health(&analyzer, &graph),
+            hub_notes(&analyzer, hub_limit),
+            dead_end_notes(&analyzer),
+        ))
     }
 
     /// Detect cycles in the graph
@@ -179,10 +164,8 @@ impl GraphTools {
         let graph = graph_lock.read().await;
         let analyzer = HealthAnalyzer::new(&graph);
 
-        let report = analyzer.analyze()?;
-
-        Ok(report
-            .isolated_clusters
+        Ok(analyzer
+            .isolated_clusters()?
             .into_iter()
             .map(|cluster| {
                 cluster
@@ -192,4 +175,42 @@ impl GraphTools {
             })
             .collect())
     }
+}
+
+/// The quick health check: broken links and orphans, scored on those alone.
+fn quick_health(analyzer: &HealthAnalyzer<'_>, graph: &LinkGraph) -> HealthInfo {
+    let counts = HealthCounts {
+        total_notes: graph.node_count(),
+        total_links: graph.edge_count(),
+        broken_links: analyzer.broken_link_count(),
+        orphaned_notes: graph.orphaned_notes().len(),
+        ..HealthCounts::default()
+    };
+    let health_score = HealthReport::score(&counts);
+    HealthInfo {
+        total_notes: counts.total_notes,
+        total_links: counts.total_links,
+        broken_links_count: counts.broken_links,
+        orphaned_notes_count: counts.orphaned_notes,
+        dead_end_notes_count: 0,
+        hub_notes_count: 0,
+        health_score,
+        is_healthy: health_score >= 80,
+    }
+}
+
+fn hub_notes(analyzer: &HealthAnalyzer<'_>, limit: usize) -> Vec<(String, usize)> {
+    analyzer
+        .hub_notes(limit)
+        .into_iter()
+        .map(|(path, count)| (turbovault_core::path_to_slash(&path), count))
+        .collect()
+}
+
+fn dead_end_notes(analyzer: &HealthAnalyzer<'_>) -> Vec<String> {
+    analyzer
+        .dead_end_notes()
+        .into_iter()
+        .map(|p| turbovault_core::path_to_slash(&p))
+        .collect()
 }

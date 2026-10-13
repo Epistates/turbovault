@@ -484,6 +484,19 @@ impl LinkGraph {
             .collect()
     }
 
+    /// Every note with the number of links into it and out of it, in the
+    /// same order as [`Self::all_files`]. Counting edges this way clones no
+    /// links, unlike [`Self::incoming_links`] and [`Self::outgoing_links`].
+    pub fn degrees(&self) -> impl Iterator<Item = (&PathBuf, usize, usize)> + '_ {
+        self.graph.node_indices().map(move |idx| {
+            (
+                &self.graph[idx],
+                self.graph.edges_directed(idx, Incoming).count(),
+                self.graph.edges(idx).count(),
+            )
+        })
+    }
+
     /// Get node count
     pub fn node_count(&self) -> usize {
         self.graph.node_count()
