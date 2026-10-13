@@ -6,6 +6,8 @@
 [![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Epistates/turbovault)
 
+- MCP Registry name: `mcp-name: io.github.epistates/turbovault`
+
 **The ultimate Rust SDK and high-performance MCP server for Obsidian-flavored Markdown (.ofm) and standard .md vaults.**
 
 TurboVault is a dual-purpose toolkit designed for both developers and users. It provides a robust, modular **Rust SDK** for building applications that consume markdown directories, and a **full-featured MCP server** that works out of the box with Claude and other AI agents.

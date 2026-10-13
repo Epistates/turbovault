@@ -4,6 +4,32 @@
 # fixed from this repository, and each entry says why and what would let us drop
 # it. A permanently red audit job is worse than no audit job, because people
 # stop reading it.
+#
+# CI runs `cargo audit --deny warnings`, so an unmaintained or unsound crate
+# that is not listed here fails the job. Keep this list in step with the
+# `[advisories] ignore` list in deny.toml, which carries the reasons:
+#
+#   RUSTSEC-2026-0253  lru via tantivy (keyed by usize, no panicking Drop)
+#   RUSTSEC-2023-0126  im OrdSet aliasing via gluesql (gluesql uses only HashSet)
+#   RUSTSEC-2026-0248  im unmaintained via gluesql
+#   RUSTSEC-2026-0251  sized-chunks unmaintained via im via gluesql
+#   RUSTSEC-2026-0255  sized-chunks panic-safety via im via gluesql
+#   RUSTSEC-2026-0247  bitmaps unmaintained via im via gluesql
+#   RUSTSEC-2025-0141  bincode 1.x via hnsw_rs (vector plugin, default-off)
+#   RUSTSEC-2025-0057  fxhash via bm25 (vector plugin, default-off)
+#   RUSTSEC-2025-0119  number_prefix via tokenizers (vector plugin, default-off)
+#   RUSTSEC-2024-0436  paste via tokenizers (vector plugin, default-off)
 
 [advisories]
-ignore = []
+ignore = [
+    "RUSTSEC-2026-0253",
+    "RUSTSEC-2023-0126",
+    "RUSTSEC-2026-0248",
+    "RUSTSEC-2026-0251",
+    "RUSTSEC-2026-0255",
+    "RUSTSEC-2026-0247",
+    "RUSTSEC-2025-0141",
+    "RUSTSEC-2025-0057",
+    "RUSTSEC-2025-0119",
+    "RUSTSEC-2024-0436",
+]

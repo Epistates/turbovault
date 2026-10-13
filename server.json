@@ -1,0 +1,69 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.epistates/turbovault",
+  "title": "TurboVault",
+  "description": "Obsidian vaults for AI agents: read, write, search, link graph, and safe atomic edits",
+  "version": "3.3.0",
+  "websiteUrl": "https://github.com/Epistates/turbovault",
+  "repository": {
+    "url": "https://github.com/Epistates/turbovault",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "turbovault",
+      "version": "3.3.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "OBSIDIAN_VAULT_PATH",
+          "description": "Vault to open at startup. Leave unset to add vaults at runtime with add_vault.",
+          "format": "filepath",
+          "isRequired": false
+        },
+        {
+          "name": "TURBOVAULT_PROFILE",
+          "description": "Configuration profile. read-only exposes search and analysis tools only.",
+          "isRequired": false,
+          "default": "development",
+          "choices": [
+            "development",
+            "production",
+            "read-only",
+            "high-performance",
+            "minimal",
+            "multi-vault",
+            "collaboration"
+          ]
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/epistates/turbovault:3.3.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "docker",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "-v",
+          "description": "Mount the vault into the container.",
+          "value": "{vault_path}:/var/obsidian-vault",
+          "isRequired": true,
+          "variables": {
+            "vault_path": {
+              "description": "Absolute path to the Obsidian vault on the host.",
+              "format": "filepath",
+              "isRequired": true
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

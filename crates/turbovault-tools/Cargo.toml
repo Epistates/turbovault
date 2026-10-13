@@ -64,6 +64,7 @@ schemars = [
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
 tempfile = { workspace = true }
+proptest = { workspace = true }
 # Tests only — production code uses `turbovault_git::Oid`, never git2 directly.
 git2 = { workspace = true }
 

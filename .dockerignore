@@ -1,0 +1,8 @@
+# Only Cargo.toml, Cargo.lock and crates/ go into the image build. Everything
+# else stays out of the context so it is small and never carries local state.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+crates/**/target/
+**/*.cdx.json

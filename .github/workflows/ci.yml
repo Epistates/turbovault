@@ -42,10 +42,27 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # server.json (the MCP Registry entry) names the version in three
+      # places; all of them must be the release being built.
+      - name: Verify server.json matches the version
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          jq -e --arg v "$VERSION" '
+            .version == $v
+            and ([.packages[] | select(.registryType == "cargo") | .version] == [$v])
+            and ([.packages[] | select(.registryType == "oci") | .identifier]
+                 == ["ghcr.io/epistates/turbovault:" + $v])
+          ' server.json > /dev/null || {
+            echo "::error file=server.json::server.json does not name version ${VERSION} everywhere"
+            exit 1
+          }
+
       # A declared dependency nothing uses is still compiled, audited and
       # published as a requirement. Fails on any, per crate.
-      - name: Install cargo-machete
-        run: cargo install cargo-machete --locked
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-machete@0.9.2
 
       - name: Check for unused dependencies
         run: cargo machete
@@ -125,6 +142,8 @@ jobs:
             args: --no-default-features --features sql
           - name: http
             args: --features http
+          - name: http+sql
+            args: --no-default-features --features http,sql
           - name: plugin-api
             args: --features plugin-api
           - name: full
@@ -145,6 +164,31 @@ jobs:
       - name: cargo check -p turbovault ${{ matrix.args }}
         run: cargo check -p turbovault ${{ matrix.args }} --locked
 
+  # The combinations above are the documented bundles. This is every feature
+  # of every crate on its own, default features off, so a feature that only
+  # builds because another one happens to pull a dependency in (websocket
+  # without http, say) fails here.
+  feature-powerset:
+    name: Feature Check (each feature alone)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: feature-powerset
+
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-hack@0.6.45
+
+      - name: cargo hack check --each-feature
+        run: cargo hack check --workspace --each-feature --locked
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -160,10 +204,27 @@ jobs:
         with:
           key: coverage
 
-      - uses: taiki-e/install-action@ab4220e067fa624f7930084426dbfb7440a52829 # cargo-llvm-cov
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov@0.9.1
 
+      # Line coverage was 92.6% when the floor went from 75 to 90, so a change
+      # that drops a few points of it is a signal rather than noise.
       - name: Enforce line coverage floor
-        run: cargo llvm-cov --workspace --all-features --locked --summary-only --fail-under-lines 75
+        run: cargo llvm-cov --workspace --all-features --locked --lcov --output-path lcov.info --fail-under-lines 90
+
+      - name: Coverage summary
+        if: always()
+        run: cargo llvm-cov report --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          if-no-files-found: ignore
+          retention-days: 30
 
   security:
     name: Security Audit
@@ -173,13 +234,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.20.2
+      # Unmaintained and unsound crates fail the job too. The ones only an
+      # upstream release can remove are listed, each with its reason, in
+      # .cargo/audit.toml and deny.toml.
       - name: Run security audit
-        run: cargo audit
-      - uses: taiki-e/install-action@6a0cb247e1ded000e6ae26346b5ab63b08c98e6a # cargo-deny
-      - name: Run cargo-deny (licenses, bans, sources)
-        run: cargo deny check licenses bans sources
+        run: cargo audit --deny warnings
+      - name: Run cargo-deny (advisories, licenses, bans, sources)
+        run: cargo deny check
 
   msrv:
     name: MSRV Check
@@ -189,4 +253,81 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # 1.90.0
         with:
           toolchain: "1.90.0"
-      - run: cargo check --workspace
+      # The crates build on 1.90; the test suite needs a newer toolchain
+      # (serial_test 4 wants 1.93.1), so this checks the libraries and
+      # binaries, every feature on, against the lockfile users get.
+      - run: cargo check --workspace --all-features --locked
+
+  # What the next release's version bump has to be, against the latest
+  # release tag (the API that was released; crates.io can lag it, since
+  # publishing is manual). Advisory here: between releases main collects
+  # changes while the version still names the last release, so a report of
+  # "major" or "minor" is information for choosing the next version, not a
+  # failure. The release workflow's verify job enforces it against the
+  # previous tag, so a release whose bump is too small cannot ship.
+  semver:
+    name: Semver Check (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: semver
+
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-semver-checks@0.51.0
+
+      - name: cargo semver-checks against the latest release tag
+        run: |
+          set -o pipefail
+          BASELINE="$(git describe --tags --abbrev=0 --match 'v*' HEAD)"
+          {
+            echo "## Semver against ${BASELINE} (advisory)"
+            echo
+            echo "Enforced when a release is tagged; see docs/development/releasing.md."
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          STATUS=0
+          cargo semver-checks --workspace --baseline-rev "${BASELINE}" --color never 2>&1 \
+            | tee -a "$GITHUB_STEP_SUMMARY" || STATUS=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Advisory: a change that needs a bigger version than Cargo.toml
+          # declares is flagged here and refused at release time, so the job
+          # stays green and doesn't mark every pull request failed.
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::warning title=Semver::This change needs a bigger version bump than Cargo.toml declares against ${BASELINE}. See the job summary; a release tag will be refused until the version covers it."
+          fi
+
+  # The write-safety matrix (crates/turbovault/tests/wss_matrix.rs) holds the
+  # clobber-safety behavior every write must have. Pending cells are the known
+  # gaps. This keeps them honest: an active cell failing, a pending cell that
+  # now passes everywhere, or more pending trials than the committed baseline
+  # each fail the job.
+  wss-ratchet:
+    name: Write-Safety Ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: wss
+
+      - name: Run the matrix and enforce the ratchet
+        run: |
+          set -o pipefail
+          python3 scripts/wss-report.py --ratchet docs/write-safety-suite/pending-baseline \
+            | tee -a "$GITHUB_STEP_SUMMARY"

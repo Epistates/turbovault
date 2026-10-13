@@ -145,6 +145,11 @@ harness = false
 name = "tool_benchmarks"
 harness = false
 
+# 10,000-note vault, the size the documented performance targets are for.
+[[bench]]
+name = "vault_10k"
+harness = false
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]

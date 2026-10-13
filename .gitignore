@@ -35,6 +35,11 @@ htmlcov/
 !docs/**/*.md
 !CHANGELOG.md
 !CONTRIBUTORS.md
+!CONTRIBUTING.md
+!SECURITY.md
+!CODE_OF_CONDUCT.md
+# Issue and pull request templates.
+!.github/**/*.md
 !RELEASE*.md
 !PUBLISH*.md
 # Crate-level READMEs are packaged by Cargo (readme = "README.md"), so an
@@ -44,5 +49,12 @@ htmlcov/
 # one is missing from a fresh clone, and `include_str!` turns that into a build
 # failure rather than a skipped test.
 !crates/*/tests/fixtures/*.md
+# Fuzz seeds are inputs too, for the same reason.
+!fuzz/seeds/**/*.md
+# The example vault the Docker setup mounts.
+!examples/**/*.md
 !/LICENSE*
 !LICENSE
+
+# CycloneDX SBOMs from cargo-cyclonedx (generated in the release workflow)
+*.cdx.json

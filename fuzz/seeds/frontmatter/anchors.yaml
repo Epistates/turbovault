@@ -1,0 +1,6 @@
+a: &anchor [1, 2]
+b: *anchor
+c: !!str 3
+d: |
+  block
+  text

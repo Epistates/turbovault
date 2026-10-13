@@ -1,0 +1,133 @@
+name: Scheduled
+
+# Checks too slow or too noisy for every pull request: they run nightly and on
+# demand, and a failure here opens no PR but shows on the Actions tab.
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  # Tests marked `#[ignore = "timing; ..."]` assert that adversarial input
+  # parses in linear time. They need an optimized build to mean anything, and
+  # a shared runner's timing is too noisy to gate a pull request on.
+  timing:
+    name: Timing tests (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: timing
+
+      - name: Run the ignored timing tests in release mode
+        run: cargo test --release --locked -p turbovault-parser --test test_nesting_bounds -- --ignored
+
+  # Each fuzz target for five minutes, the corpus carried between runs in the
+  # Actions cache so coverage keeps growing night over night. A crash uploads
+  # the input that caused it; reproduce with `cargo +nightly fuzz run <target>
+  # <file>` (see fuzz/README.md).
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: parse_blocks
+            seeds: markdown
+          - target: parse_note
+            seeds: markdown
+          - target: rewrite_links
+            seeds: markdown
+          - target: frontmatter
+            seeds: frontmatter
+          - target: edit_blocks
+            seeds: edit_blocks
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # nightly
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: fuzz
+          workspaces: fuzz
+
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-fuzz@0.13.2
+
+      - name: Restore corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz for five minutes
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          cargo +nightly fuzz run -O "${{ matrix.target }}" \
+            "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.seeds }}" \
+            -- -max_total_time=300 -max_len=65536 -rss_limit_mb=4096
+
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # The 10,000-note benchmarks (crates/turbovault/benches/vault_10k.rs),
+  # compared with the last good night. The cache holds the baseline and is
+  # only saved when the job passes, so a regression stays red night after
+  # night until it is fixed or a passing run accepts the new numbers.
+  # Shared runners are noisy; the threshold is set for real regressions, not
+  # a few percent of drift.
+  bench:
+    name: Benchmarks (10k notes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: bench
+
+      - name: Restore the last good baseline
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bench-history
+          key: bench-history-${{ github.run_id }}
+          restore-keys: bench-history-
+
+      - name: Run the benchmarks
+        env:
+          CRITERION_HOME: ${{ github.workspace }}/bench-history
+        run: cargo bench -p turbovault --bench vault_10k --locked -- --save-baseline candidate
+
+      - name: Compare with the last good night
+        run: |
+          set -o pipefail
+          python3 scripts/bench_compare.py bench-history nightly candidate --threshold 25 --promote \
+            | tee -a "$GITHUB_STEP_SUMMARY"

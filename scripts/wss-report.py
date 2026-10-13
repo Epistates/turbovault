@@ -440,6 +440,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--html", metavar="PATH", help="write a self-contained HTML report")
+    ap.add_argument("--ratchet", metavar="BASELINE",
+                    help="CI mode: fail on a newly-failing active cell, on a cell that "
+                         "passes in every world and backend yet is still pending, or on "
+                         "more pending trials than the count in BASELINE")
     ap.add_argument("--audit", action="store_true",
                     help="check the Rust tables against the source-of-truth CSV "
                          "(fast: lists trials, runs none) and exit")
@@ -510,8 +514,64 @@ def main():
     else:
         print(render_markdown(rows, totals, unpend, newly_failing))
 
+    if args.ratchet:
+        sys.exit(ratchet(args.ratchet, truth, pending_set, newly_failing))
+
     # Non-zero exit iff the matrix is off its fixpoint, so CI/humans get a signal.
     sys.exit(1 if (unpend or newly_failing) else 0)
+
+
+def cell_key(name):
+    """A trial's cell, the same across worlds and backends: one `Case` row in an
+    adapter's table runs as a trial in every world (and both backends unless
+    `.on(...)` scopes it), so it can only be activated once all of them pass."""
+    parts = split_name(name)
+    return None if parts is None else parts[2:]
+
+
+def ratchet(baseline_path, truth, pending_set, newly_failing):
+    """The CI gate. The plain report flags any pending trial that passes, but a
+    pending `Case` is shared by every world, so a trial that passes in one world
+    while another still fails it cannot be activated yet. This counts a cell as
+    ready only when every one of its trials passes, and holds the pending total
+    to the committed baseline so the burndown cannot quietly grow."""
+    by_cell = defaultdict(list)
+    for name, passed in truth.items():
+        key = cell_key(name)
+        if key is not None:
+            by_cell[key].append((name, passed))
+    ready = sorted(
+        key for key, trials in by_cell.items()
+        if all(passed for _, passed in trials)
+        and any(name in pending_set for name, _ in trials)
+    )
+
+    with open(baseline_path) as f:
+        baseline = int(f.read().split()[0])
+    pending = len(pending_set)
+
+    failed = False
+    if newly_failing:
+        failed = True
+        print(f"\n{FAIL} {len(newly_failing)} active cell(s) fail; fix them or mark them pending.")
+    if ready:
+        failed = True
+        print(f"\n{PEND_PASS} {len(ready)} pending cell(s) now pass in every world and "
+              f"backend; activate them (`pending` -> `new`) and lower {baseline_path}:")
+        for key in ready:
+            print(f"  - {'::'.join(key)}")
+    if pending > baseline:
+        failed = True
+        print(f"\n{FAIL} {pending} pending trials, above the baseline of {baseline} in "
+              f"{baseline_path}. A new pending cell is a known gap; raise the baseline in "
+              f"the same change so the review sees it.")
+    elif pending < baseline:
+        print(f"\n{PASS} {pending} pending trials, below the baseline of {baseline}. "
+              f"Lower {baseline_path} to {pending} to lock the progress in.")
+    if not failed:
+        print(f"\n{PASS} Ratchet holds: {pending} pending trials (baseline {baseline}), "
+              f"no active cell failing, no pending cell ready to activate.")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

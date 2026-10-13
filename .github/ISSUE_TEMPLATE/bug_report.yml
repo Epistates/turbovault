@@ -1,0 +1,76 @@
+name: Bug report
+description: Something TurboVault does wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a security vulnerability, please use
+        [private reporting](https://github.com/Epistates/turbovault/security/advisories/new) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what TurboVault did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: |
+        The tool calls (name and arguments) or steps that trigger it. A minimal vault
+        (a few notes pasted here, or a link) helps most.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: TurboVault version
+      description: The output of `turbovault --version`.
+      placeholder: turbovault 3.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - Prebuilt binary from a GitHub release
+        - cargo install
+        - Docker image
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options:
+        - stdio (Claude Desktop, Claude Code and most clients)
+        - HTTP
+        - WebSocket
+        - TCP
+        - Unix socket
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and MCP client
+      placeholder: macOS 15, Claude Desktop 1.4
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Write backend
+      options:
+        - Direct (default)
+        - Git
+        - Not sure
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Server stderr, or the error the client showed. Remove anything private.
+      render: text

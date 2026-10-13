@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The semver check needs the previous release tag.
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -40,6 +43,39 @@ jobs:
       - name: Verify formatting
         run: cargo fmt --all --check
 
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-semver-checks@0.51.0
+
+      # The version being released has to be a big enough step from the
+      # previous release for what changed: a breaking change needs a major
+      # bump, an addition at least a minor one. CI only reports this on pull
+      # requests; here it fails the release.
+      - name: Verify the version bump covers the API changes
+        shell: bash
+        run: |
+          EXCLUDE=()
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then EXCLUDE=(--exclude "${GITHUB_REF_NAME}"); fi
+          BASELINE="$(git describe --tags --abbrev=0 --match 'v*' "${EXCLUDE[@]}" HEAD)"
+          echo "Previous release: ${BASELINE}"
+          cargo semver-checks --workspace --baseline-rev "${BASELINE}"
+
+      # server.json (the MCP Registry entry) names the version in three
+      # places; all of them must be the release being built.
+      - name: Verify server.json matches the version
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          jq -e --arg v "$VERSION" '
+            .version == $v
+            and ([.packages[] | select(.registryType == "cargo") | .version] == [$v])
+            and ([.packages[] | select(.registryType == "oci") | .identifier]
+                 == ["ghcr.io/epistates/turbovault:" + $v])
+          ' server.json > /dev/null || {
+            echo "::error file=server.json::server.json does not name version ${VERSION} everywhere"
+            exit 1
+          }
+
       - name: Lint with clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -60,10 +96,12 @@ jobs:
   # ── Publish Crates ───────────────────────────────────────────────────
   # Runs only on a `v*` tag, and only when CARGO_REGISTRY_TOKEN is present, so
   # a fork or a repo without the secret builds a release without publishing.
+  # Waits on the builds too, so a tag whose binaries fail to build or to
+  # start never reaches crates.io half-released.
   publish:
     name: Publish Crates
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [verify, build]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -116,33 +154,44 @@ jobs:
       matrix:
         include:
           # Linux x86_64 (glibc)
+          # `smoke` marks the targets the runner can execute, so the built
+          # binary is started and driven over stdio before it ships. The
+          # ARM64 Linux ones are cross-compiled on x86_64 and cannot run
+          # there, and macos-latest is ARM64.
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             use_cross: false
+            smoke: true
           # Linux x86_64 (musl - for Alpine/static linking)
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
             use_cross: true
+            smoke: true
           # Linux ARM64 (glibc)
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             use_cross: true
+            smoke: false
           # Linux ARM64 (musl - for Alpine/static linking)
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-latest
             use_cross: true
+            smoke: false
           # macOS x86_64
           - target: x86_64-apple-darwin
             runner: macos-latest
             use_cross: false
+            smoke: false
           # macOS ARM64 (Apple Silicon)
           - target: aarch64-apple-darwin
             runner: macos-latest
             use_cross: false
+            smoke: true
           # Windows x86_64
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             use_cross: false
+            smoke: true
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -176,6 +225,15 @@ jobs:
           ar = "aarch64-linux-gnu-ar"
           EOF
 
+      # cargo-auditable embeds the resolved dependency list in the binary, so
+      # `cargo audit bin` can check a shipped binary years later. It wraps
+      # cargo on the host, so the cross-compiled targets (built inside cross's
+      # container) go without; the release SBOM covers them.
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        if: ${{ !matrix.use_cross }}
+        with:
+          tool: cargo-auditable@0.7.7
+
       # Prebuilt binaries carry every feature (see `release` in
       # crates/turbovault/Cargo.toml); the unix socket transport exists only
       # off Windows.
@@ -186,9 +244,24 @@ jobs:
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
           else
-            cargo build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
+            cargo auditable build --release --locked --target ${{ matrix.target }} -p turbovault --features "$FEATURES"
           fi
         shell: bash
+
+      # Start the binary that is about to ship and hold a real MCP session
+      # with it: --version, initialize, tools/list. A build that links but
+      # cannot start (a missing runtime library, a panic at startup) fails
+      # here instead of on a user's machine.
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          BIN="target/${{ matrix.target }}/release/turbovault"
+          if [ "${{ runner.os }}" = "Windows" ]; then BIN="${BIN}.exe"; fi
+          PYTHON=python3
+          command -v python3 >/dev/null 2>&1 || PYTHON=python
+          "$PYTHON" scripts/smoke_test.py --expect-version "$VERSION" "$BIN"
 
       # macOS Code Signing (optional - requires secrets to be configured)
       - name: Import Apple Code Signing Certificate
@@ -234,7 +307,7 @@ jobs:
             spctl -a -v target/${{ matrix.target }}/release/turbovault || true
             echo "Binary signed and notarized"
           else
-            echo "Developer ID certificate not configured. Using ad-hoc signing..."
+            echo "::warning title=macOS binary not notarized::No Developer ID certificate is configured, so ${{ matrix.target }} is ad-hoc signed and Gatekeeper will warn users. Set the APPLE_* secrets to sign and notarize."
             codesign --remove-signature target/${{ matrix.target }}/release/turbovault || true
             codesign -s - target/${{ matrix.target }}/release/turbovault
             codesign -v target/${{ matrix.target }}/release/turbovault
@@ -253,13 +326,13 @@ jobs:
           # Create zip for Windows (tar.gz not common on Windows)
           Compress-Archive -Path $binary -DestinationPath "artifacts/$binary.zip"
 
-          # Generate SHA256
-          $hash = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLower()
-          "$hash  $binary" | Out-File -FilePath "artifacts/$binary.sha256" -Encoding ascii -NoNewline
+          # Checksum the archive that ships, the same file SHA256SUMS covers
+          $hash = (Get-FileHash "artifacts/$binary.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $binary.zip" | Out-File -FilePath "artifacts/$binary.zip.sha256" -Encoding ascii -NoNewline
 
           Write-Host "Binary info:"
           Get-Item $binary | Format-List Length, LastWriteTime
-          Get-Content "artifacts/$binary.sha256"
+          Get-Content "artifacts/$binary.zip.sha256"
         shell: pwsh
 
       - name: Prepare artifacts (Unix)
@@ -272,13 +345,15 @@ jobs:
 
           # Create tar to preserve permissions and prevent corruption
           tar -czf "artifacts/$BINARY.tar.gz" "$BINARY"
+          # Checksum the archive that ships, the same file SHA256SUMS covers
+          cd artifacts
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$BINARY" > "artifacts/$BINARY.sha256"
+            sha256sum "$BINARY.tar.gz" > "$BINARY.tar.gz.sha256"
           else
-            shasum -a 256 "$BINARY" > "artifacts/$BINARY.sha256"
+            shasum -a 256 "$BINARY.tar.gz" > "$BINARY.tar.gz.sha256"
           fi
-          ls -lh "$BINARY"
-          cat "artifacts/$BINARY.sha256"
+          ls -lh "$BINARY.tar.gz"
+          cat "$BINARY.tar.gz.sha256"
         shell: bash
 
       - name: Upload artifacts
@@ -289,6 +364,131 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # ── Container Image ──────────────────────────────────────────────────
+  # The same Dockerfile CI smoke-tests, built natively on an x86_64 and an
+  # ARM64 runner (no emulation), pushed by digest, then joined into one
+  # multi-arch tag on GHCR with signed build provenance.
+  image:
+    name: Image (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    env:
+      IMAGE: ghcr.io/epistates/turbovault
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=image-${{ matrix.platform }}
+          cache-to: type=gha,scope=image-${{ matrix.platform }},mode=max
+
+      - name: Smoke test this platform's image
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          python3 scripts/smoke_test.py --expect-version "$VERSION" \
+            docker run -i --rm "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+      - name: Record the digest
+        run: |
+          mkdir -p digests
+          DIGEST="${{ steps.build.outputs.digest }}"
+          touch "digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-digest-${{ strategy.job-index }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  image-publish:
+    name: Publish image
+    runs-on: ubuntu-latest
+    needs: image
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/epistates/turbovault
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: digests
+          pattern: image-digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Create the multi-arch tags
+        working-directory: digests
+        run: |
+          # shellcheck disable=SC2046
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Resolve the index digest
+        id: index
+        run: |
+          VERSION="${{ steps.meta.outputs.version }}"
+          DIGEST="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
   # ── Create GitHub Release ─────────────────────────────────────────────
   release:
     name: Create Release
@@ -297,9 +497,21 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
+      # Sigstore-signed build provenance and SBOM attestations, stored by
+      # GitHub and checked with `gh attestation verify`.
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-cyclonedx@0.5.9
 
       - name: Download all artifacts
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -334,13 +546,37 @@ jobs:
           done
         shell: bash
 
+      # One CycloneDX SBOM for the binary as released: the `release` and
+      # `unix` features, dependencies for every target platform.
+      - name: Generate SBOM
+        run: |
+          cargo cyclonedx --manifest-path crates/turbovault/Cargo.toml \
+            --format json --spec-version 1.5 --features release,unix --target all \
+            --override-filename turbovault.cdx -q
+          cp crates/turbovault/turbovault.cdx.json "final-release/turbovault-${GITHUB_REF_NAME}.cdx.json"
+        shell: bash
+
       - name: Generate combined checksums
         run: |
           cd final-release
-          # Generate SHA256SUMS for archives (not individual binaries)
-          sha256sum *.tar.gz *.zip 2>/dev/null | grep -v "No such file" > SHA256SUMS || true
+          sha256sum -- *.tar.gz *.zip *.cdx.json > SHA256SUMS
           cat SHA256SUMS
         shell: bash
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            final-release/*.tar.gz
+            final-release/*.zip
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        with:
+          subject-path: |
+            final-release/*.tar.gz
+            final-release/*.zip
+          sbom-path: final-release/turbovault-${{ github.ref_name }}.cdx.json
 
       - name: Create Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
@@ -349,6 +585,7 @@ jobs:
             final-release/*.tar.gz
             final-release/*.zip
             final-release/*.sha256
+            final-release/*.cdx.json
             final-release/SHA256SUMS
           generate_release_notes: true
           draft: false

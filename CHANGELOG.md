@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`response_format: concise`** on `search`, `advanced_search`, `search_by_frontmatter`, `recommend_related`, `explain_vault` and `get_vault_context` leaves out what an agent rarely needs: each search result's `preview`, `outgoing_links`, `word_count` and `char_count`; `explain_vault`'s `structure` and `meta.alternatives`; `get_vault_context`'s `markdown_dialect` and `tools`. `detailed` stays the default, so a caller that doesn't ask gets what it always has.
 - `turbovault-core`, `-graph`, `-audit`, `-vault` and `-tools` have an optional `schemars` feature that derives JSON Schemas for the types the tools return. A field those types skip when empty now also deserializes when it's absent.
 - New in the crates: `VaultManager::ensure_fresh_now` (a freshness pass without the debounce, for an operation that rewrites notes by what links to what), `turbovault_core::is_note`, `ServerConfig::for_vault`, `VaultConfig::permits` and `validate_operations`, and `VAULT_OPERATIONS`.
+- **Release archives carry signed build provenance and an SBOM attestation**, verifiable with `gh attestation verify`, and a CycloneDX SBOM is attached to each release. Every `.sha256` now covers the archive that ships, and native binaries embed their dependency list for `cargo audit bin`.
+- **Multi-arch container images** (amd64, arm64) are published to `ghcr.io/epistates/turbovault` with each release. The Dockerfile builds the full release feature set with a locked, digest-pinned toolchain.
+- **TurboVault can be listed in the official MCP Registry** as `io.github.epistates/turbovault`, from the new `server.json`.
+- **A security policy** with private vulnerability reporting, a contributing guide, a code of conduct, and issue and pull request templates.
+- **CI reports the semver bump the next release needs (and the release workflow enforces it), checks every feature on its own, advisories against a triaged ignore list, 90% coverage and the write-safety burndown**, and runs fuzzing, property tests and 10,000-note benchmarks on a schedule.
 
 ### Changed
 

@@ -1,0 +1,56 @@
+[package]
+name = "turbovault-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace, so the fuzz targets' nightly-only sanitizer flags never
+# touch the main build and `cargo test --workspace` never builds them.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+arbitrary = { version = "1.5", features = ["derive"] }
+serde_json = "1.0"
+turbovault-parser = { path = "../crates/turbovault-parser" }
+turbovault-vault = { path = "../crates/turbovault-vault" }
+turbovault-tools = { path = "../crates/turbovault-tools" }
+
+[[bin]]
+name = "parse_blocks"
+path = "fuzz_targets/parse_blocks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parse_note"
+path = "fuzz_targets/parse_note.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frontmatter"
+path = "fuzz_targets/frontmatter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edit_blocks"
+path = "fuzz_targets/edit_blocks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rewrite_links"
+path = "fuzz_targets/rewrite_links.rs"
+test = false
+doc = false
+bench = false

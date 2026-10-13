@@ -1,0 +1,55 @@
+name: Docker
+
+# Builds the image and holds a real MCP session with it. Only when something
+# the image is built from changes, since a cold image build compiles the
+# whole release feature set; main and the nightly run cover the rest.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker-compose.yml
+      - Cargo.lock
+      - .github/workflows/docker.yml
+      - scripts/smoke_test.py
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and smoke-test the image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: turbovault:ci
+          cache-from: type=gha,scope=docker-ci
+          cache-to: type=gha,scope=docker-ci,mode=max
+
+      - name: Smoke test
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          python3 scripts/smoke_test.py --expect-version "$VERSION" docker run -i --rm turbovault:ci
+
+      - name: Smoke test against the example vault, as compose mounts it
+        run: |
+          python3 scripts/smoke_test.py docker run -i --rm \
+            -v "$PWD/examples/docker-vault:/var/obsidian-vault" turbovault:ci

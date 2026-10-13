@@ -1,0 +1,9 @@
+title: Note
+tags:
+  - a
+  - b/c
+aliases: [One, "Two"]
+nested:
+  deep:
+    deeper: [1, 2, {x: y}]
+date: 2026-10-13

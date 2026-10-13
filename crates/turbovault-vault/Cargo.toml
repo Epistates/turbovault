@@ -48,6 +48,7 @@ schemars = [
 
 [dev-dependencies]
 tempfile = { workspace = true }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 # GitSubstrate unit tests init a throwaway repo directly (mirrors
 # turbovault-git's own test helpers).
