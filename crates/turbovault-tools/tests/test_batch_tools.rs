@@ -781,6 +781,36 @@ async fn test_plan_move_rewrites_markdown_links() {
     );
 }
 
+/// A reference link moves with the definition it goes through; a wikilink
+/// whose text happens to match a definition's label is still one wikilink.
+#[tokio::test]
+async fn test_plan_move_rewrites_reference_links() {
+    let linker = "See [the paper][p], [p][] and [P]. Also [[Paper]].\n\n\
+                  [p]: ../wiki/My%20Paper.md#Results \"Paper\"\n\
+                  [paper]: https://example.com\n";
+    let (_temp_dir, manager) = setup_vault_with_files(&[
+        ("wiki/My Paper.md", "# Paper\n"),
+        ("wiki/Paper.md", "# Other\n"),
+        ("notes/linker.md", linker),
+    ])
+    .await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("wiki/My Paper.md", "archive/My Study.md", None, "move")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        planned_content(&plan, "notes/linker.md").as_deref(),
+        Some(
+            "See [the paper][p], [p][] and [P]. Also [[Paper]].\n\n\
+             [p]: ../archive/My%20Study.md#Results \"Paper\"\n\
+             [paper]: https://example.com\n"
+        )
+    );
+}
+
 /// Two notes share a basename. Moving one rewrites only the links the graph
 /// resolves to it, never a link that names the other one.
 #[tokio::test]

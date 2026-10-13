@@ -2351,6 +2351,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reference_links_are_backlinks() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("My Note.md"), "# Mine\n").unwrap();
+        std::fs::write(temp_dir.path().join("Other.md"), "# Other\n").unwrap();
+        std::fs::write(
+            temp_dir.path().join("refs.md"),
+            "See [mine][m] and [[Other]].\n\n[m]: <My Note.md>\n[other]: My%20Note.md\n",
+        )
+        .unwrap();
+
+        manager.initialize().await.unwrap();
+
+        let mine = manager
+            .get_backlinks(Path::new("My Note.md"))
+            .await
+            .unwrap();
+        assert_eq!(mine.len(), 1, "{mine:?}");
+        // `[[Other]]` reads `[Other]` as a shortcut to the `[other]`
+        // definition in CommonMark; it is still only a wikilink to Other.
+        let other = manager.get_backlinks(Path::new("Other.md")).await.unwrap();
+        assert_eq!(other.len(), 1, "{other:?}");
+        let forward = manager
+            .get_forward_links(Path::new("refs.md"))
+            .await
+            .unwrap();
+        assert_eq!(forward.len(), 2, "{forward:?}");
+    }
+
+    #[tokio::test]
     async fn test_write_non_markdown_file_does_not_pollute_graph() {
         // Writing a non-markdown artifact (e.g. an exported viz.html) must not
         // add a node to the note graph or the note cache.

@@ -8,7 +8,7 @@
 //!
 //! All public parsing APIs delegate to this engine internally.
 
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, HeadingLevel, LinkType as CmLinkType, Options, Parser, Tag, TagEnd};
 use regex::Regex;
 use std::ops::Range;
 use std::path::Path;
@@ -21,7 +21,7 @@ use turbovault_core::{
 use crate::ParseOptions;
 use crate::blocks::slugify;
 use crate::parsers::link_utils::{
-    classify_url, classify_wikilink, markdown_link_target, split_wikilink,
+    classify_url, classify_wikilink, link_destination_end, markdown_link_target, split_wikilink,
 };
 
 // ============================================================================
@@ -176,6 +176,91 @@ impl ParseResult {
 }
 
 // ============================================================================
+// Reference definitions
+// ============================================================================
+
+/// A reference definition, `[label]: destination "title"`, which the
+/// reference links `[text][label]`, `[label][]` and `[label]` take their
+/// destination from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceDefinition {
+    /// The label, as written.
+    pub label: String,
+    /// The note or URL the destination names, decoded the way a
+    /// [`Link::target`] is, so a reference link's target equals it.
+    pub target: String,
+    /// Byte range of the destination as written, angle brackets included.
+    pub destination: Range<usize>,
+}
+
+/// The reference definitions in `content` that reference links can use, in
+/// document order: the first for each label (CommonMark ignores a later one
+/// with the same label), and none inside code or frontmatter.
+pub fn reference_definitions(content: &str) -> Vec<ReferenceDefinition> {
+    let parser = Parser::new_ext(content, markdown_options());
+    let mut definitions: Vec<ReferenceDefinition> = parser
+        .reference_definitions()
+        .iter()
+        .filter_map(|(label, definition)| {
+            let start = destination_start(content, definition.span.start)?;
+            let end = link_destination_end(content, start)?;
+            Some(ReferenceDefinition {
+                label: label.to_string(),
+                target: markdown_link_target(&definition.dest),
+                destination: start..end,
+            })
+        })
+        .collect();
+    definitions.sort_by_key(|definition| definition.destination.start);
+    definitions
+}
+
+/// Where the destination of the definition whose `[` is at `start` begins:
+/// past `[label]:` and the spaces, line break and quote markers before it.
+fn destination_start(content: &str, start: usize) -> Option<usize> {
+    let bytes = content.as_bytes();
+    let mut i = start + 1;
+    loop {
+        match *bytes.get(i)? {
+            b'\\' => i += 1,
+            b']' => break,
+            _ => {}
+        }
+        i += 1;
+    }
+    if bytes.get(i + 1) != Some(&b':') {
+        return None;
+    }
+    i += 2;
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\r' | b'\n' | b'>')) {
+        i += 1;
+    }
+    Some(i)
+}
+
+/// A link that takes its destination from a reference definition.
+fn is_reference(link_type: CmLinkType) -> bool {
+    matches!(
+        link_type,
+        CmLinkType::Reference
+            | CmLinkType::ReferenceUnknown
+            | CmLinkType::Collapsed
+            | CmLinkType::CollapsedUnknown
+            | CmLinkType::Shortcut
+            | CmLinkType::ShortcutUnknown
+    )
+}
+
+/// The CommonMark extensions the engine reads notes with.
+fn markdown_options() -> Options {
+    Options::ENABLE_TASKLISTS
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS
+        | Options::ENABLE_HEADING_ATTRIBUTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+}
+
+// ============================================================================
 // Core parsing engine
 // ============================================================================
 
@@ -271,15 +356,7 @@ impl<'a> ParseEngine<'a> {
         let mut excluded = ExcludedRanges::default();
         let mut body_start: usize = 0;
 
-        // Configure pulldown-cmark options
-        let mut opts = Options::empty();
-        opts.insert(Options::ENABLE_TASKLISTS);
-        opts.insert(Options::ENABLE_YAML_STYLE_METADATA_BLOCKS);
-        opts.insert(Options::ENABLE_HEADING_ATTRIBUTES);
-        opts.insert(Options::ENABLE_STRIKETHROUGH);
-        opts.insert(Options::ENABLE_TABLES);
-
-        let parser = Parser::new_ext(self.content, opts);
+        let parser = Parser::new_ext(self.content, markdown_options());
 
         // State tracking
         let mut in_code_block = false;
@@ -293,7 +370,7 @@ impl<'a> ParseEngine<'a> {
         let mut in_task_item: bool = false;
         let mut task_builder: TaskBuilder = TaskBuilder::default();
 
-        let mut current_link: Option<(String, String)> = None; // (url, title)
+        let mut current_link: Option<(String, CmLinkType)> = None;
         let mut link_text = String::new();
         let mut link_start: usize = 0;
         let mut markdown_link_range_start: Option<usize> = None;
@@ -434,21 +511,41 @@ impl<'a> ParseEngine<'a> {
                 }
 
                 // === Markdown Links ===
+                // `[[Note]]` is a wikilink, but when the note also defines
+                // `[note]: ...`, CommonMark reads the inner `[Note]` as a
+                // shortcut reference to it. That is the wikilink's own text,
+                // not a second link.
+                Event::Start(Tag::Link { link_type, .. })
+                    if is_reference(link_type)
+                        && self.content[..range.start].ends_with('[')
+                        && self.content[range.end..].starts_with(']') => {}
                 Event::Start(Tag::Link {
-                    dest_url, title, ..
+                    link_type,
+                    dest_url,
+                    ..
                 }) if !in_code_block => {
                     markdown_link_range_start = Some(range.start);
                     if options.parse_markdown_links {
-                        current_link = Some((dest_url.to_string(), title.to_string()));
+                        current_link = Some((dest_url.to_string(), link_type));
                         link_text.clear();
                         link_start = range.start;
                     }
                 }
                 Event::End(TagEnd::Link) => {
+                    // A collapsed reference, `[Note][]`, is reported without
+                    // its empty label; the link is all of it.
+                    let end = match current_link {
+                        Some((_, CmLinkType::Collapsed))
+                            if self.content[range.end..].starts_with("[]") =>
+                        {
+                            range.end + 2
+                        }
+                        _ => range.end,
+                    };
                     if let Some(start) = markdown_link_range_start.take() {
-                        excluded.add(start..range.end);
+                        excluded.add(start..end);
                     }
-                    if let Some((url, _title)) = current_link.take() {
+                    if let Some((url, _)) = current_link.take() {
                         let link_type = classify_url(&url);
 
                         result.markdown_links.push(Link {
@@ -462,7 +559,7 @@ impl<'a> ParseEngine<'a> {
                             position: SourcePosition::from_offset_indexed(
                                 &self.index,
                                 link_start,
-                                range.end - link_start,
+                                end - link_start,
                             ),
                             resolved_target: None,
                             is_valid: true,
@@ -1670,6 +1767,65 @@ Back to normal [[Valid]]
         let span = |link: &Link| &content[link.position.offset..][..link.position.length];
         assert_eq!(span(&result.markdown_links[0]), "[Paper](papers/paper.md)");
         assert_eq!(span(&result.markdown_links[1]), "[Spaced](<My Note.md>)");
+    }
+
+    #[test]
+    fn test_reference_links() {
+        let content = "See [Full][paper], [paper][], [Paper] and [Spaced][s].\n\n> [quoted]\n\n[[Paper]] and ![[Paper]] are wikilinks.\n\n[PAPER]: papers/paper.md \"Title\"\n[s]:\n  <My Note.md>\n> [quoted]: Quoted%20Note.md\n[unused]: unused.md\n";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        let span = |link: &Link| &content[link.position.offset..][..link.position.length];
+        let links: Vec<_> = result
+            .markdown_links
+            .iter()
+            .map(|link| (span(link), link.target.as_str()))
+            .collect();
+        assert_eq!(
+            links,
+            [
+                ("[Full][paper]", "papers/paper.md"),
+                ("[paper][]", "papers/paper.md"),
+                ("[Paper]", "papers/paper.md"),
+                ("[Spaced][s]", "My Note.md"),
+                ("[quoted]", "Quoted Note.md"),
+            ]
+        );
+        // `[[Paper]]` stays one wikilink although `[paper]` is defined.
+        assert_eq!(result.wikilinks.len(), 1);
+        assert_eq!(result.embeds.len(), 1);
+
+        // Each definition with the destination as written, ready to splice.
+        let definitions = reference_definitions(content);
+        let found: Vec<_> = definitions
+            .iter()
+            .map(|d| {
+                (
+                    d.label.as_str(),
+                    d.target.as_str(),
+                    &content[d.destination.clone()],
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("PAPER", "papers/paper.md", "papers/paper.md"),
+                ("s", "My Note.md", "<My Note.md>"),
+                ("quoted", "Quoted Note.md", "Quoted%20Note.md"),
+                ("unused", "unused.md", "unused.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reference_definitions_skip_code_and_duplicates() {
+        let content = "```\n[a]: code.md\n```\n\n[b]: first.md\n[B]: second.md\n";
+        let targets: Vec<_> = reference_definitions(content)
+            .into_iter()
+            .map(|d| d.target)
+            .collect();
+        assert_eq!(targets, ["first.md"]);
     }
 
     #[test]
