@@ -1399,10 +1399,11 @@ impl CoreToolHandler {
         manager.ensure_fresh().await;
 
         // One build per vault however many callers arrive at once; the build
-        // indexes the entire vault via tantivy.
+        // opens the vault's persisted index and re-indexes what changed since
+        // it was written, or indexes the entire vault when there is none.
         let (engine, missed) = self
             .search_engines
-            .get_or_build(vault_name, || SearchEngine::new(manager.clone()))
+            .get_or_build(vault_name, || SearchEngine::for_vault(manager.clone()))
             .await
             .map_err(|e| McpError::internal(format!("Failed to build search engine: {}", e)))?;
         // Notes that changed after the build read them.

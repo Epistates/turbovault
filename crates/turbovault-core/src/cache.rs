@@ -167,6 +167,13 @@ impl VaultCache {
         crate::bytes_to_lower_hex(result)[..16].to_string() // Use first 16 chars of hash
     }
 
+    /// TurboVault's platform cache directory (`~/.cache/turbovault` on
+    /// Linux and macOS), where state derived from a vault is kept outside
+    /// it. Not created by this call.
+    pub fn cache_root() -> Result<PathBuf> {
+        Self::get_cache_dir()
+    }
+
     /// Get the platform-specific cache directory
     fn get_cache_dir() -> Result<PathBuf> {
         if let Ok(cache_home) = std::env::var("XDG_CACHE_HOME") {

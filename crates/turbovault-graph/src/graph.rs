@@ -428,6 +428,22 @@ impl LinkGraph {
         }
     }
 
+    /// How many notes link to `path`: the number of entries
+    /// [`Self::backlinks`] would return, without cloning their links.
+    pub fn backlink_source_count(&self, path: &PathBuf) -> usize {
+        let Some(&target_idx) = self.path_index.get(path) else {
+            return 0;
+        };
+        let mut sources: Vec<NodeIndex> = self
+            .graph
+            .edges_directed(target_idx, Incoming)
+            .map(|edge| edge.source())
+            .collect();
+        sources.sort_unstable();
+        sources.dedup();
+        sources.len()
+    }
+
     /// Get all forward links from a file (files this file links to)
     pub fn forward_links(&self, path: &PathBuf) -> Result<Vec<(PathBuf, Vec<Link>)>> {
         if let Some(&source_idx) = self.path_index.get(path) {
