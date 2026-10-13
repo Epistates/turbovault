@@ -537,6 +537,9 @@ TurboVault fully understands Obsidian's syntax:
 - **No shell execution** — Zero command injection risk
 - **Audit trail**: Every write is recorded under `.turbovault/` (and as a commit on a Git-backed vault), in every profile
 - **Read-only mode**: `--profile readonly` or `--require-read-only-tools` hides and refuses every mutating tool
+- **Vault registration is confined**: `add_vault` and `create_vault` never accept the home directory, its hidden and application-data directories, or system directories, and `--allowed-vault-roots` limits them to chosen directories. On network transports they're off unless roots are set
+- **Network authentication**: the HTTP transport takes bearer tokens or OAuth JWTs (`--auth-mode`), with per-client rate limiting, and won't listen beyond loopback without authentication. See [Security in the configuration guide](docs/configuration/index.md#security)
+- **Bounded queries**: result counts are clamped at every tool, and `query_frontmatter_sql` runs only `SELECT`, for at most 10 seconds and 1000 rows
 
 ## System Requirements
 

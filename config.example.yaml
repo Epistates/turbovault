@@ -135,6 +135,60 @@ vaults:
   #   cache_ttl: 1800  # 30 minutes
 
 # ------------------------------------------------------------------------------
+# SECURITY
+# ------------------------------------------------------------------------------
+# Who can reach the server and which directories it will serve. Each key has
+# a matching command-line flag (shown alongside) that takes precedence.
+
+security:
+  # Directories add_vault and create_vault may register vaults inside
+  # (--allowed-vault-roots). Without this, runtime registration accepts any
+  # directory on stdio and none on a network transport. A filesystem root,
+  # the home directory, hidden and application-data directories under home,
+  # and system directories are refused either way. Vaults listed under
+  # `vaults:` above are not restricted.
+  allowed_vault_roots:
+    - ~/Vaults
+
+  # HTTP authentication (--auth-mode). Required to listen beyond loopback.
+  auth:
+    # none (default), bearer or jwt
+    mode: none
+    # This server's canonical URL; tokens must be issued for it
+    # (--auth-resource). Defaults to http://<host>:<port>/mcp.
+    # resource: https://vault.example.com/mcp
+    #
+    # bearer: shared secret tokens, one per line, each at least 32
+    # characters (--auth-token-file, or a single token in
+    # TURBOVAULT_AUTH_TOKEN).
+    # token_file: /etc/turbovault/tokens
+    #
+    # jwt: tokens from an OAuth authorization server, checked for issuer,
+    # audience, expiry and signature (--auth-issuer, --auth-jwks-uri,
+    # --auth-audience, --auth-required-scopes).
+    # issuer: https://auth.example.com
+    # jwks_uri: https://auth.example.com/.well-known/jwks.json
+    # audience: https://vault.example.com/mcp
+    # required_scopes: [vault]
+
+  # Per-client HTTP rate limit (--rate-limit, --rate-limit-window-secs).
+  # Off on loopback and 600 a minute beyond it unless set; 0 turns it off.
+  # rate_limit:
+  #   requests: 120
+  #   window_secs: 60
+
+  # Browser origins the HTTP transport accepts besides localhost
+  # (--allowed-origins), and reverse proxies whose forwarded client address
+  # headers are trusted (--trusted-proxies).
+  # allowed_origins: [https://app.example.com]
+  # trusted_proxies: [10.0.0.0/8]
+
+  # Listen beyond loopback without authentication
+  # (--allow-unauthenticated-network). Only for a deployment that
+  # authenticates in front of TurboVault.
+  allow_unauthenticated_network: false
+
+# ------------------------------------------------------------------------------
 # OBSERVABILITY
 # ------------------------------------------------------------------------------
 # Logging, metrics, and tracing configuration
