@@ -34,9 +34,11 @@ fn link_to(name: &str, dir: &str, form: u8) -> String {
     }
 }
 
-/// Prose around the links, with nothing in it that could itself be a link.
+/// Prose around the links, with nothing in it that could itself be a link,
+/// and no run of four spaces: indented that far, a line is a code block,
+/// and a link in code is left alone on purpose.
 fn prose() -> impl Strategy<Value = String> {
-    "[a-z ,.\n]{0,20}"
+    "[a-z ,.\n]{0,20}".prop_filter("no indented code", |s| !s.contains("    "))
 }
 
 proptest! {
