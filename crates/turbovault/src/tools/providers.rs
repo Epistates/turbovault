@@ -1005,7 +1005,14 @@ impl McpHandler for ObsidianMcpServer {
                     "tool {name:?} failed with an internal error: {detail}"
                 )))
             })?;
-            Ok(self.core.polish_error_result(result).await)
+            let result = self.core.polish_error_result(result).await;
+            // A plugin's text block is the plugin's to word; it need not be
+            // a copy of its structured result.
+            #[cfg(feature = "plugin-api")]
+            if self.plugin_owning_name(name).is_some() {
+                return Ok(result);
+            }
+            Ok(CoreToolHandler::compact_json_text(result))
         }
     }
 

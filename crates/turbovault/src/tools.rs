@@ -1050,6 +1050,26 @@ impl CoreToolHandler {
         result
     }
 
+    /// Write a successful result's text block as compact JSON. TurboMCP
+    /// renders a JSON result twice, as `structuredContent` and as a
+    /// pretty-printed text copy for clients that read only the text; the
+    /// indentation is a third or more of that copy's tokens and tells a
+    /// model nothing. `structuredContent` is left exactly as it was.
+    fn compact_json_text(mut result: ToolResult) -> ToolResult {
+        if result.is_error == Some(true) {
+            return result;
+        }
+        let Some(structured) = result.structured_content.as_ref() else {
+            return result;
+        };
+        if let [Content::Text(text)] = result.content.as_mut_slice()
+            && let Ok(compact) = serde_json::to_string(structured)
+        {
+            text.text = compact;
+        }
+        result
+    }
+
     /// Every registered vault's root, as configured and as it resolves.
     async fn vault_roots(&self) -> Vec<PathBuf> {
         let mut roots = Vec::new();
