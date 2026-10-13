@@ -580,21 +580,41 @@ pub(crate) fn is_stopword(word: &str) -> bool {
 }
 
 /// Extract snippet from content around matching terms
+/// `text` lower-cased character by character, with the byte offset in `text`
+/// that each byte of the result came from.
+fn lower_with_origins(text: &str) -> (String, Vec<usize>) {
+    let mut lower = String::with_capacity(text.len());
+    let mut origins = Vec::with_capacity(text.len());
+    for (offset, ch) in text.char_indices() {
+        lower.extend(ch.to_lowercase());
+        origins.resize(lower.len(), offset);
+    }
+    (lower, origins)
+}
+
 fn extract_snippet(content: &str, query: &str) -> String {
     if query.is_empty() || query == "*" {
         return content.lines().take(1).collect();
     }
 
-    let query_lower = query.to_lowercase();
-    let content_lower = content.to_lowercase();
+    let (query_lower, _) = lower_with_origins(query);
+    let (content_lower, origins) = lower_with_origins(content);
 
-    if let Some(pos) = content_lower.find(&query_lower) {
+    if let Some(found) = content_lower.find(&query_lower) {
+        // Where the match sits in `content` itself, which a character that
+        // changes length when lowered puts somewhere else.
+        let pos = origins[found];
+        let match_end = origins
+            .get(found + query_lower.len())
+            .copied()
+            .unwrap_or(content.len());
+
         let mut start = pos.saturating_sub(50);
         while start > 0 && !content.is_char_boundary(start) {
             start -= 1;
         }
 
-        let mut end = (pos + query_lower.len() + 50).min(content.len());
+        let mut end = (match_end + 50).min(content.len());
         while end < content.len() && !content.is_char_boundary(end) {
             end += 1;
         }
@@ -630,6 +650,16 @@ mod tests {
         let content = "The quick brown fox jumps over the lazy dog";
         let snippet = extract_snippet(content, "fox");
         assert!(snippet.contains("fox"));
+    }
+
+    /// Lower-casing can change a character's length (`İ` is two bytes, its
+    /// lower case three), so a match found in a lower-cased copy has to be
+    /// mapped back before it can cut the original.
+    #[test]
+    fn test_extract_snippet_after_characters_that_grow_when_lowered() {
+        let content = format!("{} harbor {}", "İ".repeat(60), "x".repeat(80));
+        let snippet = extract_snippet(&content, "HARBOR");
+        assert!(snippet.contains("harbor"), "{snippet}");
     }
 
     #[test]
