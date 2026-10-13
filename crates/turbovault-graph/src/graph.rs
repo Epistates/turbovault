@@ -2,7 +2,7 @@
 
 use petgraph::prelude::*;
 use petgraph::unionfind::UnionFind;
-use petgraph::visit::{EdgeRef, NodeIndexable};
+use petgraph::visit::{EdgeRef, IntoEdgeReferences, NodeIndexable};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use turbovault_core::prelude::*;
@@ -12,19 +12,25 @@ type NodeIndex = petgraph::graph::NodeIndex;
 
 /// Link graph for analyzing vault relationships
 pub struct LinkGraph {
-    /// Directed graph: nodes are file paths, edges are links
-    graph: DiGraph<PathBuf, Link>,
+    /// Directed graph: nodes are file paths, edges are links. A stable graph,
+    /// so removing a node or edge never renumbers another one and the index
+    /// maps below stay valid without fixing up.
+    graph: StableDiGraph<PathBuf, Link>,
 
-    /// Map from file name (stem, lowercased) to node indices.
-    /// Multiple files may share the same lowercased stem on case-sensitive
-    /// filesystems (e.g. `Note.md` and `NOTE.md` on ext4). We store all
-    /// candidates and resolve to the first match, mirroring Obsidian's
-    /// "first found wins" behaviour.
+    /// Map from file name (stem, lowercased) to node indices. Several notes
+    /// can share a stem (`a/Note.md` and `b/note.md`, or `Note.md` and
+    /// `NOTE.md` on a case-sensitive filesystem); [`Self::preferred`] picks
+    /// which one a bare link means.
     file_index: HashMap<String, Vec<NodeIndex>>,
 
     /// Map from aliases (lowercased) to node indices.
     /// Same multi-value semantics as `file_index`.
     alias_index: HashMap<String, Vec<NodeIndex>>,
+
+    /// The aliases each node is registered under in `alias_index`, so that
+    /// re-adding a note drops the aliases its frontmatter no longer lists
+    /// and removing it touches only its own keys.
+    node_aliases: HashMap<NodeIndex, Vec<String>>,
 
     /// Map from full path to node index (for quick lookups)
     path_index: HashMap<PathBuf, NodeIndex>,
@@ -42,9 +48,10 @@ impl LinkGraph {
     /// Create a new link graph
     pub fn new() -> Self {
         Self {
-            graph: DiGraph::new(),
+            graph: StableDiGraph::new(),
             file_index: HashMap::new(),
             alias_index: HashMap::new(),
+            node_aliases: HashMap::new(),
             path_index: HashMap::new(),
             unresolved_links: HashMap::new(),
             path_suffix_index: HashMap::new(),
@@ -58,50 +65,19 @@ impl LinkGraph {
 
     /// Add a file to the graph
     pub fn add_file(&mut self, file: &VaultFile) -> Result<()> {
-        let path = file.path.clone();
+        let node_idx = self.node_for(&file.path);
 
-        // Create node if not exists
-        let node_idx = if let Some(&idx) = self.path_index.get(&path) {
-            idx
-        } else {
-            let idx = self.graph.add_node(path.clone());
-            self.path_index.insert(path.clone(), idx);
-
-            // Add to file_index by stem (lowercased for case-insensitive resolution)
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                self.file_index
-                    .entry(stem.to_lowercase())
-                    .or_default()
-                    .push(idx);
-            }
-
-            // Build path suffix entries for folder-qualified lookups like [[Folder/Note]]
-            let components: Vec<String> = path
-                .iter()
-                .filter_map(|c| c.to_str())
-                .map(|s| {
-                    let lower = s.to_lowercase();
-                    lower.strip_suffix(".md").unwrap_or(&lower).to_string()
-                })
-                .collect();
-            for i in (0..components.len()).rev() {
-                let suffix = components[i..].to_vec();
-                self.path_suffix_index.entry(suffix).or_default().push(idx);
-            }
-
-            idx
-        };
-
-        // Register aliases from frontmatter (lowercased for case-insensitive resolution).
-        // Guard against duplicates: add_file may be called multiple times for the
-        // same path (e.g. on every write_file), so only push if not already present.
-        if let Some(fm) = &file.frontmatter {
-            for alias in fm.aliases() {
-                let entries = self.alias_index.entry(alias.to_lowercase()).or_default();
-                if !entries.contains(&node_idx) {
-                    entries.push(node_idx);
-                }
-            }
+        // Register aliases from frontmatter (lowercased for case-insensitive
+        // resolution). add_file runs again on every write, so an alias the
+        // frontmatter no longer lists is dropped, and the links that reached
+        // the note through it are resolved afresh.
+        let aliases = file
+            .frontmatter
+            .as_ref()
+            .map(|fm| fm.aliases().iter().map(|a| a.to_lowercase()).collect())
+            .unwrap_or_default();
+        if self.set_aliases(node_idx, aliases) {
+            self.reroute_inbound(node_idx);
         }
 
         // A previously broken link may become valid when its target note (or an
@@ -111,6 +87,90 @@ impl LinkGraph {
         self.reconcile_unresolved_links();
 
         Ok(())
+    }
+
+    /// The node for `path`, created and indexed by stem and path suffix if
+    /// the graph has none yet.
+    fn node_for(&mut self, path: &PathBuf) -> NodeIndex {
+        if let Some(&idx) = self.path_index.get(path) {
+            return idx;
+        }
+        let idx = self.graph.add_node(path.clone());
+        self.path_index.insert(path.clone(), idx);
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            self.file_index
+                .entry(stem.to_lowercase())
+                .or_default()
+                .push(idx);
+        }
+        // Suffix entries for folder-qualified lookups like [[Folder/Note]].
+        for suffix in path_suffixes(path) {
+            self.path_suffix_index.entry(suffix).or_default().push(idx);
+        }
+        idx
+    }
+
+    /// Register `idx` under exactly `aliases`. Returns whether an alias it
+    /// was registered under before is gone.
+    fn set_aliases(&mut self, idx: NodeIndex, mut aliases: Vec<String>) -> bool {
+        aliases.sort();
+        aliases.dedup();
+        let mut dropped = false;
+        for old in self.node_aliases.remove(&idx).unwrap_or_default() {
+            if aliases.binary_search(&old).is_err() {
+                remove_index(&mut self.alias_index, &old, idx);
+                dropped = true;
+            }
+        }
+        for alias in &aliases {
+            let entries = self.alias_index.entry(alias.clone()).or_default();
+            if !entries.contains(&idx) {
+                entries.push(idx);
+            }
+        }
+        if !aliases.is_empty() {
+            self.node_aliases.insert(idx, aliases);
+        }
+        dropped
+    }
+
+    /// Resolve again every link into `idx` that may no longer mean it,
+    /// moving each to the note it resolves to now, or to the broken links.
+    fn reroute_inbound(&mut self, idx: NodeIndex) {
+        let stale: Vec<_> = self
+            .graph
+            .edges_directed(idx, Incoming)
+            .filter(|edge| self.resolve_link(&edge.weight().target) != Some(idx))
+            .map(|edge| edge.id())
+            .collect();
+        for edge in stale {
+            let source = self.graph.edge_endpoints(edge).map(|(source, _)| source);
+            if let (Some(source), Some(link)) = (source, self.graph.remove_edge(edge)) {
+                self.link_from(source, link);
+            }
+        }
+    }
+
+    /// Record `link`, written in the note at `source`: an edge to the note it
+    /// resolves to, nothing for a link to its own note (resolved, but not a
+    /// graph self-loop, which would distort cycles and centrality), or a
+    /// broken link.
+    fn link_from(&mut self, source: NodeIndex, mut link: Link) {
+        match self.resolve_link(&link.target) {
+            Some(target) if target == source => {}
+            Some(target) => {
+                link.is_valid = true;
+                self.graph.add_edge(source, target, link);
+            }
+            None => {
+                link.is_valid = false;
+                let source_path = self.graph[source].clone();
+                self.unresolved_links
+                    .entry(source_path)
+                    .or_default()
+                    .push(link);
+            }
+        }
     }
 
     fn reconcile_unresolved_links(&mut self) {
@@ -142,91 +202,34 @@ impl LinkGraph {
         }
     }
 
-    /// Remove a file from the graph.
-    ///
-    /// **Important**: petgraph's `remove_node` uses swap-remove — the last node
-    /// in the graph is moved into the removed node's slot. We must update all
-    /// external index maps (`path_index`, `file_index`, `alias_index`) to reflect
-    /// the swapped node's new `NodeIndex`.
+    /// Remove a file from the graph. The links to it are resolved again, so
+    /// each one falls through to another note of the same name, or shows as
+    /// broken right away rather than once its own note is next parsed.
     pub fn remove_file(&mut self, path: &PathBuf) -> Result<()> {
-        if let Some(&idx) = self.path_index.get(path) {
-            // Remove the target node from all indices
-            self.path_index.remove(path);
-            self.unresolved_links.remove(path);
+        let Some(idx) = self.path_index.remove(path) else {
+            return Ok(());
+        };
+        self.unresolved_links.remove(path);
 
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                let key = stem.to_lowercase();
-                if let Some(indices) = self.file_index.get_mut(&key) {
-                    indices.retain(|&i| i != idx);
-                    if indices.is_empty() {
-                        self.file_index.remove(&key);
-                    }
-                }
-            }
+        // Only the keys this node was indexed under, not a sweep of every map.
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            remove_index(&mut self.file_index, &stem.to_lowercase(), idx);
+        }
+        for suffix in path_suffixes(path) {
+            remove_index(&mut self.path_suffix_index, &suffix, idx);
+        }
+        for alias in self.node_aliases.remove(&idx).unwrap_or_default() {
+            remove_index(&mut self.alias_index, &alias, idx);
+        }
 
-            // Remove aliases pointing to this node
-            for indices in self.alias_index.values_mut() {
-                indices.retain(|&i| i != idx);
-            }
-            self.alias_index.retain(|_, indices| !indices.is_empty());
-
-            // Remove path_suffix_index entries pointing to this node
-            for indices in self.path_suffix_index.values_mut() {
-                indices.retain(|&i| i != idx);
-            }
-            self.path_suffix_index
-                .retain(|_, indices| !indices.is_empty());
-
-            // Before removing, identify the node that will be swapped into `idx`.
-            // petgraph moves the last node (highest index) into the removed slot.
-            let last_idx = NodeIndex::new(self.graph.node_count() - 1);
-            let swapped_path = if last_idx != idx {
-                Some(self.graph[last_idx].clone())
-            } else {
-                None
-            };
-
-            // Remove node and all edges
-            self.graph.remove_node(idx);
-
-            // Fix up index maps for the swapped node (formerly at last_idx, now at idx)
-            if let Some(swapped_path) = swapped_path {
-                // Update path_index
-                self.path_index.insert(swapped_path.clone(), idx);
-
-                // Update file_index: replace last_idx with idx
-                if let Some(stem) = swapped_path.file_stem().and_then(|s| s.to_str()) {
-                    let key = stem.to_lowercase();
-                    if let Some(indices) = self.file_index.get_mut(&key) {
-                        for node_idx in indices.iter_mut() {
-                            if *node_idx == last_idx {
-                                *node_idx = idx;
-                            }
-                        }
-                    }
-                }
-
-                // Update alias_index: replace last_idx with idx
-                for indices in self.alias_index.values_mut() {
-                    for node_idx in indices.iter_mut() {
-                        if *node_idx == last_idx {
-                            *node_idx = idx;
-                        }
-                    }
-                }
-
-                // Update path_suffix_index: replace last_idx with idx
-                for indices in self.path_suffix_index.values_mut() {
-                    for node_idx in indices.iter_mut() {
-                        if *node_idx == last_idx {
-                            *node_idx = idx;
-                        }
-                    }
-                }
-
-                // Update unresolved_links key if the swapped node had entries
-                // (key is by path, not by index, so no change needed — paths don't move)
-            }
+        let inbound: Vec<(NodeIndex, Link)> = self
+            .graph
+            .edges_directed(idx, Incoming)
+            .map(|edge| (edge.source(), edge.weight().clone()))
+            .collect();
+        self.graph.remove_node(idx);
+        for (source, link) in inbound {
+            self.link_from(source, link);
         }
 
         Ok(())
@@ -235,40 +238,13 @@ impl LinkGraph {
     /// Add links from a parsed file to the graph
     pub fn update_links(&mut self, file: &VaultFile) -> Result<()> {
         let source_path = &file.path;
-
-        // Get or create source node
-        let source_idx = if let Some(&idx) = self.path_index.get(source_path) {
-            idx
-        } else {
-            let idx = self.graph.add_node(source_path.clone());
-            self.path_index.insert(source_path.clone(), idx);
-            // Also populate file_index and path_suffix_index for stem-based resolution
-            if let Some(stem) = source_path.file_stem().and_then(|s| s.to_str()) {
-                self.file_index
-                    .entry(stem.to_lowercase())
-                    .or_default()
-                    .push(idx);
-            }
-            let components: Vec<String> = source_path
-                .iter()
-                .filter_map(|c| c.to_str())
-                .map(|s| {
-                    let lower = s.to_lowercase();
-                    lower.strip_suffix(".md").unwrap_or(&lower).to_string()
-                })
-                .collect();
-            for i in (0..components.len()).rev() {
-                let suffix = components[i..].to_vec();
-                self.path_suffix_index.entry(suffix).or_default().push(idx);
-            }
-            idx
-        };
+        let source_idx = self.node_for(source_path);
 
         // Remove old outgoing edges and unresolved links for this source.
-        // Edge ids can't be collected first: removing an edge moves the
-        // graph's last edge into its slot, so a collected id can come to name
-        // another edge, or none, and the old edge survives.
-        while let Some(edge) = self.graph.first_edge(source_idx, Outgoing) {
+        // The graph is stable, so the collected edge ids stay valid while
+        // the edges are removed.
+        let outgoing: Vec<_> = self.graph.edges(source_idx).map(|e| e.id()).collect();
+        for edge in outgoing {
             self.graph.remove_edge(edge);
         }
         self.unresolved_links.remove(source_path);
@@ -300,23 +276,7 @@ impl LinkGraph {
                 if clean_target.is_empty() {
                     continue;
                 }
-
-                if let Some(target_idx) = self.resolve_link(&link.target) {
-                    // Skip self-references (a note linking to itself) — they are
-                    // resolved, not broken, but must not become graph self-loops
-                    // (they would distort cycle detection and centrality).
-                    if target_idx != source_idx {
-                        self.graph.add_edge(source_idx, target_idx, link.clone());
-                    }
-                } else {
-                    // Track unresolved links for broken link detection
-                    let mut broken = link.clone();
-                    broken.is_valid = false;
-                    self.unresolved_links
-                        .entry(source_path.clone())
-                        .or_default()
-                        .push(broken);
-                }
+                self.link_from(source_idx, link.clone());
             }
         }
 
@@ -346,8 +306,10 @@ impl LinkGraph {
 
         // Single component (`Note`, `orders.md`): try file stem first.
         if parts.len() == 1
-            && let Some(indices) = self.file_index.get(&parts[0])
-            && let Some(&idx) = indices.first()
+            && let Some(idx) = self
+                .file_index
+                .get(&parts[0])
+                .and_then(|indices| self.preferred(indices))
         {
             return Some(idx);
         }
@@ -356,27 +318,32 @@ impl LinkGraph {
         // and may contain `/` (e.g. an alias literally `Projects/Roadmap`), so
         // match the joined form, not just single-component targets.
         let joined = parts.join("/");
-        if let Some(indices) = self.alias_index.get(&joined)
-            && let Some(&idx) = indices.first()
+        if let Some(idx) = self
+            .alias_index
+            .get(&joined)
+            .and_then(|indices| self.preferred(indices))
         {
             return Some(idx);
         }
 
         // Folder-qualified or bundle-relative links: path-suffix match.
-        if let Some(candidates) = self.path_suffix_index.get(&parts) {
-            if candidates.len() == 1 {
-                return Some(candidates[0]);
-            }
-            // Multiple matches — pick the shortest path (most specific)
-            if !candidates.is_empty() {
-                return candidates
-                    .iter()
-                    .min_by_key(|&&idx| self.graph[idx].components().count())
-                    .copied();
-            }
-        }
+        self.path_suffix_index
+            .get(&parts)
+            .and_then(|candidates| self.preferred(candidates))
+    }
 
-        None
+    /// Which of several notes a link that names them all means: the one in
+    /// the fewest folders (the vault root's `Note.md` over `deep/Note.md`, as
+    /// Obsidian's shortest-path link format assumes), then the first by path.
+    /// It depends only on the paths, never on the order notes were indexed.
+    fn preferred(&self, candidates: &[NodeIndex]) -> Option<NodeIndex> {
+        candidates.iter().copied().min_by(|&a, &b| {
+            let (a, b) = (&self.graph[a], &self.graph[b]);
+            a.components()
+                .count()
+                .cmp(&b.components().count())
+                .then_with(|| a.cmp(b))
+        })
     }
 
     /// Get all backlinks to a file (files that link to this file)
@@ -622,6 +589,38 @@ impl Default for LinkGraph {
     }
 }
 
+/// The lowercased, `.md`-stripped path suffixes `path` is found under for
+/// folder-qualified links: `a/b/Note.md` under `[note]`, `[b, note]` and
+/// `[a, b, note]`.
+fn path_suffixes(path: &std::path::Path) -> Vec<Vec<String>> {
+    let components: Vec<String> = path
+        .iter()
+        .filter_map(|c| c.to_str())
+        .map(|s| {
+            let lower = s.to_lowercase();
+            lower.strip_suffix(".md").unwrap_or(&lower).to_string()
+        })
+        .collect();
+    (0..components.len())
+        .rev()
+        .map(|i| components[i..].to_vec())
+        .collect()
+}
+
+/// Remove `idx` from the entry for `key`, and the entry once it is empty.
+fn remove_index<K: std::hash::Hash + Eq>(
+    map: &mut HashMap<K, Vec<NodeIndex>>,
+    key: &K,
+    idx: NodeIndex,
+) {
+    if let Some(indices) = map.get_mut(key) {
+        indices.retain(|&i| i != idx);
+        if indices.is_empty() {
+            map.remove(key);
+        }
+    }
+}
+
 /// True if a link target refers to a *note* (as opposed to an attachment,
 /// image, media, or data file), ignoring any `#fragment`.
 ///
@@ -779,6 +778,115 @@ mod tests {
         assert_eq!(graph.edge_count(), total);
     }
 
+    fn with_aliases(mut file: VaultFile, aliases: &[&str]) -> VaultFile {
+        let mut data = std::collections::HashMap::new();
+        data.insert(
+            "aliases".to_string(),
+            serde_json::Value::Array(
+                aliases
+                    .iter()
+                    .map(|a| serde_json::Value::String((*a).into()))
+                    .collect(),
+            ),
+        );
+        file.frontmatter = Some(turbovault_core::Frontmatter {
+            data,
+            position: SourcePosition::start(),
+        });
+        file
+    }
+
+    fn unresolved_targets(graph: &LinkGraph, path: &str) -> Vec<String> {
+        graph
+            .all_unresolved_links()
+            .get(&PathBuf::from(path))
+            .map(|links| links.iter().map(|l| l.target.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Deleting a note breaks the links to it at once, as Obsidian shows
+    /// them, and adding it back mends them.
+    #[test]
+    fn test_removing_a_target_breaks_its_inbound_links() {
+        let mut graph = LinkGraph::new();
+        let a = create_test_file("a.md", vec!["b"]);
+        graph.add_file(&a).unwrap();
+        graph.add_file(&create_test_file("b.md", vec![])).unwrap();
+        graph.update_links(&a).unwrap();
+        assert_eq!(graph.edge_count(), 1);
+
+        graph.remove_file(&PathBuf::from("b.md")).unwrap();
+        assert_eq!(graph.edge_count(), 0);
+        assert_eq!(unresolved_targets(&graph, "a.md"), ["b"]);
+        assert!(!graph.all_unresolved_links()[&PathBuf::from("a.md")][0].is_valid);
+
+        graph.add_file(&create_test_file("b.md", vec![])).unwrap();
+        assert_eq!(graph.edge_count(), 1);
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    /// When one of two same-named notes goes, links to it fall through to
+    /// the other, the way they would resolve if parsed afresh.
+    #[test]
+    fn test_removing_one_of_two_same_named_notes_repoints_links() {
+        let mut graph = LinkGraph::new();
+        let linker = create_test_file("linker.md", vec!["note"]);
+        graph
+            .add_file(&create_test_file("note.md", vec![]))
+            .unwrap();
+        graph
+            .add_file(&create_test_file("deep/note.md", vec![]))
+            .unwrap();
+        graph.add_file(&linker).unwrap();
+        graph.update_links(&linker).unwrap();
+        assert_eq!(edge_targets(&graph, "linker.md"), ["note.md"]);
+
+        graph.remove_file(&PathBuf::from("note.md")).unwrap();
+        assert_eq!(edge_targets(&graph, "linker.md"), ["deep/note.md"]);
+        assert!(graph.all_unresolved_links().is_empty());
+    }
+
+    /// Which of several same-named notes a bare link means does not depend
+    /// on the order they were indexed in: the one with the fewest folders,
+    /// then the first by path.
+    #[test]
+    fn test_same_named_notes_resolve_independently_of_scan_order() {
+        let paths = ["z/note.md", "b/Note.md", "a/note.md", "x/y/note.md"];
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0], [1, 3, 0, 2]] {
+            let mut graph = LinkGraph::new();
+            for i in order {
+                graph.add_file(&create_test_file(paths[i], vec![])).unwrap();
+            }
+            assert_eq!(
+                graph.resolve("note"),
+                Some(&PathBuf::from("a/note.md")),
+                "order {order:?}"
+            );
+        }
+    }
+
+    /// An alias dropped from a note's frontmatter stops resolving to it.
+    #[test]
+    fn test_dropped_alias_stops_resolving() {
+        let mut graph = LinkGraph::new();
+        graph
+            .add_file(&with_aliases(
+                create_test_file("roadmap.md", vec![]),
+                &["Plan"],
+            ))
+            .unwrap();
+        assert_eq!(graph.resolve("plan"), Some(&PathBuf::from("roadmap.md")));
+
+        graph
+            .add_file(&with_aliases(
+                create_test_file("roadmap.md", vec![]),
+                &["Q3"],
+            ))
+            .unwrap();
+        assert_eq!(graph.resolve("plan"), None);
+        assert_eq!(graph.resolve("q3"), Some(&PathBuf::from("roadmap.md")));
+    }
+
     #[test]
     fn test_add_file() {
         let mut graph = LinkGraph::new();
@@ -934,8 +1042,8 @@ mod tests {
     #[test]
     fn test_case_insensitive_collision_both_indexed() {
         // On case-sensitive filesystems, Note.md and NOTE.md can coexist.
-        // Both should be in the graph and the first-added should win for
-        // resolution, but neither should be silently dropped.
+        // Both should be in the graph and one should win for resolution
+        // (see `preferred`), but neither should be silently dropped.
         let mut graph = LinkGraph::new();
         let file1 = create_test_file("Note.md", vec![]);
         let file2 = create_test_file("NOTE.md", vec![]);
@@ -949,7 +1057,12 @@ mod tests {
         // Both files should exist as nodes
         assert_eq!(graph.node_count(), 3);
 
-        // Link should resolve (to whichever was added first)
+        // Link should resolve to the first by path, whichever was added first
+        assert_eq!(
+            graph.resolve("note"),
+            Some(&PathBuf::from("NOTE.md")),
+            "uppercase sorts first"
+        );
         assert_eq!(graph.edge_count(), 1);
         assert!(graph.all_unresolved_links().is_empty());
     }
@@ -983,9 +1096,9 @@ mod tests {
 
     #[test]
     fn test_remove_node_swap_fixup_three_nodes() {
-        // Regression test for petgraph swap-remove index invalidation.
-        // When the first node is removed, petgraph moves the last node
-        // into its slot. Our index maps must be updated accordingly.
+        // Regression test for index invalidation on removal. A plain petgraph
+        // Graph moves its last node into a removed node's slot; the stable
+        // graph does not, and the index maps must stay right either way.
         let mut graph = LinkGraph::new();
         let a = create_test_file("a.md", vec![]);
         let b = create_test_file("b.md", vec![]);
@@ -998,8 +1111,7 @@ mod tests {
 
         assert_eq!(graph.edge_count(), 1);
 
-        // Remove a.md — petgraph swaps c.md (last) into slot 0.
-        // All index maps for c.md must be updated.
+        // Remove a.md; c.md must stay reachable through every index map.
         graph.remove_file(&PathBuf::from("a.md")).unwrap();
 
         assert_eq!(graph.node_count(), 2);
