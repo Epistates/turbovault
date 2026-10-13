@@ -665,6 +665,12 @@ pub struct VaultManager {
     reconcile: tokio::sync::Mutex<ReconcileState>,
     /// Vault-relative paths with a write in flight. See [`WriteClaim`].
     write_claims: StdMutex<HashMap<String, usize>>,
+    /// Where the vault root really is, every symlink to it followed: worked
+    /// out by the first path resolution that succeeds, then reused.
+    real_root: OnceLock<PathBuf>,
+    /// The protected directory names, folded the way `protected_component`
+    /// compares them, once rather than on every path component.
+    protected_names: Vec<String>,
 }
 
 impl VaultManager {
@@ -784,8 +790,16 @@ impl VaultManager {
         };
 
         let scan_spec = Arc::new(ScanSpec::new(&config, vault_path.clone()));
+        let protected_names = PROTECTED_COMPONENTS
+            .iter()
+            .copied()
+            .chain(config.excluded_paths.iter().map(String::as_str))
+            .map(str::to_lowercase)
+            .collect();
 
         Ok(Self {
+            real_root: OnceLock::new(),
+            protected_names,
             config,
             vault_path,
             resolved_vault_path: OnceLock::new(),
@@ -1869,7 +1883,7 @@ impl VaultManager {
     /// again to where it really lands, since a symlink inside the vault can
     /// reach `.git` without the path ever naming it.
     pub fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
-        let resolved = PathValidator::resolve_in_vault(&self.vault_path, path)?;
+        let resolved = self.resolve_in_vault(path)?;
         self.ensure_path_is_not_protected(&resolved.path)?;
         if let Some(component) = self.protected_component(&resolved.real_relative) {
             return Err(Error::protected_path(resolved.path, component));
@@ -1884,7 +1898,20 @@ impl VaultManager {
     /// that is the plugin host's config-read capability. Prefer
     /// [`Self::resolve_path`] everywhere else.
     pub fn resolve_path_bypassing_policy(&self, path: &Path) -> Result<PathBuf> {
-        Ok(PathValidator::resolve_in_vault(&self.vault_path, path)?.path)
+        Ok(self.resolve_in_vault(path)?.path)
+    }
+
+    /// [`PathValidator::resolve_in_vault`], with the vault root's real
+    /// location worked out once rather than on every call.
+    fn resolve_in_vault(&self, path: &Path) -> Result<turbovault_core::ResolvedPath> {
+        let real_root = match self.real_root.get() {
+            Some(real_root) => real_root,
+            None => {
+                let real_root = PathValidator::real_root(&self.vault_path)?;
+                self.real_root.get_or_init(|| real_root)
+            }
+        };
+        PathValidator::resolve_in_vault_at(&self.vault_path, real_root, path)
     }
 
     /// Refuse a path that lies inside the vault but under a protected
@@ -1935,11 +1962,7 @@ impl VaultManager {
             };
             let name = raw.to_string_lossy();
             let folded = name.trim_end_matches(['.', ' ']).to_lowercase();
-            let protected = PROTECTED_COMPONENTS
-                .iter()
-                .copied()
-                .chain(self.config.excluded_paths.iter().map(String::as_str))
-                .any(|p| p.to_lowercase() == folded);
+            let protected = self.protected_names.contains(&folded);
             protected.then(|| name.into_owned())
         })
     }
