@@ -136,16 +136,30 @@ pub struct VaultConfig {
     /// Whether this is the default vault
     pub is_default: bool,
 
-    // Optional overrides
+    // Optional overrides of the server's settings, for this vault only (see
+    // [`ServerConfig::for_vault`]).
     /// See [`ServerConfig::reconcile_external_changes`].
     #[serde(alias = "watch_for_changes")]
     pub reconcile_external_changes: Option<bool>,
+    /// Replaces [`ServerConfig::max_file_size`].
     pub max_file_size: Option<u64>,
+    /// Replaces [`ServerConfig::allowed_extensions`].
     pub allowed_extensions: Option<HashSet<String>>,
+    /// Added to [`ServerConfig::excluded_paths`], never in place of it, so a
+    /// vault can't unprotect `.obsidian` or `.git` by listing its own.
     pub excluded_paths: Option<HashSet<String>>,
+    /// Deprecated since 3.4.0: never read. Still accepted, with a warning.
     pub enable_caching: Option<bool>,
+    /// Deprecated since 3.4.0: never read. Still accepted, with a warning.
     pub cache_ttl: Option<u64>,
+    /// Deprecated since 3.4.0: never read, since templates are built in.
+    /// Still accepted, with a warning.
     pub template_dirs: Option<Vec<PathBuf>>,
+    /// What TurboVault may do to this vault's notes: any of
+    /// [`VAULT_OPERATIONS`]. `read` alone makes the vault read-only. Unset, or
+    /// `all`, allows everything. Reading is always allowed. Written as one
+    /// name (`allowed_operations: read`) or a list.
+    #[serde(default, deserialize_with = "one_or_many")]
     pub allowed_operations: Option<HashSet<String>>,
 
     /// Write backend selection. Default `Direct` — a permanent per-vault
@@ -157,10 +171,74 @@ pub struct VaultConfig {
     pub git: Option<VaultGitConfig>,
 }
 
+/// The names [`VaultConfig::allowed_operations`] accepts. `write` creates or
+/// changes a note, `delete` removes one, `move` renames one, and `all`
+/// allows everything. A move that also rewrites the links to the note needs
+/// `write` for those.
+pub const VAULT_OPERATIONS: [&str; 5] = ["read", "write", "delete", "move", "all"];
+
+/// One name or a list of names, so `allowed_operations: read` reads like
+/// `allowed_operations: [read]`.
+fn one_or_many<'de, D>(deserializer: D) -> std::result::Result<Option<HashSet<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(HashSet<String>),
+    }
+    Ok(
+        Option::<OneOrMany>::deserialize(deserializer)?.map(|names| match names {
+            OneOrMany::One(name) => HashSet::from([name]),
+            OneOrMany::Many(names) => names,
+        }),
+    )
+}
+
 impl VaultConfig {
     /// Create a new vault config with builder
     pub fn builder(name: impl Into<String>, path: impl Into<PathBuf>) -> VaultConfigBuilder {
         VaultConfigBuilder::new(name, path)
+    }
+
+    /// Whether [`Self::allowed_operations`] lets TurboVault do `operation`,
+    /// one of [`VAULT_OPERATIONS`], to this vault's notes.
+    pub fn permits(&self, operation: &str) -> bool {
+        operation == "read"
+            || self.allowed_operations.as_ref().is_none_or(|allowed| {
+                allowed.iter().any(|name| {
+                    name.eq_ignore_ascii_case("all") || name.eq_ignore_ascii_case(operation)
+                })
+            })
+    }
+
+    /// Refuse an `allowed_operations` name TurboVault doesn't know. A
+    /// misspelling would otherwise go unnoticed, and leave a vault meant to
+    /// be locked down open.
+    pub fn validate_operations(&self) -> Result<()> {
+        let Some(allowed) = &self.allowed_operations else {
+            return Ok(());
+        };
+        let unknown: Vec<&str> = allowed
+            .iter()
+            .map(String::as_str)
+            .filter(|name| {
+                !VAULT_OPERATIONS
+                    .iter()
+                    .any(|known| known.eq_ignore_ascii_case(name))
+            })
+            .collect();
+        if unknown.is_empty() {
+            return Ok(());
+        }
+        Err(Error::config_error(format!(
+            "vault '{}' has unknown allowed_operations: {}. Use any of {}",
+            self.name,
+            unknown.join(", "),
+            VAULT_OPERATIONS.join(", ")
+        )))
     }
 
     /// Validate the vault configuration
@@ -168,6 +246,7 @@ impl VaultConfig {
         if self.name.is_empty() {
             return Err(Error::config_error("Vault name cannot be empty"));
         }
+        self.validate_operations()?;
 
         if !self.path.exists() {
             std::fs::create_dir_all(&self.path).map_err(|e| {
@@ -509,6 +588,41 @@ impl ServerConfig {
         Ok(())
     }
 
+    /// This server's settings for `vault`, with the vault's own overrides
+    /// applied: `max_file_size`, `allowed_extensions` and
+    /// `reconcile_external_changes` replace the server's, and
+    /// `excluded_paths` adds to them. The settings the vault sets but nothing
+    /// reads (`enable_caching`, `cache_ttl`, `template_dirs`) are warned
+    /// about here, once per vault manager.
+    pub fn for_vault(&self, vault: &VaultConfig) -> ServerConfig {
+        let mut config = self.clone();
+        if let Some(reconcile) = vault.reconcile_external_changes {
+            config.reconcile_external_changes = reconcile;
+        }
+        if let Some(max) = vault.max_file_size {
+            config.max_file_size = max;
+        }
+        if let Some(extensions) = &vault.allowed_extensions {
+            config.allowed_extensions = extensions.clone();
+        }
+        if let Some(excluded) = &vault.excluded_paths {
+            config.excluded_paths.extend(excluded.iter().cloned());
+        }
+        for (name, set) in [
+            ("enable_caching", vault.enable_caching.is_some()),
+            ("cache_ttl", vault.cache_ttl.is_some()),
+            ("template_dirs", vault.template_dirs.is_some()),
+        ] {
+            if set {
+                log::warn!(
+                    "vault '{}' sets {name}, which TurboVault never reads; it is deprecated and will be removed in the next major release",
+                    vault.name
+                );
+            }
+        }
+        config
+    }
+
     /// Get default vault config
     pub fn default_vault(&self) -> Result<&VaultConfig> {
         self.vaults
@@ -577,6 +691,65 @@ mod tests {
         let mut config = ServerConfig::new();
         config.vaults.clear();
         assert!(config.validate().is_err());
+    }
+
+    fn vault_from_yaml(yaml: &str) -> VaultConfig {
+        yaml_serde::from_str(yaml).unwrap()
+    }
+
+    /// `allowed_operations` reads as one name or a list, as the example
+    /// config writes it both ways.
+    #[test]
+    fn allowed_operations_reads_one_name_or_a_list() {
+        let one =
+            vault_from_yaml("name: v\npath: /v\nis_default: true\nallowed_operations: read\n");
+        assert!(one.permits("read"));
+        assert!(!one.permits("write"));
+
+        let all = vault_from_yaml("name: v\npath: /v\nis_default: true\nallowed_operations: all\n");
+        assert!(all.permits("delete"));
+
+        let list = vault_from_yaml(
+            "name: v\npath: /v\nis_default: true\nallowed_operations: [read, write]\n",
+        );
+        assert!(list.permits("write"));
+        assert!(!list.permits("delete"));
+
+        let unset = vault_from_yaml("name: v\npath: /v\nis_default: true\n");
+        assert!(unset.permits("move"));
+    }
+
+    /// A misspelled operation would otherwise be silently ignored, leaving
+    /// a vault meant to be locked down open.
+    #[test]
+    fn allowed_operations_refuses_an_unknown_name() {
+        let temp = TempDir::new().unwrap();
+        let mut vault = VaultConfig::builder("v", temp.path()).build().unwrap();
+        vault.allowed_operations = Some(["read".to_string(), "wirte".to_string()].into());
+        let error = vault.validate().unwrap_err().to_string();
+        assert!(error.contains("wirte"), "{error}");
+    }
+
+    /// A vault's own settings override the server's. Exclusions add to the
+    /// server's, so a vault can't drop the protection of `.obsidian` or
+    /// `.git` by listing its own.
+    #[test]
+    fn for_vault_applies_the_vaults_overrides() {
+        let temp = TempDir::new().unwrap();
+        let mut vault = VaultConfig::builder("v", temp.path()).build().unwrap();
+        vault.max_file_size = Some(1024);
+        vault.excluded_paths = Some(["private".to_string()].into());
+        vault.allowed_extensions = Some([".md".to_string()].into());
+        vault.reconcile_external_changes = Some(false);
+        let server = ServerConfig::new();
+
+        let merged = server.for_vault(&vault);
+
+        assert_eq!(merged.max_file_size, 1024);
+        assert!(merged.excluded_paths.contains("private"));
+        assert!(merged.excluded_paths.contains(".obsidian"));
+        assert_eq!(merged.allowed_extensions, [".md".to_string()].into());
+        assert!(!merged.reconcile_external_changes);
     }
 
     // -------- GWS.11 write-backend + git config --------

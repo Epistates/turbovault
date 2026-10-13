@@ -520,7 +520,11 @@ pub struct VaultManager {
 impl VaultManager {
     /// Create a new vault manager
     pub fn new(config: ServerConfig) -> Result<Self> {
+        // The vault's own settings override the server's from here on, for
+        // the scan, path protection, size limit and freshness schedule alike.
+        let config = config.for_vault(config.default_vault()?);
         let default_vault = config.default_vault()?;
+        default_vault.validate_operations()?;
         let vault_path = default_vault.path.clone();
         let parser = Parser::new(vault_path.clone());
 
@@ -1104,6 +1108,7 @@ impl VaultManager {
     /// concurrent freshness sweep cannot catch this write half-applied and
     /// republish it as somebody else's ([`WriteClaim`]).
     async fn apply_through_substrate(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
+        self.check_allowed_operations(plan)?;
         let outcome = {
             let _claim = WriteClaim::new(&self.write_claims, plan.touched_paths());
             let outcome = self.substrate.apply(plan).await?;
@@ -1113,6 +1118,90 @@ impl VaultManager {
         self.fire_change_listener(with_origin(outcome.changed.clone(), CommitOrigin::Local))
             .await;
         Ok(outcome)
+    }
+
+    /// Refuse a plan the vault's `allowed_operations` doesn't allow, before
+    /// any of it lands. Every mutation passes through here.
+    ///
+    /// An upsert needs `write`, a remove `delete` and a rename `move`. A move
+    /// can also be built as a copy plus a remove, which is how a link-aware
+    /// move is: a remove whose bytes the plan writes under another path is
+    /// one, and both halves need `move` rather than `write` and `delete`. The
+    /// bytes are matched through the precondition every such move carries
+    /// for its source.
+    fn check_allowed_operations(&self, plan: &ChangePlan) -> Result<()> {
+        let vault = self.config.default_vault()?;
+        if vault.allowed_operations.is_none() || vault.permits("all") {
+            return Ok(());
+        }
+
+        // The bytes each removed path is held to, and the bytes each upsert
+        // writes. A remove and an upsert with the same bytes are one move.
+        let removed_token = |path: &str| {
+            plan.preconditions
+                .iter()
+                .find_map(|(guarded, precondition)| match precondition {
+                    Precondition::ExpectBlob(token) if guarded == path => Some(token.as_str()),
+                    _ => None,
+                })
+        };
+        let removed_tokens: HashSet<&str> = plan
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Remove { path } => removed_token(path),
+                _ => None,
+            })
+            .collect();
+        let mut written_tokens = HashSet::new();
+        if !removed_tokens.is_empty() {
+            for change in &plan.changes {
+                if let Change::Upsert { content, .. } = change {
+                    written_tokens.insert(self.hash_bytes(content)?);
+                }
+            }
+        }
+
+        let mut needed = std::collections::BTreeSet::new();
+        for change in &plan.changes {
+            needed.insert(match change {
+                Change::Upsert { content, .. }
+                    if !removed_tokens.is_empty()
+                        && removed_tokens.contains(self.hash_bytes(content)?.as_str()) =>
+                {
+                    "move"
+                }
+                Change::Remove { path }
+                    if removed_token(path).is_some_and(|token| written_tokens.contains(token)) =>
+                {
+                    "move"
+                }
+                Change::Upsert { .. } => "write",
+                Change::Remove { .. } => "delete",
+                Change::Rename { .. } => "move",
+            });
+        }
+
+        let refused: Vec<&str> = needed
+            .into_iter()
+            .filter(|operation| !vault.permits(operation))
+            .collect();
+        if refused.is_empty() {
+            return Ok(());
+        }
+        let mut allowed: Vec<&str> = vault
+            .allowed_operations
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        allowed.sort_unstable();
+        Err(Error::config_error(format!(
+            "vault '{}' does not allow {} (allowed_operations: {})",
+            vault.name,
+            refused.join(" or "),
+            allowed.join(", ")
+        )))
     }
 
     /// Get vault path
@@ -2501,6 +2590,124 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backlinks.len(), 2, "{backlinks:?}");
+    }
+
+    /// A manager for one vault in `dir` whose own config is shaped by `shape`.
+    fn manager_with_vault(dir: &Path, shape: impl FnOnce(&mut VaultConfig)) -> VaultManager {
+        let mut config = ServerConfig::new();
+        let mut vault = VaultConfig::builder("v", dir).build().unwrap();
+        shape(&mut vault);
+        config.vaults.push(vault);
+        VaultManager::new(config).unwrap()
+    }
+
+    /// `allowed_operations: read` makes a vault read-only: every write is
+    /// refused at the chokepoint they all share, saying why.
+    #[tokio::test]
+    async fn a_read_only_vault_refuses_every_write() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("a.md"), "# A\n").unwrap();
+        let manager = manager_with_vault(temp_dir.path(), |vault| {
+            vault.allowed_operations = Some(["read".to_string()].into());
+        });
+        manager.initialize().await.unwrap();
+
+        let error = manager
+            .write_file(Path::new("b.md"), "# B\n", Precondition::Blind, "add")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("allowed_operations"), "{error}");
+        assert!(
+            manager
+                .delete_file(Path::new("a.md"), Precondition::Blind, "rm")
+                .await
+                .is_err()
+        );
+        assert!(!temp_dir.path().join("b.md").exists());
+        assert!(temp_dir.path().join("a.md").exists());
+        // Reading is always allowed.
+        assert_eq!(manager.read_file(Path::new("a.md")).await.unwrap(), "# A\n");
+    }
+
+    /// Each kind of change needs its own operation, and a move built as a
+    /// copy plus a remove (as a link-aware move is) needs `move`, not
+    /// `write` and `delete`.
+    #[tokio::test]
+    async fn allowed_operations_is_checked_per_kind_of_change() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("a.md"), "# A\n").unwrap();
+        let manager = manager_with_vault(temp_dir.path(), |vault| {
+            vault.allowed_operations = Some(["read".to_string(), "move".to_string()].into());
+        });
+        manager.initialize().await.unwrap();
+
+        let token = manager.hash_bytes(b"# A\n").unwrap();
+        let moved = ChangePlan::new("move")
+            .upsert("b.md", b"# A\n".to_vec())
+            .expect_blob("a.md", token)
+            .remove("a.md");
+        manager
+            .apply_changes(&moved)
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
+        assert!(temp_dir.path().join("b.md").exists());
+
+        let deleted = ChangePlan::new("rm").remove("b.md");
+        assert!(manager.apply_changes(&deleted).await.is_err());
+        let written = ChangePlan::new("add").upsert("c.md", b"# C\n".to_vec());
+        assert!(manager.apply_changes(&written).await.is_err());
+
+        // A move in the same plan doesn't carry an unrelated delete with it.
+        std::fs::write(temp_dir.path().join("other.md"), "# Other\n").unwrap();
+        let token = manager.hash_bytes(b"# A\n").unwrap();
+        let move_and_delete = ChangePlan::new("both")
+            .upsert("d.md", b"# A\n".to_vec())
+            .expect_blob("b.md", token)
+            .remove("b.md")
+            .remove("other.md");
+        assert!(manager.apply_changes(&move_and_delete).await.is_err());
+        assert!(temp_dir.path().join("other.md").exists());
+    }
+
+    /// A vault's own `max_file_size` and `excluded_paths` apply to it, and
+    /// its exclusions add to the server's.
+    #[tokio::test]
+    async fn a_vaults_own_limits_apply() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir(temp_dir.path().join("private")).unwrap();
+        std::fs::write(temp_dir.path().join("big.md"), "x".repeat(200)).unwrap();
+        let manager = manager_with_vault(temp_dir.path(), |vault| {
+            vault.max_file_size = Some(64);
+            vault.excluded_paths = Some(["private".to_string()].into());
+        });
+        manager.initialize().await.unwrap();
+
+        assert!(manager.read_file(Path::new("big.md")).await.is_err());
+        assert!(
+            manager
+                .write_file(
+                    Path::new("private/x.md"),
+                    "# X\n",
+                    Precondition::Blind,
+                    "add"
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            manager
+                .write_file(
+                    Path::new(".obsidian/x.md"),
+                    "# X\n",
+                    Precondition::Blind,
+                    "add"
+                )
+                .await
+                .is_err()
+        );
     }
 
     /// `Note.MD` is a note: cached, and parsed, so its links are backlinks.
