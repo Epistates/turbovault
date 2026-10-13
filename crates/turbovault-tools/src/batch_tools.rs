@@ -624,6 +624,13 @@ impl BatchTools {
             let src_hash = self.manager.hash_bytes(src_content.as_bytes())?;
             link_updates.push((rel_str, rewritten, src_hash));
         }
+        // Canvases are not in the link graph; their file nodes and text
+        // links to `from` follow the move the same way, in the same plan.
+        link_updates.extend(
+            crate::canvas_tools::CanvasTools::new(self.manager.clone())
+                .rewrites_for_move(from, to)
+                .await?,
+        );
 
         // The source is held to the content this move read, unless the caller
         // pinned it already: an edit that lands while the backlinks are being
@@ -749,6 +756,12 @@ impl BatchTools {
         for full_src in backlink_paths {
             out.push(self.rel_backlink_path(&full_src)?);
         }
+        // A canvas pointing at the note would show a missing-file card too.
+        out.extend(
+            crate::canvas_tools::CanvasTools::new(self.manager.clone())
+                .canvases_referencing(path)
+                .await?,
+        );
         Ok(out)
     }
 

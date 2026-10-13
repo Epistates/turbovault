@@ -169,6 +169,7 @@
 pub mod analysis_tools;
 pub mod audit_tools;
 pub mod batch_tools;
+pub mod canvas_tools;
 pub mod diff_tools;
 pub mod duplicate_tools;
 pub mod export_tools;
@@ -197,6 +198,7 @@ pub mod sql_engine;
 pub use analysis_tools::{AnalysisTools, VaultStats};
 pub use audit_tools::AuditTools;
 pub use batch_tools::BatchTools;
+pub use canvas_tools::CanvasTools;
 pub use diff_tools::{DiffResult, DiffSummary, DiffTools};
 pub use duplicate_tools::{CompareResult, DuplicateGroup, DuplicateTools};
 pub use export_tools::ExportTools;
