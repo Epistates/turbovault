@@ -5737,6 +5737,7 @@ dependencies = [
  "strsim",
  "tempfile",
  "tokio",
+ "tracing",
  "turbomcp",
  "turbomcp-client",
  "turbomcp-core",

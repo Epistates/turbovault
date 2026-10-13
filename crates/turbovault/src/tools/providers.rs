@@ -1147,64 +1147,53 @@ impl McpHandler for ObsidianMcpServer {
         prompts
     }
 
+    /// Every call is a span, `tool_call`, carrying the tool, the vault it
+    /// answered from, its outcome and how long it took, and counts toward the
+    /// `mcp_tool_calls_total` and `mcp_tool_duration_seconds` metrics. None of
+    /// it carries arguments or note content.
     fn call_tool<'a>(
         &'a self,
         name: &'a str,
         args: serde_json::Value,
         ctx: &'a RequestContext,
     ) -> impl std::future::Future<Output = McpResult<ToolResult>> + MaybeSend + 'a {
+        use tracing::Instrument;
+        let span = tracing::info_span!(
+            "tool_call",
+            tool = %name,
+            vault = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+            duration_ms = tracing::field::Empty,
+        );
         async move {
-            let routed = self
-                .tool_routes
-                .get(name)
-                .ok_or_else(|| McpError::tool_not_found(name))?;
-            // A plugin tool answers from the plugin's own derived state, which
-            // this process cannot see and therefore cannot gate at the point of
-            // use the way the vault's own tools gate at the manager accessors
-            // they call. Reconciling here is what advances the change feed that
-            // state is built from, so a plugin index is as current as the
-            // vault's own, on the same debounce, without the plugin having to
-            // arrange it.
-            #[cfg(feature = "plugin-api")]
-            if self.plugin_owning_name(name).is_some() {
-                self.core.ensure_active_vault_fresh().await;
-            }
-            // A panic is a bug in the tool, and the caller should hear about
-            // it as a failed call. Left alone it ends the task answering the
-            // request, and the client waits on a response that never comes.
-            use futures::FutureExt;
-            // Whatever the call changes is recorded in the audit trail as
-            // this call's doing.
-            let audit_context = turbovault_audit::AuditContext {
-                tool: Some(name.to_string()),
-                request_id: Some(ctx.request_id.clone()),
-                client_id: ctx.client_id.clone(),
-                user_id: ctx.user_id.clone(),
-                session_id: ctx.session_id.clone(),
+            let started = std::time::Instant::now();
+            let result = self.dispatch_tool(name, args, ctx).await;
+            let elapsed = started.elapsed();
+            let span = tracing::Span::current();
+            let outcome = match &result {
+                Ok(result) if result.is_error == Some(true) => "error",
+                Ok(_) => "ok",
+                Err(_) => "failed",
             };
-            let call = std::panic::AssertUnwindSafe(
-                audit_context.scope(self.composite.call_tool(routed, args, ctx)),
+            if let Some(vault) = result
+                .as_ref()
+                .ok()
+                .and_then(|result| result.structured_content.as_ref())
+                .and_then(|structured| structured.get("vault"))
+                .and_then(serde_json::Value::as_str)
+            {
+                span.record("vault", vault);
+            }
+            span.record("outcome", outcome);
+            span.record("duration_ms", elapsed.as_millis() as u64);
+            turbomcp::telemetry::metrics::McpMetrics::tool_call(
+                name,
+                outcome == "ok",
+                elapsed.as_secs_f64(),
             );
-            let result = call.catch_unwind().await.unwrap_or_else(|panic| {
-                let detail = panic_message(&panic);
-                log::error!("tool {name:?} panicked: {detail}");
-                Err(McpError::internal(format!(
-                    "tool {name:?} failed with an internal error: {detail}"
-                )))
-            })?;
-            let result = self.core.polish_error_result(result).await;
-            // A plugin's text block is the plugin's to word; it need not be
-            // a copy of its structured result.
-            #[cfg(feature = "plugin-api")]
-            if self.plugin_owning_name(name).is_some() {
-                return Ok(result);
-            }
-            let result = CoreToolHandler::compact_json_text(result);
-            if RESOURCE_LINK_TOOLS.contains(&name) {
-                return Ok(with_note_links(result));
-            }
-            Ok(result)
+            result
         }
+        .instrument(span)
     }
 
     fn read_resource<'a>(
@@ -1283,6 +1272,68 @@ impl McpHandler for ObsidianMcpServer {
                 )))
             }
         }
+    }
+}
+
+impl ObsidianMcpServer {
+    /// Dispatch a tool call: route it, record it in the audit trail, keep a
+    /// panic from ending the request, and finish the result for the client.
+    async fn dispatch_tool(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        ctx: &RequestContext,
+    ) -> McpResult<ToolResult> {
+        let routed = self
+            .tool_routes
+            .get(name)
+            .ok_or_else(|| McpError::tool_not_found(name))?;
+        // A plugin tool answers from the plugin's own derived state, which
+        // this process cannot see and therefore cannot gate at the point of
+        // use the way the vault's own tools gate at the manager accessors
+        // they call. Reconciling here is what advances the change feed that
+        // state is built from, so a plugin index is as current as the
+        // vault's own, on the same debounce, without the plugin having to
+        // arrange it.
+        #[cfg(feature = "plugin-api")]
+        if self.plugin_owning_name(name).is_some() {
+            self.core.ensure_active_vault_fresh().await;
+        }
+        // A panic is a bug in the tool, and the caller should hear about
+        // it as a failed call. Left alone it ends the task answering the
+        // request, and the client waits on a response that never comes.
+        use futures::FutureExt;
+        // Whatever the call changes is recorded in the audit trail as
+        // this call's doing.
+        let audit_context = turbovault_audit::AuditContext {
+            tool: Some(name.to_string()),
+            request_id: Some(ctx.request_id.clone()),
+            client_id: ctx.client_id.clone(),
+            user_id: ctx.user_id.clone(),
+            session_id: ctx.session_id.clone(),
+        };
+        let call = std::panic::AssertUnwindSafe(
+            audit_context.scope(self.composite.call_tool(routed, args, ctx)),
+        );
+        let result = call.catch_unwind().await.unwrap_or_else(|panic| {
+            let detail = panic_message(&panic);
+            log::error!("tool {name:?} panicked: {detail}");
+            Err(McpError::internal(format!(
+                "tool {name:?} failed with an internal error: {detail}"
+            )))
+        })?;
+        let result = self.core.polish_error_result(result).await;
+        // A plugin's text block is the plugin's to word; it need not be
+        // a copy of its structured result.
+        #[cfg(feature = "plugin-api")]
+        if self.plugin_owning_name(name).is_some() {
+            return Ok(result);
+        }
+        let result = CoreToolHandler::compact_json_text(result);
+        if RESOURCE_LINK_TOOLS.contains(&name) {
+            return Ok(with_note_links(result));
+        }
+        Ok(result)
     }
 }
 

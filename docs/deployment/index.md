@@ -177,9 +177,9 @@ docker run -d \
   -p 4317:4317 \
   jaegertracing/all-in-one:latest
 
-# Configure server
+# Configure server (or pass --otlp-endpoint)
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-mcp-obsidian --vault /path/to/vault --profile production
+turbovault --vault /path/to/vault --profile production
 
 # View traces: Open http://localhost:16686
 ```
