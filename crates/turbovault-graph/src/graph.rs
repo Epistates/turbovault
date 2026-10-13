@@ -39,6 +39,11 @@ pub struct LinkGraph {
     /// Used by HealthAnalyzer for broken link detection.
     unresolved_links: HashMap<PathBuf, Vec<Link>>,
 
+    /// The sources in `unresolved_links`, by the key each of their links
+    /// would resolve through ([`unresolved_key`]), so a new note re-resolves
+    /// only the links that could name it rather than every broken link.
+    unresolved_by_key: HashMap<String, HashSet<PathBuf>>,
+
     /// Index from reversed lowercase path suffix to node indices for O(1) path-suffix resolution.
     /// Used by `resolve_link` to avoid O(N) scans of `path_index`.
     path_suffix_index: HashMap<Vec<String>, Vec<NodeIndex>>,
@@ -54,6 +59,7 @@ impl LinkGraph {
             node_aliases: HashMap::new(),
             path_index: HashMap::new(),
             unresolved_links: HashMap::new(),
+            unresolved_by_key: HashMap::new(),
             path_suffix_index: HashMap::new(),
         }
     }
@@ -83,10 +89,72 @@ impl LinkGraph {
         // A previously broken link may become valid when its target note (or an
         // alias for that target) is added later. Runtime writes add one file at
         // a time, unlike full initialization which indexes every node before it
-        // builds edges, so reconcile the unresolved set after updating indices.
-        self.reconcile_unresolved_links();
+        // builds edges, so reconcile the unresolved links that could name it.
+        let sources = self.unresolved_sources_naming(node_idx);
+        self.reconcile_unresolved_links(sources);
 
         Ok(())
+    }
+
+    /// The sources holding a broken link that might resolve to `idx`: those
+    /// whose link key is one of the names the note is indexed under (its
+    /// stem, each path suffix, each alias).
+    fn unresolved_sources_naming(&self, idx: NodeIndex) -> Vec<PathBuf> {
+        if self.unresolved_by_key.is_empty() {
+            return Vec::new();
+        }
+        let path = &self.graph[idx];
+        let mut keys: Vec<String> = path_suffixes(path)
+            .into_iter()
+            .map(|suffix| suffix.join("/"))
+            .collect();
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            keys.push(stem.to_lowercase());
+        }
+        keys.extend(self.node_aliases.get(&idx).into_iter().flatten().cloned());
+
+        let mut sources: Vec<PathBuf> = keys
+            .iter()
+            .filter_map(|key| self.unresolved_by_key.get(key))
+            .flatten()
+            .cloned()
+            .collect();
+        sources.sort();
+        sources.dedup();
+        sources
+    }
+
+    /// Record `link` from `source_path` as broken.
+    fn add_unresolved(&mut self, source_path: PathBuf, link: Link) {
+        if let Some(key) = unresolved_key(&link.target) {
+            self.unresolved_by_key
+                .entry(key)
+                .or_default()
+                .insert(source_path.clone());
+        }
+        self.unresolved_links
+            .entry(source_path)
+            .or_default()
+            .push(link);
+    }
+
+    /// Forget every broken link recorded for `source_path`, returning them.
+    fn take_unresolved(&mut self, source_path: &PathBuf) -> Vec<Link> {
+        let links = self
+            .unresolved_links
+            .remove(source_path)
+            .unwrap_or_default();
+        for link in &links {
+            if let Some(key) = unresolved_key(&link.target)
+                && let Some(sources) = self.unresolved_by_key.get_mut(&key)
+            {
+                sources.remove(source_path);
+                if sources.is_empty() {
+                    self.unresolved_by_key.remove(&key);
+                }
+            }
+        }
+        links
     }
 
     /// The node for `path`, created and indexed by stem and path suffix if
@@ -165,25 +233,19 @@ impl LinkGraph {
             None => {
                 link.is_valid = false;
                 let source_path = self.graph[source].clone();
-                self.unresolved_links
-                    .entry(source_path)
-                    .or_default()
-                    .push(link);
+                self.add_unresolved(source_path, link);
             }
         }
     }
 
-    fn reconcile_unresolved_links(&mut self) {
-        let unresolved = std::mem::take(&mut self.unresolved_links);
-
-        for (source_path, links) in unresolved {
+    /// Resolve again the broken links of each of `sources`, turning those
+    /// that now name a note into edges.
+    fn reconcile_unresolved_links(&mut self, sources: Vec<PathBuf>) {
+        for source_path in sources {
             let Some(&source_idx) = self.path_index.get(&source_path) else {
-                self.unresolved_links.insert(source_path, links);
                 continue;
             };
-            let mut remaining = Vec::new();
-
-            for mut link in links {
+            for mut link in self.take_unresolved(&source_path) {
                 if let Some(target_idx) = self.resolve_link(&link.target) {
                     // Resolved same-document links are valid but do not become
                     // graph self-loops, matching update_links().
@@ -192,12 +254,8 @@ impl LinkGraph {
                         self.graph.add_edge(source_idx, target_idx, link);
                     }
                 } else {
-                    remaining.push(link);
+                    self.add_unresolved(source_path.clone(), link);
                 }
-            }
-
-            if !remaining.is_empty() {
-                self.unresolved_links.insert(source_path, remaining);
             }
         }
     }
@@ -209,7 +267,7 @@ impl LinkGraph {
         let Some(idx) = self.path_index.remove(path) else {
             return Ok(());
         };
-        self.unresolved_links.remove(path);
+        self.take_unresolved(path);
 
         // Only the keys this node was indexed under, not a sweep of every map.
         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
@@ -247,7 +305,7 @@ impl LinkGraph {
         for edge in outgoing {
             self.graph.remove_edge(edge);
         }
-        self.unresolved_links.remove(source_path);
+        self.take_unresolved(source_path);
 
         // Add edges for each internal note link.
         //
@@ -620,6 +678,15 @@ fn path_suffixes(path: &std::path::Path) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// The key a broken link to `target` is filed under in
+/// `LinkGraph::unresolved_by_key`: its lowercased, `.md`-stripped components
+/// joined by `/`, which is the stem a single-component target names, the
+/// alias it would match and the path suffix it would match. `None` for a
+/// target that can never resolve (an external URL, a bare anchor).
+fn unresolved_key(target: &str) -> Option<String> {
+    turbovault_core::okf::normalize_link_target(target).map(|parts| parts.join("/"))
+}
+
 /// Remove `idx` from the entry for `key`, and the entry once it is empty.
 fn remove_index<K: std::hash::Hash + Eq>(
     map: &mut HashMap<K, Vec<NodeIndex>>,
@@ -789,6 +856,76 @@ mod tests {
         }
         let total: usize = declared.iter().map(Vec::len).sum();
         assert_eq!(graph.edge_count(), total);
+    }
+
+    /// Notes come and go, folders, aliases and all, while others link to
+    /// them by name, folder path and alias. Re-resolving only the broken
+    /// links that could name a new note must leave none that would resolve,
+    /// and the index of broken links must match them exactly.
+    #[test]
+    fn broken_links_resolve_once_their_target_appears() {
+        let mut rng = XorShift(0x2545_f491_4f6c_dd1d);
+        let path = |i: usize| format!("d{}/n{}.md", i % 3, i % 12);
+        let target = |rng: &mut XorShift| match rng.below(4) {
+            0 => format!("n{}", rng.below(14)),
+            1 => format!("d{}/n{}", rng.below(4), rng.below(14)),
+            2 => format!("alias {}", rng.below(6)),
+            _ => format!("N{}.md#Part", rng.below(14)),
+        };
+        let mut graph = LinkGraph::new();
+        for round in 0..3000 {
+            let note = path(rng.below(36));
+            if rng.below(5) == 0 {
+                graph.remove_file(&PathBuf::from(&note)).unwrap();
+            } else {
+                let targets: Vec<String> = (0..rng.below(5)).map(|_| target(&mut rng)).collect();
+                let file = create_test_file(&note, targets.iter().map(String::as_str).collect());
+                let alias = format!("alias {}", rng.below(6));
+                let file = if rng.below(3) == 0 {
+                    with_aliases(file, &[alias.as_str()])
+                } else {
+                    file
+                };
+                graph.add_file(&file).unwrap();
+                graph.update_links(&file).unwrap();
+            }
+
+            for (source, links) in &graph.unresolved_links {
+                if !graph.path_index.contains_key(source) {
+                    continue;
+                }
+                for link in links {
+                    assert!(
+                        graph.resolve_link(&link.target).is_none(),
+                        "round {round}: {} -> {} is recorded broken but resolves",
+                        source.display(),
+                        link.target
+                    );
+                }
+            }
+            let mut indexed: Vec<(String, PathBuf)> = graph
+                .unresolved_by_key
+                .iter()
+                .flat_map(|(key, sources)| sources.iter().map(|s| (key.clone(), s.clone())))
+                .collect();
+            indexed.sort();
+            let mut expected: Vec<(String, PathBuf)> = graph
+                .unresolved_links
+                .iter()
+                .flat_map(|(source, links)| {
+                    links
+                        .iter()
+                        .filter_map(|link| unresolved_key(&link.target))
+                        .map(|key| (key, source.clone()))
+                })
+                .collect();
+            expected.sort();
+            expected.dedup();
+            assert_eq!(
+                indexed, expected,
+                "round {round}: broken link index drifted"
+            );
+        }
     }
 
     fn with_aliases(mut file: VaultFile, aliases: &[&str]) -> VaultFile {
