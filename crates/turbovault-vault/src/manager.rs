@@ -2321,6 +2321,35 @@ mod tests {
         }
     }
 
+    /// Obsidian writes a Markdown link to a file with a space in its name
+    /// with the space escaped, `[x](My%20Note.md)`.
+    #[tokio::test]
+    async fn percent_escaped_markdown_links_resolve() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+
+        std::fs::write(temp_dir.path().join("My Note.md"), "# Mine\n").unwrap();
+        std::fs::write(
+            temp_dir.path().join("body.md"),
+            "See [mine](My%20Note.md#Part%20Two).\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp_dir.path().join("property.md"),
+            "---\nsource: \"[mine](My%20Note.md)\"\n---\n# Property\n",
+        )
+        .unwrap();
+
+        manager.initialize().await.unwrap();
+
+        let backlinks = manager
+            .get_backlinks(Path::new("My Note.md"))
+            .await
+            .unwrap();
+        assert_eq!(backlinks.len(), 2, "{backlinks:?}");
+    }
+
     #[tokio::test]
     async fn test_write_non_markdown_file_does_not_pollute_graph() {
         // Writing a non-markdown artifact (e.g. an exported viz.html) must not

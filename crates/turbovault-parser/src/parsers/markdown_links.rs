@@ -7,7 +7,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 use turbovault_core::{LineIndex, Link, SourcePosition};
 
-use super::link_utils::classify_url;
+use super::link_utils::{classify_url, markdown_link_target};
 
 // Re-export for tests
 #[cfg(test)]
@@ -80,7 +80,7 @@ pub fn parse_markdown_links(content: &str) -> Vec<Link> {
             Some(Link {
                 type_: link_type,
                 source_file: std::path::PathBuf::new(),
-                target: url.to_string(),
+                target: markdown_link_target(url),
                 display_text: Some(text.to_string()),
                 position,
                 resolved_target: None,
@@ -130,7 +130,7 @@ pub fn parse_markdown_links_indexed(content: &str, index: &LineIndex) -> Vec<Lin
             Some(Link {
                 type_: link_type,
                 source_file: std::path::PathBuf::new(),
-                target: url.to_string(),
+                target: markdown_link_target(url),
                 display_text: Some(text.to_string()),
                 position,
                 resolved_target: None,

@@ -59,6 +59,7 @@ schemars = "1.2"
 
 # Markdown Parsing (2025 diligence: see DEPENDENCY_DILIGENCE_2025.md)
 pulldown-cmark = "0.13"      # CommonMark parser with OFM extensions (headings, tasks, frontmatter, code blocks)
+percent-encoding = "2.3"     # Markdown link destinations (`My%20Note.md`)
 
 # Observability & Diagnostics
 tracing = "0.1"

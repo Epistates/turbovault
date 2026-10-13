@@ -118,6 +118,55 @@ pub fn split_wikilink(inner: &str) -> (String, Option<String>) {
     }
 }
 
+/// Characters a Markdown link destination cannot carry as they are: a space
+/// ends the destination, parentheses and angle brackets end or open it, `#`
+/// starts the fragment, and `%` starts an escape. Obsidian writes a link to
+/// `My Note.md` as `My%20Note.md`.
+const LINK_PATH_ESCAPES: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+    .add(b' ')
+    .add(b'%')
+    .add(b'(')
+    .add(b')')
+    .add(b'<')
+    .add(b'>')
+    .add(b'#');
+
+/// The target a Markdown link destination names, with its percent escapes
+/// decoded: `My%20Note.md` is the note `My Note.md`. External URLs are kept
+/// as written, since they are the browser's to interpret. A destination
+/// whose escapes do not decode to UTF-8 is also kept as written.
+///
+/// # Examples
+///
+/// ```
+/// use turbovault_parser::parsers::link_utils::markdown_link_target;
+///
+/// assert_eq!(markdown_link_target("My%20Note.md#Part%20Two"), "My Note.md#Part Two");
+/// assert_eq!(markdown_link_target("https://example.com/a%20b"), "https://example.com/a%20b");
+/// ```
+pub fn markdown_link_target(destination: &str) -> String {
+    if classify_url(destination) == LinkType::ExternalLink {
+        return destination.to_string();
+    }
+    percent_encoding::percent_decode_str(destination)
+        .decode_utf8()
+        .map_or_else(|_| destination.to_string(), |decoded| decoded.into_owned())
+}
+
+/// A vault path written as a Markdown link destination, escaped the way
+/// Obsidian writes one and the way [`markdown_link_target`] reads it back.
+///
+/// # Examples
+///
+/// ```
+/// use turbovault_parser::parsers::link_utils::markdown_link_path;
+///
+/// assert_eq!(markdown_link_path("Archive/My Note.md"), "Archive/My%20Note.md");
+/// ```
+pub fn markdown_link_path(path: &str) -> String {
+    percent_encoding::utf8_percent_encode(path, LINK_PATH_ESCAPES).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
