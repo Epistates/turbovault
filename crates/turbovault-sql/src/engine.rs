@@ -212,7 +212,7 @@ impl FrontmatterSqlEngine {
 
     /// Populate the `links` table from the vault link graph.
     async fn populate_links(&self, glue: &mut Glue<MemoryStorage>) -> usize {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let graph_read = graph.read().await;
         let all_links = graph_read.all_links();
         let mut count = 0usize;

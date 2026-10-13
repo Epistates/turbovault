@@ -99,7 +99,10 @@ async fn disjoint_writers_both_succeed() {
     // graph must end up with all 40 files (ReindexQueue's own drain/notify
     // unit tests live in turbovault-vault/src/reindex.rs).
     manager.flush_reindex().await;
-    assert_eq!(manager.link_graph().read().await.node_count(), 40);
+    assert_eq!(
+        manager.link_graph_flushed().await.read().await.node_count(),
+        40
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

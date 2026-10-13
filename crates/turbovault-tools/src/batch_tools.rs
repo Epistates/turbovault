@@ -70,7 +70,7 @@ impl BatchTools {
             });
         }
 
-        self.manager.flush_reindex().await;
+        self.manager.ensure_fresh_now().await;
         // A batch failure that wrote NOTHING (intra-batch collision, a
         // stale/absent precondition, an unreadable link source, any git
         // failure) is reported as `success: false` in the BatchResult
@@ -252,7 +252,7 @@ impl BatchTools {
         dest_expected_hash: Option<&str>,
         message: &str,
     ) -> Result<Vec<String>> {
-        self.manager.flush_reindex().await;
+        self.manager.ensure_fresh_now().await;
         let (plan, updated) = self
             .fold_move_with_links(
                 ChangePlan::new(message.to_string()),
@@ -279,7 +279,7 @@ impl BatchTools {
         expected_hash: Option<&str>,
         message: &str,
     ) -> Result<Vec<String>> {
-        self.manager.flush_reindex().await;
+        self.manager.ensure_fresh_now().await;
         let (plan, updated) = self
             .fold_delete_with_stale_links(ChangePlan::new(message.to_string()), path, expected_hash)
             .await?;
@@ -596,7 +596,7 @@ impl BatchTools {
         let from_full = self.manager.vault_path().join(from);
 
         let backlink_paths = {
-            let lg = self.manager.link_graph();
+            let lg = self.manager.link_graph_flushed().await;
             let graph = lg.read().await;
             graph
                 .backlinks(&from_full)
@@ -656,7 +656,7 @@ impl BatchTools {
 
         let target_full = self.manager.vault_path().join(path);
         let backlink_paths = {
-            let lg = self.manager.link_graph();
+            let lg = self.manager.link_graph_flushed().await;
             let graph = lg.read().await;
             graph
                 .backlinks(&target_full)
@@ -704,7 +704,7 @@ impl BatchTools {
         target: &std::path::Path,
     ) -> Vec<turbovault_core::Link> {
         let links = crate::wikilink_rewriter::links_in(content);
-        let lg = self.manager.link_graph();
+        let lg = self.manager.link_graph_flushed().await;
         let graph = lg.read().await;
         links
             .into_iter()
@@ -722,7 +722,7 @@ impl BatchTools {
     /// present.
     async fn list_inbound_backlinks(&self, path: &str) -> Result<Vec<String>> {
         let backlink_paths = {
-            let lg = self.manager.link_graph();
+            let lg = self.manager.link_graph_flushed().await;
             let graph = lg.read().await;
             graph
                 .backlinks(&self.manager.vault_path().join(path))

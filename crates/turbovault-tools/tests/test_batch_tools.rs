@@ -642,7 +642,7 @@ async fn test_batch_partial_failure_reports_the_op_that_landed() {
     // ...and the manager indexed what landed, so the op that survived the
     // partial is visible to every read path, not just to `ls`.
     let linkers = {
-        let lg = manager.link_graph();
+        let lg = manager.link_graph_flushed().await;
         let graph = lg.read().await;
         graph
             .backlinks(&temp_dir.path().join("existing.md"))
@@ -752,6 +752,50 @@ async fn test_plan_move_leaves_alias_links_alone() {
         planned_content(&plan, "linker.md").as_deref(),
         Some("[[Legacy Name]] and [[fresh]]\n")
     );
+}
+
+/// A note that started linking to the moved one a moment ago, outside
+/// TurboVault (Obsidian, a sync client), is rewritten too. The freshness gate
+/// is debounced, so a move that trusted the last scheduled pass would leave
+/// that link broken.
+#[tokio::test]
+async fn test_move_rewrites_a_link_added_outside_moments_ago() {
+    let (temp_dir, manager) = setup_vault_with_files(&[("old.md", "# Old\n")]).await;
+    // A read starts the debounce window.
+    manager.ensure_fresh().await;
+    tokio::fs::write(temp_dir.path().join("fresh.md"), "See [[old]].\n")
+        .await
+        .unwrap();
+
+    let updated = BatchTools::new(manager.clone())
+        .move_file_with_link_updates("old.md", "new.md", None, None, "move")
+        .await
+        .unwrap();
+
+    assert_eq!(updated, ["fresh.md"]);
+    assert_eq!(
+        tokio::fs::read_to_string(temp_dir.path().join("fresh.md"))
+            .await
+            .unwrap(),
+        "See [[new]].\n"
+    );
+}
+
+/// The same for the stale-wrap on delete.
+#[tokio::test]
+async fn test_delete_wraps_a_link_added_outside_moments_ago() {
+    let (temp_dir, manager) = setup_vault_with_files(&[("old.md", "# Old\n")]).await;
+    manager.ensure_fresh().await;
+    tokio::fs::write(temp_dir.path().join("fresh.md"), "See [[old]].\n")
+        .await
+        .unwrap();
+
+    let updated = BatchTools::new(manager.clone())
+        .delete_file_with_link_rewrite_to_stale("old.md", None, "delete")
+        .await
+        .unwrap();
+
+    assert_eq!(updated, ["fresh.md"]);
 }
 
 /// Markdown links follow a move the way wikilinks do, in the body and in

@@ -507,7 +507,7 @@ async fn test_copy_file_indexes_the_copy() {
 
     tools.copy_file("source.md", "copy.md").await.unwrap();
 
-    let graph = manager.link_graph();
+    let graph = manager.link_graph_flushed().await;
     let backlinks = graph
         .read()
         .await

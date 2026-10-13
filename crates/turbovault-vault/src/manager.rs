@@ -819,6 +819,24 @@ impl VaultManager {
         self.reconcile_external_changes().await;
     }
 
+    /// [`Self::ensure_fresh`] without the debounce: a full pass now, unless
+    /// the vault opted out of reconciling.
+    ///
+    /// For an operation that rewrites notes according to what links to what,
+    /// a link-aware move or delete. A debounced answer can be up to
+    /// `ReconcileState::interval` old, and a link added in Obsidian within
+    /// that window would be left pointing at a note that is no longer there.
+    /// Reads keep using [`Self::ensure_fresh`]: they cost one pass per burst,
+    /// and an answer a moment old is not one that breaks anything.
+    pub async fn ensure_fresh_now(&self) {
+        self.flush_reindex().await;
+        if !self.config.reconcile_external_changes {
+            return;
+        }
+        let mut state = self.reconcile.lock().await;
+        self.reconcile_holding(&mut state).await;
+    }
+
     /// Reconcile right now, ignoring both the schedule and the configured
     /// opt-out.
     ///
@@ -1701,29 +1719,35 @@ impl VaultManager {
         }
     }
 
-    /// Get a reference to the link graph (read-only access)
+    /// The link graph as it stands, without passing the freshness gate.
     ///
-    /// NOT self-flushing — internal reindex/drain machinery
-    /// (`flush_reindex`/`apply_commit_diff`) calls this directly and must
-    /// keep doing so: `flush_reindex` already holds the queue's flush lock
-    /// while draining, so routing it through [`Self::link_graph_flushed`]
-    /// here would re-enter that lock and deadlock. Read-only consumers
-    /// outside the manager (tool implementations) should prefer
-    /// `link_graph_flushed()` instead.
+    /// Whatever changed outside TurboVault since the last pass is missing
+    /// from it, so a caller that answers from it can be wrong without any
+    /// sign of it. Use [`Self::link_graph_flushed`].
+    #[deprecated(
+        since = "3.4.0",
+        note = "skips the freshness gate; use `link_graph_flushed`"
+    )]
     pub fn link_graph(&self) -> Arc<RwLock<LinkGraph>> {
+        self.graph_handle()
+    }
+
+    /// The graph handle, NOT self-flushing. The reindex/drain machinery
+    /// (`flush_reindex`/`apply_commit_diff`) needs it raw: `flush_reindex`
+    /// already holds the queue's flush lock while draining, so routing it
+    /// through [`Self::link_graph_flushed`] would re-enter that lock and
+    /// deadlock.
+    pub(crate) fn graph_handle(&self) -> Arc<RwLock<LinkGraph>> {
         Arc::clone(&self.link_graph)
     }
 
-    /// Self-flushing link-graph accessor (see `get_backlinks`): drains any
-    /// queued out-of-band commits before handing back the graph handle. This
-    /// is the shared primitive read-only tool implementations (graph/export/
-    /// relationship/viewer) should call instead of the bare `link_graph()`,
-    /// so every such reader gets the same out-of-band-commit coherence
-    /// guarantee as `get_backlinks`/`get_stats`/etc. without each call site
-    /// having to remember to flush itself.
+    /// Self-flushing link-graph accessor (see `get_backlinks`): passes the
+    /// freshness gate before handing back the graph handle, so every reader
+    /// gets the same coherence guarantee as `get_backlinks`/`get_stats`/etc.
+    /// without each call site having to remember to flush itself.
     pub async fn link_graph_flushed(&self) -> Arc<RwLock<LinkGraph>> {
         self.ensure_fresh().await;
-        self.link_graph()
+        self.graph_handle()
     }
 
     /// Parse a single file and return VaultFile
