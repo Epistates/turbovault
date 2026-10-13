@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Audit entries say which tool call made them, chain to each other, and are synced to disk.** Each entry records the tool, request, client, user and session behind it, and the hash of the entry before it, so `audit_stats` can report whether any entry but the last was edited or removed since. Two processes writing one vault extend one chain. `snapshot_retention` in the server config bounds the snapshots rollback restores from, by count or by age; both are off by default, so nothing is deleted unless asked.
+- **`rollback_note` takes `force`.**
+
+### Changed
+
+- **`rollback_note` refuses to discard edits made after the operation it undoes**, until `force: true`. It now goes through the vault's write path, with its write lock, protected paths and a precondition, and a rollback is recorded so it can itself be rolled back.
+- **Git-backend writes cost the same however large the vault is.** One single-note write went from 197 ms to 20 ms in a 2,000-note vault.
+- **Which of several same-named notes a bare link means no longer depends on scan order.** It's the one in the fewest folders, then the first by path.
+- `AuditEntry` gains `context` and `prev_hash`, `AuditStats` gains `chain`, and `ServerConfig` gains `snapshot_retention`. Code that builds these with a struct literal needs the new fields.
+
+### Fixed
+
+- **Re-parsing a note no longer leaves stale links in the graph.** An edge the note no longer declared could survive, showing as phantom backlinks, wrong hub and orphan counts, and `delete_note` refusing over a link that no longer existed.
+- **Deleting a note shows its links as broken right away**, or re-points them to another note of the same name. An alias removed from a note's frontmatter stops resolving to it.
+- **A Git-backed vault no longer gets stuck after a failed write.** If a commit landed but writing it out failed (another git process holding `index.lock`, a full disk, the process stopping), every later write was refused with "Git index contains staged changes". The next write, or the next start, now finishes it, leaving alone any file edited by hand in between.
+- **Notes with names near the 255-byte limit can be written.**
+- **Conversations sharing a project no longer drop each other's vaults** from the saved registry, and an unreadable registry is kept as a backup instead of being overwritten.
+- **Direct-backend writes from separate processes on one vault no longer race.**
+- **A vault removed while it was being added could be left as the active vault.**
+- **Result counts are capped at every tool.** `advanced_search` with `limit: 0` panicked, and a huge limit could abort the process. Zero still means no results.
+- **`query_frontmatter_sql` is bounded.** It runs only `SELECT` statements, on a blocking thread, for at most 10 seconds, and returns at most 1000 rows, with `truncated` and `total_rows` when cut.
+- **`SELECT *` from the `files` table returns its rows.** It came back as `{"type": "other"}`.
+- **Moving a note rewrites reference links to it.** A reference link, `[text][ref]`, `[ref][]` or `[ref]`, takes its destination from a definition elsewhere in the note, `[ref]: old.md`, and that definition was left pointing at the old path. It's now re-pointed the way an inline Markdown link is, keeping its form, escaping, fragment and title, so every link through it follows the move. Deleting a note marks its reference links stale as well, and `[ref][]` is now struck through whole rather than as `~~[ref]~~[]`. `parse_reference_definitions` is new in `turbovault-parser`.
+- **A wikilink is no longer also a Markdown link when a definition shares its name.** CommonMark reads the `[Note]` inside `[[Note]]` as a shortcut reference whenever the note defines `[note]: ...`, so the wikilink was reported a second time, as a link to that definition's destination, adding a backlink to whatever it pointed at.
+
 ### Security
 
 - **Runtime vault registration is confined.** `add_vault` and `create_vault` never accept a filesystem root, the home directory or anything containing it, hidden directories under home (`~/.ssh`, `~/.config`), application data (`~/Library` apart from the iCloud and cloud storage folders vaults sync through, `AppData`), or system directories. `--allowed-vault-roots` (or `security.allowed_vault_roots`) limits registration to chosen directories. Without it, registration is open on stdio and off on the network transports. Vaults restored from the cache are held to the same rules, and fanout scratch vaults are no longer saved to it.
@@ -16,15 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Template frontmatter is written as YAML**, so a title with a newline can no longer add keys. Placeholders are filled once, so a value can't pull in another field.
 - **Fanout scratch worktrees go in a fresh private directory** with a random name, instead of a predictable path in the temp directory.
 - **`SearchTools::search_files` stays inside the vault.** It no longer follows symlinks or lists protected and excluded directories.
-
-### Fixed
-
-- **Result counts are capped at every tool.** `advanced_search` with `limit: 0` panicked, and a huge limit could abort the process. Zero still means no results.
-- **`query_frontmatter_sql` is bounded.** It runs only `SELECT` statements, on a blocking thread, for at most 10 seconds, and returns at most 1000 rows, with `truncated` and `total_rows` when cut.
-- **`SELECT *` from the `files` table returns its rows.** It came back as `{"type": "other"}`.
-
-- **Moving a note rewrites reference links to it.** A reference link, `[text][ref]`, `[ref][]` or `[ref]`, takes its destination from a definition elsewhere in the note, `[ref]: old.md`, and that definition was left pointing at the old path. It's now re-pointed the way an inline Markdown link is, keeping its form, escaping, fragment and title, so every link through it follows the move. Deleting a note marks its reference links stale as well, and `[ref][]` is now struck through whole rather than as `~~[ref]~~[]`. `parse_reference_definitions` is new in `turbovault-parser`.
-- **A wikilink is no longer also a Markdown link when a definition shares its name.** CommonMark reads the `[Note]` inside `[[Note]]` as a shortcut reference whenever the note defines `[note]: ...`, so the wikilink was reported a second time, as a link to that definition's destination, adding a backlink to whatever it pointed at.
 
 ## [3.3.0] - 2026-10-12
 
