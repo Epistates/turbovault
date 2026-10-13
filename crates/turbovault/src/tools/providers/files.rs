@@ -350,6 +350,9 @@ impl FileProvider {
         open_world = false,
         output_schema = StandardResponse<DeletedPayload>,
     )]
+    // Each argument is one of the tool's MCP parameters; the macro reads the
+    // input schema from this signature, and passes the request as `ctx`.
+    #[allow(clippy::too_many_arguments)]
     async fn delete_note(
         &self,
         #[description(
@@ -479,6 +482,9 @@ impl FileProvider {
         open_world = false,
         output_schema = StandardResponse<MovedPayload>,
     )]
+    // Each argument is one of the tool's MCP parameters; the macro reads the
+    // input schema from this signature, and passes the request as `ctx`.
+    #[allow(clippy::too_many_arguments)]
     async fn move_note(
         &self,
         #[description(
