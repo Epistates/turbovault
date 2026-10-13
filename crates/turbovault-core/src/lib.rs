@@ -92,7 +92,7 @@ pub mod utils;
 pub mod validation;
 pub mod vault_roots;
 
-pub use atomic_write::write_atomic;
+pub use atomic_write::{is_temp_file_name, write_atomic};
 pub use change_plan::{Change, ChangePlan};
 pub use config::*;
 pub use error::{Error, Result};

@@ -1732,6 +1732,69 @@ async fn audit_preview_diff_and_rollback_restore_the_previous_note() {
     );
 }
 
+/// The audit trail says which tool call made each change, and its hash
+/// chain is reported intact.
+#[tokio::test]
+async fn audit_entries_name_the_tool_call_and_chain() {
+    let (_temp, server) = registered_server("audit-context").await;
+    write_note(&server, "a.md", "# A\n").await;
+    write_note(&server, "b.md", "# B\n").await;
+
+    let log = call(&server, "audit_log", json!({"limit": 5})).await;
+    let newest = &log["data"][0];
+    assert_eq!(newest["context"]["tool"], "write_note");
+    assert!(newest["context"]["request_id"].is_string());
+    assert!(newest["prev_hash"].is_string());
+
+    let stats = call(&server, "audit_stats", json!({})).await;
+    assert_eq!(stats["data"]["chain"]["broken_at"], Value::Null);
+    assert_eq!(stats["data"]["chain"]["entries"], 2);
+}
+
+/// A rollback that would discard a later edit is refused until forced, and
+/// the forced rollback is itself recorded and can be rolled back.
+#[tokio::test]
+async fn rollback_guards_later_edits_and_can_be_undone() {
+    let (_temp, server) = registered_server("audit-rollback-guard").await;
+    let blind =
+        |content: &str| json!({"path": "plan.md", "content": content, "expected_hash": "blind"});
+    write_note(&server, "plan.md", "v1\n").await;
+    call(&server, "write_note", blind("v2\n")).await;
+    let updates = call(
+        &server,
+        "audit_log",
+        json!({"path": "plan.md", "operation": "UPDATE", "limit": 5}),
+    )
+    .await;
+    let update_id = updates["data"][0]["id"].as_str().unwrap().to_string();
+    call(&server, "write_note", blind("v3\n")).await;
+    let read = || async {
+        call(&server, "read_note", json!({"path": "plan.md"})).await["data"]["content"].clone()
+    };
+
+    let refused = call_error(&server, "rollback_note", json!({"operation_id": update_id})).await;
+    assert!(refused.contains("force"), "{refused}");
+    assert_eq!(read().await, "v3\n");
+
+    let forced = call(
+        &server,
+        "rollback_note",
+        json!({"operation_id": update_id, "force": true}),
+    )
+    .await;
+    assert_eq!(read().await, "v1\n");
+    let rollback_id = forced["data"]["audit_entry_id"].as_str().unwrap();
+    assert!(!rollback_id.is_empty());
+
+    call(
+        &server,
+        "rollback_note",
+        json!({"operation_id": rollback_id}),
+    )
+    .await;
+    assert_eq!(read().await, "v3\n");
+}
+
 #[tokio::test]
 async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consistent() {
     let (_temp, server) = registered_server("audit-operation-matrix").await;
@@ -1855,6 +1918,8 @@ async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consist
     )
     .await;
     assert_eq!(rollback_entries["count"], 2);
+    // The newest rollback recreated deleted.md; rolling it back deletes it
+    // again, and nothing has changed it since.
     let rollback_id = rollback_entries["data"][0]["id"]
         .as_str()
         .expect("rollback operation ID");
@@ -1864,10 +1929,9 @@ async fn audit_create_delete_and_unsupported_rollbacks_keep_public_state_consist
         json!({"operation_id": rollback_id}),
     )
     .await;
-    assert_eq!(
-        rollback_preview["warnings"],
-        json!(["Cannot roll back a rollback operation"])
-    );
+    assert_eq!(rollback_preview["data"]["operation"], "ROLLBACK");
+    assert_eq!(rollback_preview["data"]["would_delete"], true);
+    assert!(rollback_preview.get("warnings").is_none());
 
     let unknown_operation = call_error(&server, "audit_log", json!({"operation": "COPY"})).await;
     assert!(unknown_operation.contains("Unknown operation type"));

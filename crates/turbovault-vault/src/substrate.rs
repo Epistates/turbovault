@@ -156,8 +156,8 @@ pub struct DirectSubstrate {
     vault_path: PathBuf,
     /// R6: serializes the check-preconditions -> apply window in-process,
     /// closing the TOCTOU window the pre-M3a per-op mutators left open
-    /// between their hash check and their write. Cross-process safety stays
-    /// a git-backend capability (ref CAS) — not simulated here.
+    /// between their hash check and their write. Other processes writing the
+    /// same vault are kept out by the file lock `apply` also takes.
     ///
     /// ponytail: substrate-wide, not per-path — every Direct-backend write
     /// serializes behind this one mutex for the duration of its fs I/O,
@@ -189,8 +189,32 @@ impl DirectSubstrate {
         self.vault_path.join(rel)
     }
 
+    /// Take the vault's cross-process write lock, an advisory lock on
+    /// `.turbovault/write.lock`, waiting for any other holder.
+    async fn lock_vault(&self) -> Result<std::fs::File> {
+        let state_dir = self.vault_path.join(".turbovault");
+        tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(&state_dir)?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(state_dir.join("write.lock"))?;
+            file.lock()?;
+            Ok(file)
+        })
+        .await
+        .map_err(|e| Error::other(format!("vault lock task failed: {e}")))?
+        .map_err(Error::io)
+    }
+
     pub async fn apply(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         let _guard = self.write_lock.lock().await;
+        // The in-process lock orders this process's writes; the file lock
+        // orders them against other processes writing the same vault (one
+        // per Claude Desktop conversation), as the git backend's does.
+        // Released when the handle drops at the end of the apply.
+        let _vault_lock = self.lock_vault().await?;
 
         // Every precondition is checked against current on-disk bytes before
         // any change is applied — a stale read aborts the whole plan with
@@ -252,8 +276,8 @@ impl DirectSubstrate {
     /// the plan with `ConcurrencyError`. A behavior-preserving translation of
     /// the pre-M3a per-mutator `expected_hash` checks
     /// (write_file/delete_file/move_file, manager.rs ~L184/L406/L472) onto the
-    /// four [`Precondition`] variants. The guard is in-process only; cross-
-    /// process CAS is a git-backend capability (R6).
+    /// four [`Precondition`] variants. `apply` holds both the in-process and
+    /// the cross-process write lock around it (R6).
     fn check_precondition(
         path: &str,
         precondition: &Precondition,
@@ -420,6 +444,14 @@ impl DirectSubstrate {
             return;
         };
 
+        // A rollback applied through the write path is recorded as the
+        // rollback it is, with the content it replaced as its before-state,
+        // so it can be rolled back in turn.
+        let operation = if metadata.is_some_and(|m| m.get("rolled_back_operation").is_some()) {
+            OperationType::Rollback
+        } else {
+            operation
+        };
         let mut entry = AuditEntry::new(operation, rel_path);
         if let Some(new_path) = new_path {
             entry = entry.with_new_path(new_path);
@@ -1003,6 +1035,37 @@ mod tests {
             .await
             .unwrap();
         assert!(winner_content == "from-a" || winner_content == "from-b");
+    }
+
+    /// Another process writing the same vault holds the vault's write lock;
+    /// a write waits for it rather than checking its preconditions against
+    /// a vault that process is halfway through changing.
+    #[tokio::test]
+    async fn a_write_waits_for_another_process_holding_the_vault_lock() {
+        let tmp = TempDir::new().unwrap();
+        let sub = Arc::new(direct(&tmp));
+        std::fs::create_dir_all(tmp.path().join(".turbovault")).unwrap();
+        let other_process =
+            std::fs::File::create(tmp.path().join(".turbovault/write.lock")).unwrap();
+        other_process.lock().unwrap();
+
+        let write = {
+            let sub = Arc::clone(&sub);
+            tokio::spawn(async move {
+                sub.apply(&ChangePlan::new("w").create("waited.md", "x"))
+                    .await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !write.is_finished(),
+            "the write went ahead under another lock holder"
+        );
+        assert!(!tmp.path().join("waited.md").exists());
+
+        other_process.unlock().unwrap();
+        write.await.unwrap().unwrap();
+        assert!(tmp.path().join("waited.md").exists());
     }
 
     /// A real I/O failure on the precondition read (not "absent") must

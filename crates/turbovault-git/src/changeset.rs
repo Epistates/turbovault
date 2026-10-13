@@ -127,6 +127,11 @@ impl VaultRepo {
         let changed = plan.touched_paths();
 
         self.with_commit_lock(|| {
+            // An earlier write that landed its commit but did not finish
+            // writing it out is finished first; until it is, the index does
+            // not match HEAD and every write would be refused.
+            self.finish_interrupted_write()?;
+
             // `parent_at_apply` is captured INSIDE `commit_with_retry`'s
             // success closure so the post-commit hook reports the correct
             // first parent even after a CAS-rebuild loop (the parent we
@@ -158,28 +163,24 @@ impl VaultRepo {
                     return Ok(None);
                 }
                 let parents: Vec<Oid> = tip.into_iter().collect();
-                Ok(Some(self.commit_tree(tree, &parents, &plan.message)?))
-            })?;
-
-            match committed {
-                Some(commit) => {
-                    // Reveal the commit to the working tree (still under the lock).
-                    self.materialize(commit, &changed)?;
-
-                    // Fire the GWS.14 reindex hook inside the commit lock so the
-                    // queue observes commits in commit order (matches the order
-                    // a future drainer must replay them).
-                    if let Some(hook) = &self.commit_hook {
-                        hook(parent_at_apply, commit);
+                let commit = self.commit_tree(tree, &parents, &plan.message)?;
+                // From here the ref may move; record what to finish if the
+                // working tree is not written after it does.
+                self.mark_resync(tip, &changed)?;
+                Ok(Some(commit))
+            });
+            let commit = match committed {
+                Ok(Some(commit)) => commit,
+                // Nothing landed: a no-op, a refusal, or a ref that would not
+                // move. An earlier attempt may have left a marker, and a ref
+                // could in principle move and still report an error, so
+                // finishing sorts out which and clears it. The outcome's own
+                // error is the one to report.
+                outcome => {
+                    if let Err(error) = self.finish_interrupted_write() {
+                        tracing::warn!(%error, "could not clear the resync marker");
                     }
-
-                    Ok(ChangesetResult {
-                        commit,
-                        paths: changed,
-                        no_op: false,
-                    })
-                }
-                None => {
+                    outcome?;
                     // Identity tree -> no commit, no CAS, no materialize, no
                     // hook. `parent_at_apply` is the tip we evaluated (whose
                     // preconditions passed); an identity tree implies a
@@ -187,13 +188,38 @@ impl VaultRepo {
                     let commit = parent_at_apply.ok_or_else(|| {
                         Error::other("identity-tree no-op on an unborn branch is impossible")
                     })?;
-                    Ok(ChangesetResult {
+                    return Ok(ChangesetResult {
                         commit,
                         paths: Vec::new(),
                         no_op: true,
-                    })
+                    });
                 }
+            };
+
+            // Reveal the commit to the working tree (still under the lock).
+            // The commit is the write, so if this fails it has still landed;
+            // the marker stays, and the next write (or the next process to
+            // open the repository) finishes it.
+            if let Err(error) = self.materialize(commit, &changed) {
+                return Err(Error::other(format!(
+                    "commit {commit} landed, but writing it to the working tree failed: \
+                     {error}. It will be written out before the next write"
+                )));
             }
+            self.clear_resync_marker()?;
+
+            // Fire the GWS.14 reindex hook inside the commit lock so the
+            // queue observes commits in commit order (matches the order
+            // a future drainer must replay them).
+            if let Some(hook) = &self.commit_hook {
+                hook(parent_at_apply, commit);
+            }
+
+            Ok(ChangesetResult {
+                commit,
+                paths: changed,
+                no_op: false,
+            })
         })
     }
 }
@@ -201,6 +227,7 @@ impl VaultRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::materialize::RESYNC_MARKER;
     use git2::Repository;
     use tempfile::TempDir;
 
@@ -219,6 +246,99 @@ mod tests {
 
     fn read_wt(vr: &VaultRepo, rel: &str) -> String {
         std::fs::read_to_string(workfile(vr, rel)).unwrap()
+    }
+
+    /// Hold the index lock the way another git process (Obsidian Git, a
+    /// terminal `git add`) does, so writing the index fails after the ref
+    /// has already moved.
+    fn hold_index_lock(vr: &VaultRepo) -> std::path::PathBuf {
+        let lock = vr.git().path().join("index.lock");
+        std::fs::write(&lock, b"").unwrap();
+        lock
+    }
+
+    fn status(vr: &VaultRepo, rel: &str) -> git2::Status {
+        vr.git().status_file(std::path::Path::new(rel)).unwrap()
+    }
+
+    /// A commit lands but writing it out fails: the error says so, and the
+    /// next write finishes the job instead of refusing forever with "staged
+    /// changes".
+    #[test]
+    fn a_failed_materialize_is_finished_by_the_next_write() {
+        let (_tmp, vr) = open_unborn();
+        vr.commit_changeset(&ChangePlan::new("seed").create("note.md", "v1"))
+            .unwrap();
+        let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
+        let before = vr.head_oid();
+
+        let lock = hold_index_lock(&vr);
+        let error = vr
+            .commit_changeset(&ChangePlan::new("update").update("note.md", "v2", v1.to_string()))
+            .unwrap_err();
+        assert!(error.to_string().contains("landed"), "{error}");
+        assert_ne!(vr.head_oid(), before, "the commit landed");
+        std::fs::remove_file(lock).unwrap();
+
+        vr.commit_changeset(&ChangePlan::new("next").create("other.md", "x"))
+            .unwrap();
+        assert_eq!(read_wt(&vr, "note.md"), "v2");
+        assert_eq!(status(&vr, "note.md"), git2::Status::CURRENT);
+        assert_eq!(status(&vr, "other.md"), git2::Status::CURRENT);
+    }
+
+    /// A file edited by hand after the failed write is the user's: finishing
+    /// the write leaves it, and it shows as a local change against HEAD.
+    #[test]
+    fn finishing_a_failed_materialize_keeps_a_later_local_edit() {
+        let (_tmp, vr) = open_unborn();
+        vr.commit_changeset(&ChangePlan::new("seed").create("note.md", "v1"))
+            .unwrap();
+        let v1 = VaultRepo::blob_oid_of(b"v1").unwrap();
+
+        let lock = hold_index_lock(&vr);
+        vr.commit_changeset(&ChangePlan::new("update").update("note.md", "v2", v1.to_string()))
+            .unwrap_err();
+        std::fs::remove_file(lock).unwrap();
+        std::fs::write(workfile(&vr, "note.md"), "typed by hand").unwrap();
+
+        vr.commit_changeset(&ChangePlan::new("next").create("other.md", "x"))
+            .unwrap();
+        assert_eq!(read_wt(&vr, "note.md"), "typed by hand");
+        assert_eq!(status(&vr, "note.md"), git2::Status::WT_MODIFIED);
+    }
+
+    /// A process that stopped mid-write is finished by the next one to open
+    /// the repository, before anything else writes.
+    #[test]
+    fn an_interrupted_write_is_finished_at_startup() {
+        let (tmp, vr) = open_unborn();
+        vr.commit_changeset(&ChangePlan::new("seed").create("note.md", "v1"))
+            .unwrap();
+        let lock = hold_index_lock(&vr);
+        vr.commit_changeset(&ChangePlan::new("add").create("new.md", "fresh"))
+            .unwrap_err();
+        std::fs::remove_file(lock).unwrap();
+        drop(vr);
+
+        let reopened = VaultRepo::open(tmp.path()).unwrap();
+        reopened.recover_interrupted_write().unwrap();
+        assert_eq!(read_wt(&reopened, "new.md"), "fresh");
+        assert_eq!(status(&reopened, "new.md"), git2::Status::CURRENT);
+        assert!(!reopened.git().path().join(RESYNC_MARKER).exists());
+    }
+
+    /// A write refused before anything landed leaves nothing to finish.
+    #[test]
+    fn a_refused_write_leaves_no_resync_marker() {
+        let (_tmp, vr) = open_unborn();
+        vr.commit_changeset(&ChangePlan::new("seed").create("note.md", "v1"))
+            .unwrap();
+        let stale = VaultRepo::blob_oid_of(b"stale").unwrap();
+        vr.commit_changeset(&ChangePlan::new("stale").update("note.md", "v2", stale.to_string()))
+            .unwrap_err();
+        assert!(!vr.git().path().join(RESYNC_MARKER).exists());
+        assert_eq!(read_wt(&vr, "note.md"), "v1");
     }
 
     #[test]

@@ -411,6 +411,30 @@ pub struct ServerConfig {
         note = "never read by TurboVault; removed in the next major release"
     )]
     pub debug_mode: bool,
+
+    /// How long the audit trail keeps the note snapshots that rollback
+    /// restores from. Unlimited unless set.
+    #[serde(default)]
+    pub snapshot_retention: SnapshotRetention,
+}
+
+/// How long the audit trail keeps note snapshots. A snapshot past either
+/// limit is deleted, and an operation that needed it can no longer be rolled
+/// back. Both limits are off by default, so nothing is ever deleted.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SnapshotRetention {
+    /// Keep at most this many snapshots, the most recently used.
+    pub max_count: Option<usize>,
+    /// Delete snapshots not used for this many days.
+    pub max_age_days: Option<u32>,
+}
+
+impl SnapshotRetention {
+    /// Whether either limit is set.
+    pub fn is_limited(&self) -> bool {
+        self.max_count.is_some() || self.max_age_days.is_some()
+    }
 }
 
 impl Default for ServerConfig {
@@ -448,6 +472,7 @@ impl Default for ServerConfig {
             multi_vault_enabled: false,
             metrics_enabled: false,
             debug_mode: false,
+            snapshot_retention: SnapshotRetention::default(),
         }
     }
 }

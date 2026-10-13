@@ -18,7 +18,124 @@ use git2::Oid;
 use std::path::Path;
 use tracing::instrument;
 
+/// A marker in the git directory naming a commit's parent and its paths,
+/// written just before the ref moves and removed once the commit is in the
+/// working tree. Finding it means a write may have landed a commit without
+/// finishing that, because writing the files or the index failed (another
+/// git process holding `index.lock`, a full disk) or the process stopped.
+pub(crate) const RESYNC_MARKER: &str = "turbovault-resync";
+
+/// A tree entry's blob and file mode.
+type Entry = (Oid, i32);
+
 impl VaultRepo {
+    /// Record that `paths` are about to move from `parent` to a new commit.
+    /// Call under the commit lock, before the ref moves.
+    pub(crate) fn mark_resync(&self, parent: Option<Oid>, paths: &[String]) -> Result<()> {
+        let mut body = parent.map_or_else(|| "unborn".to_string(), |oid| oid.to_string());
+        for path in paths {
+            body.push('\0');
+            body.push_str(path);
+        }
+        std::fs::write(self.git().path().join(RESYNC_MARKER), body)?;
+        Ok(())
+    }
+
+    fn read_resync_marker(&self) -> Result<Option<(Option<Oid>, Vec<String>)>> {
+        let body = match std::fs::read_to_string(self.git().path().join(RESYNC_MARKER)) {
+            Ok(body) => body,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut fields = body.split('\0');
+        let parent = match fields.next() {
+            Some("unborn") | None => None,
+            Some(hex) => Some(Oid::from_str(hex)?),
+        };
+        Ok(Some((parent, fields.map(str::to_string).collect())))
+    }
+
+    /// Finish a write an earlier call or process left half done: if its
+    /// commit landed, write the commit's version of each of its paths to the
+    /// working tree and the index. Takes the commit lock; call it once a
+    /// repository is opened, before anything reads the working tree as HEAD.
+    pub fn recover_interrupted_write(&self) -> Result<()> {
+        self.with_commit_lock(|| self.finish_interrupted_write())
+    }
+
+    /// [`Self::recover_interrupted_write`], for a caller already holding the
+    /// commit lock.
+    pub(crate) fn finish_interrupted_write(&self) -> Result<()> {
+        let Some((parent, paths)) = self.read_resync_marker()? else {
+            return Ok(());
+        };
+        let head = self.head_oid();
+        if head != parent {
+            self.carry_paths(parent, head, &paths).map_err(|error| {
+                Error::other(format!(
+                    "an earlier write's commit landed but is not in the working tree yet, \
+                     and finishing it failed: {error}"
+                ))
+            })?;
+        }
+        self.clear_resync_marker()
+    }
+
+    pub(crate) fn clear_resync_marker(&self) -> Result<()> {
+        match std::fs::remove_file(self.git().path().join(RESYNC_MARKER)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Bring `paths` in the working tree and index from commit `old` to
+    /// commit `new`, where they still hold `old`'s version. A file or index
+    /// entry holding anything else changed after the write and is the
+    /// user's; it's left alone, and shows as a local change against `new`.
+    fn carry_paths(&self, old: Option<Oid>, new: Option<Oid>, paths: &[String]) -> Result<()> {
+        let repo = self.git();
+        let workdir = repo
+            .workdir()
+            .ok_or_else(|| Error::other("bare repository has no working tree"))?
+            .to_path_buf();
+        let old_tree = old.map(|c| repo.find_commit(c)?.tree()).transpose()?;
+        let new_tree = new.map(|c| repo.find_commit(c)?.tree()).transpose()?;
+        let mut index = repo.index()?;
+
+        for rel in paths {
+            let old_entry = entry_at(old_tree.as_ref(), rel)?;
+            let new_entry = entry_at(new_tree.as_ref(), rel)?;
+            let target = workdir.join(rel);
+
+            let on_disk = working_blob(&target)?;
+            let file_is_new = if on_disk == Some(new_entry.map(|e| e.0)) {
+                true
+            } else if on_disk == Some(old_entry.map(|e| e.0)) {
+                match new_entry {
+                    Some((blob, _)) => {
+                        turbovault_core::write_atomic(&target, repo.find_blob(blob)?.content())?
+                    }
+                    None => std::fs::remove_file(&target)?,
+                }
+                true
+            } else {
+                false
+            };
+
+            let staged = index.get_path(Path::new(rel), 0).map(|entry| entry.id);
+            if staged != old_entry.map(|e| e.0) && staged != new_entry.map(|e| e.0) {
+                continue;
+            }
+            match new_entry {
+                Some((blob, mode)) if !file_is_new => {
+                    index.add(&unstated_entry(rel, blob, mode))?;
+                }
+                entry => stage(&mut index, rel, entry)?,
+            }
+        }
+        index.write()?;
+        Ok(())
+    }
     /// Refuse a commit when any touched working-tree path does not currently
     /// match the commit it is based on. This protects untracked files and
     /// unsaved/manual edits from being overwritten during materialization.
@@ -29,16 +146,16 @@ impl VaultRepo {
         paths: &[String],
     ) -> Result<()> {
         let repo = self.git();
-        let staged_mask = git2::Status::INDEX_NEW
-            | git2::Status::INDEX_MODIFIED
-            | git2::Status::INDEX_DELETED
-            | git2::Status::INDEX_RENAMED
-            | git2::Status::INDEX_TYPECHANGE;
-        if repo
-            .statuses(None)?
-            .iter()
-            .any(|entry| entry.status().intersects(staged_mask))
-        {
+        let tree = match base {
+            Some(oid) => Some(repo.find_commit(oid)?.tree()?),
+            None => None,
+        };
+        // Staged changes are where the index differs from the base tree.
+        // Comparing the two reads no working-tree file, so the check costs
+        // the same however many notes the vault holds (a full status would
+        // stat every file, and hash any whose stat the index lacks).
+        let staged = repo.diff_tree_to_index(tree.as_ref(), Some(&repo.index()?), None)?;
+        if staged.deltas().len() > 0 {
             return Err(Error::concurrency(
                 "Git index contains staged changes; commit or unstage them before a TurboVault write",
             ));
@@ -46,10 +163,6 @@ impl VaultRepo {
         let workdir = repo
             .workdir()
             .ok_or_else(|| Error::other("bare repository has no working tree"))?;
-        let tree = match base {
-            Some(oid) => Some(repo.find_commit(oid)?.tree()?),
-            None => None,
-        };
 
         for rel in paths {
             let expected = match tree.as_ref() {
@@ -96,28 +209,27 @@ impl VaultRepo {
             .ok_or_else(|| Error::other("bare repository has no working tree"))?
             .to_path_buf();
         let tree = repo.find_commit(commit)?.tree()?;
+        let mut index = repo.index()?;
 
         for rel in paths {
             let target = workdir.join(rel);
-            match tree.get_path(Path::new(rel)) {
-                Ok(entry) => {
-                    let blob = repo.find_blob(entry.id())?;
-                    turbovault_core::write_atomic(&target, blob.content())?;
+            let entry = entry_at(Some(&tree), rel)?;
+            match entry {
+                Some((blob, _)) => {
+                    turbovault_core::write_atomic(&target, repo.find_blob(blob)?.content())?;
                 }
-                Err(e) if e.code() == git2::ErrorCode::NotFound => {
-                    // Removed in this commit: delete the working-tree file if present.
-                    if target.exists() {
-                        std::fs::remove_file(&target)?;
-                    }
-                }
-                Err(e) => return Err(Error::Git(e)),
+                // Removed in this commit: delete the working-tree file if present.
+                None if target.exists() => std::fs::remove_file(&target)?,
+                None => {}
             }
+            stage(&mut index, rel, entry)?;
         }
 
-        // Sync the real index to the commit's tree so working tree == index ==
-        // HEAD and `git status` is clean for the touched paths.
-        let mut index = repo.index()?;
-        index.read_tree(&tree)?;
+        // Only the touched paths' index entries change, so working tree ==
+        // index == HEAD for them and every other entry keeps the file stat
+        // that lets git skip rereading an unchanged file. Reading the whole
+        // tree into the index instead dropped every entry's stat, and the
+        // next status had to hash the whole vault.
         index.write()?;
         Ok(())
     }
@@ -130,6 +242,74 @@ impl VaultRepo {
             Some(head) => self.materialize(head, paths),
             None => Ok(()),
         }
+    }
+}
+
+/// The blob and mode at `rel` in `tree`, if it has one.
+fn entry_at(tree: Option<&git2::Tree<'_>>, rel: &str) -> Result<Option<Entry>> {
+    let Some(tree) = tree else {
+        return Ok(None);
+    };
+    match tree.get_path(Path::new(rel)) {
+        Ok(entry) => Ok(Some((entry.id(), entry.filemode()))),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(Error::Git(error)),
+    }
+}
+
+/// What a working-tree path holds: `Some(Some(blob))` for a regular file,
+/// `Some(None)` for nothing, and `None` for anything else (a directory or a
+/// symlink), which is never overwritten.
+fn working_blob(target: &Path) -> Result<Option<Option<Oid>>> {
+    match std::fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            Ok(Some(Some(Oid::hash_file(git2::ObjectType::Blob, target)?)))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Some(None)),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Point the index entry for `rel` at `entry`, a working-tree file just
+/// written with that content, or drop it when `entry` is `None`. The entry
+/// records the file's stat, so git can tell it is unchanged without reading
+/// it. Should a checkout filter (`core.autocrlf`, `.gitattributes`) make the
+/// file hash differently from the blob, the blob is recorded without a stat
+/// instead, so the path never shows as a staged change.
+fn stage(index: &mut git2::Index, rel: &str, entry: Option<Entry>) -> Result<()> {
+    let path = Path::new(rel);
+    match entry {
+        Some((blob, mode)) => {
+            index.add_path(path)?;
+            let staged = index.get_path(path, 0);
+            if staged.is_none_or(|staged| staged.id != blob || staged.mode != mode as u32) {
+                index.add(&unstated_entry(rel, blob, mode))?;
+            }
+        }
+        None if index.get_path(path, 0).is_some() => index.remove_path(path)?,
+        None => {}
+    }
+    Ok(())
+}
+
+/// An index entry for `blob` at `rel` with no recorded file stat, so git
+/// compares the working file's content against it instead of trusting a
+/// timestamp.
+fn unstated_entry(rel: &str, blob: Oid, mode: i32) -> git2::IndexEntry {
+    git2::IndexEntry {
+        ctime: git2::IndexTime::new(0, 0),
+        mtime: git2::IndexTime::new(0, 0),
+        dev: 0,
+        ino: 0,
+        mode: mode as u32,
+        uid: 0,
+        gid: 0,
+        file_size: 0,
+        id: blob,
+        flags: (rel.len().min(0xfff)) as u16,
+        flags_extended: 0,
+        path: rel.as_bytes().to_vec(),
     }
 }
 
@@ -238,6 +418,55 @@ mod tests {
             git2::Status::CURRENT,
             "no pending changes after materialize"
         );
+    }
+
+    /// Writing one path leaves every other index entry as it was, stat
+    /// included, so git never has to reread the rest of the vault.
+    #[test]
+    fn materialize_keeps_untouched_index_entries() {
+        let (_tmp, vr) = open_unborn();
+        let c1 = commit(&vr, &[upsert("a.md", "alpha"), upsert("b.md", "beta")]);
+        vr.materialize(c1, &["a.md".into(), "b.md".into()]).unwrap();
+        let entry = |path: &str| {
+            let mut index = vr.git().index().unwrap();
+            index.read(true).unwrap();
+            index.get_path(Path::new(path), 0).unwrap()
+        };
+        let before = entry("b.md");
+        assert_ne!(
+            before.mtime.seconds(),
+            0,
+            "a written file is staged with its stat"
+        );
+
+        let c2 = commit(&vr, &[upsert("a.md", "alpha 2")]);
+        vr.materialize(c2, &["a.md".into()]).unwrap();
+        let after = entry("b.md");
+        assert_eq!(
+            (after.mtime, after.ino, after.file_size),
+            (before.mtime, before.ino, before.file_size)
+        );
+        assert_eq!(
+            vr.git().status_file(Path::new("a.md")).unwrap(),
+            git2::Status::CURRENT
+        );
+    }
+
+    /// A path removed from the commit leaves the index too.
+    #[test]
+    fn materialize_drops_the_index_entry_of_a_removed_path() {
+        let (_tmp, vr) = open_unborn();
+        let c1 = commit(&vr, &[upsert("a.md", "alpha"), upsert("b.md", "beta")]);
+        vr.materialize(c1, &["a.md".into(), "b.md".into()]).unwrap();
+        let c2 = commit(
+            &vr,
+            &[TreeChange::Remove {
+                path: "a.md".to_string(),
+            }],
+        );
+        vr.materialize(c2, &["a.md".into()]).unwrap();
+        let statuses = vr.git().statuses(None).unwrap();
+        assert!(statuses.is_empty(), "clean after removal");
     }
 
     #[test]

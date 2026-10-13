@@ -132,9 +132,9 @@ fn collect_keys<'a>(
             } else if file_type.is_file() {
                 // Temp files from an interrupted `put` are not keys.
                 let is_temp = path
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.starts_with("tmp."));
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(turbovault_core::is_temp_file_name);
                 if is_temp {
                     continue;
                 }

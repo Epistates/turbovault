@@ -11,6 +11,8 @@ pub mod log;
 pub mod rollback;
 pub mod snapshot;
 
-pub use log::{AuditEntry, AuditFilter, AuditLog, AuditStats, OperationType};
-pub use rollback::{RollbackEngine, RollbackPreview, RollbackResult};
+pub use log::{
+    AuditContext, AuditEntry, AuditFilter, AuditLog, AuditStats, ChainVerification, OperationType,
+};
+pub use rollback::{RollbackEngine, RollbackPlan, RollbackPreview, RollbackResult};
 pub use snapshot::SnapshotStore;

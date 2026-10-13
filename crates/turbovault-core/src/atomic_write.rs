@@ -32,7 +32,7 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     };
     fs::create_dir_all(parent)?;
 
-    let temp = path.with_extension(format!("tmp.{}", uuid::Uuid::new_v4()));
+    let temp = parent.join(temp_name());
     let written = (|| {
         let mut file = OpenOptions::new()
             .write(true)
@@ -55,6 +55,23 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+const TEMP_PREFIX: &str = ".tvtmp-";
+
+/// A fresh temp file name: short and fixed-length, so a target name that is
+/// itself near the filesystem's 255-byte limit can still be written, and
+/// hidden, so Obsidian and the note scan pass over it.
+fn temp_name() -> String {
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    format!("{TEMP_PREFIX}{}", &id[..8])
+}
+
+/// Whether `name` (a file name, not a path) is one of [`write_atomic`]'s
+/// temp files, such as one an interrupted write left behind.
+pub fn is_temp_file_name(name: &str) -> bool {
+    name.strip_prefix(TEMP_PREFIX)
+        .is_some_and(|id| id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Sync a directory so a rename inside it is durable. Best effort: the write
 /// has already landed, and Windows cannot open a directory to sync it.
 fn sync_dir(dir: &Path) {
@@ -75,8 +92,30 @@ mod tests {
         fs::read_dir(dir)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name.contains(".tmp."))
+            .filter(|name| is_temp_file_name(name))
             .collect()
+    }
+
+    /// A name close to the 255-byte limit is legal, so it must be writable;
+    /// a temp name derived from it would be longer than the limit.
+    #[test]
+    fn writes_a_name_near_the_length_limit() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(format!("{}.md", "n".repeat(230)));
+        write_atomic(&path, b"long").unwrap();
+        write_atomic(&path, b"longer").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"longer");
+        assert!(leftovers(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn temp_names_are_recognized_and_hidden() {
+        let name = temp_name();
+        assert!(name.starts_with('.'), "{name}");
+        assert!(name.len() <= 16, "{name}");
+        assert!(is_temp_file_name(&name));
+        assert!(!is_temp_file_name("note.md"));
+        assert!(!is_temp_file_name(".tvtmp-notes.md"));
     }
 
     #[test]

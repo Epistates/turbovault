@@ -525,6 +525,15 @@ impl VaultManager {
                         default_vault.name, vault_path, e
                     ))
                 })?;
+                // Finish a write an earlier process landed but did not write
+                // out. If that fails now, the next write tries again.
+                if let Err(error) = repo.recover_interrupted_write() {
+                    log::warn!(
+                        "vault '{}': could not finish an interrupted write: {}",
+                        default_vault.name,
+                        error
+                    );
+                }
                 let cached_repo: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
 
                 // GWS.14b: drain the queue before a ConcurrencyError surfaces
@@ -2087,14 +2096,14 @@ mod tests {
                 .is_ok()
         );
 
-        // Verify no .tmp files are left
+        // Verify no temp files are left
         let entries = std::fs::read_dir(temp_dir.path()).unwrap();
         for entry in entries {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            if let Some(ext) = path.extension() {
-                assert_ne!(ext, "tmp", "Temporary file left after write");
-            }
+            let name = entry.unwrap().file_name();
+            assert!(
+                !turbovault_core::is_temp_file_name(&name.to_string_lossy()),
+                "Temporary file left after write: {name:?}"
+            );
         }
     }
 
@@ -2698,7 +2707,7 @@ mod tests {
         assert_eq!(read_back, content);
     }
 
-    /// After a successful `write_file` no `.tmp.*` files should remain
+    /// After a successful `write_file` no temp files should remain
     /// anywhere under the vault directory.
     #[tokio::test]
     async fn test_temp_file_cleanup_on_write() {
@@ -2714,7 +2723,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Walk the entire vault tree and assert no `.tmp.*` files remain.
+        // Walk the entire vault tree and assert no temp files remain.
         let mut stack = vec![temp_dir.path().to_path_buf()];
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).unwrap() {
@@ -2723,9 +2732,9 @@ mod tests {
                 if path.is_dir() {
                     stack.push(path);
                 } else {
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let name = entry.file_name();
                     assert!(
-                        !ext.starts_with("tmp"),
+                        !turbovault_core::is_temp_file_name(&name.to_string_lossy()),
                         "Leftover temp file found: {:?}",
                         path
                     );
