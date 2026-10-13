@@ -1000,6 +1000,11 @@ impl ObsidianMcpServer {
     }
 
     #[doc(hidden)]
+    pub async fn holds_vault_state_test(&self, vault_name: &str) -> bool {
+        self.core.holds_vault_state_test(vault_name).await
+    }
+
+    #[doc(hidden)]
     pub async fn remove_vault_test(&self, vault_name: &str) -> McpResult<serde_json::Value> {
         self.core.remove_vault_test(vault_name).await
     }

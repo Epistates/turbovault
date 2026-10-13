@@ -363,12 +363,20 @@ async fn e2e_remove_vault_cleans_up_git_backend_state() {
         server.has_git_locks_test(name).await,
         "locks entry should be live"
     );
+    // Build the rest of what the server holds for a vault: its search
+    // engine, and (with the manager) its audit log and snapshot store.
+    call(&server, "search", serde_json::json!({"query": "anything"})).await;
+    call(&server, "get_vault_context", serde_json::json!({})).await;
 
     server.remove_vault_test(name).await.unwrap();
 
     assert!(
         !server.has_git_locks_test(name).await,
         "locks entry should be dropped after remove_vault"
+    );
+    assert!(
+        !server.holds_vault_state_test(name).await,
+        "nothing (manager, audit log, snapshots, engines) should outlive remove_vault"
     );
 
     // Vault gone from the registry too.
