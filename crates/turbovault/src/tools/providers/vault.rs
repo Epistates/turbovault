@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::ops::Deref;
 
+use turbovault_core::VaultInfo;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
 
 use super::super::*;
@@ -50,6 +51,12 @@ impl Deref for VaultProvider {
     }
 }
 
+/// Response payload for `get_active_vault`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ActiveVaultPayload {
+    active_vault: String,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl VaultProvider {
     // ==================== Vault Lifecycle (Multi-Vault Management) ====================
@@ -66,6 +73,7 @@ impl VaultProvider {
         destructive = false,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<VaultInfo>,
     )]
     async fn create_vault(
         &self,
@@ -101,13 +109,9 @@ impl VaultProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        let response = StandardResponse::new(
-            name.clone(),
-            "create_vault",
-            serde_json::to_value(&vault_info).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_next_step("set_active_vault")
-        .with_next_step("list_vaults");
+        let response = StandardResponse::new(name.clone(), "create_vault", vault_info)
+            .with_next_step("set_active_vault")
+            .with_next_step("list_vaults");
 
         response.to_json()
     }
@@ -121,6 +125,7 @@ impl VaultProvider {
         destructive = false,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<VaultInfo>,
     )]
     async fn add_vault(
         &self,
@@ -165,13 +170,9 @@ impl VaultProvider {
 
         log::info!("Vault '{}' initialized and ready", name);
 
-        let response = StandardResponse::new(
-            name.clone(),
-            "add_vault",
-            serde_json::to_value(&vault_info).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_next_step("set_active_vault")
-        .with_next_step("list_vaults");
+        let response = StandardResponse::new(name.clone(), "add_vault", vault_info)
+            .with_next_step("set_active_vault")
+            .with_next_step("list_vaults");
 
         // CACHE PERSISTENCE: Save vault state to persistent cache
         if let Err(e) = self.persist_vault_state().await {
@@ -191,6 +192,7 @@ impl VaultProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<StatusPayload>,
     )]
     async fn remove_vault(
         &self,
@@ -208,6 +210,7 @@ impl VaultProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<Vec<VaultInfo>>,
     )]
     async fn list_vaults(&self) -> McpResult<serde_json::Value> {
         let tools = self.lifecycle_tools();
@@ -217,7 +220,7 @@ impl VaultProvider {
         let response = StandardResponse::new(
             String::new(), // No active vault for this operation
             "list_vaults",
-            serde_json::to_value(&vaults).map_err(|e| McpError::internal(e.to_string()))?,
+            vaults,
         )
         .with_count(count);
 
@@ -233,6 +236,7 @@ impl VaultProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<VaultConfig>,
     )]
     async fn get_vault_config(
         &self,
@@ -241,12 +245,8 @@ impl VaultProvider {
         let tools = self.lifecycle_tools();
         let config = tools.get_vault_config(&name).await.map_err(to_mcp_error)?;
 
-        let response = StandardResponse::new(
-            name.clone(),
-            "get_vault_config",
-            serde_json::to_value(&config).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_next_step("set_active_vault");
+        let response = StandardResponse::new(name.clone(), "get_vault_config", config)
+            .with_next_step("set_active_vault");
 
         response.to_json()
     }
@@ -260,6 +260,7 @@ impl VaultProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<StatusPayload>,
     )]
     async fn set_active_vault(
         &self,
@@ -271,7 +272,9 @@ impl VaultProvider {
         let response = StandardResponse::new(
             name.clone(),
             "set_active_vault",
-            serde_json::json!({"status": "activated"}),
+            StatusPayload {
+                status: "activated",
+            },
         )
         .with_next_step("get_vault_context")
         .with_next_step("quick_health_check");
@@ -294,6 +297,7 @@ impl VaultProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ActiveVaultPayload>,
     )]
     async fn get_active_vault(&self) -> McpResult<serde_json::Value> {
         let tools = self.lifecycle_tools();
@@ -302,7 +306,9 @@ impl VaultProvider {
         let response = StandardResponse::new(
             active.clone(),
             "get_active_vault",
-            serde_json::json!({"active_vault": active}),
+            ActiveVaultPayload {
+                active_vault: active,
+            },
         )
         .with_next_step("get_vault_context");
 

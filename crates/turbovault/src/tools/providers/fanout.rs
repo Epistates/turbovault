@@ -86,6 +86,42 @@ impl Deref for FanoutProvider {
     }
 }
 
+/// Response payload for `begin_fanout`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct FanoutBegun {
+    fanout_id: String,
+    base_vault: String,
+    /// The vault to make active to work in the fanout.
+    fanout_vault: String,
+    worktree_path: PathBuf,
+}
+
+/// Response payload for `commit_fanout`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct FanoutCommitted {
+    fanout_id: String,
+    /// `null` when the fanout's work fast-forwarded.
+    merge_commit: Option<String>,
+    tip_before: String,
+    tip_after: String,
+}
+
+/// Response payload for `abandon_fanout`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct FanoutAbandoned {
+    /// Whether there was a fanout to abandon.
+    was_active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fanout_id: Option<String>,
+}
+
+/// Response payload for `list_orphan_fanouts`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct OrphanFanouts {
+    count: usize,
+    orphans: Vec<OrphanFanoutEntry>,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl FanoutProvider {
     #[tool(
@@ -96,6 +132,7 @@ impl FanoutProvider {
         destructive = false,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<FanoutBegun>,
     )]
     async fn begin_fanout(
         &self,
@@ -172,12 +209,12 @@ impl FanoutProvider {
         StandardResponse::new(
             &base_vault,
             "begin_fanout",
-            serde_json::json!({
-                "fanout_id": fanout_id,
-                "base_vault": base_vault,
-                "fanout_vault": fanout_vault,
-                "worktree_path": scratch_path,
-            }),
+            FanoutBegun {
+                fanout_id,
+                base_vault: base_vault.clone(),
+                fanout_vault,
+                worktree_path: scratch_path,
+            },
         )
         .with_next_steps(&["set_active_vault", "commit_fanout", "abandon_fanout"])
         .to_json()
@@ -191,6 +228,7 @@ impl FanoutProvider {
         destructive = true,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<FanoutCommitted>,
     )]
     async fn commit_fanout(
         &self,
@@ -242,12 +280,12 @@ impl FanoutProvider {
         StandardResponse::new(
             base_vault,
             "commit_fanout",
-            serde_json::json!({
-                "fanout_id": record.fanout_id,
-                "merge_commit": result.merge_commit.map(|oid| oid.to_string()),
-                "tip_before": result.tip_before.to_string(),
-                "tip_after": result.tip_after.to_string(),
-            }),
+            FanoutCommitted {
+                fanout_id: record.fanout_id,
+                merge_commit: result.merge_commit.map(|oid| oid.to_string()),
+                tip_before: result.tip_before.to_string(),
+                tip_after: result.tip_after.to_string(),
+            },
         )
         .with_next_step("quick_health_check")
         .to_json()
@@ -261,13 +299,17 @@ impl FanoutProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<FanoutAbandoned>,
     )]
     async fn abandon_fanout(&self) -> McpResult<serde_json::Value> {
         let Some((base_vault, record)) = self.active_record().await else {
             return StandardResponse::new(
                 self.get_active_vault_name().await.unwrap_or_default(),
                 "abandon_fanout",
-                serde_json::json!({"was_active": false}),
+                FanoutAbandoned {
+                    was_active: false,
+                    fanout_id: None,
+                },
             )
             .to_json();
         };
@@ -297,7 +339,10 @@ impl FanoutProvider {
         StandardResponse::new(
             base_vault,
             "abandon_fanout",
-            serde_json::json!({"was_active": true, "fanout_id": record.fanout_id}),
+            FanoutAbandoned {
+                was_active: true,
+                fanout_id: Some(record.fanout_id),
+            },
         )
         .to_json()
     }
@@ -310,6 +355,7 @@ impl FanoutProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<OrphanFanouts>,
     )]
     async fn list_orphan_fanouts(
         &self,
@@ -323,7 +369,10 @@ impl FanoutProvider {
         StandardResponse::new(
             self.get_active_vault_name().await.unwrap_or_default(),
             "list_orphan_fanouts",
-            serde_json::json!({"count": orphans.len(), "orphans": orphans}),
+            OrphanFanouts {
+                count: orphans.len(),
+                orphans,
+            },
         )
         .to_json()
     }

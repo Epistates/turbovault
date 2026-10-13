@@ -33,6 +33,7 @@ impl AuditProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<turbovault_audit::AuditEntry>>,
     )]
     async fn audit_log(
         &self,
@@ -83,15 +84,11 @@ impl AuditProvider {
 
         let entries = audit_tools.query_log(&filter).await.map_err(to_mcp_error)?;
         let (entries, page) = request.slice_ranked(entries);
-        StandardResponse::new(
-            &vault_name,
-            "audit_log",
-            serde_json::to_value(&entries).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_page(page)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["rollback_preview", "diff_note_version", "audit_stats"])
-        .to_json()
+        StandardResponse::new(&vault_name, "audit_log", &entries)
+            .with_page(page)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["rollback_preview", "diff_note_version", "audit_stats"])
+            .to_json()
     }
 
     #[tool(
@@ -102,6 +99,7 @@ impl AuditProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<turbovault_audit::RollbackPreview>,
     )]
     async fn rollback_preview(
         &self,
@@ -116,13 +114,9 @@ impl AuditProvider {
             .rollback_preview(&operation_id, &vault_path)
             .await
             .map_err(to_mcp_error)?;
-        let mut response = StandardResponse::new(
-            &vault_name,
-            "rollback_preview",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["rollback_note", "audit_log"]);
+        let mut response = StandardResponse::new(&vault_name, "rollback_preview", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["rollback_note", "audit_log"]);
         for w in &result.warnings {
             response = response.with_warning(w.clone());
         }
@@ -137,6 +131,7 @@ impl AuditProvider {
         destructive = true,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<turbovault_audit::RollbackResult>,
     )]
     async fn rollback_note(
         &self,
@@ -184,14 +179,10 @@ impl AuditProvider {
             );
         }
 
-        StandardResponse::new(
-            &vault_name,
-            "rollback_note",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["read_note", "audit_log"])
-        .to_json()
+        StandardResponse::new(&vault_name, "rollback_note", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["read_note", "audit_log"])
+            .to_json()
     }
 
     #[tool(
@@ -202,6 +193,7 @@ impl AuditProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<turbovault_audit::AuditStats>,
     )]
     async fn audit_stats(&self) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("audit_stats").await?;
@@ -209,13 +201,9 @@ impl AuditProvider {
         let vault_name = self.get_active_vault_name().await?;
         let audit_tools = self.get_audit_tools().await?;
         let result = audit_tools.stats().await.map_err(to_mcp_error)?;
-        StandardResponse::new(
-            &vault_name,
-            "audit_stats",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["audit_log", "explain_vault"])
-        .to_json()
+        StandardResponse::new(&vault_name, "audit_stats", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["audit_log", "explain_vault"])
+            .to_json()
     }
 }

@@ -69,10 +69,12 @@ name = "turbovault"
 path = "src/bin/main.rs"
 
 [dependencies]
-turbovault-core = { workspace = true }
-turbovault-vault = { workspace = true }
-turbovault-audit = { workspace = true }
-turbovault-tools = { workspace = true }
+# `schemars` derives a JSON Schema for every type a tool returns, which is
+# what each tool's advertised outputSchema is built from.
+turbovault-core = { workspace = true, features = ["schemars"] }
+turbovault-vault = { workspace = true, features = ["schemars"] }
+turbovault-audit = { workspace = true, features = ["schemars"] }
+turbovault-tools = { workspace = true, features = ["schemars"] }
 turbovault-plugin-api = { workspace = true, optional = true }
 turbovault-plugin-vector = { workspace = true, optional = true }
 
@@ -130,6 +132,10 @@ turbovault-vector = { workspace = true, features = ["test-util"] }
 # `harness = false` runner, so each matrix cell is its own named `cargo test`
 # entry and `pending` cells are `--ignored` (the burndown).
 libtest-mimic = "0.8"
+# Validates every tool result against the outputSchema the tool advertises,
+# so a schema cannot drift from what the tool returns. No remote $refs, so
+# no network features.
+jsonschema = { version = "0.58", default-features = false }
 
 [[test]]
 name = "wss_matrix"

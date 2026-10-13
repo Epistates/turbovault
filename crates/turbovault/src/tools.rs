@@ -215,6 +215,24 @@ fn clamp_count(requested: Option<usize>, default: usize, max: usize) -> usize {
     requested.unwrap_or(default).min(max)
 }
 
+/// How much a tool that offers `response_format` puts in its result.
+/// `detailed` is everything, and the default, so a caller that doesn't ask
+/// gets what it always has; `concise` leaves out the parts the tool names in
+/// its parameter description, for an agent that only needs the gist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ResponseFormat {
+    Concise,
+    #[default]
+    Detailed,
+}
+
+impl ResponseFormat {
+    fn is_concise(format: Option<Self>) -> bool {
+        format.unwrap_or_default() == Self::Concise
+    }
+}
+
 /// How many items a list-returning tool gives back when the caller doesn't
 /// say: enough for an overview, and never megabytes by accident.
 const DEFAULT_PAGE_SIZE: usize = 50;
@@ -228,15 +246,15 @@ const MAX_RANKED_OFFSET: usize = 1000;
 /// page, and is absent on the last one. `total` is absent where counting
 /// every match would cost what the tool exists to avoid, such as a ranked
 /// search.
-#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
 struct Page {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     total: Option<usize>,
     offset: usize,
     limit: usize,
     returned: usize,
     truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     next_offset: Option<usize>,
 }
 
@@ -324,28 +342,55 @@ impl PageRequest {
 /// Render the OKF orientation block for `get_vault_context`: a compact signal
 /// telling the agent whether this vault is an OKF bundle, where the
 /// progressive-disclosure entry point is, and what its type vocabulary looks
-/// like. Returns `null` when the vault is not an OKF bundle.
-fn okf_context_block(bundle: &turbovault_core::okf::BundleInfo) -> serde_json::Value {
+/// like. `None` (reported as `null`) when the vault is not an OKF bundle.
+fn okf_context_block(bundle: &turbovault_core::okf::BundleInfo) -> Option<OkfContext> {
     if !bundle.is_okf_bundle {
-        return serde_json::Value::Null;
+        return None;
     }
-    serde_json::json!({
-        "is_okf_bundle": true,
-        "concept_docs": bundle.concept_docs,
-        "concept_ratio": (bundle.concept_ratio * 100.0).round() / 100.0,
-        "entry_point": bundle.has_root_index.then_some("index.md"),
-        "has_root_log": bundle.has_root_log,
-        "top_types": bundle.top_types.iter()
+    Some(OkfContext {
+        is_okf_bundle: true,
+        concept_docs: bundle.concept_docs,
+        concept_ratio: (bundle.concept_ratio * 100.0).round() / 100.0,
+        entry_point: bundle.has_root_index.then_some("index.md"),
+        has_root_log: bundle.has_root_log,
+        top_types: bundle
+            .top_types
+            .iter()
             .take(8)
-            .map(|(t, n)| serde_json::json!({ "type": t, "count": n }))
-            .collect::<Vec<_>>(),
-        "guidance": if bundle.has_root_index {
+            .map(|(type_, count)| OkfTypeCount {
+                type_: type_.clone(),
+                count: *count,
+            })
+            .collect(),
+        guidance: if bundle.has_root_index {
             "This vault is an OKF bundle. Read index.md first and follow its links (progressive disclosure, OKF §6) instead of blind search."
         } else {
             "This vault is an OKF bundle but has no root index.md. Run generate_index to create progressive-disclosure entry points (OKF §6)."
         },
-        "tools": ["okf_validate", "generate_index", "append_log_entry"],
+        tools: ["okf_validate", "generate_index", "append_log_entry"],
     })
+}
+
+/// How to work with a vault that is an OKF bundle, as `get_vault_context`
+/// reports it under `okf`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct OkfContext {
+    is_okf_bundle: bool,
+    concept_docs: usize,
+    concept_ratio: f64,
+    entry_point: Option<&'static str>,
+    has_root_log: bool,
+    top_types: Vec<OkfTypeCount>,
+    guidance: &'static str,
+    tools: [&'static str; 3],
+}
+
+/// One OKF concept `type` and how many notes carry it.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct OkfTypeCount {
+    #[serde(rename = "type")]
+    type_: String,
+    count: usize,
 }
 
 /// turbovault-0bh: auto-derive a commit subject from a batch's op tally.
@@ -448,7 +493,10 @@ fn batch_operation_change(operation: &turbovault_tools::BatchOperation) -> Vault
 
 /// Standardized response envelope for all tools (LLMX improvement)
 /// Generic, non-cumbersome, forward-looking design
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+///
+/// Each tool advertises `StandardResponse<Payload>` as its outputSchema, so
+/// the schema of `data` is the schema of the payload type it returns.
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema, Debug, Clone)]
 pub struct StandardResponse<T: serde::Serialize> {
     /// Which vault this operation was performed on
     pub vault: String,
@@ -459,20 +507,59 @@ pub struct StandardResponse<T: serde::Serialize> {
     /// The actual result data (any type)
     pub data: T,
     /// Count of items in result (if applicable)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<usize>,
     /// How long the operation took in milliseconds
     pub took_ms: u64,
     /// Non-fatal warnings or notes (e.g., "Note had duplicate links")
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// Suggested next operations based on result (e.g., ["write_note", "search"])
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next_steps: Vec<String>,
     /// Flexible metadata object for forward-looking extensibility
     /// Can include: version, timestamp, correlation_id, suggestions, deprecation notices, etc.
-    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub meta: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The payload of a tool whose whole answer is that it did the thing, such
+/// as `{"status": "removed"}`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct StatusPayload {
+    status: &'static str,
+}
+
+/// The outputSchema of a tool that returns one page of a list: the
+/// [`StandardResponse`] envelope with `meta.pagination` spelled out, which
+/// such a tool always sets. Only its schema is used; the field list mirrors
+/// `StandardResponse`, and the output schema test checks every paged tool's
+/// real result against it.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+pub(crate) struct Paged<T: serde::Serialize> {
+    vault: String,
+    operation: String,
+    success: bool,
+    data: T,
+    /// The number of items in this page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    count: Option<usize>,
+    took_ms: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    warnings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    next_steps: Vec<String>,
+    meta: PagedMeta,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct PagedMeta {
+    pagination: Page,
+    /// Anything else the tool reports about the call.
+    #[serde(flatten)]
+    other: serde_json::Map<String, serde_json::Value>,
 }
 
 impl<T: serde::Serialize> StandardResponse<T> {
@@ -939,7 +1026,7 @@ impl CoreToolHandler {
 /// turbovault-84k: one fanout artifact found by [`ObsidianMcpServer::
 /// scan_orphan_fanouts`]. Wraps the substrate's `OrphanFanout` with the
 /// owning vault's name (which the substrate alone can't know).
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct OrphanFanoutEntry {
     pub vault_name: String,
     pub worktree_name: String,
@@ -1606,13 +1693,9 @@ impl CoreToolHandler {
         if let Err(error) = self.forget_vault_state(name).await {
             log::warn!("Failed to persist vault state after removal: {error}");
         }
-        StandardResponse::new(
-            name,
-            "remove_vault",
-            serde_json::json!({"status": "removed"}),
-        )
-        .with_next_step("list_vaults")
-        .to_json()
+        StandardResponse::new(name, "remove_vault", StatusPayload { status: "removed" })
+            .with_next_step("list_vaults")
+            .to_json()
     }
 
     /// Test-only: expose the lazy `CommitLocks` initializer for tests

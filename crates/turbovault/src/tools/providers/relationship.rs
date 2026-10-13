@@ -21,6 +21,77 @@ impl Deref for RelationshipProvider {
     }
 }
 
+// `RelationshipTools` builds these results as JSON; the types below are the
+// schemas they are advertised with, and the output schema test holds the two
+// together.
+
+/// What `suggest_links` returns.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct LinkSuggestions {
+    file: String,
+    /// This page of the suggestions, strongest first.
+    suggestions: Vec<LinkSuggestion>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct LinkSuggestion {
+    target: String,
+    strength: f64,
+    reasons: Vec<String>,
+}
+
+/// What `get_link_strength` returns. `strength` holds the whole score.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct LinkStrengthPayload {
+    source: String,
+    target: String,
+    strength: LinkStrength,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct LinkStrength {
+    source: String,
+    target: String,
+    /// From 0.0 (unconnected) to 1.0.
+    strength: f64,
+    components: LinkStrengthComponents,
+    interpretation: String,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct LinkStrengthComponents {
+    direct_links: usize,
+    backlinks: usize,
+    shared_references: usize,
+}
+
+/// What `get_centrality_ranking` returns.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct CentralityRanking {
+    /// How many notes were ranked, across every page.
+    total_files: usize,
+    /// This page of the ranking, most central first.
+    rankings: Vec<CentralityRank>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct CentralityRank {
+    rank: usize,
+    file: String,
+    score: f64,
+    betweenness: f64,
+    closeness: f64,
+    eigenvector: f64,
+    interpretation: String,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl RelationshipProvider {
     // ==================== Relationship Operations ====================
@@ -34,6 +105,7 @@ impl RelationshipProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<LinkSuggestions>,
     )]
     async fn suggest_links(
         &self,
@@ -77,6 +149,7 @@ impl RelationshipProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<LinkStrengthPayload>,
     )]
     async fn get_link_strength(
         &self,
@@ -113,6 +186,7 @@ impl RelationshipProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<CentralityRanking>,
     )]
     async fn get_centrality_ranking(
         &self,

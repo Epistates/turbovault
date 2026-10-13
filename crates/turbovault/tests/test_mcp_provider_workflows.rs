@@ -4,6 +4,8 @@
 //! tool tests cover algorithms; this file protects provider composition, shared
 //! state, argument decoding, and structured response contracts.
 
+mod output_schema;
+
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use turbomcp::{McpHandler, RequestContext};
@@ -25,9 +27,11 @@ async fn call(server: &ObsidianMcpServer, name: &str, arguments: Value) -> Value
             .first_text()
             .unwrap_or("tool returned an error without text")
     );
-    result
+    let structured = result
         .structured_content
-        .unwrap_or_else(|| panic!("public MCP tool {name:?} returned no structured content"))
+        .unwrap_or_else(|| panic!("public MCP tool {name:?} returned no structured content"));
+    output_schema::assert_matches_output_schema(server, name, &structured);
+    structured
 }
 
 async fn call_error(server: &ObsidianMcpServer, name: &str, arguments: Value) -> String {

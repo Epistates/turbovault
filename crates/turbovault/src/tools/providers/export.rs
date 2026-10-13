@@ -21,6 +21,14 @@ impl Deref for ExportProvider {
     }
 }
 
+/// Response payload for the export tools: the document, and its format.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ExportPayload {
+    /// The JSON or CSV document, as text.
+    content: String,
+    format: String,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl ExportProvider {
     // ==================== Export Operations ====================
@@ -34,6 +42,7 @@ impl ExportProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ExportPayload>,
     )]
     async fn export_health_report(
         &self,
@@ -49,7 +58,10 @@ impl ExportProvider {
         let response = StandardResponse::new(
             vault_name,
             "export_health_report",
-            serde_json::json!({"content": report, "format": format}),
+            ExportPayload {
+                content: report,
+                format: format.clone(),
+            },
         )
         .with_meta("format", serde_json::json!(format));
 
@@ -65,6 +77,7 @@ impl ExportProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ExportPayload>,
     )]
     async fn export_broken_links(
         &self,
@@ -80,7 +93,10 @@ impl ExportProvider {
         let response = StandardResponse::new(
             vault_name,
             "export_broken_links",
-            serde_json::json!({"content": links, "format": format}),
+            ExportPayload {
+                content: links,
+                format: format.clone(),
+            },
         )
         .with_meta("format", serde_json::json!(format));
 
@@ -96,6 +112,7 @@ impl ExportProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ExportPayload>,
     )]
     async fn export_vault_stats(
         &self,
@@ -111,7 +128,10 @@ impl ExportProvider {
         let response = StandardResponse::new(
             vault_name,
             "export_vault_stats",
-            serde_json::json!({"content": stats, "format": format}),
+            ExportPayload {
+                content: stats,
+                format: format.clone(),
+            },
         )
         .with_meta("format", serde_json::json!(format));
 
@@ -127,6 +147,7 @@ impl ExportProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ExportPayload>,
     )]
     async fn export_analysis_report(
         &self,
@@ -142,7 +163,10 @@ impl ExportProvider {
         let response = StandardResponse::new(
             vault_name,
             "export_analysis_report",
-            serde_json::json!({"content": report, "format": format}),
+            ExportPayload {
+                content: report,
+                format: format.clone(),
+            },
         )
         .with_meta("format", serde_json::json!(format));
 
