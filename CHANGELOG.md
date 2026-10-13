@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dependencies refreshed.** `uuid` 1.28, and the lockfile moved 24 packages to their latest compatible versions, among them `hnsw_rs` 0.3.5, which no longer pulls in the unmaintained `bincode` 1.x, so its advisory ignore is gone. Every GitHub Action is at its latest release. The Scorecard action was pinned to a tag object, which Actions can't run, and is now pinned to its commit.
 - **Canvases count as links to the notes they show.** `get_backlinks` lists them, `delete_note` counts them before refusing, and moving a note re-points their file cards and text links in the same change.
 - **A task keeps its checkbox character,** so in-progress `[/]` and cancelled `[-]` tasks are distinguishable from open ones. `TaskItem` gains a `status` field.
 - **Every tool tells an agent how to call it.** Every parameter, including each `batch_execute` operation's fields, has a description of what it takes, its default and its limits, and every tool has a title and complete read-only, destructive, idempotent and open-world hints. Tool descriptions say when to use a tool rather than its neighbor.
