@@ -104,18 +104,21 @@ impl AuditProvider {
     }
 
     #[tool(
-        description = "Restore a note to its state before a specific operation (identified by operation_id from audit_log)",
+        description = "Restore a note to its state before a specific operation (identified by operation_id from audit_log). Refuses if the note changed since that operation, since the change would be lost; check rollback_preview, then pass force=true to roll back anyway. A rollback is itself recorded, so it can be rolled back",
         tags = ["write", "audit"],
         destructive = true,
     )]
-    async fn rollback_note(&self, operation_id: String) -> McpResult<serde_json::Value> {
+    async fn rollback_note(
+        &self,
+        operation_id: String,
+        force: Option<bool>,
+    ) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("rollback_note").await?;
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let audit_tools = self.get_audit_tools().await?;
-        let vault_path = manager.vault_path().clone();
         let result = audit_tools
-            .rollback_execute(&operation_id, &vault_path)
+            .rollback(&manager, &operation_id, force.unwrap_or(false))
             .await
             .map_err(to_mcp_error)?;
 

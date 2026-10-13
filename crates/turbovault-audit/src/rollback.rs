@@ -58,15 +58,13 @@ impl RollbackEngine {
             .ok_or_else(|| Error::not_found(format!("Audit entry not found: {}", operation_id)))?;
 
         let file_path = PathValidator::validate_path_in_vault(vault_path, Path::new(&entry.path))?;
-        let current_exists = file_path.exists();
-        let current_hash = if current_exists {
-            let content = tokio::fs::read_to_string(&file_path)
-                .await
-                .map_err(Error::io)?;
-            Some(SnapshotStore::compute_hash(&content))
-        } else {
-            None
+        let current = match tokio::fs::read(&file_path).await {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(Error::io(error)),
         };
+        let current_exists = current.is_some();
+        let current_hash = current.as_deref().map(turbovault_core::compute_hash_bytes);
 
         let mut warnings = Vec::new();
 
@@ -115,11 +113,24 @@ impl RollbackEngine {
                 warnings.push("Move rollback not yet supported".to_string());
                 (false, false, false)
             }
-            OperationType::Rollback => {
-                warnings.push("Cannot roll back a rollback operation".to_string());
-                (false, false, false)
-            }
+            OperationType::Rollback => match target_state(&entry) {
+                Ok(Target::Absent) => (false, current_exists, false),
+                Ok(Target::Snapshot(_)) => (!current_exists, false, current_exists),
+                Err(_) => {
+                    warnings.push(
+                        "Cannot roll back a rollback recorded without the content it replaced"
+                            .to_string(),
+                    );
+                    (false, false, false)
+                }
+            },
         };
+        if let Some(change) = changed_since(&entry, current.as_deref()) {
+            warnings.push(format!(
+                "File {change} since this operation; rolling back would discard that, \
+                 so it needs force"
+            ));
+        }
 
         // Build diff preview if we're modifying
         let diff_preview = if would_modify {
@@ -162,103 +173,215 @@ impl RollbackEngine {
         })
     }
 
-    /// Execute a rollback (restores the file to its state before the operation)
-    pub async fn execute(&self, operation_id: &str, vault_path: &Path) -> Result<RollbackResult> {
+    /// Work out what rolling back `operation_id` does, checked against the
+    /// file as it is now. Unless `force` is set, a file that no longer holds
+    /// what the operation left behind is refused, since rolling it back
+    /// would discard whatever changed it since.
+    pub async fn plan(
+        &self,
+        operation_id: &str,
+        vault_path: &Path,
+        force: bool,
+    ) -> Result<RollbackPlan> {
         let entry = self
             .audit_log
             .get_entry(operation_id)
             .await?
             .ok_or_else(|| Error::not_found(format!("Audit entry not found: {}", operation_id)))?;
-
         let file_path = PathValidator::validate_path_in_vault(vault_path, Path::new(&entry.path))?;
 
-        if matches!(
-            entry.operation,
-            OperationType::Move | OperationType::Rollback
-        ) {
-            return Err(Error::Other(format!(
-                "Rollback of {} operations is not supported",
-                entry.operation
-            )));
-        }
-        let action_taken;
-
-        // Snapshot current state before rollback
-        let _current_snapshot_id = if file_path.exists() {
-            let content = tokio::fs::read_to_string(&file_path)
-                .await
-                .map_err(Error::io)?;
-            Some(self.snapshot_store.store(&content).await?)
-        } else {
-            None
+        let restore_snapshot_id = match target_state(&entry)? {
+            Target::Absent => None,
+            Target::Snapshot(id) => Some(id),
+        };
+        let restore = match &restore_snapshot_id {
+            Some(id) => Some(self.snapshot_store.retrieve(id).await?),
+            None => None,
+        };
+        let current = match tokio::fs::read(&file_path).await {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(Error::io_at(entry.path.clone(), error)),
         };
 
-        match entry.operation {
-            OperationType::Create => {
-                // Undo create = delete. The `exists()` check above already
-                // means a NotFound here is a race with something else
-                // removing the file between that check and this call, so
-                // translate it the same way as any other missing-file
-                // operation rather than leaking the OS's raw NotFound text.
-                if file_path.exists() {
-                    tokio::fs::remove_file(&file_path)
-                        .await
-                        .map_err(|e| Error::io_at(entry.path.clone(), e))?;
-                    action_taken = "Deleted file (undoing create)".to_string();
-                } else {
-                    action_taken = "File already absent — no action taken".to_string();
-                }
-            }
-            OperationType::Update | OperationType::Delete => {
-                // Undo update/delete = restore before content
-                let before_id = entry.before_snapshot_id.as_ref().ok_or_else(|| {
-                    Error::Other("No before-snapshot — cannot restore".to_string())
-                })?;
+        if !force && let Some(change) = changed_since(&entry, current.as_deref()) {
+            return Err(Error::concurrency_error(format!(
+                "'{}' {change} since operation {}, so rolling it back would discard that. \
+                 Check rollback_preview, then roll back with force to discard it anyway.",
+                entry.path, entry.id
+            )));
+        }
 
-                let before_content = self.snapshot_store.retrieve(before_id).await?;
+        Ok(RollbackPlan {
+            entry,
+            restore,
+            restore_snapshot_id,
+            current,
+        })
+    }
 
+    /// Execute a rollback (restores the file to its state before the
+    /// operation), refusing one that would discard a later change.
+    ///
+    /// This writes the file directly. A running server applies a
+    /// [`RollbackPlan`] through its own write path instead, so the write
+    /// takes the vault's write lock and is checked like any other.
+    pub async fn execute(&self, operation_id: &str, vault_path: &Path) -> Result<RollbackResult> {
+        self.execute_checked(operation_id, vault_path, false).await
+    }
+
+    /// [`Self::execute`], rolling back over a later change when `force` is set.
+    pub async fn execute_checked(
+        &self,
+        operation_id: &str,
+        vault_path: &Path,
+        force: bool,
+    ) -> Result<RollbackResult> {
+        let plan = self.plan(operation_id, vault_path, force).await?;
+        let file_path =
+            PathValidator::validate_path_in_vault(vault_path, Path::new(&plan.entry.path))?;
+
+        match &plan.restore {
+            None if plan.current.is_none() => {}
+            None => tokio::fs::remove_file(&file_path)
+                .await
+                .map_err(|e| Error::io_at(plan.entry.path.clone(), e))?,
+            Some(content) => {
                 // Through the shared atomic write. This used to write through
                 // `note.tmp` for `note.md`, overwriting a real note of that
                 // name and then renaming it away.
-                let target = file_path.clone();
-                tokio::task::spawn_blocking(move || {
-                    turbovault_core::write_atomic(&target, before_content.as_bytes())
-                })
-                .await
-                .map_err(|e| Error::Other(format!("rollback write task failed: {e}")))?
-                .map_err(Error::io)?;
-
-                action_taken = format!(
-                    "Restored content from snapshot {} (undoing {})",
-                    before_id,
-                    entry.operation.to_string().to_lowercase()
-                );
+                let (target, bytes) = (file_path.clone(), content.clone().into_bytes());
+                tokio::task::spawn_blocking(move || turbovault_core::write_atomic(&target, &bytes))
+                    .await
+                    .map_err(|e| Error::Other(format!("rollback write task failed: {e}")))?
+                    .map_err(Error::io)?;
             }
-            OperationType::Move | OperationType::Rollback => unreachable!(),
         }
 
-        // Record the rollback itself as an audit entry
-        let rollback_entry = AuditEntry::new(OperationType::Rollback, &entry.path).with_metadata(
-            serde_json::json!({
-                "rolled_back_operation": operation_id,
-                "rolled_back_type": entry.operation.to_string(),
-            }),
-        );
-
-        let audit_entry_id = rollback_entry.id.clone();
-
-        // Fire-and-forget audit recording
-        if let Err(e) = self.audit_log.record(&rollback_entry).await {
-            log::warn!("Failed to record rollback audit entry: {}", e);
-        }
-
+        let audit_entry_id = self.record(&plan).await;
         Ok(RollbackResult {
             operation_id: operation_id.to_string(),
-            path: entry.path,
+            path: plan.entry.path.clone(),
             success: true,
-            action_taken,
+            action_taken: plan.action(),
             audit_entry_id,
         })
+    }
+
+    /// Record a rollback that [`Self::execute_checked`] applied, with the
+    /// content it replaced as its before-state so it can be rolled back in
+    /// turn. Returns the new entry's id.
+    async fn record(&self, plan: &RollbackPlan) -> String {
+        let mut entry = AuditEntry::new(OperationType::Rollback, &plan.entry.path).with_metadata(
+            serde_json::json!({
+                "rolled_back_operation": plan.entry.id,
+                "rolled_back_type": plan.entry.operation.to_string(),
+                "before_absent": plan.current.is_none(),
+                "after_absent": plan.restore.is_none(),
+            }),
+        );
+        if let Some(before) = plan
+            .current
+            .as_deref()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        {
+            match self.snapshot_store.store(before).await {
+                Ok(id) => entry = entry.with_before(SnapshotStore::compute_hash(before), id),
+                Err(e) => log::warn!("Failed to store the content a rollback replaced: {}", e),
+            }
+        }
+        if let (Some(content), Some(id)) = (&plan.restore, &plan.restore_snapshot_id) {
+            entry = entry.with_after(SnapshotStore::compute_hash(content), id.clone());
+        }
+
+        let id = entry.id.clone();
+        // Fire-and-forget audit recording
+        if let Err(e) = self.audit_log.record(&entry).await {
+            log::warn!("Failed to record rollback audit entry: {}", e);
+        }
+        id
+    }
+}
+
+/// What rolling back one operation does, checked against the file as it was
+/// when the plan was made.
+#[derive(Debug, Clone)]
+pub struct RollbackPlan {
+    /// The operation being rolled back.
+    pub entry: AuditEntry,
+    /// The content to put back, or `None` to remove the file.
+    pub restore: Option<String>,
+    /// The snapshot `restore` comes from.
+    pub restore_snapshot_id: Option<String>,
+    /// The file's bytes when the plan was made, or `None` if it was absent.
+    /// A writer applying the plan should refuse if the file no longer holds
+    /// them.
+    pub current: Option<Vec<u8>>,
+}
+
+impl RollbackPlan {
+    /// A description of what applying the plan does.
+    pub fn action(&self) -> String {
+        let undoing = self.entry.operation.to_string().to_lowercase();
+        match (&self.restore, &self.current, &self.restore_snapshot_id) {
+            (None, None, _) => "File already absent, no action taken".to_string(),
+            (None, Some(_), _) => format!("Deleted file (undoing {undoing})"),
+            (Some(_), _, Some(id)) => {
+                format!("Restored content from snapshot {id} (undoing {undoing})")
+            }
+            (Some(_), _, None) => format!("Restored content (undoing {undoing})"),
+        }
+    }
+}
+
+/// The state rolling back an entry returns its path to.
+enum Target {
+    Absent,
+    Snapshot(String),
+}
+
+fn target_state(entry: &AuditEntry) -> Result<Target> {
+    let before_absent = entry.metadata.get("before_absent") == Some(&serde_json::Value::Bool(true));
+    match (&entry.operation, &entry.before_snapshot_id) {
+        (OperationType::Create, _) => Ok(Target::Absent),
+        (OperationType::Update | OperationType::Delete, Some(id)) => {
+            Ok(Target::Snapshot(id.clone()))
+        }
+        (OperationType::Update | OperationType::Delete, None) => Err(Error::Other(
+            "No before-snapshot — cannot restore".to_string(),
+        )),
+        (OperationType::Rollback, Some(id)) => Ok(Target::Snapshot(id.clone())),
+        (OperationType::Rollback, None) if before_absent => Ok(Target::Absent),
+        (OperationType::Rollback, None) => Err(Error::Other(
+            "This ROLLBACK operation was recorded without the content it replaced, \
+             so it cannot be rolled back"
+                .to_string(),
+        )),
+        (OperationType::Move, _) => Err(Error::Other(
+            "Rollback of MOVE operations is not supported".to_string(),
+        )),
+    }
+}
+
+/// How the file differs from what `entry` left behind, if it does and the
+/// entry recorded enough to tell.
+fn changed_since(entry: &AuditEntry, current: Option<&[u8]>) -> Option<&'static str> {
+    // A move's path is where the note came from; it can't be rolled back.
+    if entry.operation == OperationType::Move {
+        return None;
+    }
+    let after_absent = entry.metadata.get("after_absent") == Some(&serde_json::Value::Bool(true));
+    let left_absent = matches!(entry.operation, OperationType::Delete)
+        || (matches!(entry.operation, OperationType::Rollback) && after_absent);
+    match current {
+        Some(_) if left_absent => Some("was created again"),
+        None if left_absent => None,
+        // Older entries may not record the content they left.
+        _ if entry.after_hash.is_none() => None,
+        None => Some("was deleted"),
+        Some(bytes) => (entry.after_hash.as_deref()
+            != Some(&turbovault_core::compute_hash_bytes(bytes)))
+        .then_some("has changed"),
     }
 }
 
@@ -278,6 +401,114 @@ mod tests {
         let snapshot_store = Arc::new(SnapshotStore::new(audit_log.snapshot_dir().to_path_buf()));
         let engine = RollbackEngine::new(audit_log.clone(), snapshot_store.clone());
         (temp_dir, audit_log, snapshot_store, engine)
+    }
+
+    /// Record an update of `test.md` from `old` to `new`, with `test.md`
+    /// holding `on_disk` now.
+    async fn recorded_update(
+        temp_dir: &tempfile::TempDir,
+        audit_log: &AuditLog,
+        snapshot_store: &SnapshotStore,
+        on_disk: &str,
+    ) -> String {
+        let (old, new) = ("old\n", "new\n");
+        let before = snapshot_store.store(old).await.unwrap();
+        let after = snapshot_store.store(new).await.unwrap();
+        tokio::fs::write(temp_dir.path().join("test.md"), on_disk)
+            .await
+            .unwrap();
+        let entry = AuditEntry::new(OperationType::Update, "test.md")
+            .with_before(SnapshotStore::compute_hash(old), before)
+            .with_after(SnapshotStore::compute_hash(new), after);
+        audit_log.record(&entry).await.unwrap();
+        entry.id
+    }
+
+    async fn read(temp_dir: &tempfile::TempDir, path: &str) -> String {
+        tokio::fs::read_to_string(temp_dir.path().join(path))
+            .await
+            .unwrap()
+    }
+
+    /// A file edited after the operation is not silently put back: the edit
+    /// would be lost. Forcing it is the caller's explicit choice.
+    #[tokio::test]
+    async fn rollback_refuses_to_discard_a_later_edit_unless_forced() {
+        let (temp_dir, audit_log, snapshot_store, engine) = setup_engine().await;
+        let id = recorded_update(&temp_dir, &audit_log, &snapshot_store, "edited later\n").await;
+
+        let error = engine.execute(&id, temp_dir.path()).await.unwrap_err();
+        assert!(matches!(error, Error::ConcurrencyError { .. }), "{error}");
+        assert!(error.to_string().contains("force"), "{error}");
+        assert_eq!(read(&temp_dir, "test.md").await, "edited later\n");
+
+        let preview = engine.preview(&id, temp_dir.path()).await.unwrap();
+        assert!(
+            preview.warnings.iter().any(|w| w.contains("changed since")),
+            "{:?}",
+            preview.warnings
+        );
+
+        engine
+            .execute_checked(&id, temp_dir.path(), true)
+            .await
+            .unwrap();
+        assert_eq!(read(&temp_dir, "test.md").await, "old\n");
+    }
+
+    /// A rollback records what it replaced, so it can be rolled back too.
+    #[tokio::test]
+    async fn a_rollback_can_be_rolled_back() {
+        let (temp_dir, audit_log, snapshot_store, engine) = setup_engine().await;
+        let id = recorded_update(&temp_dir, &audit_log, &snapshot_store, "new\n").await;
+
+        let rollback = engine.execute(&id, temp_dir.path()).await.unwrap();
+        assert_eq!(read(&temp_dir, "test.md").await, "old\n");
+        let entry = audit_log
+            .get_entry(&rollback.audit_entry_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(entry.before_snapshot_id.is_some());
+        assert_eq!(entry.after_hash, Some(SnapshotStore::compute_hash("old\n")));
+
+        engine
+            .execute(&rollback.audit_entry_id, temp_dir.path())
+            .await
+            .unwrap();
+        assert_eq!(read(&temp_dir, "test.md").await, "new\n");
+    }
+
+    /// Undoing a create deletes the file, so a file edited since is kept.
+    #[tokio::test]
+    async fn rolling_back_a_create_keeps_a_file_edited_since() {
+        let (temp_dir, audit_log, snapshot_store, engine) = setup_engine().await;
+        let created = snapshot_store.store("created\n").await.unwrap();
+        let entry = AuditEntry::new(OperationType::Create, "made.md")
+            .with_after(SnapshotStore::compute_hash("created\n"), created);
+        audit_log.record(&entry).await.unwrap();
+        tokio::fs::write(temp_dir.path().join("made.md"), "created, then edited\n")
+            .await
+            .unwrap();
+
+        assert!(engine.execute(&entry.id, temp_dir.path()).await.is_err());
+        assert_eq!(read(&temp_dir, "made.md").await, "created, then edited\n");
+    }
+
+    /// Undoing a delete recreates the file, so one made again since is kept.
+    #[tokio::test]
+    async fn rolling_back_a_delete_keeps_a_file_recreated_since() {
+        let (temp_dir, audit_log, snapshot_store, engine) = setup_engine().await;
+        let deleted = snapshot_store.store("deleted\n").await.unwrap();
+        let entry = AuditEntry::new(OperationType::Delete, "gone.md")
+            .with_before(SnapshotStore::compute_hash("deleted\n"), deleted);
+        audit_log.record(&entry).await.unwrap();
+        tokio::fs::write(temp_dir.path().join("gone.md"), "made again\n")
+            .await
+            .unwrap();
+
+        assert!(engine.execute(&entry.id, temp_dir.path()).await.is_err());
+        assert_eq!(read(&temp_dir, "gone.md").await, "made again\n");
     }
 
     #[tokio::test]
@@ -424,7 +655,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             rollback_preview.warnings,
-            vec!["Cannot roll back a rollback operation"]
+            vec!["Cannot roll back a rollback recorded without the content it replaced"]
         );
     }
 
@@ -508,7 +739,7 @@ mod tests {
         assert!(
             unsupported_rollback
                 .to_string()
-                .contains("ROLLBACK operations")
+                .contains("ROLLBACK operation was recorded without")
         );
     }
 

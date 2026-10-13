@@ -420,6 +420,14 @@ impl DirectSubstrate {
             return;
         };
 
+        // A rollback applied through the write path is recorded as the
+        // rollback it is, with the content it replaced as its before-state,
+        // so it can be rolled back in turn.
+        let operation = if metadata.is_some_and(|m| m.get("rolled_back_operation").is_some()) {
+            OperationType::Rollback
+        } else {
+            operation
+        };
         let mut entry = AuditEntry::new(operation, rel_path);
         if let Some(new_path) = new_path {
             entry = entry.with_new_path(new_path);

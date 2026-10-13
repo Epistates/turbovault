@@ -2506,11 +2506,17 @@
     "annotations": {
       "destructiveHint": true
     },
-    "description": "Restore a note to its state before a specific operation (identified by operation_id from audit_log)",
+    "description": "Restore a note to its state before a specific operation (identified by operation_id from audit_log). Refuses if the note changed since that operation, since the change would be lost; check rollback_preview, then pass force=true to roll back anyway. A rollback is itself recorded, so it can be rolled back",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "force": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "operation_id": {
           "type": "string"
         }
