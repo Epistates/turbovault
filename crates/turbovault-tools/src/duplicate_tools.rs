@@ -4,19 +4,28 @@
 //! 1. SimHash fingerprinting for fast O(1) approximate similarity checks
 //! 2. TF-IDF cosine similarity for precise verification of candidates
 //!
+//! Candidates are every pair of notes whose fingerprints are within the
+//! threshold's Hamming distance. They're found by comparing every pair, on
+//! purpose: a 64-bit XOR and popcount per pair is about a nanosecond, and
+//! split across cores that stays well under a second at 100,000 notes. The
+//! usual shortcuts (banding the fingerprint, MinHash LSH) only find most
+//! close pairs, and at the default threshold of 0.8 (13 differing bits) a
+//! banded index barely narrows the search anyway. The fingerprints and the
+//! TF-IDF vectors come from the similarity engine, which computes each note's
+//! once.
+//!
 //! Also provides pairwise note comparison with diff summaries.
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_core::prelude::*;
-use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
 
 use crate::diff_tools::{DiffSummary, DiffTools};
-use crate::similarity_engine::SimilarityEngine;
+use crate::similarity_engine::{NoteSummary, SimilarityEngine};
 
 /// Duplicate detection tools
 #[derive(Clone)]
@@ -54,15 +63,6 @@ pub struct CompareResult {
     pub recommendation: String,
 }
 
-/// SimHash fingerprint for a document
-struct DocFingerprint {
-    path: PathBuf,
-    title: String,
-    word_count: usize,
-    modified_at: f64,
-    fingerprint: u64,
-}
-
 impl DuplicateTools {
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
@@ -74,95 +74,69 @@ impl DuplicateTools {
         threshold: f64,
         limit: usize,
     ) -> Result<Vec<DuplicateGroup>> {
-        let files = self.manager.scan_vault().await?;
+        let engine = SimilarityEngine::new(self.manager.clone()).await?;
+        Ok(self.find_duplicates_with(&engine, threshold, limit))
+    }
 
-        // Build SimHash fingerprints for all files
-        let mut fingerprints: Vec<DocFingerprint> = Vec::new();
-
-        for file_path in &files {
-            if let Ok(vault_file) = self.manager.parse_file(file_path).await {
-                let plain = to_plain_text(&vault_file.content);
-                let fingerprint = compute_simhash(&plain);
-
-                let rel_path = self.manager.relative_path(file_path);
-
-                let title = vault_file
-                    .headings
-                    .first()
-                    .map(|h| h.text.clone())
-                    .unwrap_or_else(|| {
-                        file_path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string()
-                    });
-
-                fingerprints.push(DocFingerprint {
-                    path: PathBuf::from(rel_path),
-                    title,
-                    word_count: plain.split_whitespace().count(),
-                    modified_at: vault_file.metadata.modified_at,
-                    fingerprint,
-                });
-            }
-        }
+    /// [`Self::find_duplicates`] with an engine already built for this vault.
+    pub fn find_duplicates_with(
+        &self,
+        engine: &SimilarityEngine,
+        threshold: f64,
+        limit: usize,
+    ) -> Vec<DuplicateGroup> {
+        let notes = engine.note_summaries();
+        let prints: Vec<u64> = notes.iter().map(|note| note.simhash).collect();
 
         // Convert threshold to hamming distance bound
         // SimHash with 64 bits: similarity ~= 1 - (hamming_distance / 64)
         // For threshold 0.8 → max hamming distance = 64 * (1 - 0.8) = ~13
         let max_hamming = ((1.0 - threshold) * 64.0).ceil() as u32;
 
-        // Find candidate pairs via SimHash hamming distance
-        let mut candidate_pairs: Vec<(usize, usize, u32)> = Vec::new();
-
-        for i in 0..fingerprints.len() {
-            for j in (i + 1)..fingerprints.len() {
-                let hamming =
-                    (fingerprints[i].fingerprint ^ fingerprints[j].fingerprint).count_ones();
-                if hamming <= max_hamming {
-                    candidate_pairs.push((i, j, hamming));
-                }
-            }
-        }
+        // Find candidate pairs via SimHash hamming distance: every pair, in
+        // order (see the module docs).
+        let mut candidate_pairs: Vec<(usize, usize, u32)> = (0..prints.len())
+            .into_par_iter()
+            .flat_map_iter(|i| {
+                let print = prints[i];
+                let prints = &prints;
+                ((i + 1)..prints.len()).filter_map(move |j| {
+                    let hamming = (print ^ prints[j]).count_ones();
+                    (hamming <= max_hamming).then_some((i, j, hamming))
+                })
+            })
+            .collect();
 
         // Sort by hamming distance (most similar first)
         candidate_pairs.sort_by_key(|&(_, _, h)| h);
 
-        // Build similarity engine for precise verification
-        let sim_engine = SimilarityEngine::new(self.manager.clone()).await?;
-
         // Verify candidates and build groups
         let mut groups: Vec<DuplicateGroup> = Vec::new();
-        let mut grouped: Vec<bool> = vec![false; fingerprints.len()];
+        let mut grouped: Vec<bool> = vec![false; notes.len()];
 
-        for (i, j, _) in &candidate_pairs {
+        for (i, j, hamming) in &candidate_pairs {
             if grouped[*i] && grouped[*j] {
                 continue;
             }
 
-            let path_i = fingerprints[*i].path.to_string_lossy().to_string();
-            let path_j = fingerprints[*j].path.to_string_lossy().to_string();
+            let path_i = notes[*i].path.to_string_lossy().to_string();
+            let path_j = notes[*j].path.to_string_lossy().to_string();
 
             // Score this one pair. Ranking the whole vault from `path_i` to read
             // off `path_j` made every candidate pair cost a pass over every
             // note.
-            let precise_score = sim_engine
+            let precise_score = engine
                 .pair_similarity(&path_i, &path_j)
-                .unwrap_or_else(|| {
-                    // Fallback: compute from hamming distance
-                    let hamming =
-                        (fingerprints[*i].fingerprint ^ fingerprints[*j].fingerprint).count_ones();
-                    1.0 - (hamming as f64 / 64.0)
-                });
+                // Fallback: compute from hamming distance
+                .unwrap_or_else(|| 1.0 - (*hamming as f64 / 64.0));
 
             if precise_score >= threshold {
                 grouped[*i] = true;
                 grouped[*j] = true;
 
                 let notes = vec![
-                    make_duplicate_note(&fingerprints[*i]),
-                    make_duplicate_note(&fingerprints[*j]),
+                    make_duplicate_note(&notes[*i]),
+                    make_duplicate_note(&notes[*j]),
                 ];
 
                 groups.push(DuplicateGroup {
@@ -190,20 +164,31 @@ impl DuplicateTools {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| paths(a).cmp(&paths(b)))
         });
-        Ok(groups)
+        groups
     }
 
     /// Compare two specific notes in detail
     pub async fn compare_notes(&self, left: &str, right: &str) -> Result<CompareResult> {
-        // Get similarity score and shared terms
-        let sim_engine = SimilarityEngine::new(self.manager.clone()).await?;
-        let results = sim_engine.find_similar_notes(left, self.manager.scan_vault().await?.len());
+        let engine = SimilarityEngine::new(self.manager.clone()).await?;
+        self.compare_notes_with(&engine, left, right).await
+    }
 
-        let (similarity_score, shared_terms) = results
-            .iter()
-            .find(|r| r.path == right)
-            .map(|r| (r.score, r.shared_terms.clone()))
-            .unwrap_or((0.0, vec![]));
+    /// [`Self::compare_notes`] with an engine already built for this vault.
+    pub async fn compare_notes_with(
+        &self,
+        engine: &SimilarityEngine,
+        left: &str,
+        right: &str,
+    ) -> Result<CompareResult> {
+        // Get similarity score and shared terms: what a similarity ranking
+        // from `left` lists for `right`, which never includes `left` itself.
+        let (similarity_score, shared_terms) = if left == right {
+            None
+        } else {
+            engine.pair_details(left, right)
+        }
+        .map(|(score, terms)| ((score * 10000.0).round() / 10000.0, terms))
+        .unwrap_or((0.0, vec![]));
 
         // Get diff summary
         let diff_tools = DiffTools::new(self.manager.clone());
@@ -230,21 +215,21 @@ impl DuplicateTools {
     }
 }
 
-fn make_duplicate_note(fp: &DocFingerprint) -> DuplicateNote {
-    let modified_at = chrono::DateTime::from_timestamp(fp.modified_at as i64, 0)
+fn make_duplicate_note(note: &NoteSummary) -> DuplicateNote {
+    let modified_at = chrono::DateTime::from_timestamp(note.modified_at as i64, 0)
         .map(|dt| dt.to_rfc3339())
         .unwrap_or_else(|| "unknown".to_string());
 
     DuplicateNote {
-        path: fp.path.to_string_lossy().to_string(),
-        title: fp.title.clone(),
-        word_count: fp.word_count,
+        path: note.path.to_string_lossy().to_string(),
+        title: note.title.clone(),
+        word_count: note.word_count,
         modified_at,
     }
 }
 
 /// Compute a 64-bit SimHash fingerprint for text content
-fn compute_simhash(text: &str) -> u64 {
+pub(crate) fn compute_simhash(text: &str) -> u64 {
     let shingles = generate_shingles(text, 3);
     if shingles.is_empty() {
         return 0;

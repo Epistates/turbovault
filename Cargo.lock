@@ -5899,6 +5899,7 @@ dependencies = [
  "git2",
  "log",
  "proptest",
+ "rayon",
  "schemars 1.2.2",
  "serde",
  "serde_json",
