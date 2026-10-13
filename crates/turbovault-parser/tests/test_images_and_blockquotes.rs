@@ -222,6 +222,29 @@ fn a_blockquote_emits_no_stray_paragraph() {
     );
 }
 
+/// A nested quote shares its outer quote's buffer, and closing the nested one
+/// used to flush and close both. Whatever the outer quote said after it came
+/// back as a top-level paragraph, outside any quote.
+#[test]
+fn the_outer_quote_continues_after_a_nested_quote() {
+    let blocks = parse_blocks("> before\n>\n> > nested\n>\n> after\n");
+    assert_eq!(
+        blocks.len(),
+        1,
+        "expected only the blockquote, got {blocks:?}"
+    );
+    let (content, nested) = first_blockquote(&blocks);
+    assert_eq!(content, "before\n\nnested\n\nafter");
+    let paragraphs: Vec<_> = nested
+        .iter()
+        .map(|block| match block {
+            ContentBlock::Paragraph { content, .. } => content.as_str(),
+            other => panic!("expected only paragraphs in the quote, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(paragraphs, ["before", "nested", "after"]);
+}
+
 /// A fenced block inside a quote was emitted as a top-level sibling *ahead of*
 /// the blockquote, so it rendered above the callout header instead of within
 /// the callout.

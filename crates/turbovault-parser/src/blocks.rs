@@ -210,6 +210,18 @@ fn extract_summary(details_content: &str) -> String {
 // Parser state machine
 // ============================================================================
 
+/// Deepest a list nests inside another in the blocks [`parse_blocks`]
+/// returns, counted separately in the document and inside each blockquote.
+/// An item nested deeper contributes its text and blocks to the deepest item
+/// kept rather than opening a level of its own.
+///
+/// This is a bound on cost, not a style rule. A quote is rebuilt as markdown,
+/// and markdown says a list is nested only by indenting it, so a quote that
+/// nests `> - > - …` a level per four bytes rebuilt as text quadratic in its
+/// size. Every consumer that walks the tree recursively also pays for its
+/// depth on the stack. Thirty-two levels is far past anything written by hand.
+pub const MAX_LIST_DEPTH: usize = 32;
+
 /// One list level open inside a blockquote that is still buffering.
 ///
 /// A quote is rebuilt by re-parsing its raw text, so a list inside one has to
@@ -268,12 +280,20 @@ struct BlockParserState {
     /// Document line the buffering blockquote started on, so the re-parse of
     /// its raw text can number its blocks from there instead of from zero.
     blockquote_start_line: usize,
+    /// When this parse is a blockquote's re-parse and that quote sits inside
+    /// a list item, the line the outermost such item starts on. Elements in
+    /// the quote measure their `line_offset` from it, so they agree with the
+    /// item's other elements.
+    outer_item_line: Option<usize>,
     paragraph_buffer: String,
     inline_buffer: Vec<InlineElement>,
     /// Lists open in the main document tree, outermost first.
     list_stack: Vec<ListFrame>,
     /// List items open in the main document tree, outermost first.
     item_stack: Vec<ItemFrame>,
+    /// Lists open past [`MAX_LIST_DEPTH`] in the main document tree, which
+    /// fold into the deepest item kept instead of nesting.
+    list_overflow: usize,
     code_buffer: String,
     code_language: Option<String>,
     code_start_line: usize,
@@ -282,8 +302,19 @@ struct BlockParserState {
     /// had accumulated, so `- item ![a](a.png)` lost its "item " prefix.
     image_title: String,
     blockquote_buffer: String,
+    /// How many quotes are open, the buffering one included. Only the
+    /// outermost one's end flushes the buffer.
+    blockquote_depth: usize,
+    /// Newlines in `blockquote_buffer[..quoted_scanned]`. Finding the buffer's
+    /// height then only reads what was written since the last time; reading
+    /// all of it for every block made a long quote quadratic.
+    quoted_newlines: usize,
+    quoted_scanned: usize,
     /// Lists open inside the buffering blockquote, outermost first.
     quoted_lists: Vec<QuotedList>,
+    /// Lists open past [`MAX_LIST_DEPTH`] inside the buffering blockquote,
+    /// written as part of the deepest item kept instead of nesting.
+    quoted_list_overflow: usize,
     /// Content column of each open item in `quoted_lists`, so a nested list
     /// indents under its parent's marker instead of a fixed two spaces.
     quoted_item_indents: Vec<String>,
@@ -312,21 +343,27 @@ struct BlockParserState {
 }
 
 impl BlockParserState {
-    fn new(start_line: usize) -> Self {
+    fn new(start_line: usize, outer_item_line: Option<usize>) -> Self {
         Self {
             current_line: start_line,
             current_end_line: start_line,
             blockquote_start_line: start_line,
+            outer_item_line,
             paragraph_buffer: String::new(),
             inline_buffer: Vec::new(),
             list_stack: Vec::new(),
             item_stack: Vec::new(),
+            list_overflow: 0,
             code_buffer: String::new(),
             code_language: None,
             code_start_line: 0,
             image_title: String::new(),
             blockquote_buffer: String::new(),
+            blockquote_depth: 0,
+            quoted_newlines: 0,
+            quoted_scanned: 0,
             quoted_lists: Vec::new(),
+            quoted_list_overflow: 0,
             quoted_item_indents: Vec::new(),
             table_headers: Vec::new(),
             table_alignments: Vec::new(),
@@ -387,9 +424,15 @@ impl BlockParserState {
             ordered: frame.ordered,
             items: frame.items,
         };
+        self.push_to_container(blocks, list_block);
+    }
+
+    /// Attaches a finished block to whatever encloses it: the innermost open
+    /// item's own blocks when there is one, the top-level `blocks` otherwise.
+    fn push_to_container(&mut self, blocks: &mut Vec<ContentBlock>, block: ContentBlock) {
         match self.item_stack.last_mut() {
-            Some(item) => item.blocks.push(list_block),
-            None => blocks.push(list_block),
+            Some(item) => item.blocks.push(block),
+            None => blocks.push(block),
         }
     }
 
@@ -413,31 +456,51 @@ impl BlockParserState {
         }
     }
 
+    /// Closes the buffering blockquote into the block it re-parses to, or
+    /// `None` when it collected no text.
+    fn take_blockquote(&mut self) -> Option<ContentBlock> {
+        if !(self.in_blockquote && !self.blockquote_buffer.is_empty()) {
+            return None;
+        }
+        // Paragraph ends inside the quote append a blank-line separator,
+        // which leaves a trailing one on the last paragraph. It carries no
+        // meaning and would show up in every consumer's `content`.
+        let content = self.blockquote_buffer.trim_end().to_string();
+        // Numbered from the quote's own line, not from zero. The re-parse
+        // rebuilds the quote line for line, so a block inside it lands on
+        // the document line it was written on. Parsing the fragment cold
+        // reported every quoted fence as `start_line: 0`, which put it
+        // before the start of the document for any consumer filtering on
+        // position.
+        //
+        // A quote inside a list item also hands down the line the outermost
+        // item starts on, so a link inside the quote reports its
+        // `line_offset` on the same scale as every other element the item
+        // collects, rather than none at all.
+        let nested_blocks =
+            parse_blocks_anchored(&content, self.blockquote_start_line, self.item_anchor());
+        self.blockquote_buffer.clear();
+        self.quoted_newlines = 0;
+        self.quoted_scanned = 0;
+        self.in_blockquote = false;
+        Some(ContentBlock::Blockquote {
+            content,
+            blocks: nested_blocks,
+        })
+    }
+
     fn flush_blockquote(&mut self, blocks: &mut Vec<ContentBlock>) {
-        if self.in_blockquote && !self.blockquote_buffer.is_empty() {
-            // Paragraph ends inside the quote append a blank-line separator,
-            // which leaves a trailing one on the last paragraph. It carries no
-            // meaning and would show up in every consumer's `content`.
-            let content = self.blockquote_buffer.trim_end().to_string();
-            // Numbered from the quote's own line, not from zero. The re-parse
-            // rebuilds the quote line for line, so a block inside it lands on
-            // the document line it was written on. Parsing the fragment cold
-            // reported every quoted fence as `start_line: 0`, which put it
-            // before the start of the document for any consumer filtering on
-            // position.
-            let nested_blocks = parse_blocks_from_line(&content, self.blockquote_start_line);
-            blocks.push(ContentBlock::Blockquote {
-                content,
-                blocks: nested_blocks,
-            });
-            self.blockquote_buffer.clear();
-            self.in_blockquote = false;
+        if let Some(quote) = self.take_blockquote() {
+            blocks.push(quote);
         }
     }
 
     /// Document line the next character written to the quote buffer lands on.
-    fn next_quoted_line(&self) -> usize {
-        self.blockquote_start_line + self.blockquote_buffer.matches('\n').count()
+    fn next_quoted_line(&mut self) -> usize {
+        let unscanned = &self.blockquote_buffer.as_bytes()[self.quoted_scanned..];
+        self.quoted_newlines += unscanned.iter().filter(|&&b| b == b'\n').count();
+        self.quoted_scanned = self.blockquote_buffer.len();
+        self.blockquote_start_line + self.quoted_newlines
     }
 
     /// Pads the quote buffer with newlines until its next write lands on
@@ -492,6 +555,13 @@ impl BlockParserState {
     }
 
     fn open_quoted_list(&mut self, start_number: Option<u64>, source_line: usize) {
+        // Past the limit a list writes no markers and no indent of its own;
+        // see `open_quoted_item`. Indenting every level two columns further
+        // is what made `> - > - …` rebuild as text quadratic in its length.
+        if self.quoted_list_overflow > 0 || self.quoted_lists.len() >= MAX_LIST_DEPTH {
+            self.quoted_list_overflow += 1;
+            return;
+        }
         let indent = self.quoted_item_indents.last().cloned().unwrap_or_default();
         if self.quoted_lists.is_empty() {
             self.sync_quoted_line(source_line);
@@ -507,10 +577,21 @@ impl BlockParserState {
     }
 
     fn close_quoted_list(&mut self) {
-        self.quoted_lists.pop();
+        if self.quoted_list_overflow > 0 {
+            self.quoted_list_overflow -= 1;
+        } else {
+            self.quoted_lists.pop();
+        }
     }
 
     fn open_quoted_item(&mut self, source_line: usize) {
+        if self.quoted_list_overflow > 0 {
+            // An item past the limit is written as more of the deepest item
+            // kept: a continuation line at its content column, or nothing at
+            // all when it opens on a line that item already occupies.
+            self.open_quoted_block(source_line);
+            return;
+        }
         if self.quoted_lists.is_empty() {
             return;
         }
@@ -534,6 +615,9 @@ impl BlockParserState {
     }
 
     fn close_quoted_item(&mut self) {
+        if self.quoted_list_overflow > 0 {
+            return;
+        }
         self.quoted_item_indents.pop();
         if !self.blockquote_buffer.ends_with('\n') {
             self.blockquote_buffer.push('\n');
@@ -567,9 +651,15 @@ impl BlockParserState {
     /// item's aggregated `inline` (see `collect_inline_elements`) tell how far
     /// into the source a given element actually is.
     fn item_line_offset(&self) -> Option<usize> {
-        self.item_stack
-            .first()
-            .map(|frame| self.current_line.saturating_sub(frame.start_line))
+        self.item_anchor()
+            .map(|anchor| self.current_line.saturating_sub(anchor))
+    }
+
+    /// Source line of the outermost list item enclosing the current event,
+    /// including one outside this parse when this is a blockquote's re-parse.
+    fn item_anchor(&self) -> Option<usize> {
+        self.outer_item_line
+            .or_else(|| self.item_stack.first().map(|frame| frame.start_line))
     }
 
     /// The inline list the enclosing container collects into. A heading keeps
@@ -746,11 +836,31 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         Event::End(TagEnd::Item) if state.in_blockquote => {
             state.close_quoted_item();
         }
+        // A checkbox past the limit has no item of its own to mark.
+        Event::TaskListMarker(_) if state.in_blockquote && state.quoted_list_overflow > 0 => {}
         Event::TaskListMarker(checked) if state.in_blockquote => {
             state
                 .blockquote_buffer
                 .push_str(if checked { "[x] " } else { "[ ] " });
         }
+        // Past `MAX_LIST_DEPTH` a list opens no level of its own. Its items'
+        // text and blocks fold into the deepest item kept, which is still
+        // open around them, so nothing is lost but the nesting.
+        Event::Start(Tag::List(_))
+            if state.list_overflow > 0 || state.list_stack.len() >= MAX_LIST_DEPTH =>
+        {
+            state.list_overflow += 1;
+        }
+        Event::End(TagEnd::List(_)) if state.list_overflow > 0 => {
+            state.list_overflow -= 1;
+        }
+        Event::Start(Tag::Item) if state.list_overflow > 0 => {
+            // Kept apart from the text before it, the way a line break would.
+            if !state.paragraph_buffer.is_empty() {
+                state.add_inline_text(" ");
+            }
+        }
+        Event::End(TagEnd::Item) | Event::TaskListMarker(_) if state.list_overflow > 0 => {}
         Event::Start(Tag::List(start_number)) => {
             state.list_stack.push(ListFrame {
                 ordered: start_number.is_some(),
@@ -779,20 +889,25 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             let Some(frame) = state.item_stack.pop() else {
                 return;
             };
-            let mut item_blocks = frame.blocks;
-            let (content, mut inline, remaining_blocks) = if !state.paragraph_buffer.is_empty() {
+            let mut remaining_blocks = frame.blocks;
+            // Only a leading paragraph is taken out, and it is moved rather
+            // than cloned: cloning `first()` to look at it deep-copied a
+            // nested list's whole subtree at every level it was nested in.
+            let (content, mut inline) = if !state.paragraph_buffer.is_empty() {
                 (
                     std::mem::take(&mut state.paragraph_buffer),
                     std::mem::take(&mut state.inline_buffer),
-                    item_blocks,
                 )
-            } else if let Some(ContentBlock::Paragraph { content, inline }) =
-                item_blocks.first().cloned()
-            {
-                let remaining: Vec<ContentBlock> = item_blocks.drain(1..).collect();
-                (content, inline, remaining)
+            } else if matches!(
+                remaining_blocks.first(),
+                Some(ContentBlock::Paragraph { .. })
+            ) {
+                match remaining_blocks.remove(0) {
+                    ContentBlock::Paragraph { content, inline } => (content, inline),
+                    _ => (String::new(), Vec::new()),
+                }
             } else {
-                (String::new(), Vec::new(), std::mem::take(&mut item_blocks))
+                (String::new(), Vec::new())
             };
 
             // Collect inline elements from all nested blocks (paragraphs, lists, etc.)
@@ -830,15 +945,32 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.blockquote_start_line = state.current_line;
             }
             state.in_blockquote = true;
+            state.blockquote_depth += 1;
+        }
+        // A nested quote's end is not the buffer's. Flushing here closed the
+        // outer quote with it: the rest of the outer quote came back as
+        // top-level blocks, and the ends of any quoted item and list still
+        // open around the nested quote reached the main tree as if they were
+        // its own, closing a real list early and losing the items after it.
+        Event::End(TagEnd::BlockQuote(_)) if state.blockquote_depth > 1 => {
+            state.blockquote_depth -= 1;
         }
         Event::End(TagEnd::BlockQuote(_)) => {
-            state.flush_blockquote(blocks);
+            state.blockquote_depth = 0;
+            // A quote inside a list item is one of that item's blocks. Sending
+            // it to the top-level `blocks` put it ahead of the list it was
+            // written in, since the list itself only lands there when it
+            // closes, and left the item with no trace of it.
+            if let Some(quote) = state.take_blockquote() {
+                state.push_to_container(blocks, quote);
+            }
             // `flush_blockquote` only resets the flag when it had something to
             // emit, so a quote that produced no text (`>` on a line by itself)
             // left it set and every block after it was swallowed into a quote
             // that had already closed.
             state.in_blockquote = false;
             state.quoted_lists.clear();
+            state.quoted_list_overflow = 0;
             state.quoted_item_indents.clear();
         }
         Event::Start(Tag::Table(alignments)) => {
@@ -1133,6 +1265,27 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 value: "\n".to_string(),
             });
         }
+        // A setext heading can span lines, and its lines are one heading.
+        Event::SoftBreak | Event::HardBreak if state.in_heading => {
+            if state.in_image || state.in_link {
+                state.link_text.push(' ');
+            } else {
+                state.heading_buffer.push(' ');
+                state.heading_inline.push(InlineElement::Text {
+                    value: " ".to_string(),
+                });
+            }
+        }
+        // A tight list item's text is not in a paragraph, so the arm above
+        // never saw its line breaks and `- first line` / `  continued` read
+        // as `first linecontinued`.
+        Event::SoftBreak if !state.item_stack.is_empty() => {
+            if state.in_link || state.in_image {
+                state.link_text.push(' ');
+            } else {
+                state.add_inline_text(" ");
+            }
+        }
         Event::Rule => {
             state.flush_paragraph(blocks);
             blocks.push(ContentBlock::HorizontalRule);
@@ -1290,6 +1443,17 @@ fn line_index_of(starts: &[usize], offset: usize) -> usize {
 ///
 /// Use this when you need accurate line numbers for nested content.
 pub fn parse_blocks_from_line(markdown: &str, start_line: usize) -> Vec<ContentBlock> {
+    parse_blocks_anchored(markdown, start_line, None)
+}
+
+/// [`parse_blocks_from_line`], for a fragment that sits inside a list item
+/// starting on `outer_item_line`, so the fragment's inline elements report
+/// their `line_offset` relative to that item.
+fn parse_blocks_anchored(
+    markdown: &str,
+    start_line: usize,
+    outer_item_line: Option<usize>,
+) -> Vec<ContentBlock> {
     // Pre-process wikilinks
     let preprocessed = preprocess_wikilinks(markdown);
 
@@ -1313,7 +1477,7 @@ pub fn parse_blocks_from_line(markdown: &str, start_line: usize) -> Vec<ContentB
     let line_starts = line_start_offsets(&processed_markdown);
     let parser = Parser::new_ext(&processed_markdown, options).into_offset_iter();
     let mut blocks = Vec::new();
-    let mut state = BlockParserState::new(start_line);
+    let mut state = BlockParserState::new(start_line, outer_item_line);
 
     for (event, span) in parser {
         state.current_line = start_line + line_index_of(&line_starts, span.start);
@@ -1399,6 +1563,36 @@ pub fn to_plain_text(markdown: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tight item's text is not in a paragraph, and its line breaks were
+    /// dropped, so a wrapped item ran its lines together.
+    #[test]
+    fn a_tight_list_item_keeps_the_space_at_its_line_breaks() {
+        let blocks = parse_blocks("- first line\n  continued\n- next\n");
+        let ContentBlock::List { items, .. } = &blocks[0] else {
+            panic!("expected a list, got {blocks:?}");
+        };
+        assert_eq!(items[0].content, "first line continued");
+        let text: String = items[0]
+            .inline
+            .iter()
+            .map(|e| match e {
+                InlineElement::Text { value } => value.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(text, "first line continued");
+        assert_eq!(items[1].content, "next");
+    }
+
+    #[test]
+    fn a_setext_heading_spanning_lines_is_one_spaced_heading() {
+        let blocks = parse_blocks("Line one\nline two\n===\n");
+        let ContentBlock::Heading { content, .. } = &blocks[0] else {
+            panic!("expected a heading, got {blocks:?}");
+        };
+        assert_eq!(content, "Line one line two");
+    }
 
     #[test]
     fn test_parse_paragraph() {

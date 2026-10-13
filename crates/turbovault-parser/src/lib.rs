@@ -137,7 +137,7 @@ pub use standalone::{ParseOptions, ParsedContent};
 pub use parsers::frontmatter_parser::extract_frontmatter;
 
 // Block-level parsing (for treemd integration)
-pub use blocks::{parse_blocks, parse_blocks_from_line, slugify, to_plain_text};
+pub use blocks::{MAX_LIST_DEPTH, parse_blocks, parse_blocks_from_line, slugify, to_plain_text};
 
 // OKF citation parsing (`# Citations` convention)
 pub use parsers::citations::parse_citations;

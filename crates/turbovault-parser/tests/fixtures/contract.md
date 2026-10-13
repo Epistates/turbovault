@@ -69,6 +69,12 @@ fn top_level() {
   in_a_list_item()
   ```
 
+- item with a quote
+
+  > quoted in an item, with [link-in-item-quote](https://example.com/iq)
+  > - and a list inside that quote
+- item after the quote
+
 > A quote with ![img-in-quote](quoted.png), [link-in-quote](https://example.com/q),
 > `code in quote`, **strong in quote**, and a
 > [![badge-in-quote](qbadge.png)](https://example.com/qb) badge.
@@ -117,6 +123,11 @@ fn top_level() {
 > outer quote
 >
 > > nested quote
+>
+> back in the outer quote
+
+- > - > a quote nested in a quoted item
+- the item after it
 
 | Column A | Column B | Column C |
 |:---------|:--------:|---------:|
