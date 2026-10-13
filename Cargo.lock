@@ -5530,6 +5530,7 @@ version = "3.3.0"
 dependencies = [
  "chrono",
  "log",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -5557,6 +5558,7 @@ dependencies = [
  "chrono",
  "log",
  "parking_lot",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -5598,6 +5600,7 @@ name = "turbovault-graph"
 version = "3.3.0"
 dependencies = [
  "petgraph",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "tokio",
@@ -5666,6 +5669,7 @@ dependencies = [
  "chrono",
  "git2",
  "log",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "shellexpand",
@@ -5696,6 +5700,7 @@ dependencies = [
  "git2",
  "log",
  "notify",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "similar",

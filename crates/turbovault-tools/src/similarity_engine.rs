@@ -26,6 +26,7 @@ struct DocumentVector {
 
 /// Similarity search result
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SimilarityResult {
     pub path: String,
     pub title: String,

@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 /// Type of operation tracked in the audit log
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OperationType {
     Create,
@@ -33,20 +34,21 @@ impl std::fmt::Display for OperationType {
 
 /// A single audit log entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct AuditEntry {
     pub id: String,
     pub timestamp: String,
     pub operation: OperationType,
     pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_snapshot_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_snapshot_id: Option<String>,
     #[serde(default)]
     pub metadata: serde_json::Value,
@@ -183,6 +185,7 @@ impl AuditFilter {
 
 /// Audit trail statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct AuditStats {
     pub total_operations: usize,
     pub operations_by_type: HashMap<String, usize>,

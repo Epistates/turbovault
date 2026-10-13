@@ -13,6 +13,7 @@ pub struct GraphTools {
 
 /// Simplified broken link for JSON serialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BrokenLinkInfo {
     pub source_file: String,
     pub target: String,
@@ -22,6 +23,7 @@ pub struct BrokenLinkInfo {
 
 /// Simplified health report for JSON serialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct HealthInfo {
     pub total_notes: usize,
     pub total_links: usize,

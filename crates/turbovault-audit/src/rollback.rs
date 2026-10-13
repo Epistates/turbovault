@@ -11,6 +11,7 @@ use crate::snapshot::SnapshotStore;
 
 /// Preview of what a rollback would do
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct RollbackPreview {
     pub operation_id: String,
     pub path: String,
@@ -27,6 +28,7 @@ pub struct RollbackPreview {
 
 /// Result of a rollback execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct RollbackResult {
     pub operation_id: String,
     pub path: String,

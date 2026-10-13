@@ -24,6 +24,12 @@ sha2 = { workspace = true }
 tokio = { workspace = true }
 log = { workspace = true }
 similar = { workspace = true }
+schemars = { workspace = true, optional = true, features = ["chrono04"] }
+
+[features]
+default = []
+# JSON Schemas for the audit records the server returns (see turbovault-core).
+schemars = ["dep:schemars", "turbovault-core/schemars"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

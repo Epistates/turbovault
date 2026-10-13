@@ -15,6 +15,7 @@ use turbovault_vault::VaultManager;
 
 /// Field types for template parameters
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TemplateFieldType {
     Text,
     LongText,
@@ -27,6 +28,7 @@ pub enum TemplateFieldType {
 
 /// Template field definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TemplateField {
     pub name: String,
     pub description: String,
@@ -38,6 +40,7 @@ pub struct TemplateField {
 
 /// Complete template definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TemplateDefinition {
     /// Template identifier (e.g., "feature-doc", "bug-report")
     pub id: String,
@@ -194,6 +197,7 @@ impl TemplateBuilder {
 
 /// Info about created note from template
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CreatedNoteInfo {
     pub path: String,
     pub title: String,

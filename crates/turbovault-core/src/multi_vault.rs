@@ -14,6 +14,7 @@ use tokio::sync::RwLock;
 
 /// Information about a registered vault
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VaultInfo {
     /// Unique vault name
     pub name: String,

@@ -60,6 +60,7 @@ struct VizData {
 
 /// Summary returned to the caller after generating a visualization.
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VisualizationResult {
     /// Display name shown in the viewer header.
     pub name: String,

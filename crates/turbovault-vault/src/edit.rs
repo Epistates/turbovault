@@ -50,6 +50,7 @@ pub struct SearchReplaceBlock {
 
 /// Result of applying edits
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct EditResult {
     /// Whether edits were applied successfully
     pub success: bool,
@@ -62,10 +63,10 @@ pub struct EditResult {
     /// Total blocks attempted
     pub total_blocks: usize,
     /// Preview of changes (if dry_run)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_preview: Option<String>,
     /// Warning messages (e.g., fuzzy match used)
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
 }
 

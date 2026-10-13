@@ -23,6 +23,7 @@ pub struct QualityTools {
 
 /// Composite quality score for a single note
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct QualityScore {
     pub path: String,
     pub overall_score: u8,
@@ -34,6 +35,7 @@ pub struct QualityScore {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ReadabilityScore {
     pub score: u8,
     pub flesch_kincaid_grade: f64,
@@ -43,6 +45,7 @@ pub struct ReadabilityScore {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StructureScore {
     pub score: u8,
     pub has_title: bool,
@@ -55,6 +58,7 @@ pub struct StructureScore {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CompletenessScore {
     pub score: u8,
     pub word_count: usize,
@@ -67,6 +71,7 @@ pub struct CompletenessScore {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StalenessScore {
     pub score: u8,
     pub days_since_modified: u64,
@@ -76,6 +81,7 @@ pub struct StalenessScore {
 
 /// Score distribution buckets
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ScoreDistribution {
     pub poor: usize,      // 0-20
     pub below_avg: usize, // 21-40
@@ -86,6 +92,7 @@ pub struct ScoreDistribution {
 
 /// Dimension averages across the vault
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DimensionAverages {
     pub readability: f64,
     pub structure: f64,
@@ -95,6 +102,7 @@ pub struct DimensionAverages {
 
 /// Vault-wide quality report
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VaultQualityReport {
     pub total_notes: usize,
     pub average_score: f64,

@@ -26,6 +26,7 @@ pub struct DuplicateTools {
 
 /// A group of near-duplicate notes
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DuplicateGroup {
     pub similarity: f64,
     pub notes: Vec<DuplicateNote>,
@@ -33,6 +34,7 @@ pub struct DuplicateGroup {
 
 /// A note within a duplicate group
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DuplicateNote {
     pub path: String,
     pub title: String,
@@ -42,6 +44,7 @@ pub struct DuplicateNote {
 
 /// Detailed comparison of two notes
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CompareResult {
     pub left_path: String,
     pub right_path: String,

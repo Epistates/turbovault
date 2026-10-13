@@ -12,6 +12,7 @@ pub struct AnalysisTools {
 
 /// Statistics response structure
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VaultStats {
     pub total_files: usize,
     pub total_links: usize,
