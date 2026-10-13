@@ -693,8 +693,15 @@ impl CoreToolHandler {
         match AuditLog::new(&vault_path).await {
             Ok(audit_log) => {
                 let audit_log = Arc::new(audit_log);
-                let snapshot_store =
-                    Arc::new(SnapshotStore::new(audit_log.snapshot_dir().to_path_buf()));
+                let retention = self
+                    .multi_vault_mgr
+                    .server_config()
+                    .snapshot_retention
+                    .clone();
+                let snapshot_store = Arc::new(
+                    SnapshotStore::new(audit_log.snapshot_dir().to_path_buf())
+                        .with_retention(retention),
+                );
                 manager.set_audit_log(audit_log.clone(), snapshot_store.clone());
 
                 self.audit_logs

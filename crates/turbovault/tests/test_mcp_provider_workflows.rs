@@ -1732,6 +1732,25 @@ async fn audit_preview_diff_and_rollback_restore_the_previous_note() {
     );
 }
 
+/// The audit trail says which tool call made each change, and its hash
+/// chain is reported intact.
+#[tokio::test]
+async fn audit_entries_name_the_tool_call_and_chain() {
+    let (_temp, server) = registered_server("audit-context").await;
+    write_note(&server, "a.md", "# A\n").await;
+    write_note(&server, "b.md", "# B\n").await;
+
+    let log = call(&server, "audit_log", json!({"limit": 5})).await;
+    let newest = &log["data"][0];
+    assert_eq!(newest["context"]["tool"], "write_note");
+    assert!(newest["context"]["request_id"].is_string());
+    assert!(newest["prev_hash"].is_string());
+
+    let stats = call(&server, "audit_stats", json!({})).await;
+    assert_eq!(stats["data"]["chain"]["broken_at"], Value::Null);
+    assert_eq!(stats["data"]["chain"]["entries"], 2);
+}
+
 /// A rollback that would discard a later edit is refused until forced, and
 /// the forced rollback is itself recorded and can be rolled back.
 #[tokio::test]

@@ -978,7 +978,18 @@ impl McpHandler for ObsidianMcpServer {
             // it as a failed call. Left alone it ends the task answering the
             // request, and the client waits on a response that never comes.
             use futures::FutureExt;
-            let call = std::panic::AssertUnwindSafe(self.composite.call_tool(routed, args, ctx));
+            // Whatever the call changes is recorded in the audit trail as
+            // this call's doing.
+            let audit_context = turbovault_audit::AuditContext {
+                tool: Some(name.to_string()),
+                request_id: Some(ctx.request_id.clone()),
+                client_id: ctx.client_id.clone(),
+                user_id: ctx.user_id.clone(),
+                session_id: ctx.session_id.clone(),
+            };
+            let call = std::panic::AssertUnwindSafe(
+                audit_context.scope(self.composite.call_tool(routed, args, ctx)),
+            );
             call.catch_unwind().await.unwrap_or_else(|panic| {
                 let detail = panic_message(&panic);
                 log::error!("tool {name:?} panicked: {detail}");
