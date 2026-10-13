@@ -136,14 +136,14 @@ impl MetadataTools {
     /// Query files by metadata pattern
     pub async fn query_metadata(&self, pattern: &str) -> Result<Value> {
         let filter = parse_query(pattern)?;
-        let vault_files = self.manager.vault_files_validated().await;
+        let vault_files = self.manager.notes_validated().await;
         let mut matches = Vec::new();
 
         for vault_file in vault_files {
             if !turbovault_core::is_note(&vault_file.path) {
                 continue;
             }
-            if let Some(frontmatter) = vault_file.frontmatter
+            if let Some(frontmatter) = &vault_file.frontmatter
                 && filter.matches(&frontmatter.data)
             {
                 let display_path = self.manager.relative_path(&vault_file.path);

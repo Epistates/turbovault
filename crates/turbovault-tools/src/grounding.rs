@@ -144,7 +144,7 @@ impl GroundingTools {
     /// Scan the vault for notes that make claims but cite no source.
     pub async fn find_ungrounded_notes(&self, limit: usize) -> Result<UngroundedReport> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
         let mut total_notes = 0usize;
         let mut ungrounded: Vec<UngroundedNote> = Vec::new();
 

@@ -101,7 +101,7 @@ impl ValidationTools {
     /// Validate entire vault (batch validation)
     pub async fn validate_vault(&self) -> Result<ValidationReportInfo> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
 
         let validator = CompositeValidator::default_rules();
         let mut combined_report = ValidationReport::new();
@@ -117,7 +117,7 @@ impl ValidationTools {
     /// Validate vault with issue limit (for large vaults)
     pub async fn validate_vault_quick(&self, max_issues: usize) -> Result<ValidationReportInfo> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
 
         let validator = CompositeValidator::default_rules();
         let mut combined_report = ValidationReport::new();

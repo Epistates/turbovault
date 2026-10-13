@@ -220,7 +220,9 @@ impl Observed {
 /// One note in the cache: what was parsed, and the revision it was parsed from.
 #[derive(Debug, Clone)]
 struct CacheEntry {
-    file: VaultFile,
+    /// Shared, so handing the cache's notes to a reader copies pointers,
+    /// not the vault.
+    file: Arc<VaultFile>,
     /// The fingerprint of the bytes `file` was parsed from, when it could be
     /// established. `None` means "unknown", which no scan result can equal, so
     /// the next sweep re-parses the note. Unknown resolves to "assume stale".
@@ -252,6 +254,10 @@ const RECONCILE_DUTY_DIVISOR: u32 = 20;
 /// latency on a slow or network disk, few enough to stay well inside the open
 /// file limit.
 const INITIAL_READ_CONCURRENCY: usize = 64;
+
+/// How many notes `initialize` reads before parsing them, so at most this
+/// many notes' raw text is held at once.
+const INITIAL_PARSE_CHUNK: usize = 2048;
 
 /// How many notes `sync_index` applies per hold of the graph and the cache,
 /// so a reader waits on a slice of a large batch, never all of it.
@@ -546,34 +552,46 @@ fn parse_note(parser: &Parser, path: &Path, read: &NoteRead) -> Result<VaultFile
     Ok(file)
 }
 
-/// The note cache and link graph for a vault, from initialization's reads.
+/// A parsed note and what its read observed, ready for the index.
+type ParsedNote = (PathBuf, VaultFile, Option<Observed>);
+
+/// Parse a chunk of initialization's reads, in parallel and in order,
+/// dropping (with a warning) any note that couldn't be read or parsed.
+fn parse_reads(
+    parser: &Parser,
+    reads: Vec<(PathBuf, std::io::Result<NoteRead>)>,
+) -> Vec<ParsedNote> {
+    reads
+        .into_par_iter()
+        .filter_map(|(file_path, read)| {
+            let read = match read {
+                Ok(read) => read,
+                Err(e) => {
+                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
+                    return None;
+                }
+            };
+            match parse_note(parser, &file_path, &read) {
+                Ok(vault_file) => Some((file_path, vault_file, read.observed)),
+                Err(e) => {
+                    log::warn!("Failed to parse {}: {}", file_path.display(), e);
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// The note cache and link graph for a vault, from its parsed notes.
 ///
 /// Two passes: every note is added to the graph before any link is resolved,
 /// so a link finds its target regardless of scan order.
-fn build_index(
-    parser: &Parser,
-    reads: Vec<(PathBuf, std::io::Result<NoteRead>)>,
-) -> (HashMap<PathBuf, CacheEntry>, LinkGraph) {
-    let mut cache = HashMap::with_capacity(reads.len());
+fn build_index(parsed: Vec<ParsedNote>) -> (HashMap<PathBuf, CacheEntry>, LinkGraph) {
+    let mut cache = HashMap::with_capacity(parsed.len());
     let mut graph = LinkGraph::new();
-    let mut parsed_files = Vec::with_capacity(reads.len());
+    let mut in_order = Vec::with_capacity(parsed.len());
 
-    for (file_path, read) in reads {
-        log::debug!("Processing file: {:?}", file_path);
-        let read = match read {
-            Ok(read) => read,
-            Err(e) => {
-                log::warn!("Failed to read file {}: {}", file_path.display(), e);
-                continue;
-            }
-        };
-        let vault_file = match parse_note(parser, &file_path, &read) {
-            Ok(vault_file) => vault_file,
-            Err(e) => {
-                log::warn!("Failed to parse {}: {}", file_path.display(), e);
-                continue;
-            }
-        };
+    for (file_path, vault_file, observed) in parsed {
         log::debug!(
             "Parsed {}: {} links extracted",
             file_path.display(),
@@ -582,17 +600,12 @@ fn build_index(
         if let Err(e) = graph.add_file(&vault_file) {
             log::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
         }
-        cache.insert(
-            file_path,
-            CacheEntry {
-                file: vault_file.clone(),
-                observed: read.observed,
-            },
-        );
-        parsed_files.push(vault_file);
+        let file = Arc::new(vault_file);
+        in_order.push(Arc::clone(&file));
+        cache.insert(file_path, CacheEntry { file, observed });
     }
 
-    for vault_file in &parsed_files {
+    for vault_file in &in_order {
         if let Err(e) = graph.update_links(vault_file) {
             log::warn!("Graph update_links failed: {}", e);
         }
@@ -1432,22 +1445,36 @@ impl VaultManager {
         // one at a time is most of what startup costs on a large vault or a
         // slow disk. `buffered` hands them back in scan order, so the cache and
         // graph are built in the same order as before.
+        //
+        // Parsing is CPU work, seconds of it on a large vault, so each chunk
+        // of reads is parsed in parallel on the blocking pool, and only its
+        // parsed notes are kept: the whole vault's raw text is never held at
+        // once.
         let notes = scanned.into_iter().filter(|note| is_note(&note.path));
-        let reads: Vec<_> = futures::stream::iter(notes)
+        let mut reads = futures::stream::iter(notes)
             .map(|note| async move {
                 let fingerprint = note.fingerprint();
                 let read = read_note_with_fingerprint(&note.path, Some(fingerprint)).await;
                 (note.path, read)
             })
-            .buffered(INITIAL_READ_CONCURRENCY)
-            .collect()
-            .await;
+            .buffered(INITIAL_READ_CONCURRENCY);
+        let parser = Arc::new(Parser::new(self.vault_path.clone()));
+        let mut parsed = Vec::new();
+        loop {
+            let chunk: Vec<_> = reads.by_ref().take(INITIAL_PARSE_CHUNK).collect().await;
+            if chunk.is_empty() {
+                break;
+            }
+            let parser = Arc::clone(&parser);
+            let notes = tokio::task::spawn_blocking(move || parse_reads(&parser, chunk))
+                .await
+                .map_err(|e| Error::other(format!("vault parse task failed: {e}")))?;
+            parsed.extend(notes);
+        }
 
-        // Parsing and linking are CPU work, seconds of it on a large vault,
-        // so they run on the blocking pool too, and build the cache and graph
-        // off to the side. Neither lock is held until they are swapped in.
-        let parser = Parser::new(self.vault_path.clone());
-        let (cache, graph) = tokio::task::spawn_blocking(move || build_index(&parser, reads))
+        // Linking builds the cache and graph off to the side, on the blocking
+        // pool too. Neither lock is held until they are swapped in.
+        let (cache, graph) = tokio::task::spawn_blocking(move || build_index(parsed))
             .await
             .map_err(|e| Error::other(format!("vault index task failed: {e}")))?;
 
@@ -1950,6 +1977,7 @@ impl VaultManager {
     /// entry says it saw, so the note never enters the diff.
     async fn insert_cache_entry(&self, path: PathBuf, file: VaultFile, observed: Option<Observed>) {
         let mut cache = self.file_cache.write().await;
+        let file = Arc::new(file);
         cache.insert(path, CacheEntry { file, observed });
     }
 
@@ -2100,6 +2128,7 @@ impl VaultManager {
             for (full_path, update) in chunk {
                 match update {
                     IndexUpdate::Upsert(file, observed) => {
+                        let file = Arc::new(file);
                         cache.insert(full_path, CacheEntry { file, observed });
                     }
                     IndexUpdate::Remove => {
@@ -2202,9 +2231,33 @@ impl VaultManager {
     /// and can tolerate up-to-millisecond staleness should prefer this over
     /// `scan_vault()` + `parse_file()`, which issues a filesystem scan and N file
     /// reads on every call.
+    ///
+    /// Each note is copied in full; [`Self::cached_notes`] shares them instead.
     pub async fn all_cached_vault_files(&self) -> Vec<VaultFile> {
         let cache = self.file_cache.read().await;
-        cache.values().map(|e| e.file.clone()).collect()
+        cache.values().map(|e| VaultFile::clone(&e.file)).collect()
+    }
+
+    /// Every note in the cache, shared rather than copied, without passing
+    /// the freshness gate. Most readers want [`Self::notes_validated`].
+    pub async fn cached_notes(&self) -> Vec<Arc<VaultFile>> {
+        let cache = self.file_cache.read().await;
+        cache.values().map(|e| Arc::clone(&e.file)).collect()
+    }
+
+    /// The cached note at `path` (absolute, as the cache keys it), shared,
+    /// without passing the freshness gate.
+    pub async fn cached_note(&self, path: &Path) -> Option<Arc<VaultFile>> {
+        let cache = self.file_cache.read().await;
+        cache.get(path).map(|e| Arc::clone(&e.file))
+    }
+
+    /// Every note, after the freshness gate, shared rather than copied: the
+    /// same notes as [`Self::vault_files_validated`] without copying the
+    /// vault on every call.
+    pub async fn notes_validated(&self) -> Vec<Arc<VaultFile>> {
+        self.ensure_fresh().await;
+        self.cached_notes().await
     }
 
     /// Return every cached vault file, after bringing the cache into agreement

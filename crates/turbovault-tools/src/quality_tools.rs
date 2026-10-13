@@ -167,7 +167,7 @@ impl QualityTools {
     /// Generate vault-wide quality report
     pub async fn vault_quality_report(&self, bottom_n: usize) -> Result<VaultQualityReport> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
 
         let mut scores: Vec<QualityScore> = Vec::with_capacity(files.len());
 
@@ -291,7 +291,7 @@ impl QualityTools {
         limit: usize,
     ) -> Result<Vec<QualityScore>> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.vault_files_validated().await;
+        let files = self.manager.notes_validated().await;
         let mut stale: Vec<QualityScore> = Vec::new();
 
         for vault_file in &files {
