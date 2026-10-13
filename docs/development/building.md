@@ -50,8 +50,21 @@ cargo test -- --nocapture
 ## Benchmarking
 
 ```bash
-cargo bench -p turbovault-server
+# Every benchmark (tool benchmarks plus the 10,000-note vault)
+cargo bench -p turbovault
+
+# Only the 10,000-note vault benchmarks, at another size
+TV_BENCH_NOTES=2000 cargo bench -p turbovault --bench vault_10k
+
+# Compare two saved runs
+cargo bench -p turbovault --bench vault_10k -- --save-baseline before
+# ...make a change...
+cargo bench -p turbovault --bench vault_10k -- --save-baseline after
+python3 scripts/bench_compare.py target/criterion before after
 ```
+
+The scheduled workflow runs `vault_10k` nightly and fails when a benchmark is
+more than 25% slower than the last good night.
 
 ## Code Quality
 

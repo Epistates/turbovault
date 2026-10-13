@@ -93,3 +93,41 @@ jobs:
           path: fuzz/artifacts/${{ matrix.target }}
           if-no-files-found: ignore
           retention-days: 30
+
+  # The 10,000-note benchmarks (crates/turbovault/benches/vault_10k.rs),
+  # compared with the last good night. The cache holds the baseline and is
+  # only saved when the job passes, so a regression stays red night after
+  # night until it is fixed or a passing run accepts the new numbers.
+  # Shared runners are noisy; the threshold is set for real regressions, not
+  # a few percent of drift.
+  bench:
+    name: Benchmarks (10k notes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: bench
+
+      - name: Restore the last good baseline
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: bench-history
+          key: bench-history-${{ github.run_id }}
+          restore-keys: bench-history-
+
+      - name: Run the benchmarks
+        env:
+          CRITERION_HOME: ${{ github.workspace }}/bench-history
+        run: cargo bench -p turbovault --bench vault_10k --locked -- --save-baseline candidate
+
+      - name: Compare with the last good night
+        run: |
+          set -o pipefail
+          python3 scripts/bench_compare.py bench-history nightly candidate --threshold 25 --promote \
+            | tee -a "$GITHUB_STEP_SUMMARY"
