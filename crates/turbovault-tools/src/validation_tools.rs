@@ -22,6 +22,9 @@ pub struct ValidationIssueInfo {
     pub message: String,
     pub line: Option<usize>,
     pub suggestion: Option<String>,
+    /// Vault-relative path of the note the issue is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// Simplified validation report for JSON serialization
@@ -50,7 +53,7 @@ impl ValidationTools {
         let validator = CompositeValidator::default_rules();
         let report = validator.validate(&vault_file);
 
-        Ok(Self::convert_report(report))
+        Ok(self.convert_report(report))
     }
 
     /// Validate note with custom rules
@@ -92,7 +95,7 @@ impl ValidationTools {
 
         let report = validator.validate(&vault_file);
 
-        Ok(Self::convert_report(report))
+        Ok(self.convert_report(report))
     }
 
     /// Validate entire vault (batch validation)
@@ -108,7 +111,7 @@ impl ValidationTools {
             combined_report.merge(report);
         }
 
-        Ok(Self::convert_report(combined_report))
+        Ok(self.convert_report(combined_report))
     }
 
     /// Validate vault with issue limit (for large vaults)
@@ -131,11 +134,11 @@ impl ValidationTools {
             }
         }
 
-        Ok(Self::convert_report(combined_report))
+        Ok(self.convert_report(combined_report))
     }
 
     /// Convert ValidationReport to serializable format
-    fn convert_report(report: ValidationReport) -> ValidationReportInfo {
+    fn convert_report(&self, report: ValidationReport) -> ValidationReportInfo {
         ValidationReportInfo {
             passed: report.passed,
             total_issues: report.total_issues(),
@@ -152,6 +155,7 @@ impl ValidationTools {
                     message: issue.message,
                     line: issue.line,
                     suggestion: issue.suggestion,
+                    path: issue.path.map(|path| self.manager.relative_path(&path)),
                 })
                 .collect(),
         }
