@@ -10,22 +10,39 @@
 //! - Block anchor:  `[[old#^block-id]]` -> `[[new#^block-id]]`
 //! - Embed:         `![[old]]` -> `![[new]]` (plus all the variants above)
 //!
+//! Markdown links to a note are rewritten too, in the form they were written
+//! in, the way Obsidian updates them:
+//!
+//! - Name:          `[x](old.md)` -> `[x](new.md)`
+//! - Vault path:    `[x](wiki/old.md)` -> `[x](archive/new.md)`
+//! - Relative path: `[x](../wiki/old.md)` -> `[x](../archive/new.md)`, from
+//!   the linking note's folder ([`rewrite_links_from`] only)
+//! - Escaped:       `[x](My%20Old.md)` and `[x](<My Old.md>)` keep their
+//!   escaping, and a fragment or title after the path is kept as written
+//!
 //! Links are found by the parser, not by a pattern over the text, so a
-//! wikilink inside code is never touched and every edit lands on a span the
+//! link inside code is never touched and every edit lands on a span the
 //! parser reported. Which links to edit is the caller's choice:
 //! [`rewrite_wikilinks`] / [`wrap_wikilinks_as_stale`] pick them by name,
 //! case-insensitively like Obsidian; the move and delete paths pass
 //! [`links_in`] filtered through the link graph's own resolution, so they
 //! rewrite exactly the links the graph reported as backlinks.
 
-use turbovault_core::Link;
 use turbovault_core::okf::normalize_link_target;
+use turbovault_core::{Link, LinkType};
+use turbovault_parser::parsers::link_utils::{markdown_link_path, markdown_link_target};
 
-/// Every wikilink and embed in `content`, with the spans the parser reports.
-/// Links inside code are not links and are not returned.
+/// Every wikilink, embed and internal Markdown link in `content`, with the
+/// spans the parser reports. Links inside code are not links and are not
+/// returned, and neither are external URLs or same-note anchors.
 pub fn links_in(content: &str) -> Vec<Link> {
     let mut links = turbovault_parser::parse_wikilinks(content);
     links.extend(turbovault_parser::parse_embeds(content));
+    links.extend(
+        turbovault_parser::parse_markdown_links(content)
+            .into_iter()
+            .filter(|link| !matches!(link.type_, LinkType::ExternalLink | LinkType::Anchor)),
+    );
     links
 }
 
@@ -61,7 +78,39 @@ pub fn wrap_wikilinks_as_stale(content: &str, deleted_vault_path: &str) -> Strin
 /// re-targeted in the same form. A link that reached the note some other way
 /// (an alias in its frontmatter) is left alone: the alias moves with the
 /// note, so the link still resolves after the move.
+///
+/// Without the linking note's path a relative Markdown link cannot be
+/// re-pointed, so it is left alone too; [`rewrite_links_from`] rewrites it.
 pub fn rewrite_links(
+    content: &str,
+    links: &[Link],
+    old_vault_path: &str,
+    new_vault_path: &str,
+) -> String {
+    rewrite(None, content, links, old_vault_path, new_vault_path)
+}
+
+/// [`rewrite_links`] for `content` read from `source_vault_path`, so that a
+/// Markdown link written relative to that note's folder (`../wiki/old.md`)
+/// is re-pointed from the same folder.
+pub fn rewrite_links_from(
+    source_vault_path: &str,
+    content: &str,
+    links: &[Link],
+    old_vault_path: &str,
+    new_vault_path: &str,
+) -> String {
+    rewrite(
+        Some(source_vault_path),
+        content,
+        links,
+        old_vault_path,
+        new_vault_path,
+    )
+}
+
+fn rewrite(
+    source_vault_path: Option<&str>,
     content: &str,
     links: &[Link],
     old_vault_path: &str,
@@ -72,7 +121,9 @@ pub fn rewrite_links(
     let new_base = basename(&new_path).to_string();
 
     splice(content, links, |span| {
-        let (open, inner) = open_bracket(span)?;
+        let Some((open, inner)) = open_bracket(span) else {
+            return rewrite_markdown_link(span, source_vault_path, &old_parts, &new_path);
+        };
         let inner = inner.strip_suffix("]]")?;
         let path_end = path_end(inner);
         let path = &inner[..path_end];
@@ -98,6 +149,164 @@ pub fn rewrite_links(
     })
 }
 
+/// Re-point a Markdown link span, `[text](destination "title")`, from the
+/// note `old_parts` names to `new_path` (a vault path without `.md`), keeping
+/// the form it was written in. `None` leaves the span as it is.
+fn rewrite_markdown_link(
+    span: &str,
+    source_vault_path: Option<&str>,
+    old_parts: &[String],
+    new_path: &str,
+) -> Option<String> {
+    let (start, end) = markdown_destination(span)?;
+    let destination = &span[start..end];
+    let (angled, written) = match destination.strip_prefix('<') {
+        Some(inner) => (true, inner.strip_suffix('>')?),
+        None => (false, destination),
+    };
+    let path_len = written.find('#').unwrap_or(written.len());
+    let (written_path, fragment) = written.split_at(path_len);
+    let path = if angled {
+        written_path.to_string()
+    } else {
+        markdown_link_target(written_path)
+    };
+
+    let parts = normalize_link_target(&path)?;
+    let names_old = if parts.len() == 1 {
+        old_parts.last() == parts.first()
+    } else {
+        old_parts.ends_with(&parts)
+    };
+    if !names_old {
+        return None;
+    }
+
+    let extension = if has_md_extension(path.trim_end()) {
+        ".md"
+    } else {
+        ""
+    };
+    let source_dir: Option<Vec<&str>> = source_vault_path.map(|source| {
+        let mut dir: Vec<&str> = source.split('/').filter(|s| !s.is_empty()).collect();
+        dir.pop();
+        dir
+    });
+    let dotted = path.starts_with("./") || path.starts_with("../");
+    let from_source = source_dir
+        .as_deref()
+        .is_some_and(|dir| resolve_from(dir, &path) == old_parts);
+
+    let new_destination = if path.starts_with('/') {
+        format!("/{new_path}{extension}")
+    } else if dotted || (parts.len() > 1 && from_source) {
+        let relative = relative_path(source_dir.as_deref()?, &format!("{new_path}{extension}"));
+        if path.starts_with("./") && !relative.starts_with("../") {
+            format!("./{relative}")
+        } else {
+            relative
+        }
+    } else if parts.len() == 1 {
+        format!("{}{extension}", basename(new_path))
+    } else {
+        format!("{new_path}{extension}")
+    };
+
+    let written_destination = if angled {
+        format!("<{new_destination}{fragment}>")
+    } else {
+        format!("{}{fragment}", markdown_link_path(&new_destination))
+    };
+    Some(format!(
+        "{}{written_destination}{}",
+        &span[..start],
+        &span[end..]
+    ))
+}
+
+/// Byte range of the destination in a Markdown link span, angle brackets
+/// included: the `x.md` of `[text](x.md "title")`. `None` for a span with no
+/// inline destination, such as a reference link `[text][ref]`.
+fn markdown_destination(span: &str) -> Option<(usize, usize)> {
+    let bytes = span.as_bytes();
+    if bytes.first() != Some(&b'[') {
+        return None;
+    }
+    // The link text's closing bracket, past any nested or escaped ones.
+    let mut depth = 0usize;
+    let mut i = 0;
+    let text_end = loop {
+        match bytes.get(i)? {
+            b'\\' => i += 1,
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    break i;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    };
+    if bytes.get(text_end + 1) != Some(&b'(') {
+        return None;
+    }
+
+    let mut start = text_end + 2;
+    while matches!(bytes.get(start), Some(b' ' | b'\t' | b'\n')) {
+        start += 1;
+    }
+    let mut end = start;
+    if bytes.get(start) == Some(&b'<') {
+        while *bytes.get(end)? != b'>' {
+            end += if bytes[end] == b'\\' { 2 } else { 1 };
+        }
+        return Some((start, end + 1));
+    }
+    // An unbracketed destination ends at whitespace or at the `)` that
+    // closes the link; parentheses inside it must balance.
+    let mut parens = 0usize;
+    while let Some(&byte) = bytes.get(end) {
+        match byte {
+            b'\\' => end += 1,
+            b'(' => parens += 1,
+            b')' if parens == 0 => break,
+            b')' => parens -= 1,
+            b' ' | b'\t' | b'\n' => break,
+            _ => {}
+        }
+        end += 1;
+    }
+    let end = end.min(bytes.len());
+    (end > start).then_some((start, end))
+}
+
+/// The note `path` names when read from the folder `dir`, as the lowercased,
+/// `.md`-stripped components [`parts_of`] gives a vault path.
+fn resolve_from(dir: &[&str], path: &str) -> Vec<String> {
+    let mut resolved: Vec<&str> = dir.to_vec();
+    for segment in path.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                resolved.pop();
+            }
+            segment => resolved.push(segment),
+        }
+    }
+    parts_of(&resolved.join("/"))
+}
+
+/// `target` (a vault path) as a path relative to the folder `dir`.
+fn relative_path(dir: &[&str], target: &str) -> String {
+    let target: Vec<&str> = target.split('/').filter(|s| !s.is_empty()).collect();
+    let common = dir.iter().zip(&target).take_while(|(a, b)| a == b).count();
+    let mut parts = vec![".."; dir.len() - common];
+    parts.extend(&target[common..]);
+    parts.join("/")
+}
+
 /// Wrap exactly `links`, which must be spans of `content` as the parser
 /// reported them, in `~~ ~~`. A span already wrapped is left as it is.
 pub fn wrap_links_as_stale(content: &str, links: &[Link]) -> String {
@@ -113,7 +322,11 @@ pub fn wrap_links_as_stale(content: &str, links: &[Link]) -> String {
         content,
         &spans.into_iter().cloned().collect::<Vec<_>>(),
         |span| {
-            open_bracket(span)?;
+            // A wikilink, embed or Markdown link; anything else is not a span
+            // the parser reported as a link.
+            if open_bracket(span).is_none() && markdown_destination(span).is_none() {
+                return None;
+            }
             Some(format!("~~{span}~~"))
         },
     )
@@ -137,7 +350,7 @@ fn links_named(content: &str, vault_path: &str) -> Vec<Link> {
 
 /// Replace each link's span with `edit(span)`, where it returns one. Spans
 /// are applied back to front so earlier offsets stay valid; a span that is
-/// not a whole wikilink in `content`, or that overlaps one already edited,
+/// not a whole link in `content`, or that overlaps one already edited,
 /// is skipped rather than trusted.
 fn splice(content: &str, links: &[Link], edit: impl Fn(&str) -> Option<String>) -> String {
     let mut spans: Vec<(usize, usize)> = links
@@ -456,5 +669,96 @@ mod tests {
         let original = "no wikilinks here";
         let out = wrap_wikilinks_as_stale(original, "old.md");
         assert_eq!(out, original);
+    }
+
+    // ==================== Markdown links ====================
+
+    /// `rewrite_links_from` over every link `links_in` finds, the way the move
+    /// path calls it.
+    fn move_from(source: &str, content: &str, old: &str, new: &str) -> String {
+        rewrite_links_from(source, content, &links_in(content), old, new)
+    }
+
+    #[test]
+    fn markdown_link_keeps_its_form() {
+        let content = "[a](old.md) [b](wiki/old.md#Part) [c](/wiki/old.md) [d](old)";
+        assert_eq!(
+            move_from("index.md", content, "wiki/old.md", "archive/new.md"),
+            "[a](new.md) [b](archive/new.md#Part) [c](/archive/new.md) [d](new)"
+        );
+    }
+
+    #[test]
+    fn relative_markdown_link_is_repointed_from_its_note() {
+        let content = "[a](../wiki/old.md) and [b](./old.md) and [c](sub/old.md)";
+        assert_eq!(
+            move_from(
+                "wiki/index.md",
+                content,
+                "wiki/old.md",
+                "archive/deep/new.md"
+            ),
+            "[a](../archive/deep/new.md) and [b](../archive/deep/new.md) and [c](sub/old.md)"
+        );
+        assert_eq!(
+            move_from(
+                "notes/index.md",
+                "[a](sub/old.md)",
+                "notes/sub/old.md",
+                "notes/new.md"
+            ),
+            "[a](new.md)",
+            "a path that resolves from the note's folder is relative"
+        );
+        assert_eq!(
+            move_from(
+                "wiki/index.md",
+                "[a](./old.md)",
+                "wiki/old.md",
+                "wiki/new.md"
+            ),
+            "[a](./new.md)"
+        );
+    }
+
+    #[test]
+    fn relative_markdown_link_needs_its_note() {
+        let content = "[a](../wiki/old.md)";
+        let links = links_in(content);
+        assert_eq!(
+            rewrite_links(content, &links, "wiki/old.md", "archive/new.md"),
+            content
+        );
+    }
+
+    #[test]
+    fn markdown_link_keeps_its_escaping_and_title() {
+        let content = "[a](My%20Old.md#Part%20Two) [b](<My Old.md> \"Title\")";
+        assert_eq!(
+            move_from("index.md", content, "My Old.md", "Done/My New.md"),
+            "[a](My%20New.md#Part%20Two) [b](<My New.md> \"Title\")"
+        );
+    }
+
+    #[test]
+    fn markdown_link_in_a_property_is_rewritten() {
+        let content = "---\nsource: \"[Paper](old.md)\"\n---\nBody [[old]]\n";
+        assert_eq!(
+            move_from("index.md", content, "old.md", "new.md"),
+            "---\nsource: \"[Paper](new.md)\"\n---\nBody [[new]]\n"
+        );
+    }
+
+    #[test]
+    fn other_markdown_links_are_left_alone() {
+        let content =
+            "[web](https://example.com/old.md) [ref][r] [other](other.md)\n\n[r]: old.md\n";
+        assert_eq!(move_from("index.md", content, "old.md", "new.md"), content);
+    }
+
+    #[test]
+    fn wrap_stale_markdown_link() {
+        let out = wrap_wikilinks_as_stale("see [x](old.md) and [[old]]", "old.md");
+        assert_eq!(out, "see ~~[x](old.md)~~ and ~~[[old]]~~");
     }
 }
