@@ -431,30 +431,36 @@ impl LinkGraph {
     /// How many notes link to `path`: the number of entries
     /// [`Self::backlinks`] would return, without cloning their links.
     pub fn backlink_source_count(&self, path: &PathBuf) -> usize {
-        let Some(&target_idx) = self.path_index.get(path) else {
-            return 0;
-        };
-        let mut sources: Vec<NodeIndex> = self
-            .graph
-            .edges_directed(target_idx, Incoming)
-            .map(|edge| edge.source())
-            .collect();
-        sources.sort_unstable();
-        sources.dedup();
-        sources.len()
+        self.neighbours(path, Incoming).len()
+    }
+
+    /// The notes linking to `path`, each once: the paths [`Self::backlinks`]
+    /// would return, without cloning their links.
+    pub fn backlink_sources(&self, path: &PathBuf) -> Vec<&PathBuf> {
+        self.neighbours(path, Incoming)
+            .into_iter()
+            .map(|idx| &self.graph[idx])
+            .collect()
     }
 
     /// The notes `path` links to, each once: the paths [`Self::forward_links`]
     /// would return, without cloning their links.
     pub fn forward_link_targets(&self, path: &PathBuf) -> Vec<&PathBuf> {
-        let Some(&source_idx) = self.path_index.get(path) else {
+        self.neighbours(path, Outgoing)
+            .into_iter()
+            .map(|idx| &self.graph[idx])
+            .collect()
+    }
+
+    /// The distinct notes at the other end of `path`'s links in `direction`.
+    fn neighbours(&self, path: &PathBuf, direction: petgraph::Direction) -> Vec<NodeIndex> {
+        let Some(&idx) = self.path_index.get(path) else {
             return Vec::new();
         };
-        let mut targets: Vec<NodeIndex> =
-            self.graph.edges(source_idx).map(|e| e.target()).collect();
-        targets.sort_unstable();
-        targets.dedup();
-        targets.into_iter().map(|idx| &self.graph[idx]).collect()
+        let mut nodes: Vec<NodeIndex> = self.graph.neighbors_directed(idx, direction).collect();
+        nodes.sort_unstable();
+        nodes.dedup();
+        nodes
     }
 
     /// Get all forward links from a file (files this file links to)

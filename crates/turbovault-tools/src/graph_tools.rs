@@ -1,6 +1,10 @@
 //! Graph operations and link analysis tools
+//!
+//! Every analysis runs over the link graph on the blocking pool, after the
+//! freshness gate, so walking a large vault never ties up an async worker.
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_core::prelude::*;
 use turbovault_graph::{AnalysisConfig, HealthAnalyzer, HealthCounts, HealthReport, LinkGraph};
@@ -41,71 +45,81 @@ impl GraphTools {
         Self { manager }
     }
 
+    /// Run `analysis` over the link graph (after the freshness gate) on the
+    /// blocking pool.
+    async fn with_graph<T, F>(&self, analysis: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&LinkGraph) -> Result<T> + Send + 'static,
+    {
+        let graph = self.manager.link_graph_flushed().await;
+        tokio::task::spawn_blocking(move || analysis(&graph.blocking_read()))
+            .await
+            .map_err(|e| Error::other(format!("graph analysis task failed: {e}")))?
+    }
+
     /// Get detailed broken links information
     pub async fn get_broken_links(&self) -> Result<Vec<BrokenLinkInfo>> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        let unresolved = graph.all_unresolved_links();
-        let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
-
-        Ok(analyzer
-            .broken_links()?
-            .into_iter()
-            .map(|bl| BrokenLinkInfo {
-                source_file: turbovault_core::path_to_slash(&bl.source_file),
-                target: bl.target,
-                line: bl.line,
-                suggestions: bl.suggestions,
-            })
-            .collect())
+        self.with_graph(|graph| {
+            let analyzer = HealthAnalyzer::with_files(graph, graph.all_unresolved_links());
+            Ok(analyzer
+                .broken_links()?
+                .into_iter()
+                .map(|bl| BrokenLinkInfo {
+                    source_file: turbovault_core::path_to_slash(&bl.source_file),
+                    target: bl.target,
+                    line: bl.line,
+                    suggestions: bl.suggestions,
+                })
+                .collect())
+        })
+        .await
     }
 
     /// Run quick health check
     pub async fn quick_health_check(&self) -> Result<HealthInfo> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        let unresolved = graph.all_unresolved_links();
-        let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
-        Ok(quick_health(&analyzer, &graph))
+        self.with_graph(|graph| {
+            let analyzer = HealthAnalyzer::with_files(graph, graph.all_unresolved_links());
+            Ok(quick_health(&analyzer, graph))
+        })
+        .await
     }
 
     /// Run comprehensive health analysis
     pub async fn full_health_analysis(&self) -> Result<HealthInfo> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        let unresolved = graph.all_unresolved_links();
-        let analyzer = HealthAnalyzer::with_files(&graph, unresolved);
+        self.with_graph(|graph| {
+            let analyzer = HealthAnalyzer::with_files(graph, graph.all_unresolved_links());
 
-        // Counts only: the full analysis would also list every issue and
-        // suggest fixes for every broken link, none of which this reports.
-        let counts = analyzer.counts()?;
-        let health_score = HealthReport::score(&counts);
-        Ok(HealthInfo {
-            total_notes: counts.total_notes,
-            total_links: counts.total_links,
-            broken_links_count: counts.broken_links,
-            orphaned_notes_count: counts.orphaned_notes,
-            dead_end_notes_count: counts.dead_end_notes,
-            hub_notes_count: analyzer
-                .hub_notes(AnalysisConfig::default().hub_notes_limit)
-                .len(),
-            health_score,
-            is_healthy: health_score >= 80,
+            // Counts only: the full analysis would also list every issue and
+            // suggest fixes for every broken link, none of which this reports.
+            let counts = analyzer.counts()?;
+            let health_score = HealthReport::score(&counts);
+            Ok(HealthInfo {
+                total_notes: counts.total_notes,
+                total_links: counts.total_links,
+                broken_links_count: counts.broken_links,
+                orphaned_notes_count: counts.orphaned_notes,
+                dead_end_notes_count: counts.dead_end_notes,
+                hub_notes_count: analyzer
+                    .hub_notes(AnalysisConfig::default().hub_notes_limit)
+                    .len(),
+                health_score,
+                is_healthy: health_score >= 80,
+            })
         })
+        .await
     }
 
     /// Get hub notes (highly connected nodes)
     pub async fn get_hub_notes(&self, limit: usize) -> Result<Vec<(String, usize)>> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        Ok(hub_notes(&HealthAnalyzer::new(&graph), limit))
+        self.with_graph(move |graph| Ok(hub_notes(&HealthAnalyzer::new(graph), limit)))
+            .await
     }
 
     /// Get dead-end notes (no outgoing links but have incoming)
     pub async fn get_dead_end_notes(&self) -> Result<Vec<String>> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        Ok(dead_end_notes(&HealthAnalyzer::new(&graph)))
+        self.with_graph(|graph| Ok(dead_end_notes(&HealthAnalyzer::new(graph))))
+            .await
     }
 
     /// The quick health check, the `limit` most connected notes and the
@@ -114,67 +128,47 @@ impl GraphTools {
         &self,
         hub_limit: usize,
     ) -> Result<(HealthInfo, Vec<(String, usize)>, Vec<String>)> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        let analyzer = HealthAnalyzer::with_files(&graph, graph.all_unresolved_links());
-        Ok((
-            quick_health(&analyzer, &graph),
-            hub_notes(&analyzer, hub_limit),
-            dead_end_notes(&analyzer),
-        ))
+        self.with_graph(move |graph| {
+            let analyzer = HealthAnalyzer::with_files(graph, graph.all_unresolved_links());
+            Ok((
+                quick_health(&analyzer, graph),
+                hub_notes(&analyzer, hub_limit),
+                dead_end_notes(&analyzer),
+            ))
+        })
+        .await
     }
 
     /// Detect cycles in the graph
     pub async fn detect_cycles(&self) -> Result<Vec<Vec<String>>> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        let cycles = graph.cycles();
-
-        Ok(cycles
-            .into_iter()
-            .map(|cycle| {
-                cycle
-                    .into_iter()
-                    .map(|p| turbovault_core::path_to_slash(&p))
-                    .collect()
-            })
-            .collect())
+        self.with_graph(|graph| Ok(slash_paths(graph.cycles())))
+            .await
     }
 
     /// Get connected components
     pub async fn get_connected_components(&self) -> Result<Vec<Vec<String>>> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        let components = graph.connected_components()?;
-
-        Ok(components
-            .into_iter()
-            .map(|component| {
-                component
-                    .into_iter()
-                    .map(|p| turbovault_core::path_to_slash(&p))
-                    .collect()
-            })
-            .collect())
+        self.with_graph(|graph| Ok(slash_paths(graph.connected_components()?)))
+            .await
     }
 
     /// Get isolated clusters (small disconnected groups)
     pub async fn get_isolated_clusters(&self) -> Result<Vec<Vec<String>>> {
-        let graph_lock = self.manager.link_graph_flushed().await;
-        let graph = graph_lock.read().await;
-        let analyzer = HealthAnalyzer::new(&graph);
-
-        Ok(analyzer
-            .isolated_clusters()?
-            .into_iter()
-            .map(|cluster| {
-                cluster
-                    .into_iter()
-                    .map(|p| turbovault_core::path_to_slash(&p))
-                    .collect()
-            })
-            .collect())
+        self.with_graph(|graph| Ok(slash_paths(HealthAnalyzer::new(graph).isolated_clusters()?)))
+            .await
     }
+}
+
+/// Groups of paths, each written with `/` separators.
+fn slash_paths(groups: Vec<Vec<PathBuf>>) -> Vec<Vec<String>> {
+    groups
+        .into_iter()
+        .map(|group| {
+            group
+                .into_iter()
+                .map(|p| turbovault_core::path_to_slash(&p))
+                .collect()
+        })
+        .collect()
 }
 
 /// The quick health check: broken links and orphans, scored on those alone.
