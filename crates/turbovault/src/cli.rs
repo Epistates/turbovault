@@ -138,6 +138,16 @@ pub struct Args {
     #[arg(long, value_delimiter = ',', env = "TURBOVAULT_TRUSTED_PROXIES")]
     trusted_proxies: Vec<String>,
 
+    /// Don't ask the user before delete_note, a move_note that replaces a
+    /// note, or a forced rollback_note. By default TurboVault asks through
+    /// the client when the client supports elicitation.
+    #[arg(
+        long,
+        env = "TURBOVAULT_NO_CONFIRM_DESTRUCTIVE",
+        action = clap::ArgAction::SetTrue
+    )]
+    no_confirm_destructive: bool,
+
     /// Listen beyond loopback without authentication. Only for deployments
     /// that authenticate in front of TurboVault.
     #[arg(
@@ -312,6 +322,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         ),
     }
     server.set_vault_root_policy(root_policy.clone());
+    server.set_confirm_destructive(!args.no_confirm_destructive);
 
     // Initialize persistent cache in the server
     if let Err(e) = server.init_cache().await {

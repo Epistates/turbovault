@@ -768,6 +768,8 @@ pub(super) struct CoreToolHandler {
     resource_hub: Arc<note_resources::ResourceHub>,
     /// A task checking subscribed vaults for outside edits is running.
     subscription_sweep: Arc<std::sync::atomic::AtomicBool>,
+    /// Ask the user before a destructive call, when the client can ask.
+    confirm_destructive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// One row of `ObsidianMcpServer.active_fanouts`.
@@ -819,6 +821,7 @@ impl CoreToolHandler {
             vault_root_policy: Arc::new(std::sync::RwLock::new(VaultRootPolicy::anywhere())),
             resource_hub: Arc::default(),
             subscription_sweep: Arc::default(),
+            confirm_destructive: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         })
     }
 
@@ -836,6 +839,80 @@ impl CoreToolHandler {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    /// Whether destructive calls ask the user first, through the client's
+    /// elicitation support. On by default; a client that can't ask is never
+    /// asked either way.
+    pub fn set_confirm_destructive(&self, enabled: bool) {
+        self.confirm_destructive
+            .store(enabled, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Ask the user to confirm `action` before a destructive call goes
+    /// ahead, when the client supports form elicitation. A client that
+    /// doesn't, or a server with confirmation turned off, goes ahead as the
+    /// call's own flags say, exactly as before. A user who declines, or an
+    /// answer that can't be had, stops the call with nothing changed.
+    pub(super) async fn confirm_destructive(
+        &self,
+        ctx: &RequestContext,
+        action: String,
+    ) -> McpResult<()> {
+        if !self
+            .confirm_destructive
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Ok(());
+        }
+        let Some(session) = ctx.session() else {
+            return Ok(());
+        };
+        let can_ask = matches!(
+            session.client_capabilities().await,
+            Ok(Some(capabilities))
+                if capabilities
+                    .elicitation
+                    .as_ref()
+                    .is_some_and(|elicitation| elicitation.supports_form())
+        );
+        if !can_ask {
+            return Ok(());
+        }
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "confirm": {
+                    "type": "boolean",
+                    "title": "Go ahead",
+                    "description": "Check to go ahead.",
+                    "default": false,
+                }
+            },
+            "required": ["confirm"],
+        });
+        let answer = ctx
+            .elicit_form(action.clone(), schema)
+            .await
+            .map_err(|error| {
+                McpError::user_rejected(format!(
+                    "Couldn't confirm with the user ({error}), so nothing was changed"
+                ))
+            })?;
+        let confirmed = answer.action == turbomcp_types::ElicitAction::Accept
+            && answer
+                .content
+                .as_ref()
+                .and_then(|content| content.get("confirm"))
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+        if confirmed {
+            Ok(())
+        } else {
+            Err(McpError::user_rejected(
+                "The user declined, so nothing was changed. Ask them before trying again",
+            ))
+        }
     }
 
     /// Lifecycle tools that check paths against this server's root policy.

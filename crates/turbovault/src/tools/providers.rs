@@ -902,6 +902,13 @@ impl ObsidianMcpServer {
         self.core.set_vault_root_policy(policy);
     }
 
+    /// Whether delete_note, a replacing move_note and a forced rollback_note
+    /// ask the user first, when the client supports elicitation. On by
+    /// default.
+    pub fn set_confirm_destructive(&self, enabled: bool) {
+        self.core.set_confirm_destructive(enabled);
+    }
+
     /// The policy `add_vault` and `create_vault` check paths against.
     pub fn vault_root_policy(&self) -> turbovault_tools::VaultRootPolicy {
         self.core.vault_root_policy()

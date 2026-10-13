@@ -437,3 +437,151 @@ async fn a_cancelled_call_stops_before_it_changes_anything() {
         "a cancelled batch writes nothing"
     );
 }
+
+fn delete_args(path: &str) -> Value {
+    json!({"path": path, "confirm_path": path})
+}
+
+#[tokio::test]
+async fn a_client_without_elicitation_deletes_as_before() {
+    let (vault, server) = server_with_vault().await;
+    let session = RecordingSession::plain();
+    let result = server
+        .call_tool("delete_note", delete_args("Notes.md"), &context(&session))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error(),
+        "{}",
+        result.first_text().unwrap_or_default()
+    );
+    assert!(!vault.path().join("Notes.md").exists());
+    assert!(
+        session.requests.lock().unwrap().is_empty(),
+        "nobody is asked"
+    );
+}
+
+#[tokio::test]
+async fn the_user_confirms_a_delete_through_the_client() {
+    let (vault, server) = server_with_vault().await;
+    let session =
+        RecordingSession::eliciting(json!({"action": "accept", "content": {"confirm": true}}));
+    let result = server
+        .call_tool("delete_note", delete_args("Notes.md"), &context(&session))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error(),
+        "{}",
+        result.first_text().unwrap_or_default()
+    );
+    assert!(!vault.path().join("Notes.md").exists());
+    let requests = session.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "elicitation/create");
+    assert!(
+        requests[0].1["message"]
+            .as_str()
+            .unwrap()
+            .contains("Notes.md")
+    );
+}
+
+#[tokio::test]
+async fn a_declined_or_unconfirmed_delete_changes_nothing() {
+    for reply in [
+        json!({"action": "decline"}),
+        json!({"action": "cancel"}),
+        json!({"action": "accept", "content": {"confirm": false}}),
+    ] {
+        let (vault, server) = server_with_vault().await;
+        let session = RecordingSession::eliciting(reply.clone());
+        let result = server
+            .call_tool("delete_note", delete_args("Notes.md"), &context(&session))
+            .await;
+        let refused = match result {
+            Ok(result) => result.is_error(),
+            Err(_) => true,
+        };
+        assert!(refused, "{reply}");
+        assert!(vault.path().join("Notes.md").exists(), "{reply}");
+    }
+}
+
+#[tokio::test]
+async fn read_only_tools_never_ask() {
+    let (_vault, server) = server_with_vault().await;
+    let session =
+        RecordingSession::eliciting(json!({"action": "accept", "content": {"confirm": true}}));
+    let ctx = context(&session);
+    for (tool, arguments) in [
+        ("read_note", json!({"path": "Notes.md"})),
+        ("search", json!({"query": "plan"})),
+        ("explain_vault", json!({})),
+    ] {
+        let result = server.call_tool(tool, arguments, &ctx).await.unwrap();
+        assert!(!result.is_error(), "{tool}");
+    }
+    assert!(session.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_replacing_move_asks_and_a_plain_one_does_not() {
+    let (vault, server) = server_with_vault().await;
+    let session =
+        RecordingSession::eliciting(json!({"action": "accept", "content": {"confirm": true}}));
+    let ctx = context(&session);
+
+    let result = server
+        .call_tool(
+            "move_note",
+            json!({"from": "projects/Plan.md", "to": "projects/Moved.md"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error(),
+        "{}",
+        result.first_text().unwrap_or_default()
+    );
+    assert!(
+        session.requests.lock().unwrap().is_empty(),
+        "nothing replaced"
+    );
+
+    let result = server
+        .call_tool(
+            "move_note",
+            json!({"from": "projects/Moved.md", "to": "Notes.md", "dest_expected_hash": "blind"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error(),
+        "{}",
+        result.first_text().unwrap_or_default()
+    );
+    assert_eq!(session.requests.lock().unwrap().len(), 1, "replacing asks");
+    assert!(
+        std::fs::read_to_string(vault.path().join("Notes.md"))
+            .unwrap()
+            .starts_with("# Plan")
+    );
+}
+
+#[tokio::test]
+async fn confirmation_can_be_turned_off() {
+    let (vault, server) = server_with_vault().await;
+    server.set_confirm_destructive(false);
+    let session = RecordingSession::eliciting(json!({"action": "decline"}));
+    let result = server
+        .call_tool("delete_note", delete_args("Notes.md"), &context(&session))
+        .await
+        .unwrap();
+    assert!(!result.is_error());
+    assert!(!vault.path().join("Notes.md").exists());
+    assert!(session.requests.lock().unwrap().is_empty());
+}
