@@ -754,6 +754,33 @@ async fn test_plan_move_leaves_alias_links_alone() {
     );
 }
 
+/// Markdown links follow a move the way wikilinks do, in the body and in
+/// properties, each kept in the form it was written in. A relative one is
+/// re-pointed from its own note's folder.
+#[tokio::test]
+async fn test_plan_move_rewrites_markdown_links() {
+    let linker = "---\nsource: \"[Paper](../wiki/My%20Old.md)\"\n---\n\
+                  See [here](../wiki/My%20Old.md#Part), [there](<My Old.md>) \
+                  and [elsewhere](https://example.com/My%20Old.md).\n";
+    let (_temp_dir, manager) =
+        setup_vault_with_files(&[("wiki/My Old.md", "# Old\n"), ("notes/linker.md", linker)]).await;
+    let tools = BatchTools::new(manager.clone());
+
+    let plan = tools
+        .plan_move_with_links("wiki/My Old.md", "archive/My New.md", None, "move")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        planned_content(&plan, "notes/linker.md").as_deref(),
+        Some(
+            "---\nsource: \"[Paper](../archive/My%20New.md)\"\n---\n\
+             See [here](../archive/My%20New.md#Part), [there](<My New.md>) \
+             and [elsewhere](https://example.com/My%20Old.md).\n"
+        )
+    );
+}
+
 /// Two notes share a basename. Moving one rewrites only the links the graph
 /// resolves to it, never a link that names the other one.
 #[tokio::test]

@@ -315,7 +315,7 @@ impl FileProvider {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note. `expected_hash` guards the SOURCE, `dest_expected_hash` the DESTINATION (both accept a hash or a sentinel: \"absent\"|\"exists\"|\"blind\"; dest omitted = \"absent\", the no-clobber guard). Git-backed vaults update inbound wikilinks atomically by default; set update_backlinks=false for a rename-only operation.",
+        description = "Move or rename a note. `expected_hash` guards the SOURCE, `dest_expected_hash` the DESTINATION (both accept a hash or a sentinel: \"absent\"|\"exists\"|\"blind\"; dest omitted = \"absent\", the no-clobber guard). Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation.",
         tags = ["write"],
         destructive = true,
     )]

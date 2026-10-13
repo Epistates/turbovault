@@ -25,6 +25,7 @@ regex = { workspace = true }
 
 # 2025 diligence: OFM parsing with best-in-class libraries
 pulldown-cmark = { workspace = true }      # CommonMark parser with OFM extensions
+percent-encoding = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

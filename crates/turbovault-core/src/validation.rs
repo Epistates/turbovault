@@ -6,6 +6,7 @@
 use crate::models::{Frontmatter, Link, VaultFile};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 /// Severity level for validation issues
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -40,6 +41,11 @@ pub struct ValidationIssue {
     pub line: Option<usize>,
     /// Suggested fix (optional)
     pub suggestion: Option<String>,
+    /// The file the issue is in. [`CompositeValidator`] sets it to the file
+    /// it validated, so a report merged across a vault still says where
+    /// each issue is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
 }
 
 impl ValidationIssue {
@@ -55,6 +61,7 @@ impl ValidationIssue {
             message: message.into(),
             line: None,
             suggestion: None,
+            path: None,
         }
     }
 
@@ -521,7 +528,10 @@ impl Validator for CompositeValidator {
         let mut report = ValidationReport::new();
 
         for validator in &self.validators {
-            let sub_report = validator.validate(file);
+            let mut sub_report = validator.validate(file);
+            for issue in &mut sub_report.issues {
+                issue.path.get_or_insert_with(|| file.path.clone());
+            }
             report.merge(sub_report);
         }
 

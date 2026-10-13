@@ -20,7 +20,9 @@ use turbovault_core::{
 
 use crate::ParseOptions;
 use crate::blocks::slugify;
-use crate::parsers::link_utils::{classify_url, classify_wikilink, split_wikilink};
+use crate::parsers::link_utils::{
+    classify_url, classify_wikilink, markdown_link_target, split_wikilink,
+};
 
 // ============================================================================
 // Compiled regex patterns (LazyLock for Rust 1.80+ SOTA)
@@ -455,7 +457,7 @@ impl<'a> ParseEngine<'a> {
                                 .source_file
                                 .map(|p| p.to_path_buf())
                                 .unwrap_or_default(),
-                            target: url,
+                            target: markdown_link_target(&url),
                             display_text: Some(link_text.trim().to_string()),
                             position: SourcePosition::from_offset_indexed(
                                 &self.index,
@@ -701,7 +703,7 @@ impl<'a> ParseEngine<'a> {
                             links.push(Link {
                                 type_: classify_url(&url),
                                 source_file: source.clone(),
-                                target: url,
+                                target: markdown_link_target(&url),
                                 display_text: Some(text.trim().to_string()),
                                 position: SourcePosition::from_offset_indexed(
                                     &self.index,

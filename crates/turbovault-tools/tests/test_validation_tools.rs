@@ -139,6 +139,22 @@ async fn vault_validation_aggregates_reports_and_honors_the_quick_limit() {
     assert_eq!(full.total_issues, 4);
     assert_eq!(full.warning_count, 2);
     assert_eq!(full.info_count, 2);
+    // Merged across the vault, each issue still says which note it is in.
+    let mut paths: Vec<_> = full
+        .issues
+        .iter()
+        .map(|issue| issue.path.as_deref())
+        .collect();
+    paths.sort();
+    assert_eq!(
+        paths,
+        [
+            Some("first.md"),
+            Some("first.md"),
+            Some("nested/second.md"),
+            Some("nested/second.md"),
+        ]
+    );
 
     let limited = tools
         .validate_vault_quick(1)

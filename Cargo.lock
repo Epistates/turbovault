@@ -5607,6 +5607,7 @@ dependencies = [
 name = "turbovault-parser"
 version = "3.2.0"
 dependencies = [
+ "percent-encoding",
  "pulldown-cmark",
  "regex",
  "serde",

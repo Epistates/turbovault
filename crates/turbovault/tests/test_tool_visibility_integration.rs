@@ -45,7 +45,10 @@ fn mutating_tool_descriptions_match_current_safety_contract() {
         .find(|tool| tool.name == "move_note")
         .expect("move_note descriptor");
     let move_description = move_note.description.as_deref().unwrap_or_default();
-    assert!(move_description.contains("update inbound wikilinks atomically by default"));
+    assert!(
+        move_description
+            .contains("update inbound links (wikilinks and Markdown links) atomically by default")
+    );
     assert!(move_description.contains("update_backlinks=false"));
 }
 

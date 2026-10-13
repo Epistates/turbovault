@@ -590,7 +590,7 @@ impl BatchTools {
         expected_from: Option<&str>,
         dest_expected_hash: Option<&str>,
     ) -> Result<(ChangePlan, Vec<String>)> {
-        use crate::wikilink_rewriter::rewrite_links;
+        use crate::wikilink_rewriter::rewrite_links_from;
 
         let content = self.read_file(from).await?;
         let from_full = self.manager.vault_path().join(from);
@@ -615,7 +615,7 @@ impl BatchTools {
             let rel_str = self.rel_backlink_path(full_src)?;
             let src_content = self.read_file(&rel_str).await?;
             let links = self.links_resolving_to(&src_content, &from_full).await;
-            let rewritten = rewrite_links(&src_content, &links, from, to);
+            let rewritten = rewrite_links_from(&rel_str, &src_content, &links, from, to);
             if rewritten == src_content {
                 continue;
             }
@@ -693,8 +693,9 @@ impl BatchTools {
         Ok((plan, updated))
     }
 
-    /// The wikilinks and embeds in `content` that the link graph resolves to
-    /// `target` (an absolute vault path). `content` is parsed as read, not
+    /// The links in `content` (wikilinks, embeds and internal Markdown links)
+    /// that the link graph resolves to `target` (an absolute vault path).
+    /// `content` is parsed as read, not
     /// taken from the graph's copy, so every span is a span of the text about
     /// to be rewritten even if the file changed since it was last indexed.
     async fn links_resolving_to(
