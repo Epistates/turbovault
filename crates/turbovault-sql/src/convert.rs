@@ -23,6 +23,24 @@ pub fn payload_to_json(payload: Payload) -> Value {
                 "count": results.len()
             })
         }
+        // A schemaless table, `files`, answers `SELECT *` with one map per
+        // row rather than labels and values.
+        Payload::SelectMap(rows) => {
+            let results: Vec<Value> = rows
+                .into_iter()
+                .map(|row| {
+                    Value::Object(
+                        row.into_iter()
+                            .map(|(label, val)| (label, glue_to_json(val)))
+                            .collect(),
+                    )
+                })
+                .collect();
+            json!({
+                "rows": results,
+                "count": results.len()
+            })
+        }
         Payload::Insert(n) => json!({"type": "insert", "affected": n}),
         Payload::Update(n) => json!({"type": "update", "affected": n}),
         Payload::Delete(n) => json!({"type": "delete", "affected": n}),
