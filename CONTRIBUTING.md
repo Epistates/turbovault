@@ -31,8 +31,9 @@ cargo test --workspace --all-features --doc
   the code in `#[cfg(test)]` modules, or under each crate's `tests/`.
 - **Add a CHANGELOG entry** under `## [Unreleased]`, written for someone using
   TurboVault: what was wrong or what's new, and what they'll notice.
-- **Keep public APIs compatible.** CI runs `cargo semver-checks` against the
-  latest release tag. A breaking change needs a major version and a note in
+- **Say when a public API changes.** CI's advisory semver job reports, against
+  the latest release tag, what version bump the change needs; the release
+  workflow enforces it. A breaking change needs a major version and a note in
   the changelog.
 
 ## Snapshots and fixtures

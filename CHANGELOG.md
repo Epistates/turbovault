@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Multi-arch container images** (amd64, arm64) are published to `ghcr.io/epistates/turbovault` with each release. The Dockerfile builds the full release feature set with a locked, digest-pinned toolchain.
 - **TurboVault can be listed in the official MCP Registry** as `io.github.epistates/turbovault`, from the new `server.json`.
 - **A security policy** with private vulnerability reporting, a contributing guide, a code of conduct, and issue and pull request templates.
-- **CI checks semver, every feature on its own, advisories against a triaged ignore list, 90% coverage and the write-safety burndown**, and runs fuzzing, property tests and 10,000-note benchmarks on a schedule.
+- **CI reports the semver bump the next release needs (and the release workflow enforces it), checks every feature on its own, advisories against a triaged ignore list, 90% coverage and the write-safety burndown**, and runs fuzzing, property tests and 10,000-note benchmarks on a schedule.
 
 ### Changed
 

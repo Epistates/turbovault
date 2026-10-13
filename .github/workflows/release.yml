@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The semver check needs the previous release tag.
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -39,6 +42,23 @@ jobs:
 
       - name: Verify formatting
         run: cargo fmt --all --check
+
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-semver-checks@0.51.0
+
+      # The version being released has to be a big enough step from the
+      # previous release for what changed: a breaking change needs a major
+      # bump, an addition at least a minor one. CI only reports this on pull
+      # requests; here it fails the release.
+      - name: Verify the version bump covers the API changes
+        shell: bash
+        run: |
+          EXCLUDE=()
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then EXCLUDE=(--exclude "${GITHUB_REF_NAME}"); fi
+          BASELINE="$(git describe --tags --abbrev=0 --match 'v*' "${EXCLUDE[@]}" HEAD)"
+          echo "Previous release: ${BASELINE}"
+          cargo semver-checks --workspace --baseline-rev "${BASELINE}"
 
       # server.json (the MCP Registry entry) names the version in three
       # places; all of them must be the release being built.

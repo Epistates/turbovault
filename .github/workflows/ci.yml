@@ -258,12 +258,17 @@ jobs:
       # binaries, every feature on, against the lockfile users get.
       - run: cargo check --workspace --all-features --locked
 
-  # The published crates follow semver. The baseline is the latest release
-  # tag rather than crates.io, because publishing is a separate manual step
-  # that can lag the tag; the tag is the API that was released.
+  # What the next release's version bump has to be, against the latest
+  # release tag (the API that was released; crates.io can lag it, since
+  # publishing is manual). Advisory here: between releases main collects
+  # changes while the version still names the last release, so a report of
+  # "major" or "minor" is information for choosing the next version, not a
+  # failure. The release workflow's verify job enforces it against the
+  # previous tag, so a release whose bump is too small cannot ship.
   semver:
-    name: Semver Check
+    name: Semver Check (advisory)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -283,9 +288,20 @@ jobs:
 
       - name: cargo semver-checks against the latest release tag
         run: |
+          set -o pipefail
           BASELINE="$(git describe --tags --abbrev=0 --match 'v*' HEAD)"
-          echo "Baseline: ${BASELINE}"
-          cargo semver-checks --workspace --baseline-rev "${BASELINE}"
+          {
+            echo "## Semver against ${BASELINE} (advisory)"
+            echo
+            echo "Enforced when a release is tagged; see docs/development/releasing.md."
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          STATUS=0
+          cargo semver-checks --workspace --baseline-rev "${BASELINE}" --color never 2>&1 \
+            | tee -a "$GITHUB_STEP_SUMMARY" || STATUS=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$STATUS"
 
   # The write-safety matrix (crates/turbovault/tests/wss_matrix.rs) holds the
   # clobber-safety behavior every write must have. Pending cells are the known
