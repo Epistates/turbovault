@@ -42,6 +42,22 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # server.json (the MCP Registry entry) names the version in three
+      # places; all of them must be the release being built.
+      - name: Verify server.json matches the version
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          jq -e --arg v "$VERSION" '
+            .version == $v
+            and ([.packages[] | select(.registryType == "cargo") | .version] == [$v])
+            and ([.packages[] | select(.registryType == "oci") | .identifier]
+                 == ["ghcr.io/epistates/turbovault:" + $v])
+          ' server.json > /dev/null || {
+            echo "::error file=server.json::server.json does not name version ${VERSION} everywhere"
+            exit 1
+          }
+
       # A declared dependency nothing uses is still compiled, audited and
       # published as a requirement. Fails on any, per crate.
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28

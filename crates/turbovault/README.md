@@ -6,6 +6,8 @@
 
 Production-grade MCP server for Obsidian vault management.
 
+- MCP Registry name: `mcp-name: io.github.epistates/turbovault`
+
 The main executable binary that exposes 47 MCP tools for AI agents to autonomously manage Obsidian vaults. This is the entry point for end users - it orchestrates all vault operations by integrating the core, parser, graph, vault, sql, batch, export, and tools crates into a unified Model Context Protocol server.
 
 ## What This Is

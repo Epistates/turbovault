@@ -40,6 +40,22 @@ jobs:
       - name: Verify formatting
         run: cargo fmt --all --check
 
+      # server.json (the MCP Registry entry) names the version in three
+      # places; all of them must be the release being built.
+      - name: Verify server.json matches the version
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          jq -e --arg v "$VERSION" '
+            .version == $v
+            and ([.packages[] | select(.registryType == "cargo") | .version] == [$v])
+            and ([.packages[] | select(.registryType == "oci") | .identifier]
+                 == ["ghcr.io/epistates/turbovault:" + $v])
+          ' server.json > /dev/null || {
+            echo "::error file=server.json::server.json does not name version ${VERSION} everywhere"
+            exit 1
+          }
+
       - name: Lint with clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 

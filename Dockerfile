@@ -46,6 +46,10 @@ WORKDIR /var/obsidian-vault
 ENV RUST_LOG=info
 ENV OBSIDIAN_VAULT_PATH=/var/obsidian-vault
 
+# The MCP Registry checks this label to verify the image belongs to the
+# server named in server.json.
+LABEL io.modelcontextprotocol.server.name="io.github.epistates/turbovault"
+
 # There is no HTTP health endpoint. Over stdio (the default) the client owns
 # the process. Over a network transport (`--transport http --host 0.0.0.0`),
 # probe the port from the orchestrator, e.g. a Kubernetes tcpSocket probe.
