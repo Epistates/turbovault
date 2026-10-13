@@ -8,7 +8,6 @@
 
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 /// Render `path` as a `/`-separated string, the spelling Obsidian vault paths
 /// (and this server's MCP surface) always use.
@@ -108,51 +107,6 @@ pub fn bytes_to_lower_hex(bytes: impl AsRef<[u8]>) -> String {
 pub fn to_json_string<T: serde::Serialize + ?Sized>(data: &T, context: &str) -> Result<String> {
     serde_json::to_string_pretty(data)
         .map_err(|e| Error::config_error(format!("Failed to serialize {} as JSON: {}", context, e)))
-}
-
-/// Generic CSV serialization builder
-/// Use the CSVBuilder fluent API to construct and export CSV data
-#[deprecated(
-    since = "3.1.0",
-    note = "unused, and doesn't escape fields. Removed in the next major release"
-)]
-pub struct CSVBuilder {
-    headers: Vec<String>,
-    rows: Vec<Vec<String>>,
-}
-
-#[allow(deprecated)]
-impl CSVBuilder {
-    /// Create a new CSV with headers
-    pub fn new(headers: Vec<&str>) -> Self {
-        Self {
-            headers: headers.iter().map(|s| s.to_string()).collect(),
-            rows: Vec::new(),
-        }
-    }
-
-    /// Add a row of data
-    pub fn add_row(mut self, values: Vec<&str>) -> Self {
-        self.rows
-            .push(values.iter().map(|s| s.to_string()).collect());
-        self
-    }
-
-    /// Add a row of data from owned strings
-    pub fn add_row_owned(mut self, values: Vec<String>) -> Self {
-        self.rows.push(values);
-        self
-    }
-
-    /// Build the CSV string
-    pub fn build(self) -> String {
-        let mut csv = self.headers.join(",") + "\n";
-        for row in self.rows {
-            csv.push_str(&row.join(","));
-            csv.push('\n');
-        }
-        csv
-    }
 }
 
 /// A path inside a vault, checked against where it lands on disk.
@@ -271,46 +225,7 @@ fn lexically_normalize(path: &Path) -> PathBuf {
     out
 }
 
-/// Transaction tracking utilities
-#[deprecated(
-    since = "3.1.0",
-    note = "unused by TurboVault. Removed in the next major release"
-)]
-pub struct TransactionBuilder {
-    transaction_id: String,
-    start_time: Instant,
-}
-
-#[allow(deprecated)]
-impl TransactionBuilder {
-    /// Create a new transaction tracker
-    pub fn new() -> Self {
-        Self {
-            transaction_id: uuid::Uuid::new_v4().to_string(),
-            start_time: Instant::now(),
-        }
-    }
-
-    /// Get the transaction ID
-    pub fn transaction_id(&self) -> &str {
-        &self.transaction_id
-    }
-
-    /// Get elapsed time in milliseconds
-    pub fn elapsed_ms(&self) -> u64 {
-        self.start_time.elapsed().as_millis() as u64
-    }
-}
-
-#[allow(deprecated)]
-impl Default for TransactionBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
-#[allow(deprecated)] // still tests the deprecated builders until they're removed
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
@@ -368,18 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn test_csv_builder() {
-        let csv = CSVBuilder::new(vec!["name", "age"])
-            .add_row(vec!["Alice", "30"])
-            .add_row(vec!["Bob", "25"])
-            .build();
-
-        assert!(csv.contains("name,age"));
-        assert!(csv.contains("Alice,30"));
-        assert!(csv.contains("Bob,25"));
-    }
-
-    #[test]
     fn test_path_validator_valid() {
         let vault_root = PathBuf::from("/vault");
         let path = Path::new("notes/file.md");
@@ -393,13 +296,5 @@ mod tests {
         let path = Path::new("../../../etc/passwd");
         let result = PathValidator::validate_path_in_vault(&vault_root, path);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_transaction_builder() {
-        let builder = TransactionBuilder::new();
-        assert!(!builder.transaction_id().is_empty());
-        let elapsed = builder.elapsed_ms();
-        assert!(elapsed < 1000); // Should complete in less than 1 second
     }
 }

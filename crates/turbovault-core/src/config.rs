@@ -153,13 +153,6 @@ pub struct VaultConfig {
     /// Added to [`ServerConfig::excluded_paths`], never in place of it, so a
     /// vault can't unprotect `.obsidian` or `.git` by listing its own.
     pub excluded_paths: Option<HashSet<String>>,
-    /// Deprecated since 3.4.0: never read. Still accepted, with a warning.
-    pub enable_caching: Option<bool>,
-    /// Deprecated since 3.4.0: never read. Still accepted, with a warning.
-    pub cache_ttl: Option<u64>,
-    /// Deprecated since 3.4.0: never read, since templates are built in.
-    /// Still accepted, with a warning.
-    pub template_dirs: Option<Vec<PathBuf>>,
     /// What TurboVault may do to this vault's notes: any of
     /// [`VAULT_OPERATIONS`]. `read` alone makes the vault read-only. Unset, or
     /// `all`, allows everything. Reading is always allowed. Written as one
@@ -283,9 +276,6 @@ pub struct VaultConfigBuilder {
     max_file_size: Option<u64>,
     allowed_extensions: Option<HashSet<String>>,
     excluded_paths: Option<HashSet<String>>,
-    enable_caching: Option<bool>,
-    cache_ttl: Option<u64>,
-    template_dirs: Option<Vec<PathBuf>>,
     allowed_operations: Option<HashSet<String>>,
     write_backend: WriteBackend,
     git: Option<VaultGitConfig>,
@@ -302,9 +292,6 @@ impl VaultConfigBuilder {
             max_file_size: None,
             allowed_extensions: None,
             excluded_paths: None,
-            enable_caching: None,
-            cache_ttl: None,
-            template_dirs: None,
             allowed_operations: None,
             write_backend: WriteBackend::default(),
             git: None,
@@ -354,9 +341,6 @@ impl VaultConfigBuilder {
             max_file_size: self.max_file_size,
             allowed_extensions: self.allowed_extensions,
             excluded_paths: self.excluded_paths,
-            enable_caching: self.enable_caching,
-            cache_ttl: self.cache_ttl,
-            template_dirs: self.template_dirs,
             allowed_operations: self.allowed_operations,
             write_backend: self.write_backend,
             git: self.git,
@@ -394,107 +378,7 @@ pub struct ServerConfig {
     pub max_file_size: u64,
     pub allowed_extensions: HashSet<String>,
     pub excluded_paths: HashSet<String>,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub enable_caching: bool,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub cache_ttl: u64,
     pub log_level: String,
-
-    // Advanced settings
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub template_dirs: Vec<PathBuf>,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub default_template_variables: serde_json::Value,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub editor_backup_enabled: bool,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub editor_atomic_writes: bool,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub max_backup_files: usize,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub max_edit_history: usize,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub backup_retention_days: u32,
-
-    // Link graph settings
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub link_graph_enabled: bool,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub link_suggestions_enabled: bool,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub max_link_suggestions: usize,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub link_similarity_threshold: f32,
-
-    // Search settings
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub full_text_search_enabled: bool,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub index_rebuild_interval: u64,
-
-    // Multi-vault
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub multi_vault_enabled: bool,
-
-    // Admin
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub metrics_enabled: bool,
-    #[deprecated(
-        since = "3.1.0",
-        note = "never read by TurboVault; removed in the next major release"
-    )]
-    pub debug_mode: bool,
 
     /// How long the audit trail keeps the note snapshots that rollback
     /// restores from. Unlimited unless set.
@@ -522,7 +406,6 @@ impl SnapshotRetention {
 }
 
 impl Default for ServerConfig {
-    #[allow(deprecated)] // still has to initialize the deprecated fields
     fn default() -> Self {
         Self {
             vaults: vec![],
@@ -537,25 +420,7 @@ impl Default for ServerConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
-            enable_caching: true,
-            cache_ttl: 3600,
             log_level: "INFO".to_string(),
-            template_dirs: vec![],
-            default_template_variables: serde_json::json!({}),
-            editor_backup_enabled: true,
-            editor_atomic_writes: true,
-            max_backup_files: 100,
-            max_edit_history: 100,
-            backup_retention_days: 7,
-            link_graph_enabled: true,
-            link_suggestions_enabled: true,
-            max_link_suggestions: 10,
-            link_similarity_threshold: 0.3,
-            full_text_search_enabled: true,
-            index_rebuild_interval: 3600,
-            multi_vault_enabled: false,
-            metrics_enabled: false,
-            debug_mode: false,
             snapshot_retention: SnapshotRetention::default(),
         }
     }
@@ -596,9 +461,7 @@ impl ServerConfig {
     /// This server's settings for `vault`, with the vault's own overrides
     /// applied: `max_file_size`, `allowed_extensions` and
     /// `reconcile_external_changes` replace the server's, and
-    /// `excluded_paths` adds to them. The settings the vault sets but nothing
-    /// reads (`enable_caching`, `cache_ttl`, `template_dirs`) are warned
-    /// about here, once per vault manager.
+    /// `excluded_paths` adds to them.
     pub fn for_vault(&self, vault: &VaultConfig) -> ServerConfig {
         let mut config = self.clone();
         if let Some(reconcile) = vault.reconcile_external_changes {
@@ -612,18 +475,6 @@ impl ServerConfig {
         }
         if let Some(excluded) = &vault.excluded_paths {
             config.excluded_paths.extend(excluded.iter().cloned());
-        }
-        for (name, set) in [
-            ("enable_caching", vault.enable_caching.is_some()),
-            ("cache_ttl", vault.cache_ttl.is_some()),
-            ("template_dirs", vault.template_dirs.is_some()),
-        ] {
-            if set {
-                log::warn!(
-                    "vault '{}' sets {name}, which TurboVault never reads; it is deprecated and will be removed in the next major release",
-                    vault.name
-                );
-            }
         }
         config
     }
