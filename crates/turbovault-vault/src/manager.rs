@@ -2163,19 +2163,6 @@ impl VaultManager {
         }
     }
 
-    /// The link graph as it stands, without passing the freshness gate.
-    ///
-    /// Whatever changed outside TurboVault since the last pass is missing
-    /// from it, so a caller that answers from it can be wrong without any
-    /// sign of it. Use [`Self::link_graph_flushed`].
-    #[deprecated(
-        since = "3.4.0",
-        note = "skips the freshness gate; use `link_graph_flushed`"
-    )]
-    pub fn link_graph(&self) -> Arc<RwLock<LinkGraph>> {
-        self.graph_handle()
-    }
-
     /// The graph handle, NOT self-flushing. The reindex/drain machinery
     /// (`flush_reindex`/`apply_commit_diff`) needs it raw: `flush_reindex`
     /// already holds the queue's flush lock while draining, so routing it

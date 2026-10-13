@@ -113,15 +113,7 @@
 //!
 //! ### Output Formatting
 //!
-//! [`output_formatter::ResponseFormatter`] - Format tool responses:
-//! - JSON output
-//! - Plain text output
-//! - Table formatting
-//! - Customizable formatting
-//!
-//! ### Response Utilities
-//!
-//! [`response_utils`] - Helper functions for response formatting
+//! [`output_formatter::OutputFormat`] - The log format for network transports.
 //!
 //! ### Search Engine
 //!
@@ -184,7 +176,6 @@ pub mod output_formatter;
 pub mod periodic;
 pub mod quality_tools;
 pub mod relationship_tools;
-pub mod response_utils;
 mod search_directory;
 pub mod search_engine;
 pub mod search_tools;
@@ -216,7 +207,7 @@ pub use metadata_tools::MetadataTools;
 pub use okf_tools::{
     GenerateIndexReport, GeneratedIndex, OkfConceptInfo, OkfTools, OkfValidateReport, log_rel_for,
 };
-pub use output_formatter::{OutputFormat, ResponseFormatter};
+pub use output_formatter::OutputFormat;
 pub use quality_tools::{QualityScore, QualityTools, VaultQualityReport};
 pub use relationship_tools::RelationshipTools;
 pub use search_engine::{SearchEngine, SearchQuery, SearchResultInfo};
