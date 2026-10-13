@@ -15,7 +15,6 @@
 #   RUSTSEC-2026-0251  sized-chunks unmaintained via im via gluesql
 #   RUSTSEC-2026-0255  sized-chunks panic-safety via im via gluesql
 #   RUSTSEC-2026-0247  bitmaps unmaintained via im via gluesql
-#   RUSTSEC-2025-0141  bincode 1.x via hnsw_rs (vector plugin, default-off)
 #   RUSTSEC-2025-0057  fxhash via bm25 (vector plugin, default-off)
 #   RUSTSEC-2025-0119  number_prefix via tokenizers (vector plugin, default-off)
 #   RUSTSEC-2024-0436  paste via tokenizers (vector plugin, default-off)
@@ -28,7 +27,6 @@ ignore = [
     "RUSTSEC-2026-0251",
     "RUSTSEC-2026-0255",
     "RUSTSEC-2026-0247",
-    "RUSTSEC-2025-0141",
     "RUSTSEC-2025-0057",
     "RUSTSEC-2025-0119",
     "RUSTSEC-2024-0436",

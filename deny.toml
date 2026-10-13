@@ -35,7 +35,6 @@ ignore = [
     { id = "RUSTSEC-2026-0255", reason = "sized-chunks double free needs an element whose Drop panics; gluesql stores its own Value types in im::HashSet, whose Drop cannot panic" },
     { id = "RUSTSEC-2026-0247", reason = "bitmaps unmaintained, via im and sized-chunks via gluesql-core" },
     # The vector plugin's stack (default-off, independently versioned).
-    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained, via hnsw_rs 0.3.4 in turbovault-vector (default-off plugin)" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained, via bm25 2.3.2 in turbovault-vector (default-off plugin)" },
     { id = "RUSTSEC-2025-0119", reason = "number_prefix unmaintained, via indicatif via tokenizers via model2vec-rs in turbovault-vector (default-off plugin)" },
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (build-time proc macro), via tokenizers via model2vec-rs in turbovault-vector (default-off plugin)" },
