@@ -1348,16 +1348,25 @@ impl VaultManager {
     /// render consistently across platforms). The root is matched as
     /// configured and as the filesystem resolves it, since on Windows a
     /// resolved path starts `\\?\C:\` where the configured root starts `C:\`.
-    /// Falls back to the lossy full path when `path` is not under the vault
-    /// root.
+    /// Both are compared as rendered with `/`, so a path that was already
+    /// rendered that way (`//?/C:/...`, which Windows no longer reads as the
+    /// same path) is stripped too. Falls back to the lossy full path when
+    /// `path` is not under the vault root.
     pub fn relative_path(&self, path: &Path) -> String {
-        let relative = path.strip_prefix(&self.vault_path).or_else(|_| {
-            let resolved = self.resolved_vault_path.get_or_init(|| {
-                std::fs::canonicalize(&self.vault_path).unwrap_or_else(|_| self.vault_path.clone())
-            });
-            path.strip_prefix(resolved)
+        let rendered = path_to_slash(path);
+        let resolved = self.resolved_vault_path.get_or_init(|| {
+            std::fs::canonicalize(&self.vault_path).unwrap_or_else(|_| self.vault_path.clone())
         });
-        path_to_slash(relative.unwrap_or(path))
+        for root in [&self.vault_path, resolved] {
+            let root = path_to_slash(root);
+            if let Some(relative) = rendered
+                .strip_prefix(root.trim_end_matches('/'))
+                .and_then(|rest| rest.strip_prefix('/'))
+            {
+                return relative.to_string();
+            }
+        }
+        rendered
     }
 
     /// Set the audit log and snapshot store for operation tracking.
@@ -2680,6 +2689,12 @@ mod tests {
             "notes/a.md"
         );
         assert_eq!(manager.relative_path(&temp_dir.path().join("b.md")), "b.md");
+        // Already rendered with `/`, as the search tools hand paths over.
+        let rendered = turbovault_core::path_to_slash(&resolved.join("c.md"));
+        assert_eq!(manager.relative_path(Path::new(&rendered)), "c.md");
+        // A sibling whose name merely starts with the root's is not inside.
+        let sibling = format!("{}-other/d.md", turbovault_core::path_to_slash(&resolved));
+        assert_eq!(manager.relative_path(Path::new(&sibling)), sibling);
     }
 
     #[tokio::test]
