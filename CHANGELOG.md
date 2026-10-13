@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Audit entries say which tool call made them, chain to each other, and are synced to disk.** Each entry records the tool, request, client, user and session behind it, and the hash of the entry before it, so `audit_stats` can report whether any entry but the last was edited or removed since. Two processes writing one vault extend one chain. `snapshot_retention` in the server config bounds the snapshots rollback restores from, by count or by age; both are off by default, so nothing is deleted unless asked.
 - **`rollback_note` takes `force`.**
+- New in the crates: `VaultManager::ensure_fresh_now` (a freshness pass without the debounce, for an operation that rewrites notes by what links to what), `turbovault_core::is_note`, `ServerConfig::for_vault`, `VaultConfig::permits` and `validate_operations`, and `VAULT_OPERATIONS`.
 
 ### Changed
 
@@ -18,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Git-backend writes cost the same however large the vault is.** One single-note write went from 197 ms to 20 ms in a 2,000-note vault.
 - **Which of several same-named notes a bare link means no longer depends on scan order.** It's the one in the fewest folders, then the first by path.
 - `AuditEntry` gains `context` and `prev_hash`, `AuditStats` gains `chain`, and `ServerConfig` gains `snapshot_retention`. Code that builds these with a struct literal needs the new fields.
+- **A vault's own settings apply.** `max_file_size`, `allowed_extensions` and `reconcile_external_changes` set on a vault were ignored in favor of the server's. They now replace them for that vault.
+- **A move writes the destination and rewrites links before it removes the source**, and a delete rewrites links before it removes the note, so on a plain-folder vault a failure partway leaves a copy behind rather than none. Without `expected_hash`, a move's source is now held to the content the move read, so an edit landing while the backlinks are read is refused rather than deleted with it.
+- **Running `VaultManager::initialize` again rebuilds the note cache and link graph from the vault as it is.** It used to add to them, so a note deleted since stayed.
+- **Deprecated:** `VaultManager::link_graph()`, which skips the freshness gate, in favor of `link_graph_flushed()`. `enable_caching`, `cache_ttl` and `template_dirs` on a vault were never read; they're still accepted, with a warning.
 
 ### Fixed
 
@@ -33,6 +38,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`SELECT *` from the `files` table returns its rows.** It came back as `{"type": "other"}`.
 - **Moving a note rewrites reference links to it.** A reference link, `[text][ref]`, `[ref][]` or `[ref]`, takes its destination from a definition elsewhere in the note, `[ref]: old.md`, and that definition was left pointing at the old path. It's now re-pointed the way an inline Markdown link is, keeping its form, escaping, fragment and title, so every link through it follows the move. Deleting a note marks its reference links stale as well, and `[ref][]` is now struck through whole rather than as `~~[ref]~~[]`. `parse_reference_definitions` is new in `turbovault-parser`.
 - **A wikilink is no longer also a Markdown link when a definition shares its name.** CommonMark reads the `[Note]` inside `[[Note]]` as a shortcut reference whenever the note defines `[note]: ...`, so the wikilink was reported a second time, as a link to that definition's destination, adding a backlink to whatever it pointed at.
+- **Moving or deleting a note sees links added to it moments ago.** The freshness check is debounced, so a link added in Obsidian within the last half second (up to 30 seconds on a large vault) was missed: a move left it broken, and `delete_note` went ahead despite it. The SQL `links` table and cycle detection also read the link graph without checking freshness at all.
+- **A move or delete that stops partway says what already landed**, instead of returning the bare error of the step that failed.
+- **Search no longer loses its index when two changes arrive at once.** Each change opened its own tantivy writer, tantivy allows one, and the second failure evicted the engine, so the next search rebuilt the whole index. A note changed while the index was first being built kept its old text until its next edit; such a change is now applied when the build finishes. Concurrent first searches share one build, and the same holds for the similarity engine.
+- **A same-size edit within a file's mtime tick is noticed.** Filesystems keep mtimes to 2 seconds (FAT, exFAT) or 1 second (HFS+, many network mounts), so a checkbox toggle in the same tick as the last read looked unchanged and the old text stayed. A note read that close to its mtime is now checked by content until the tick has passed.
+- **A note that grew past `max_file_size`, or was written through a symlinked folder, no longer churns.** The scan skips both, but the note cache kept them, so every freshness pass reported them deleted again.
+- **`Note.MD` is parsed like `Note.md`.** It was cached as a note, but its links and tags were never read.
+- **`parse_blocks` leaves wikilinks in code as text.** A fenced `[[Note|alias]]` came back as a link, and so did inline `` `[[Code]]` ``.
+- **Notes carry their real created and modified times.** Both were always 0.0, the Unix epoch, so `find_stale_notes` flagged every note, staleness scores meant nothing, and `find_duplicates` dated every copy to 1970.
+- **`generate_index` no longer overwrites an `index.md` it can't read**, and its rewrite is held to the content it read, so a concurrent edit is refused rather than lost.
+- **Search snippets are cut from the right place after characters like `İ`**, which change length when lower-cased.
+- **Vault startup and `edit_note` no longer block the async runtime.** Startup parsed every note on an async worker with the cache and graph locked throughout; `edit_note` held the cache lock across its fuzzy match.
 
 ### Security
 
@@ -43,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Template frontmatter is written as YAML**, so a title with a newline can no longer add keys. Placeholders are filled once, so a value can't pull in another field.
 - **Fanout scratch worktrees go in a fresh private directory** with a random name, instead of a predictable path in the temp directory.
 - **`SearchTools::search_files` stays inside the vault.** It no longer follows symlinks or lists protected and excluded directories.
+- **`allowed_operations` is enforced.** `allowed_operations: read`, which the example config calls a read-only vault, protected nothing, and `allowed_operations: all` didn't even load. Every write, including `rollback_note`, now checks it before anything lands: `write` to create or change a note, `delete` to remove one, `move` to rename one (rewriting the links to it also needs `write`). It takes one name or a list, reading is always allowed, and an unknown name stops the server from starting rather than being ignored.
+- **A vault's own `excluded_paths` are enforced, added to the server's.** They were ignored, so a directory a vault listed as off limits stayed reachable. A vault can protect more directories this way but never fewer.
 
 ## [3.3.0] - 2026-10-12
 
