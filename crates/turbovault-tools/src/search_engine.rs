@@ -208,7 +208,7 @@ impl SearchEngine {
     async fn document_for(&self, rel_path: &str) -> Option<TantivyDocument> {
         // tlx.7: markdown only, the same for a cold build as for a change
         // report, or a path indexed by one vanishes on the other.
-        if !rel_path.to_lowercase().ends_with(".md") {
+        if !turbovault_core::is_note(std::path::Path::new(rel_path)) {
             return None;
         }
         let vault_file = match self

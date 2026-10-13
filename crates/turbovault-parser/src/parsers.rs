@@ -46,7 +46,7 @@ impl Parser {
         let mut vault_file = VaultFile::new(path.to_path_buf(), content.to_string(), metadata);
 
         // Parse content if markdown
-        if path.extension().is_some_and(|ext| ext == "md") {
+        if turbovault_core::is_note(path) {
             self.parse_content(&mut vault_file)?;
             vault_file.is_parsed = true;
             vault_file.last_parsed = Some(
@@ -70,10 +70,11 @@ impl Parser {
             created_at: 0.0,
             modified_at: 0.0,
             checksum,
-            is_attachment: !matches!(
-                path.extension().map(|e| e.to_str()),
-                Some(Some("md" | "txt"))
-            ),
+            is_attachment: !(turbovault_core::is_note(path)
+                || path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))),
         })
     }
 
@@ -132,6 +133,19 @@ mod tests {
     fn test_parser_creation() {
         let parser = Parser::new(PathBuf::from("/vault"));
         assert_eq!(parser.vault_root, PathBuf::from("/vault"));
+    }
+
+    /// The vault caches `Note.MD` as a note, so its links and tags count.
+    #[test]
+    fn test_parse_file_upper_case_extension() {
+        let parser = Parser::new(PathBuf::from("/vault"));
+        let file = parser
+            .parse_file(Path::new("/vault/Note.MD"), "See [[Other]] #tag\n")
+            .unwrap();
+        assert!(file.is_parsed);
+        assert_eq!(file.links.len(), 1);
+        assert_eq!(file.tags.len(), 1);
+        assert!(!file.metadata.is_attachment);
     }
 
     #[test]

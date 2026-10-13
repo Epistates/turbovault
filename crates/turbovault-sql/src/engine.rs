@@ -67,7 +67,7 @@ impl FrontmatterSqlEngine {
         let mut tag_count = 0usize;
 
         for file_path in &files {
-            if !file_path.to_string_lossy().to_lowercase().ends_with(".md") {
+            if !turbovault_core::is_note(file_path) {
                 continue;
             }
 
@@ -143,7 +143,7 @@ impl FrontmatterSqlEngine {
         let mut sample_paths: Vec<String> = Vec::new();
 
         for file_path in &files {
-            if !file_path.to_string_lossy().to_lowercase().ends_with(".md") {
+            if !turbovault_core::is_note(file_path) {
                 continue;
             }
 

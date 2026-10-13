@@ -43,11 +43,7 @@ impl VaultEvent {
 
     /// Check if event is for a markdown file
     pub fn is_markdown(&self) -> bool {
-        self.path()
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.eq_ignore_ascii_case("md"))
-            .unwrap_or(false)
+        turbovault_core::is_note(self.path())
     }
 }
 

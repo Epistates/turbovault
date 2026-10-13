@@ -12,6 +12,10 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
+// Markdown only, which is narrower than `allowed_extensions`: that also
+// admits `.txt` and `.canvas`, because those are worth *discovering*, not
+// worth parsing as notes.
+use turbovault_core::is_note;
 use turbovault_core::{
     Change, ChangePlan, PathValidator, Precondition, VaultGitConfig, WriteBackend, path_to_slash,
 };
@@ -439,22 +443,6 @@ impl ScanSpec {
 
         Ok(notes)
     }
-}
-
-/// Whether a path is a *note*: something the note cache, the link graph, and
-/// the search index model.
-///
-/// Markdown only, which is narrower than `allowed_extensions` — that also
-/// admits `.txt` and `.canvas`, because those are worth *discovering*, not
-/// worth parsing as notes. The two have to be kept apart, and every consumer of
-/// the note cache has to use this same test, because the freshness sweep
-/// compares what the cache holds against what a scan finds: a path one side
-/// includes and the other does not is reported changed on every single pass
-/// forever, since nothing ever records having seen it.
-fn is_note(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
 }
 
 /// Read a note and fingerprint the exact revision that was read.
@@ -2513,6 +2501,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backlinks.len(), 2, "{backlinks:?}");
+    }
+
+    /// `Note.MD` is a note: cached, and parsed, so its links are backlinks.
+    #[tokio::test]
+    async fn upper_case_extension_notes_link() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        std::fs::write(temp_dir.path().join("Target.md"), "# Target\n").unwrap();
+        std::fs::write(temp_dir.path().join("Shouting.MD"), "See [[Target]].\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        let backlinks = manager
+            .get_backlinks(Path::new("Target.md"))
+            .await
+            .unwrap();
+        assert_eq!(backlinks.len(), 1, "{backlinks:?}");
     }
 
     #[tokio::test]
