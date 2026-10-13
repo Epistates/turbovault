@@ -301,6 +301,14 @@ async fn every_tool_result_matches_its_output_schema() {
         )
         .await;
 
+    checked.call("validate_vault", json!({})).await;
+    checked
+        .call(
+            "validate_vault",
+            json!({"path": "alpha.md", "min_severity": "warning"}),
+        )
+        .await;
+
     // ---- Search ----
     for format in ["detailed", "concise"] {
         checked

@@ -119,3 +119,44 @@ async fn vault_scoped_tools_advertise_the_vault_argument() {
         );
     }
 }
+
+/// `validate_vault` reports notes written the pre-1.9 way, names the note,
+/// and filters by severity without changing the counts.
+#[tokio::test]
+async fn validate_vault_reports_pre_1_9_properties() {
+    let (alpha, _beta, server) = two_vaults().await;
+    std::fs::write(
+        alpha.path().join("Old.md"),
+        "---\ntags: work, personal\n---\n# Old\n",
+    )
+    .unwrap();
+
+    let report = call(&server, "validate_vault", json!({})).await;
+    assert!(
+        report["data"]["warning_count"].as_u64().unwrap() >= 1,
+        "{report}"
+    );
+    let issues = report["data"]["issues"].as_array().unwrap();
+    assert!(
+        issues.iter().any(|issue| issue["path"] == "Old.md"
+            && issue["message"].as_str().unwrap().contains("tags")),
+        "{report}"
+    );
+    assert!(report["meta"]["pagination"]["total"].as_u64().unwrap() >= 1);
+
+    let errors_only = call(
+        &server,
+        "validate_vault",
+        json!({"path": "Old.md", "min_severity": "error"}),
+    )
+    .await;
+    assert!(errors_only["data"]["warning_count"].as_u64().unwrap() >= 1);
+    assert!(
+        errors_only["data"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|issue| issue["severity"] == "error" || issue["severity"] == "critical"),
+        "{errors_only}"
+    );
+}

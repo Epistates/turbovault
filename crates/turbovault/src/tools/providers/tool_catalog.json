@@ -8440,6 +8440,256 @@
     "_meta": {
       "tags": [
         "read",
+        "health"
+      ]
+    },
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Validate Vault"
+    },
+    "description": "Check notes for problems Obsidian would trip on: frontmatter that doesn't parse, `tags`, `aliases` and `cssclasses` written the pre-1.9 way (a string, or the singular keys, which Obsidian 1.9 and later ignore), broken links and malformed content. Each issue has its severity, note, line and a suggested fix. With `path`, one note; without it, the whole vault. Run it after upgrading from an older Obsidian.",
+    "inputSchema": {
+      "$defs": {
+        "IssueSeverity": {
+          "description": "How serious a validation issue is, least to most.",
+          "enum": [
+            "info",
+            "warning",
+            "error",
+            "critical"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "Most issues to return. Default 50, maximum 500.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "min_severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IssueSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only list issues at least this serious: `info` (default, everything), `warning`, `error` or `critical`. The counts always cover every issue."
+        },
+        "offset": {
+          "description": "How many issues to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "Vault-relative path of one note to check, such as `projects/Plan.md`. Omit to check the whole vault.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vault": {
+          "description": "Name of a registered vault to run this call against (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, so concurrent sessions can each work on their own.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "validate_vault",
+    "outputSchema": {
+      "$defs": {
+        "Page": {
+          "properties": {
+            "limit": {
+              "type": "integer"
+            },
+            "next_offset": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "returned": {
+              "type": "integer"
+            },
+            "total": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "offset",
+            "limit",
+            "returned",
+            "truncated"
+          ],
+          "type": "object"
+        },
+        "PagedMeta": {
+          "additionalProperties": true,
+          "properties": {
+            "pagination": {
+              "$ref": "#/$defs/Page"
+            }
+          },
+          "required": [
+            "pagination"
+          ],
+          "type": "object"
+        },
+        "ValidationIssue": {
+          "properties": {
+            "category": {
+              "type": "string"
+            },
+            "line": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "severity": {
+              "type": "string"
+            },
+            "suggestion": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "severity",
+            "category",
+            "message"
+          ],
+          "type": "object"
+        },
+        "ValidationPayload": {
+          "properties": {
+            "critical_count": {
+              "type": "integer"
+            },
+            "error_count": {
+              "type": "integer"
+            },
+            "info_count": {
+              "type": "integer"
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/$defs/ValidationIssue"
+              },
+              "type": "array"
+            },
+            "passed": {
+              "type": "boolean"
+            },
+            "total_issues": {
+              "type": "integer"
+            },
+            "warning_count": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "passed",
+            "total_issues",
+            "info_count",
+            "warning_count",
+            "error_count",
+            "critical_count",
+            "issues"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "data": {
+          "$ref": "#/$defs/ValidationPayload"
+        },
+        "meta": {
+          "$ref": "#/$defs/PagedMeta"
+        },
+        "next_steps": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "operation": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "took_ms": {
+          "type": "integer"
+        },
+        "vault": {
+          "type": "string"
+        },
+        "warnings": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "vault",
+        "operation",
+        "success",
+        "data",
+        "took_ms",
+        "meta"
+      ],
+      "type": "object"
+    },
+    "title": "Validate Vault"
+  },
+  {
+    "_meta": {
+      "tags": [
+        "read",
         "audit"
       ]
     },

@@ -82,6 +82,59 @@ struct LinkStrengthComponents {
     shared_references: usize,
 }
 
+/// How serious a validation issue is, least to most.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum IssueSeverity {
+    Info,
+    Warning,
+    Error,
+    Critical,
+}
+
+impl IssueSeverity {
+    fn parse(severity: &str) -> Self {
+        match severity {
+            "critical" => Self::Critical,
+            "error" => Self::Error,
+            "warning" => Self::Warning,
+            _ => Self::Info,
+        }
+    }
+}
+
+/// What `validate_vault` returns: the counts for every issue found, and one
+/// page of the issues at or above `min_severity`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ValidationPayload {
+    /// No error or critical issue anywhere.
+    passed: bool,
+    total_issues: usize,
+    info_count: usize,
+    warning_count: usize,
+    error_count: usize,
+    critical_count: usize,
+    issues: Vec<ValidationIssue>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ValidationIssue {
+    /// `info`, `warning`, `error` or `critical`.
+    severity: String,
+    /// What the check is about, such as `frontmatter` or `links`.
+    category: String,
+    message: String,
+    /// Vault-relative path of the note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    suggestion: Option<String>,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl AnalysisProvider {
     // ─── DIFF ────────────────────────────────────────────────────────
@@ -700,5 +753,88 @@ impl AnalysisProvider {
         .with_duration(start.elapsed().as_millis() as u64)
         .with_next_steps(&["diff_notes", "read_note", "find_duplicates"])
         .to_json()
+    }
+
+    // ─── VALIDATION ──────────────────────────────────────────────────
+
+    #[tool(
+        description = "Check notes for problems Obsidian would trip on: frontmatter that doesn't parse, `tags`, `aliases` and `cssclasses` written the pre-1.9 way (a string, or the singular keys, which Obsidian 1.9 and later ignore), broken links and malformed content. Each issue has its severity, note, line and a suggested fix. With `path`, one note; without it, the whole vault. Run it after upgrading from an older Obsidian.",
+        title = "Validate Vault",
+        tags = ["read", "health"],
+        read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
+        output_schema = Paged<ValidationPayload>,
+    )]
+    async fn validate_vault(
+        &self,
+        #[description(
+            "Vault-relative path of one note to check, such as `projects/Plan.md`. Omit to check the whole vault."
+        )]
+        path: Option<String>,
+        #[description(
+            "Only list issues at least this serious: `info` (default, everything), `warning`, `error` or `critical`. The counts always cover every issue."
+        )]
+        min_severity: Option<IssueSeverity>,
+        #[description("Most issues to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many issues to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
+        let start = std::time::Instant::now();
+        let (vault_name, manager) = self.get_vault_pair().await?;
+        let tools = turbovault_tools::ValidationTools::new(manager);
+        let report = match &path {
+            Some(path) => tools.validate_note(path).await,
+            None => tools.validate_vault().await,
+        }
+        .map_err(to_mcp_error)?;
+
+        let min_severity = min_severity.unwrap_or(IssueSeverity::Info);
+        let mut issues: Vec<ValidationIssue> = report
+            .issues
+            .into_iter()
+            .filter(|issue| IssueSeverity::parse(&issue.severity) >= min_severity)
+            .map(|issue| ValidationIssue {
+                severity: issue.severity,
+                category: issue.category,
+                message: issue.message,
+                path: issue.path,
+                line: issue.line,
+                suggestion: issue.suggestion,
+            })
+            .collect();
+        // Most serious first, then by note and line, so pages are stable.
+        issues.sort_by(|a, b| {
+            IssueSeverity::parse(&b.severity)
+                .cmp(&IssueSeverity::parse(&a.severity))
+                .then_with(|| a.path.cmp(&b.path))
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.message.cmp(&b.message))
+        });
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (issues, page) = request.slice(issues);
+
+        let mut response = StandardResponse::new(
+            &vault_name,
+            "validate_vault",
+            ValidationPayload {
+                passed: report.passed,
+                total_issues: report.total_issues,
+                info_count: report.info_count,
+                warning_count: report.warning_count,
+                error_count: report.error_count,
+                critical_count: report.critical_count,
+                issues,
+            },
+        )
+        .with_page(page)
+        .with_duration(start.elapsed().as_millis() as u64);
+        if !report.passed {
+            response = response.with_next_steps(&["read_note", "edit_note", "update_frontmatter"]);
+        }
+        response.to_json()
     }
 }

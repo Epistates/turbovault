@@ -246,7 +246,7 @@ tool_visibility:
 
   # Hidden tools are omitted from tools/list but still callable by exact name.
   hidden:
-    - full_health_analysis
+    - vault_health
     - explain_vault
 
   # Disabled tools are omitted and rejected on direct calls.
@@ -257,7 +257,7 @@ tool_visibility:
   require_read_only: false
 ```
 
-CLI/env overrides can be comma-separated: `--hidden-tools full_health_analysis,explain_vault`, `--disabled-tools delete_note`, `--allowed-tools read_note,search`, or `TURBOVAULT_HIDDEN_TOOLS`, `TURBOVAULT_DISABLED_TOOLS`, and `TURBOVAULT_ALLOWED_TOOLS`.
+CLI/env overrides can be comma-separated: `--hidden-tools vault_health,explain_vault`, `--disabled-tools delete_note`, `--allowed-tools read_note,search`, or `TURBOVAULT_HIDDEN_TOOLS`, `TURBOVAULT_DISABLED_TOOLS`, and `TURBOVAULT_ALLOWED_TOOLS`.
 
 ### Environment Variables
 
@@ -368,9 +368,9 @@ server.initialize_multi_vault(manager).await;
 
 Claude can use:
 - `list_vaults()` - See all registered vaults
-- `get_active_vault()` - Check current vault
+- `list_vaults()` - Check current vault
 - `set_active_vault("work")` - Switch to different vault
-- `get_vault_config("research")` - View vault settings
+- `list_vaults(name=...)` - View vault settings
 
 ### 3. Docker Deployment
 
@@ -454,9 +454,9 @@ turbovault \
 **What Works:**
 
 - All read operations (`read_note`, `list_files`)
-- Search and discovery (`search`, `advanced_search`)
-- Link graph analysis (`get_backlinks`, `get_hub_notes`)
-- Health checks and exports (`export_health_report`)
+- Search and discovery (`search`, `search`)
+- Link graph analysis (`get_links`, `graph_report`)
+- Health checks and exports (`export`)
 
 **Use Cases:**
 
@@ -576,9 +576,9 @@ turbovault --profile production --init
 **You:** "Analyze the health of my vault and suggest improvements."
 
 **Claude will:**
-1. Use `quick_health_check()` to get overall score
-2. Use `get_broken_links()` to find issues
-3. Use `get_hub_notes()` to identify important notes
+1. Use `vault_health()` to get overall score
+2. Use `graph_report(kind="broken_links")` to find issues
+3. Use `graph_report(kind="hubs")` to identify important notes
 4. Provide actionable recommendations
 
 #### 3. Create Structured Notes
@@ -789,7 +789,7 @@ turbovault --vault /path/to/vault --profile production --init
 - Enable caching with 1-hour TTL
 - Use `--init` to build graph once on startup
 - Limit search results to 20-50 per query
-- Use `quick_health_check()` instead of `full_health_analysis()`
+- Use `vault_health()` instead of `vault_health(depth="full")`
 
 ### For Large Vaults (10k+ notes)
 
@@ -1131,7 +1131,7 @@ cargo check -p turbovault-server
 │  ┌────────────────────────────────────────────────┐    │
 │  │  tools.rs + tools/providers.rs                 │    │
 │  │  - Shared state and MCP tool wrappers          │    │
-│  │  - 79 tools grouped into focused providers     │    │
+│  │  - 52 tools grouped into focused providers     │    │
 │  │  - Stable flat public names                    │    │
 │  │  - Error conversion (Error → McpError)         │    │
 │  └────────────────────────────────────────────────┘    │

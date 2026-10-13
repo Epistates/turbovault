@@ -1654,7 +1654,7 @@ mod tests {
             .expect("select vault");
 
         let advertised = server.list_tools();
-        assert_eq!(advertised.len(), 52);
+        assert_eq!(advertised.len(), 53);
         assert!(
             advertised
                 .iter()
@@ -1905,7 +1905,7 @@ mod tests {
         ))
         .expect("serialize tool catalog");
 
-        assert_eq!(server.list_tools().len(), 51, "public tool count changed");
+        assert_eq!(server.list_tools().len(), 52, "public tool count changed");
         // The fixture is a deliberate tripwire on the public tool surface, so a
         // real change to a tool signature has to be re-blessed on purpose:
         // `UPDATE_TOOL_CATALOG=1 cargo test -p turbovault --lib`. Without this
@@ -1936,7 +1936,7 @@ mod tests {
                 String::from_utf8_lossy(&actual_bytes[start..actual_end]),
             );
         }
-        assert_eq!(server.tool_routes.len(), 51);
+        assert_eq!(server.tool_routes.len(), 52);
         assert!(
             server.server_info().description.is_none(),
             "default server must not inject plugin guidance"
