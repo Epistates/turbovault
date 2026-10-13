@@ -525,6 +525,15 @@ impl VaultManager {
                         default_vault.name, vault_path, e
                     ))
                 })?;
+                // Finish a write an earlier process landed but did not write
+                // out. If that fails now, the next write tries again.
+                if let Err(error) = repo.recover_interrupted_write() {
+                    log::warn!(
+                        "vault '{}': could not finish an interrupted write: {}",
+                        default_vault.name,
+                        error
+                    );
+                }
                 let cached_repo: CachedRepo = Arc::new(std::sync::Mutex::new(repo));
 
                 // GWS.14b: drain the queue before a ConcurrencyError surfaces
