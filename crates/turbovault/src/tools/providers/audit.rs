@@ -153,7 +153,15 @@ impl AuditProvider {
         let result = audit_tools
             .rollback(&manager, &operation_id, force.unwrap_or(false))
             .await
-            .map_err(to_mcp_error)?;
+            .map_err(|error| match error.category() {
+                // A note that changed since the operation: the refusal
+                // already says to check rollback_preview and pass force, and
+                // the generic "re-read and retry with expected_hash" doesn't
+                // apply to a tool that takes no hash.
+                ErrorCategory::Conflict => McpError::invalid_params(error.to_string())
+                    .with_data(serde_json::json!({ "category": "conflict" })),
+                _ => to_mcp_error(error),
+            })?;
 
         // A rollback restores prior content or removes a created note; either
         // way the path must be re-read by anything tracking vault state.

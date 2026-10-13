@@ -110,10 +110,36 @@ impl Error {
             | Error::ValidationError { .. } => ErrorCategory::InvalidInput,
             Error::ConcurrencyError { .. } => ErrorCategory::Conflict,
             Error::ConfigError { .. } => ErrorCategory::Unavailable,
+            Error::Wrapped(inner) if inner.is::<OperationNotAllowed>() => {
+                ErrorCategory::PermissionDenied
+            }
             Error::Io(_) | Error::Other(_) | Error::Wrapped(_) => ErrorCategory::Internal,
         }
     }
+
+    /// The refusal this error carries if a vault's `allowed_operations`
+    /// refused the change, as [`Error::operation_not_allowed`] made it.
+    pub fn as_operation_not_allowed(&self) -> Option<&OperationNotAllowed> {
+        match self {
+            Error::Wrapped(inner) => inner.downcast_ref::<OperationNotAllowed>(),
+            _ => None,
+        }
+    }
+
+    /// A change the vault's `allowed_operations` doesn't permit. Its
+    /// [`category`](Self::category) is [`ErrorCategory::PermissionDenied`].
+    pub fn operation_not_allowed(reason: impl Into<String>) -> Self {
+        Error::Wrapped(Box::new(OperationNotAllowed(reason.into())))
+    }
 }
+
+/// A change refused by the vault's `allowed_operations` setting. It travels
+/// in [`Error::Wrapped`], which keeps the [`Error`] enum unchanged; use
+/// [`Error::operation_not_allowed`] to make one and
+/// [`Error::as_operation_not_allowed`] to recognize it.
+#[derive(Debug, ThisError)]
+#[error("{0}")]
+pub struct OperationNotAllowed(pub String);
 
 impl Error {
     /// Create an IO error
@@ -246,5 +272,20 @@ mod tests {
 
         assert!(matches!(err, Error::Io(_)));
         assert!(err.to_string().contains("denied"));
+    }
+
+    #[test]
+    fn a_refused_operation_is_permission_denied() {
+        let err = Error::operation_not_allowed("vault 'notes' does not allow write");
+
+        assert_eq!(err.category(), ErrorCategory::PermissionDenied);
+        assert_eq!(
+            err.as_operation_not_allowed().map(ToString::to_string),
+            Some("vault 'notes' does not allow write".to_string())
+        );
+        // Any other wrapped error is still a fault in the server.
+        let other = Error::Wrapped(Box::new(io::Error::other("boom")));
+        assert_eq!(other.category(), ErrorCategory::Internal);
+        assert!(other.as_operation_not_allowed().is_none());
     }
 }

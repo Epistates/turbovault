@@ -56,9 +56,14 @@ pub struct FrontmatterFilter {
 fn to_mcp_error(e: Error) -> McpError {
     log::warn!("MCP error: {:?}", e);
     let category = e.category();
+    // A wrapped error is reported as itself, without the wrapper's label.
+    let text = match &e {
+        Error::Wrapped(inner) => inner.to_string(),
+        _ => e.to_string(),
+    };
     let message = match error_hint(&e) {
-        Some(hint) => format!("{e}. {hint}"),
-        None => e.to_string(),
+        Some(hint) => format!("{text}. {hint}"),
+        None => text,
     };
     let mut data = serde_json::json!({ "category": category_name(category) });
     if let Some(path) = error_path(&e) {
@@ -103,8 +108,15 @@ fn error_path(error: &Error) -> Option<&Path> {
 
 /// What a caller can do about `error`, for the ones where that is known.
 fn error_hint(error: &Error) -> Option<String> {
+    if error.as_operation_not_allowed().is_some() {
+        return Some(
+            "The vault's allowed_operations setting permits only the operations listed. The \
+             server's operator can change it; until then, use another vault for this change"
+                .to_string(),
+        );
+    }
     let hint = match error {
-        Error::FileNotFound { .. } | Error::NotFound { .. } => {
+        Error::FileNotFound { .. } => {
             "Paths are relative to the vault root and include the extension, such as \
              `projects/Plan.md`. Use search to find a note by name"
         }
@@ -1695,5 +1707,86 @@ impl CoreToolHandler {
             .await
             .insert(vault_name.to_string(), Arc::clone(&fresh));
         fresh
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind_and_text(error: Error) -> (String, String, serde_json::Value) {
+        let result = to_mcp_error(error).to_tool_result();
+        let meta = result.meta.clone().unwrap_or_default();
+        (
+            meta["io.turbomcp/errorKind"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            result.first_text().unwrap_or_default().to_string(),
+            meta["io.turbomcp/errorData"].clone(),
+        )
+    }
+
+    #[test]
+    fn a_refused_operation_names_allowed_operations() {
+        let (kind, text, data) = kind_and_text(Error::operation_not_allowed(
+            "vault 'notes' does not allow write (allowed_operations: read)",
+        ));
+        assert_eq!(kind, "permission_denied");
+        assert_eq!(data["category"], "permission_denied");
+        assert!(
+            text.starts_with("vault 'notes' does not allow write"),
+            "{text}"
+        );
+        assert!(text.contains("allowed_operations setting"), "{text}");
+        assert!(!text.contains("Wrapped error"), "{text}");
+    }
+
+    #[test]
+    fn a_stale_hash_is_a_conflict_with_a_retry_hint() {
+        let (kind, text, data) =
+            kind_and_text(Error::concurrency_error("hash mismatch on notes/a.md"));
+        assert_eq!(kind, "invalid_params");
+        assert_eq!(data["category"], "conflict");
+        assert!(text.contains("Read it again"), "{text}");
+    }
+
+    #[test]
+    fn a_fault_in_the_server_stays_internal() {
+        let (kind, _, data) = kind_and_text(Error::other(
+            "commit abc landed, but writing it to the working tree failed",
+        ));
+        assert_eq!(kind, "internal");
+        assert_eq!(data["category"], "internal");
+    }
+
+    #[test]
+    fn closest_paths_prefers_the_same_name_in_another_folder() {
+        let candidates = [
+            "projects/Plan.md".to_string(),
+            "Plans.md".to_string(),
+            "Plant care.md".to_string(),
+            "Unrelated.md".to_string(),
+        ];
+        assert_eq!(
+            closest_paths("Plan.md", &candidates, 3),
+            ["projects/Plan.md", "Plans.md"]
+        );
+        assert!(closest_paths("zzz.md", &candidates, 3).is_empty());
+    }
+
+    #[test]
+    fn relativize_paths_strips_every_vault_root() {
+        let roots = [
+            PathBuf::from("/srv/vault"),
+            PathBuf::from(r"C:\Vaults\Work"),
+        ];
+        assert_eq!(
+            relativize_paths(
+                r"File not found: /srv/vault/notes/a.md and C:\Vaults\Work\b.md",
+                &roots
+            ),
+            r"File not found: notes/a.md and b.md"
+        );
     }
 }

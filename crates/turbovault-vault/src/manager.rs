@@ -1315,7 +1315,7 @@ impl VaultManager {
             .map(String::as_str)
             .collect();
         allowed.sort_unstable();
-        Err(Error::config_error(format!(
+        Err(Error::operation_not_allowed(format!(
             "vault '{}' does not allow {} (allowed_operations: {})",
             vault.name,
             refused.join(" or "),

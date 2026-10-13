@@ -3348,11 +3348,18 @@
       "readOnlyHint": false,
       "title": "Roll Back Note"
     },
-    "description": "Undo one operation from the audit trail: restore the note to its content before it, or remove a note it created. Run rollback_preview first to see the change. Not available on Git-backed vaults.",
+    "description": "Undo one operation from the audit trail: restore the note to its content before it, or remove a note it created. Refuses if the note changed since that operation, since the later change would be lost; check rollback_preview, then pass force to roll back anyway. A rollback is itself recorded, so it can be rolled back. Not available on Git-backed vaults.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "force": {
+          "description": "Roll back even though the note changed since that operation, discarding the later change. Default false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "operation_id": {
           "description": "The `id` of the audit_log entry to undo.",
           "type": "string"
