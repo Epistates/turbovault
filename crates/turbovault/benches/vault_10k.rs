@@ -29,9 +29,26 @@ use turbovault_vault::VaultManager;
 const FOLDERS: usize = 20;
 const LINKS_PER_NOTE: usize = 8;
 const WORDS: &[&str] = &[
-    "project", "meeting", "design", "review", "graph", "vault", "search", "index", "note",
-    "research", "draft", "idea", "summary", "decision", "release", "customer", "roadmap",
-    "question", "answer", "reference",
+    "project",
+    "meeting",
+    "design",
+    "review",
+    "graph",
+    "vault",
+    "search",
+    "index",
+    "note",
+    "research",
+    "draft",
+    "idea",
+    "summary",
+    "decision",
+    "release",
+    "customer",
+    "roadmap",
+    "question",
+    "answer",
+    "reference",
 ];
 
 fn note_count() -> usize {
@@ -119,9 +136,11 @@ fn vault() -> &'static TempDir {
 
 fn manager(rt: &Runtime) -> Arc<VaultManager> {
     let mut config = ConfigProfile::Development.create_config();
-    config
-        .vaults
-        .push(VaultConfig::builder("bench", vault().path()).build().unwrap());
+    config.vaults.push(
+        VaultConfig::builder("bench", vault().path())
+            .build()
+            .unwrap(),
+    );
     let manager = VaultManager::new(config).unwrap();
     rt.block_on(manager.initialize()).unwrap();
     Arc::new(manager)

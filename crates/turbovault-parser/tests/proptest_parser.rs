@@ -67,7 +67,12 @@ fn check_note(text: &str) {
         assert_span(text, link.position.offset, link.position.length, "link");
     }
     for heading in &file.headings {
-        assert_span(text, heading.position.offset, heading.position.length, "heading");
+        assert_span(
+            text,
+            heading.position.offset,
+            heading.position.length,
+            "heading",
+        );
     }
     for tag in &file.tags {
         assert_span(text, tag.position.offset, tag.position.length, "tag");

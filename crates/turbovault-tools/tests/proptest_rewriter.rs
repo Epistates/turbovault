@@ -10,7 +10,8 @@ use turbovault_tools::wikilink_rewriter::{rewrite_wikilinks, wrap_wikilinks_as_s
 /// A note name: letters, digits, spaces and a dash, never empty and never
 /// starting or ending with a space (Obsidian trims those).
 fn note_name() -> impl Strategy<Value = String> {
-    "[A-Za-z0-9][A-Za-z0-9 -]{0,10}[A-Za-z0-9]".prop_filter("no double spaces", |s| !s.contains("  "))
+    "[A-Za-z0-9][A-Za-z0-9 -]{0,10}[A-Za-z0-9]"
+        .prop_filter("no double spaces", |s| !s.contains("  "))
 }
 
 /// One link to `name` (in folder `dir`) in a form a vault holds it in.
@@ -25,7 +26,10 @@ fn link_to(name: &str, dir: &str, form: u8) -> String {
         5 => format!("[x]({})", markdown_link_path(&format!("{name}.md"))),
         6 => format!("[x]({}#part)", markdown_link_path(&format!("{path}.md"))),
         7 => format!("[x](<{name}.md> \"Title\")"),
-        8 => format!("[x][r{form}]\n\n[r{form}]: {}\n", markdown_link_path(&format!("{path}.md"))),
+        8 => format!(
+            "[x][r{form}]\n\n[r{form}]: {}\n",
+            markdown_link_path(&format!("{path}.md"))
+        ),
         _ => format!("| [[{name}\\|cell]] |"),
     }
 }
