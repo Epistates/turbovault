@@ -11,7 +11,8 @@
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use turbovault_core::Precondition;
-use turbovault_vault::{Error, ServerConfig, VaultConfig, VaultManager};
+use turbovault_core::{Error, ServerConfig, VaultConfig};
+use turbovault_vault::VaultManager;
 
 /// A vault, and a directory beside it standing in for the rest of the machine.
 struct Fixture {
@@ -41,14 +42,14 @@ fn fixture() -> Fixture {
     }
 }
 
-fn assert_traversal(result: turbovault_vault::Result<PathBuf>, path: &str) {
+fn assert_traversal(result: turbovault_core::Result<PathBuf>, path: &str) {
     match result {
         Err(Error::PathTraversalAttempt { .. }) => {}
         other => panic!("{path:?} should be refused as leaving the vault, got {other:?}"),
     }
 }
 
-fn assert_protected(result: turbovault_vault::Result<PathBuf>, path: &str) {
+fn assert_protected(result: turbovault_core::Result<PathBuf>, path: &str) {
     match result {
         Err(Error::ProtectedPath { .. }) => {}
         other => panic!("{path:?} should be refused as protected, got {other:?}"),

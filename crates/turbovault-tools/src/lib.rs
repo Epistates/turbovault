@@ -216,7 +216,6 @@ pub use similarity_engine::{SimilarityEngine, SimilarityResult};
 pub use templates::{TemplateDefinition, TemplateEngine, TemplateField, TemplateFieldType};
 pub use turbovault_batch::{BatchOperation, BatchResult};
 pub use turbovault_core::VaultRootPolicy;
-pub use turbovault_core::prelude::*;
 pub use turbovault_git::{
     CommitLocks, FanoutInfo, MergeStrategy as GitMergeStrategy, Oid, OrphanFanout, VaultRepo,
 };

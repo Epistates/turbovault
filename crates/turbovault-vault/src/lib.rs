@@ -87,7 +87,6 @@ pub use reindex::{
     CommitOrigin, PendingCommit, ReindexQueue, apply_commit_diff, watch_ref_changes,
 };
 pub use substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
-pub use turbovault_core::prelude::*;
 
 pub mod prelude {
     pub use crate::edit::*;

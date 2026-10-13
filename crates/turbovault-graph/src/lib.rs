@@ -102,7 +102,6 @@ pub mod health;
 
 pub use graph::{GraphStats, LinkGraph};
 pub use health::{AnalysisConfig, BrokenLink, HealthAnalyzer, HealthCounts, HealthReport};
-pub use turbovault_core::prelude::*;
 
 pub mod prelude {
     pub use crate::graph::{GraphStats, LinkGraph};
