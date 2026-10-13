@@ -3400,18 +3400,6 @@
               ],
               "uniqueItems": true
             },
-            "cache_ttl": {
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "enable_caching": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "excluded_paths": {
               "items": {
                 "type": "string"
@@ -3450,15 +3438,6 @@
             "reconcile_external_changes": {
               "type": [
                 "boolean",
-                "null"
-              ]
-            },
-            "template_dirs": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
                 "null"
               ]
             },
@@ -3772,18 +3751,6 @@
               ],
               "uniqueItems": true
             },
-            "cache_ttl": {
-              "type": [
-                "integer",
-                "null"
-              ]
-            },
-            "enable_caching": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "excluded_paths": {
               "items": {
                 "type": "string"
@@ -3822,15 +3789,6 @@
             "reconcile_external_changes": {
               "type": [
                 "boolean",
-                "null"
-              ]
-            },
-            "template_dirs": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
                 "null"
               ]
             },
