@@ -160,7 +160,7 @@ turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-ap
 # plugin are still settling. They are published only because turbovault's
 # default-off `vector-search` feature depends on them, and crates.io requires
 # every dependency of a published crate to be published, optional ones included.
-turbovault-vector = { version = "0.1.1", path = "crates/turbovault-vector" }
+turbovault-vector = { version = "0.1.2", path = "crates/turbovault-vector" }
 turbovault-plugin-vector = { version = "0.1.0", path = "crates/plugins/turbovault-plugin-vector" }
 turbovault = { version = "3.3.0", path = "crates/turbovault" }
 
