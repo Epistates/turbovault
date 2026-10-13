@@ -483,15 +483,14 @@ impl<'a> ParseEngine<'a> {
                 Event::TaskListMarker(_checked) if options.parse_tasks => {
                     in_task_item = true;
                     // Read raw marker byte to detect extended states [/] [-]
-                    task_builder.is_completed = {
-                        let raw_marker = self
-                            .content
-                            .as_bytes()
-                            .get(range.start + 1)
-                            .copied()
-                            .unwrap_or(b' ') as char;
-                        crate::models::TaskStatus::from_marker(raw_marker).is_completed()
-                    };
+                    let raw_marker = self
+                        .content
+                        .get(range.start + 1..)
+                        .and_then(|rest| rest.chars().next())
+                        .unwrap_or(' ');
+                    task_builder.is_completed =
+                        crate::models::TaskStatus::from_marker(raw_marker).is_completed();
+                    task_builder.status = Some(raw_marker);
                     task_builder.position = SourcePosition::from_offset_indexed(
                         &self.index,
                         task_line_start_for_marker(self.content, &self.index, range.start),
@@ -904,6 +903,7 @@ impl<'a> ParseEngine<'a> {
             let mut task_builder = TaskBuilder {
                 content: content.to_string(),
                 is_completed: crate::models::TaskStatus::from_marker(marker).is_completed(),
+                status: Some(marker),
                 position: SourcePosition::from_offset_indexed(
                     &self.index,
                     task_start,
@@ -2018,6 +2018,29 @@ Back to normal [[Valid]]
         assert!(!result.tasks[0].is_completed);
         assert_eq!(result.tasks[0].position.line, 1);
         assert_eq!(result.tasks[0].position.column, 1);
+    }
+
+    #[test]
+    fn test_task_status_keeps_the_checkbox_character() {
+        let content = "- [ ] todo\n- [x] done\n- [X] also done\n- [/] doing\n- [-] dropped";
+        let engine = ParseEngine::new(content);
+        let result = engine.parse(&ParseOptions::all());
+
+        let statuses: Vec<(char, &str)> = result
+            .tasks
+            .iter()
+            .map(|task| (task.status, task.content.as_str()))
+            .collect();
+        assert_eq!(
+            statuses,
+            [
+                (' ', "todo"),
+                ('x', "done"),
+                ('X', "also done"),
+                ('/', "doing"),
+                ('-', "dropped"),
+            ]
+        );
     }
 
     #[test]

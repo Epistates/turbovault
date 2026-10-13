@@ -221,6 +221,10 @@ pub struct TaskItem {
     /// Task description with trailing Obsidian Tasks metadata removed.
     pub content: String,
     pub is_completed: bool,
+    /// The character in the task's checkbox: ` ` to do, `x` done, `/` in
+    /// progress, `-` cancelled, or a custom status a theme or plugin uses.
+    #[serde(default = "TaskItem::unchecked")]
+    pub status: char,
     pub position: SourcePosition,
     pub created_date: Option<NaiveDate>,
     pub scheduled_date: Option<NaiveDate>,
@@ -257,7 +261,13 @@ pub struct TaskItem {
 }
 
 impl TaskItem {
-    /// Build a [`TaskItem`] from parsed Obsidian Tasks metadata.
+    fn unchecked() -> char {
+        ' '
+    }
+
+    /// Build a [`TaskItem`] from parsed Obsidian Tasks metadata. Its
+    /// `status` is `x` or ` ` from `is_completed`; a builder that saw the
+    /// checkbox sets the character it held.
     #[must_use]
     pub fn from_parsed_metadata(
         parsed: crate::task_parser::ParsedTaskMetadata,
@@ -267,6 +277,7 @@ impl TaskItem {
         Self {
             content: parsed.description,
             is_completed,
+            status: if is_completed { 'x' } else { ' ' },
             position,
             created_date: parse_date_opt(parsed.created.as_deref()),
             scheduled_date: parse_date_opt(parsed.scheduled.as_deref()),
@@ -352,17 +363,22 @@ impl fmt::Display for TaskPriority {
 pub struct TaskBuilder {
     pub content: String,
     pub is_completed: bool,
+    /// The checkbox character, when the parser read it.
+    pub status: Option<char>,
     pub position: SourcePosition,
 }
 
 impl TaskBuilder {
     pub fn build(&mut self) -> TaskItem {
         let parsed: ParsedTaskMetadata = crate::task_parser::parse_task_content(&self.content);
-        let task_item = TaskItem::from_parsed_metadata(
+        let mut task_item = TaskItem::from_parsed_metadata(
             parsed,
             std::mem::take(&mut self.is_completed),
             std::mem::take(&mut self.position),
         );
+        if let Some(status) = self.status.take() {
+            task_item.status = status;
+        }
         self.content.clear();
         task_item
     }
