@@ -117,9 +117,11 @@ impl MultiVaultManager {
         let is_first_vault = vaults.is_empty();
         vaults.insert(vault_config.name.clone(), vault_config.clone());
 
-        // If this is the first vault, automatically set it as default
+        // If this is the first vault, automatically set it as default. The
+        // vault map stays locked until it is, the same vaults-then-default
+        // order every other method takes them in: released first, a removal
+        // could run in between and leave a removed vault active.
         if is_first_vault {
-            drop(vaults); // Release write lock before acquiring default_vault lock
             *self.default_vault.write().await = vault_config.name;
         }
 
@@ -276,6 +278,38 @@ mod tests {
             write_backend: crate::WriteBackend::default(),
             git: None,
         }
+    }
+
+    /// A vault removed while it is being added, as the first vault, is not
+    /// left as the active vault. A reader of the active vault holds the add
+    /// up between registering the vault and making it active. (The race this
+    /// guards against needed a removal to run wholly between two
+    /// instructions on another thread, which a test can't arrange; this
+    /// checks the invariant on the nearest path it can.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_vault_removed_while_being_added_is_not_left_active() {
+        let manager = Arc::new(MultiVaultManager::empty(ServerConfig::default()).unwrap());
+        let reader = manager.default_vault.read().await;
+        let adding = {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move { manager.add_vault(create_test_vault("v", false)).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let removing = {
+            let manager = Arc::clone(&manager);
+            tokio::spawn(async move { manager.remove_vault("v").await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drop(reader);
+        let (added, removed) = tokio::join!(adding, removing);
+        added.unwrap().unwrap();
+        removed.unwrap().unwrap();
+
+        let active = manager.get_active_vault().await;
+        assert!(
+            active.is_empty() || manager.vault_exists(&active).await,
+            "active vault {active:?} is not registered"
+        );
     }
 
     fn create_test_config() -> ServerConfig {
