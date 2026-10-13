@@ -268,7 +268,6 @@ jobs:
   semver:
     name: Semver Check (advisory)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -301,7 +300,12 @@ jobs:
           cargo semver-checks --workspace --baseline-rev "${BASELINE}" --color never 2>&1 \
             | tee -a "$GITHUB_STEP_SUMMARY" || STATUS=$?
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          exit "$STATUS"
+          # Advisory: a change that needs a bigger version than Cargo.toml
+          # declares is flagged here and refused at release time, so the job
+          # stays green and doesn't mark every pull request failed.
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::warning title=Semver::This change needs a bigger version bump than Cargo.toml declares against ${BASELINE}. See the job summary; a release tag will be refused until the version covers it."
+          fi
 
   # The write-safety matrix (crates/turbovault/tests/wss_matrix.rs) holds the
   # clobber-safety behavior every write must have. Pending cells are the known
