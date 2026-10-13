@@ -218,9 +218,8 @@ impl ReindexQueue {
 ///
 /// **Does NOT detect uncommitted working-tree edits.** A direct Obsidian
 /// edit (or a CC `Edit` outside MCP) changes bytes on disk without
-/// advancing HEAD; the polling listener can't see it. Architecture §8.4
-/// limitation; a working-tree inotify listener (resurrecting the dormant
-/// `crate::watcher::VaultWatcher`) is the documented Phase 2.
+/// advancing HEAD; the polling listener can't see it. The freshness gate
+/// (`VaultManager::ensure_fresh`) is what picks those up.
 ///
 /// Initial HEAD is snapshotted at startup, so the listener won't re-push
 /// commits that landed before it started. A commit advanced by THIS
