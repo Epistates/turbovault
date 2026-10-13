@@ -181,6 +181,7 @@ pub mod output_formatter;
 pub mod quality_tools;
 pub mod relationship_tools;
 pub mod response_utils;
+mod search_directory;
 pub mod search_engine;
 pub mod search_tools;
 pub mod similarity_engine;

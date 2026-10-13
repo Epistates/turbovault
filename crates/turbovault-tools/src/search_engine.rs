@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
+use tantivy::directory::{Directory, INDEX_WRITER_LOCK};
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, doc};
@@ -26,6 +27,8 @@ use tracing::instrument;
 use turbovault_core::prelude::*;
 use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
+
+use crate::search_directory::CacheDirectory;
 
 /// Search result metadata for LLM consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -594,27 +597,51 @@ fn remove_orphaned_indexes(root: &std::path::Path, keep: &std::path::Path) {
 /// layout, this TurboVault), or start a new one there.
 fn open_index_dir(dir: &std::path::Path, marker: &IndexMarker) -> Result<Index> {
     let io = |e: std::io::Error| Error::io_at(dir.display().to_string(), e);
+    let tantivy = |e: tantivy::TantivyError| Error::config_error(format!("search index: {e}"));
+    create_private_dir(dir).map_err(io)?;
+    let directory = CacheDirectory::open(dir).map_err(|e| tantivy(e.into()))?;
+
+    // Another process writing this index owns it; leave it alone and let
+    // the caller index in memory instead.
+    let lock = directory
+        .acquire_lock(&INDEX_WRITER_LOCK)
+        .map_err(|e| Error::config_error(format!("search index is in use: {e}")))?;
+
     let marker_path = dir.join(INDEX_MARKER);
     let current = std::fs::read_to_string(&marker_path)
         .ok()
         .and_then(|text| serde_json::from_str::<IndexMarker>(&text).ok())
         .is_some_and(|found| &found == marker);
+    // Written without fsync (see `search_directory`), so its checksums are
+    // what tells whether a power loss left it damaged.
     if current
-        && let Ok(index) = Index::open_in_dir(dir)
+        && let Ok(index) = Index::open(directory.clone())
         && index.schema() == schema()
+        && index
+            .validate_checksum()
+            .is_ok_and(|damaged| damaged.is_empty())
     {
+        drop(lock);
         return Ok(index);
     }
 
-    // Anything else in the directory is an older or foreign index.
-    if dir.exists() {
-        std::fs::remove_dir_all(dir).map_err(io)?;
+    // Anything else in the directory is an older, foreign or damaged index.
+    for entry in std::fs::read_dir(dir).map_err(io)? {
+        let path = entry.map_err(io)?.path();
+        if path.file_name() == Some(INDEX_WRITER_LOCK.filepath.as_os_str()) {
+            continue;
+        }
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).map_err(io)?;
+        } else {
+            std::fs::remove_file(&path).map_err(io)?;
+        }
     }
-    create_private_dir(dir).map_err(io)?;
-    let index = Index::create_in_dir(dir, schema())
-        .map_err(|e| Error::config_error(format!("Failed to create search index: {e}")))?;
+    let index =
+        Index::create(directory, schema(), tantivy::IndexSettings::default()).map_err(tantivy)?;
     let text = serde_json::to_string(marker).map_err(|e| Error::other(e.to_string()))?;
     std::fs::write(&marker_path, text).map_err(io)?;
+    drop(lock);
     Ok(index)
 }
 
@@ -1367,6 +1394,38 @@ mod tests {
             .unwrap();
         assert_eq!(reindexed, 1);
         assert_eq!(paths(&engine.search("walrus").await.unwrap()), ["a.md"]);
+    }
+
+    /// The index is written without fsync, so a power loss can leave a file
+    /// short. Its checksums catch that on the next open, and it is rebuilt.
+    #[tokio::test]
+    async fn a_damaged_index_is_rebuilt() {
+        let (_vault, manager) =
+            vault_with(&[("a.md", "# A\n\nwalrus\n"), ("b.md", "# B\n\nwalrus\n")]).await;
+        let index_dir = tempfile::TempDir::new().unwrap();
+        let dir = index_dir.path().join("index");
+        drop(
+            SearchEngine::open(Arc::clone(&manager), &dir)
+                .await
+                .unwrap(),
+        );
+
+        let segment_file = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "idx"))
+            .expect("a segment file");
+        let bytes = std::fs::read(&segment_file).unwrap();
+        std::fs::write(&segment_file, &bytes[..bytes.len() / 2]).unwrap();
+
+        let (engine, reindexed) = SearchEngine::open_counting(Arc::clone(&manager), &dir)
+            .await
+            .unwrap();
+        assert_eq!(reindexed, 2, "rebuilt from every note");
+        assert_eq!(
+            paths(&engine.search("walrus").await.unwrap()),
+            ["a.md", "b.md"]
+        );
     }
 
     /// Results count the notes linking to them. The graph is keyed by
