@@ -598,6 +598,9 @@ struct NoteRead {
 pub struct VaultManager {
     config: ServerConfig,
     vault_path: PathBuf,
+    /// `vault_path` as the filesystem resolves it, for paths that reach the
+    /// manager already resolved (on Windows, `\\?\C:\...`). Set on first use.
+    resolved_vault_path: OnceLock<PathBuf>,
     parser: Parser,
     link_graph: Arc<RwLock<LinkGraph>>,
     file_cache: Arc<RwLock<HashMap<PathBuf, CacheEntry>>>,
@@ -757,6 +760,7 @@ impl VaultManager {
         Ok(Self {
             config,
             vault_path,
+            resolved_vault_path: OnceLock::new(),
             parser,
             link_graph: Arc::new(RwLock::new(LinkGraph::new())),
             file_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -1341,10 +1345,19 @@ impl VaultManager {
     /// Convert a path to a `/`-separated vault-relative string.
     ///
     /// Strips the vault root prefix and normalizes separators to `/` (so paths
-    /// render consistently across platforms). Falls back to the lossy full path
-    /// when `path` is not under the vault root.
+    /// render consistently across platforms). The root is matched as
+    /// configured and as the filesystem resolves it, since on Windows a
+    /// resolved path starts `\\?\C:\` where the configured root starts `C:\`.
+    /// Falls back to the lossy full path when `path` is not under the vault
+    /// root.
     pub fn relative_path(&self, path: &Path) -> String {
-        path_to_slash(path.strip_prefix(&self.vault_path).unwrap_or(path))
+        let relative = path.strip_prefix(&self.vault_path).or_else(|_| {
+            let resolved = self.resolved_vault_path.get_or_init(|| {
+                std::fs::canonicalize(&self.vault_path).unwrap_or_else(|_| self.vault_path.clone())
+            });
+            path.strip_prefix(resolved)
+        });
+        path_to_slash(relative.unwrap_or(path))
     }
 
     /// Set the audit log and snapshot store for operation tracking.
@@ -2654,6 +2667,21 @@ mod tests {
 
     /// Obsidian writes a Markdown link to a file with a space in its name
     /// with the space escaped, `[x](My%20Note.md)`.
+    /// A path the filesystem resolved (on Windows `\\?\C:\...`, on macOS a
+    /// temp vault's `/private/var/...`) is still made vault-relative.
+    #[test]
+    fn relative_path_strips_the_resolved_root_too() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        let resolved = std::fs::canonicalize(temp_dir.path()).unwrap();
+
+        assert_eq!(
+            manager.relative_path(&resolved.join("notes").join("a.md")),
+            "notes/a.md"
+        );
+        assert_eq!(manager.relative_path(&temp_dir.path().join("b.md")), "b.md");
+    }
+
     #[tokio::test]
     async fn percent_escaped_markdown_links_resolve() {
         let temp_dir = TempDir::new().unwrap();
