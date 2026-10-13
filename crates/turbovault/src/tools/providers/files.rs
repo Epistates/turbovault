@@ -398,7 +398,11 @@ impl FileProvider {
 /// backlinks), resolved through the manager's self-flushing link graph
 /// (`get_backlinks`). Backs `delete_note`'s refuse-by-default listing — the
 /// M4d replacement for the old `WriteTools::list_inbound_backlinks`.
+///
+/// Passes the gate undebounced first: a link added in Obsidian a moment ago
+/// is exactly what the refusal is there to protect.
 async fn inbound_backlinks(manager: &VaultManager, path: &str) -> McpResult<Vec<String>> {
+    manager.ensure_fresh_now().await;
     let full = manager
         .get_backlinks(std::path::Path::new(path))
         .await

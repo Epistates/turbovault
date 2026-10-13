@@ -140,12 +140,7 @@ impl MetadataTools {
         let mut matches = Vec::new();
 
         for vault_file in vault_files {
-            if !vault_file
-                .path
-                .to_string_lossy()
-                .to_lowercase()
-                .ends_with(".md")
-            {
+            if !turbovault_core::is_note(&vault_file.path) {
                 continue;
             }
             if let Some(frontmatter) = vault_file.frontmatter

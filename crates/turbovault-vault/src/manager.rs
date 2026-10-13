@@ -12,6 +12,10 @@ use tokio::sync::RwLock;
 use tracing::instrument;
 use turbovault_audit::{AuditLog, SnapshotStore};
 use turbovault_core::prelude::*;
+// Markdown only, which is narrower than `allowed_extensions`: that also
+// admits `.txt` and `.canvas`, because those are worth *discovering*, not
+// worth parsing as notes.
+use turbovault_core::is_note;
 use turbovault_core::{
     Change, ChangePlan, PathValidator, Precondition, VaultGitConfig, WriteBackend, path_to_slash,
 };
@@ -129,11 +133,86 @@ struct FileFingerprint {
 
 impl FileFingerprint {
     async fn observe(path: &Path) -> Option<Self> {
+        Self::observe_with_times(path)
+            .await
+            .map(|(fingerprint, _)| fingerprint)
+    }
+
+    /// The fingerprint, and the file's times from the same stat.
+    async fn observe_with_times(path: &Path) -> Option<(Self, FileTimes)> {
         let metadata = tokio::fs::metadata(path).await.ok()?;
-        Some(Self {
+        let fingerprint = Self {
             size_bytes: metadata.len(),
             modified: metadata.modified().ok(),
-        })
+        };
+        Some((fingerprint, FileTimes::of(&metadata)))
+    }
+}
+
+/// When a note was created and last modified, for its [`FileMetadata`].
+#[derive(Debug, Clone, Copy, Default)]
+struct FileTimes {
+    created: Option<SystemTime>,
+    modified: Option<SystemTime>,
+}
+
+impl FileTimes {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        let modified = metadata.modified().ok();
+        Self {
+            // Not every filesystem keeps a birth time; the last change is the
+            // nearest thing it does keep.
+            created: metadata.created().ok().or(modified),
+            modified,
+        }
+    }
+
+    /// Record these times on `file`, as the seconds since the Unix epoch
+    /// [`FileMetadata`] keeps. The parser has the content but not the file,
+    /// so the times are the caller's to fill in.
+    fn stamp(self, file: &mut VaultFile) {
+        let seconds = |time: SystemTime| {
+            time.duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|since| since.as_secs_f64())
+        };
+        if let Some(created) = self.created.and_then(seconds) {
+            file.metadata.created_at = created;
+        }
+        if let Some(modified) = self.modified.and_then(seconds) {
+            file.metadata.modified_at = modified;
+        }
+    }
+}
+
+/// A note's fingerprint, and whether it is enough to tell a later edit apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Observed {
+    fingerprint: FileFingerprint,
+    /// Read before its mtime tick was over. A filesystem keeps mtimes to some
+    /// granularity (2 s on FAT and exFAT, 1 s on HFS+ and many network
+    /// mounts), so an edit that keeps the size and lands in the same tick
+    /// leaves the fingerprint as it was: a checkbox toggle, `[ ]` to `[x]`, is
+    /// exactly that. The sweep checks a racy note by content instead, until a
+    /// read after the tick clears it. Git does the same for the index entries
+    /// it calls "racily clean".
+    racy: bool,
+}
+
+/// How long after its mtime a note's fingerprint is racy: the coarsest tick
+/// in common use, plus slack for the clocks to disagree.
+const RACY_WINDOW: Duration = Duration::from_millis(2_100);
+
+impl Observed {
+    /// The observation of a read that finished at `read_at`.
+    fn at(fingerprint: FileFingerprint, read_at: SystemTime) -> Self {
+        let racy = fingerprint.modified.is_some_and(|modified| {
+            // An mtime ahead of our clock is racy until our clock passes it.
+            read_at
+                .duration_since(modified)
+                .map_or(true, |age| age < RACY_WINDOW)
+        });
+        Self { fingerprint, racy }
     }
 }
 
@@ -144,7 +223,7 @@ struct CacheEntry {
     /// The fingerprint of the bytes `file` was parsed from, when it could be
     /// established. `None` means "unknown", which no scan result can equal, so
     /// the next sweep re-parses the note. Unknown resolves to "assume stale".
-    observed: Option<FileFingerprint>,
+    observed: Option<Observed>,
 }
 
 /// Never reconcile more often than this, however cheap the sweep turns out to
@@ -290,6 +369,49 @@ impl ScanSpec {
                 && self.allowed_extensions.contains(&ext.to_lowercase()))
     }
 
+    /// Whether `path` is a file [`Self::walk`] would report: the same test,
+    /// for one path.
+    ///
+    /// The cache must hold exactly what a walk can find. A note it holds that
+    /// the walk can't (one that grew past `max_file_size`, or was written
+    /// through a symlinked folder) would be reported deleted by every sweep
+    /// and never settle.
+    fn admits(&self, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return false;
+        };
+        let mut current = self.root.clone();
+        let mut components = relative.components().peekable();
+        while let Some(component) = components.next() {
+            let std::path::Component::Normal(part) = component else {
+                return false;
+            };
+            let Some(name) = part.to_str() else {
+                return false;
+            };
+            if PROTECTED_COMPONENTS.contains(&name) || self.excluded.contains(name) {
+                return false;
+            }
+            current.push(part);
+            // Not followed, as in the walk.
+            let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+                return false;
+            };
+            if components.peek().is_some() {
+                if !metadata.is_dir() {
+                    return false;
+                }
+                continue;
+            }
+            let admitted = current
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| self.admits_extension(ext));
+            return metadata.is_file() && admitted && metadata.len() <= self.max_file_size;
+        }
+        false
+    }
+
     /// Walk the vault and return every note the configuration admits, carrying
     /// the `(size, mtime)` the walk had to read anyway.
     ///
@@ -367,22 +489,6 @@ impl ScanSpec {
     }
 }
 
-/// Whether a path is a *note*: something the note cache, the link graph, and
-/// the search index model.
-///
-/// Markdown only, which is narrower than `allowed_extensions` — that also
-/// admits `.txt` and `.canvas`, because those are worth *discovering*, not
-/// worth parsing as notes. The two have to be kept apart, and every consumer of
-/// the note cache has to use this same test, because the freshness sweep
-/// compares what the cache holds against what a scan finds: a path one side
-/// includes and the other does not is reported changed on every single pass
-/// forever, since nothing ever records having seen it.
-fn is_note(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-}
-
 /// Read a note and fingerprint the exact revision that was read.
 ///
 /// The fingerprint is taken before and after the read and kept only if it did
@@ -398,14 +504,94 @@ fn is_note(path: &Path) -> bool {
 async fn read_note_with_fingerprint(
     path: &Path,
     expected: Option<FileFingerprint>,
-) -> std::io::Result<(String, Option<FileFingerprint>)> {
+) -> std::io::Result<NoteRead> {
     let before = match expected {
         Some(fingerprint) => Some(fingerprint),
         None => FileFingerprint::observe(path).await,
     };
     let content = tokio::fs::read_to_string(path).await?;
-    let after = FileFingerprint::observe(path).await;
-    Ok((content, if before == after { after } else { None }))
+    let (after, times) = match FileFingerprint::observe_with_times(path).await {
+        Some((fingerprint, times)) => (Some(fingerprint), times),
+        None => (None, FileTimes::default()),
+    };
+    let read_at = SystemTime::now();
+    let observed = if before == after { after } else { None };
+    Ok(NoteRead {
+        content,
+        observed: observed.map(|fingerprint| Observed::at(fingerprint, read_at)),
+        times,
+    })
+}
+
+/// Parse what [`read_note_with_fingerprint`] read from `path`, with the
+/// file's own created and modified times, which the parser can't know.
+fn parse_note(parser: &Parser, path: &Path, read: &NoteRead) -> Result<VaultFile> {
+    let mut file = parser.parse_file(path, &read.content)?;
+    read.times.stamp(&mut file);
+    Ok(file)
+}
+
+/// The note cache and link graph for a vault, from initialization's reads.
+///
+/// Two passes: every note is added to the graph before any link is resolved,
+/// so a link finds its target regardless of scan order.
+fn build_index(
+    parser: &Parser,
+    reads: Vec<(PathBuf, std::io::Result<NoteRead>)>,
+) -> (HashMap<PathBuf, CacheEntry>, LinkGraph) {
+    let mut cache = HashMap::with_capacity(reads.len());
+    let mut graph = LinkGraph::new();
+    let mut parsed_files = Vec::with_capacity(reads.len());
+
+    for (file_path, read) in reads {
+        log::debug!("Processing file: {:?}", file_path);
+        let read = match read {
+            Ok(read) => read,
+            Err(e) => {
+                log::warn!("Failed to read file {}: {}", file_path.display(), e);
+                continue;
+            }
+        };
+        let vault_file = match parse_note(parser, &file_path, &read) {
+            Ok(vault_file) => vault_file,
+            Err(e) => {
+                log::warn!("Failed to parse {}: {}", file_path.display(), e);
+                continue;
+            }
+        };
+        log::debug!(
+            "Parsed {}: {} links extracted",
+            file_path.display(),
+            vault_file.links.len()
+        );
+        if let Err(e) = graph.add_file(&vault_file) {
+            log::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
+        }
+        cache.insert(
+            file_path,
+            CacheEntry {
+                file: vault_file.clone(),
+                observed: read.observed,
+            },
+        );
+        parsed_files.push(vault_file);
+    }
+
+    for vault_file in &parsed_files {
+        if let Err(e) = graph.update_links(vault_file) {
+            log::warn!("Graph update_links failed: {}", e);
+        }
+    }
+    (cache, graph)
+}
+
+/// What [`read_note_with_fingerprint`] read.
+struct NoteRead {
+    content: String,
+    /// `None` when the note changed during the read, so the next sweep
+    /// looks again.
+    observed: Option<Observed>,
+    times: FileTimes,
 }
 
 /// Main vault manager with file operations and watching
@@ -453,7 +639,11 @@ pub struct VaultManager {
 impl VaultManager {
     /// Create a new vault manager
     pub fn new(config: ServerConfig) -> Result<Self> {
+        // The vault's own settings override the server's from here on, for
+        // the scan, path protection, size limit and freshness schedule alike.
+        let config = config.for_vault(config.default_vault()?);
         let default_vault = config.default_vault()?;
+        default_vault.validate_operations()?;
         let vault_path = default_vault.path.clone();
         let parser = Parser::new(vault_path.clone());
 
@@ -819,6 +1009,24 @@ impl VaultManager {
         self.reconcile_external_changes().await;
     }
 
+    /// [`Self::ensure_fresh`] without the debounce: a full pass now, unless
+    /// the vault opted out of reconciling.
+    ///
+    /// For an operation that rewrites notes according to what links to what,
+    /// a link-aware move or delete. A debounced answer can be up to
+    /// `ReconcileState::interval` old, and a link added in Obsidian within
+    /// that window would be left pointing at a note that is no longer there.
+    /// Reads keep using [`Self::ensure_fresh`]: they cost one pass per burst,
+    /// and an answer a moment old is not one that breaks anything.
+    pub async fn ensure_fresh_now(&self) {
+        self.flush_reindex().await;
+        if !self.config.reconcile_external_changes {
+            return;
+        }
+        let mut state = self.reconcile.lock().await;
+        self.reconcile_holding(&mut state).await;
+    }
+
     /// Reconcile right now, ignoring both the schedule and the configured
     /// opt-out.
     ///
@@ -901,17 +1109,29 @@ impl VaultManager {
         }
 
         let mut changed: Vec<(PathBuf, bool)> = Vec::new();
+        // Matching fingerprints that can't vouch for the bytes on their own.
+        let mut racy: Vec<(PathBuf, FileFingerprint, String)> = Vec::new();
         {
             let cache = self.file_cache.read().await;
             for (path, entry) in cache.iter() {
-                match on_disk.remove(path) {
-                    // Same revision we parsed. Nothing to do.
-                    Some(found) if entry.observed == Some(found) => {}
+                match (on_disk.remove(path), entry.observed) {
+                    // Same revision we parsed, read too close to its mtime
+                    // for the fingerprint alone to say so.
+                    (Some(found), Some(observed)) if observed.fingerprint == found => {
+                        if observed.racy {
+                            racy.push((path.clone(), found, entry.file.metadata.checksum.clone()));
+                        }
+                    }
                     // Still there, but not the bytes we parsed.
-                    Some(_) => changed.push((path.clone(), true)),
+                    (Some(_), _) => changed.push((path.clone(), true)),
                     // Gone from the vault.
-                    None => changed.push((path.clone(), false)),
+                    (None, _) => changed.push((path.clone(), false)),
                 }
+            }
+        }
+        for (path, found, checksum) in racy {
+            if let Some(edited) = self.recheck_racy(&path, found, &checksum).await {
+                changed.push((path, edited));
             }
         }
         // Whatever the scan found that the cache had never heard of was created
@@ -934,6 +1154,37 @@ impl VaultManager {
         );
         self.sync_index(&changed).await;
         changed
+    }
+
+    /// Check a racy note (see [`Observed::racy`]) by content. `Some(present)`
+    /// when it changed and belongs in the sweep's diff. When the bytes are
+    /// the ones we parsed, the entry takes this read's observation instead,
+    /// which stops being racy once the read is past the note's mtime tick.
+    async fn recheck_racy(
+        &self,
+        path: &Path,
+        found: FileFingerprint,
+        checksum: &str,
+    ) -> Option<bool> {
+        match read_note_with_fingerprint(path, Some(found)).await {
+            Ok(read) if turbovault_core::compute_hash(&read.content) == checksum => {
+                let mut cache = self.file_cache.write().await;
+                // Unless a write recorded a newer revision meanwhile.
+                if let Some(entry) = cache.get_mut(path)
+                    && entry.observed.map(|o| o.fingerprint) == Some(found)
+                {
+                    entry.observed = read.observed;
+                }
+                None
+            }
+            Ok(_) => Some(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+            // Left racy, so the next pass looks again.
+            Err(e) => {
+                log::debug!("freshness sweep: re-reading {}: {e}", path.display());
+                None
+            }
+        }
     }
 
     /// Vault-relative, `/`-separated — the spelling a git diff produces, and so
@@ -976,6 +1227,7 @@ impl VaultManager {
     /// concurrent freshness sweep cannot catch this write half-applied and
     /// republish it as somebody else's ([`WriteClaim`]).
     async fn apply_through_substrate(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
+        self.check_allowed_operations(plan)?;
         let outcome = {
             let _claim = WriteClaim::new(&self.write_claims, plan.touched_paths());
             let outcome = self.substrate.apply(plan).await?;
@@ -985,6 +1237,90 @@ impl VaultManager {
         self.fire_change_listener(with_origin(outcome.changed.clone(), CommitOrigin::Local))
             .await;
         Ok(outcome)
+    }
+
+    /// Refuse a plan the vault's `allowed_operations` doesn't allow, before
+    /// any of it lands. Every mutation passes through here.
+    ///
+    /// An upsert needs `write`, a remove `delete` and a rename `move`. A move
+    /// can also be built as a copy plus a remove, which is how a link-aware
+    /// move is: a remove whose bytes the plan writes under another path is
+    /// one, and both halves need `move` rather than `write` and `delete`. The
+    /// bytes are matched through the precondition every such move carries
+    /// for its source.
+    fn check_allowed_operations(&self, plan: &ChangePlan) -> Result<()> {
+        let vault = self.config.default_vault()?;
+        if vault.allowed_operations.is_none() || vault.permits("all") {
+            return Ok(());
+        }
+
+        // The bytes each removed path is held to, and the bytes each upsert
+        // writes. A remove and an upsert with the same bytes are one move.
+        let removed_token = |path: &str| {
+            plan.preconditions
+                .iter()
+                .find_map(|(guarded, precondition)| match precondition {
+                    Precondition::ExpectBlob(token) if guarded == path => Some(token.as_str()),
+                    _ => None,
+                })
+        };
+        let removed_tokens: HashSet<&str> = plan
+            .changes
+            .iter()
+            .filter_map(|change| match change {
+                Change::Remove { path } => removed_token(path),
+                _ => None,
+            })
+            .collect();
+        let mut written_tokens = HashSet::new();
+        if !removed_tokens.is_empty() {
+            for change in &plan.changes {
+                if let Change::Upsert { content, .. } = change {
+                    written_tokens.insert(self.hash_bytes(content)?);
+                }
+            }
+        }
+
+        let mut needed = std::collections::BTreeSet::new();
+        for change in &plan.changes {
+            needed.insert(match change {
+                Change::Upsert { content, .. }
+                    if !removed_tokens.is_empty()
+                        && removed_tokens.contains(self.hash_bytes(content)?.as_str()) =>
+                {
+                    "move"
+                }
+                Change::Remove { path }
+                    if removed_token(path).is_some_and(|token| written_tokens.contains(token)) =>
+                {
+                    "move"
+                }
+                Change::Upsert { .. } => "write",
+                Change::Remove { .. } => "delete",
+                Change::Rename { .. } => "move",
+            });
+        }
+
+        let refused: Vec<&str> = needed
+            .into_iter()
+            .filter(|operation| !vault.permits(operation))
+            .collect();
+        if refused.is_empty() {
+            return Ok(());
+        }
+        let mut allowed: Vec<&str> = vault
+            .allowed_operations
+            .iter()
+            .flatten()
+            .map(String::as_str)
+            .collect();
+        allowed.sort_unstable();
+        Err(Error::config_error(format!(
+            "vault '{}' does not allow {} (allowed_operations: {})",
+            vault.name,
+            refused.join(" or "),
+            allowed.join(", ")
+        )))
     }
 
     /// Get vault path
@@ -1039,23 +1375,17 @@ impl VaultManager {
     pub async fn initialize(&self) -> Result<()> {
         log::info!("Starting vault initialization for: {:?}", self.vault_path);
 
-        let mut cache = self.file_cache.write().await;
-        let mut graph = self.link_graph.write().await;
-
         // Scan for markdown files, keeping the metadata the scan already read:
         // it becomes each cache entry's fingerprint, so the first freshness
         // sweep after startup compares against the same observation the graph
-        // was built from and reports nothing.
-        let scanned = self.scan_files_with_metadata()?;
+        // was built from and reports nothing. The walk is blocking I/O, so it
+        // runs on the blocking pool.
+        let spec = Arc::clone(&self.scan_spec);
+        let scanned = tokio::task::spawn_blocking(move || spec.walk())
+            .await
+            .map_err(|e| Error::other(format!("vault scan task failed: {e}")))??;
         log::info!("Found {} markdown files", scanned.len());
 
-        // Two-pass initialization: first add all files to the graph index,
-        // then resolve links. This ensures every file is discoverable when
-        // resolving wikilink targets, regardless of scan order.
-        let mut parsed_files = Vec::with_capacity(scanned.len());
-
-        // Pass 1: parse all files, populate cache and graph nodes.
-        //
         // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
         // note file here (a `.txt`, a `.canvas`) would put it somewhere no
         // applier ever updates it, so every freshness sweep would report it
@@ -1076,52 +1406,23 @@ impl VaultManager {
             .collect()
             .await;
 
-        for (file_path, read) in reads {
-            log::debug!("Processing file: {:?}", file_path);
-            match read {
-                Ok((content, observed)) => match self.parser.parse_file(&file_path, &content) {
-                    Ok(vault_file) => {
-                        log::debug!(
-                            "Parsed {}: {} links extracted",
-                            file_path.display(),
-                            vault_file.links.len()
-                        );
-
-                        cache.insert(
-                            file_path.clone(),
-                            CacheEntry {
-                                file: vault_file.clone(),
-                                observed,
-                            },
-                        );
-
-                        if let Err(e) = graph.add_file(&vault_file) {
-                            log::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
-                        }
-                        parsed_files.push(vault_file);
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to parse {}: {}", file_path.display(), e);
-                    }
-                },
-                Err(e) => {
-                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
-                }
-            }
-        }
-
-        // Pass 2: resolve links (all files now in the index)
-        for vault_file in &parsed_files {
-            if let Err(e) = graph.update_links(vault_file) {
-                log::warn!("Graph update_links failed: {}", e);
-            }
-        }
+        // Parsing and linking are CPU work, seconds of it on a large vault,
+        // so they run on the blocking pool too, and build the cache and graph
+        // off to the side. Neither lock is held until they are swapped in.
+        let parser = Parser::new(self.vault_path.clone());
+        let (cache, graph) = tokio::task::spawn_blocking(move || build_index(&parser, reads))
+            .await
+            .map_err(|e| Error::other(format!("vault index task failed: {e}")))?;
 
         log::info!(
             "Vault initialization complete. Graph now has {} files, {} links",
             graph.node_count(),
             graph.edge_count()
         );
+        let mut cache_guard = self.file_cache.write().await;
+        let mut graph_guard = self.link_graph.write().await;
+        *cache_guard = cache;
+        *graph_guard = graph;
 
         Ok(())
     }
@@ -1289,16 +1590,16 @@ impl VaultManager {
 
         let vault_path = self.resolve_path(path)?;
 
-        // Acquire write lock on file cache to prevent TOCTOU
-        let _cache_guard = self.file_cache.write().await;
-
-        // Read current content
+        // Read current content. No lock is held from here to the write: the
+        // write is held to this exact pre-image (below), so an edit landing
+        // in between is refused rather than overwritten, and the fuzzy match
+        // doesn't stall every other reader and writer of the cache.
         let current_content = tokio::fs::read_to_string(&vault_path)
             .await
             .map_err(|e| Error::io_at(self.relative_path(&vault_path), e))?;
 
         // Preserve the exact pre-image that the edit was calculated from. The
-        // write below revalidates this hash after releasing the cache lock.
+        // write below revalidates this hash.
         // Mint the token via the active SUBSTRATE's convention (git blob-oid on
         // git, NFC-sha256 on direct) — the same token `edit`'s `expected`
         // precondition carries and the token the substrate re-checks at apply
@@ -1317,12 +1618,16 @@ impl VaultManager {
             });
         }
 
-        // Parse and apply edits
-        let engine = EditEngine::new();
-        let blocks = engine.parse_blocks(edits)?;
-
-        let (mut edit_result, new_content) =
-            engine.apply_edits(&current_content, &blocks, dry_run)?;
+        // Parse and apply edits. Fuzzy matching is CPU work bounded per block
+        // but not in the number of blocks, so it runs on the blocking pool.
+        let edits = edits.to_string();
+        let (mut edit_result, new_content) = tokio::task::spawn_blocking(move || {
+            let engine = EditEngine::new();
+            let blocks = engine.parse_blocks(&edits)?;
+            engine.apply_edits(&current_content, &blocks, dry_run)
+        })
+        .await
+        .map_err(|e| Error::other(format!("edit task failed: {e}")))??;
 
         // Report substrate-native version tokens (git blob-oid on git, NFC-
         // sha256 on direct) so the caller can round-trip `new_hash` as a
@@ -1336,9 +1641,6 @@ impl VaultManager {
         if dry_run {
             return Ok(edit_result);
         }
-
-        // Release cache guard before write (avoid deadlock)
-        drop(_cache_guard);
 
         // Re-check at write time so an intervening in-process or external
         // change is rejected instead of silently overwritten.
@@ -1609,14 +1911,23 @@ impl VaultManager {
     /// Recording the fingerprint here is what keeps the freshness sweep quiet
     /// about this process's own writes: the next scan finds exactly what this
     /// entry says it saw, so the note never enters the diff.
-    async fn insert_cache_entry(
-        &self,
-        path: PathBuf,
-        file: VaultFile,
-        observed: Option<FileFingerprint>,
-    ) {
+    async fn insert_cache_entry(&self, path: PathBuf, file: VaultFile, observed: Option<Observed>) {
         let mut cache = self.file_cache.write().await;
         cache.insert(path, CacheEntry { file, observed });
+    }
+
+    /// Whether a scan would find `path` (see [`ScanSpec::admits`]).
+    async fn in_scope(&self, path: &Path) -> bool {
+        let spec = Arc::clone(&self.scan_spec);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || spec.admits(&path))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// [`parse_note`] with this manager's parser.
+    fn parse_read(&self, path: &Path, read: &NoteRead) -> Result<VaultFile> {
+        parse_note(&self.parser, path, read)
     }
 
     /// Bring the link graph + note cache into agreement with a substrate
@@ -1638,10 +1949,12 @@ impl VaultManager {
                 continue;
             }
 
-            if *present {
+            let in_scope = self.in_scope(&full_path).await;
+            if *present && in_scope {
                 match read_note_with_fingerprint(&full_path, None).await {
-                    Ok((content, observed)) => match self.parser.parse_file(&full_path, &content) {
+                    Ok(read) => match self.parse_read(&full_path, &read) {
                         Ok(vault_file) => {
+                            let observed = read.observed;
                             {
                                 let mut graph = self.link_graph.write().await;
                                 if let Err(e) = graph.add_file(&vault_file) {
@@ -1688,7 +2001,12 @@ impl VaultManager {
                 // atomic with the recreating write) rather than closing it
                 // outright; a full fix serializes sync_index with apply()
                 // per path, add if this ever proves observable in practice.
-                if tokio::fs::try_exists(&full_path).await.unwrap_or(false) {
+                //
+                // A note that is there but out of the scan's reach (too
+                // large, or behind a symlinked folder) is evicted however it
+                // was reported, so the cache never holds what a sweep can't
+                // find.
+                if in_scope {
                     continue;
                 }
                 {
@@ -1701,40 +2019,45 @@ impl VaultManager {
         }
     }
 
-    /// Get a reference to the link graph (read-only access)
+    /// The link graph as it stands, without passing the freshness gate.
     ///
-    /// NOT self-flushing — internal reindex/drain machinery
-    /// (`flush_reindex`/`apply_commit_diff`) calls this directly and must
-    /// keep doing so: `flush_reindex` already holds the queue's flush lock
-    /// while draining, so routing it through [`Self::link_graph_flushed`]
-    /// here would re-enter that lock and deadlock. Read-only consumers
-    /// outside the manager (tool implementations) should prefer
-    /// `link_graph_flushed()` instead.
+    /// Whatever changed outside TurboVault since the last pass is missing
+    /// from it, so a caller that answers from it can be wrong without any
+    /// sign of it. Use [`Self::link_graph_flushed`].
+    #[deprecated(
+        since = "3.4.0",
+        note = "skips the freshness gate; use `link_graph_flushed`"
+    )]
     pub fn link_graph(&self) -> Arc<RwLock<LinkGraph>> {
+        self.graph_handle()
+    }
+
+    /// The graph handle, NOT self-flushing. The reindex/drain machinery
+    /// (`flush_reindex`/`apply_commit_diff`) needs it raw: `flush_reindex`
+    /// already holds the queue's flush lock while draining, so routing it
+    /// through [`Self::link_graph_flushed`] would re-enter that lock and
+    /// deadlock.
+    pub(crate) fn graph_handle(&self) -> Arc<RwLock<LinkGraph>> {
         Arc::clone(&self.link_graph)
     }
 
-    /// Self-flushing link-graph accessor (see `get_backlinks`): drains any
-    /// queued out-of-band commits before handing back the graph handle. This
-    /// is the shared primitive read-only tool implementations (graph/export/
-    /// relationship/viewer) should call instead of the bare `link_graph()`,
-    /// so every such reader gets the same out-of-band-commit coherence
-    /// guarantee as `get_backlinks`/`get_stats`/etc. without each call site
-    /// having to remember to flush itself.
+    /// Self-flushing link-graph accessor (see `get_backlinks`): passes the
+    /// freshness gate before handing back the graph handle, so every reader
+    /// gets the same coherence guarantee as `get_backlinks`/`get_stats`/etc.
+    /// without each call site having to remember to flush itself.
     pub async fn link_graph_flushed(&self) -> Arc<RwLock<LinkGraph>> {
         self.ensure_fresh().await;
-        self.link_graph()
+        self.graph_handle()
     }
 
     /// Parse a single file and return VaultFile
     #[instrument(skip(self), fields(file = ?path), name = "vault_parse_file")]
     pub async fn parse_file(&self, path: &Path) -> Result<VaultFile> {
         let full_path = self.resolve_path(path)?;
-        let content = tokio::fs::read_to_string(&full_path)
+        let read = read_note_with_fingerprint(&full_path, None)
             .await
             .map_err(|e| Error::io_at(self.relative_path(&full_path), e))?;
-        self.parser
-            .parse_file(&full_path, &content)
+        self.parse_read(&full_path, &read)
             .map_err(|e| Error::parse_error(e.to_string()))
     }
 
@@ -1749,17 +2072,16 @@ impl VaultManager {
             return Ok(()); // Not something the cache or the graph models.
         }
         match read_note_with_fingerprint(&full_path, None).await {
-            Ok((content, observed)) => {
+            Ok(read) => {
                 let vault_file = self
-                    .parser
-                    .parse_file(&full_path, &content)
+                    .parse_read(&full_path, &read)
                     .map_err(|error| Error::parse_error(error.to_string()))?;
                 {
                     let mut graph = self.link_graph.write().await;
                     graph.add_file(&vault_file)?;
                     graph.update_links(&vault_file)?;
                 }
-                self.insert_cache_entry(full_path, vault_file, observed)
+                self.insert_cache_entry(full_path, vault_file, read.observed)
                     .await;
                 Ok(())
             }
@@ -2357,6 +2679,156 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(backlinks.len(), 2, "{backlinks:?}");
+    }
+
+    /// A manager for one vault in `dir` whose own config is shaped by `shape`.
+    fn manager_with_vault(dir: &Path, shape: impl FnOnce(&mut VaultConfig)) -> VaultManager {
+        let mut config = ServerConfig::new();
+        let mut vault = VaultConfig::builder("v", dir).build().unwrap();
+        shape(&mut vault);
+        config.vaults.push(vault);
+        VaultManager::new(config).unwrap()
+    }
+
+    /// `allowed_operations: read` makes a vault read-only: every write is
+    /// refused at the chokepoint they all share, saying why.
+    #[tokio::test]
+    async fn a_read_only_vault_refuses_every_write() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("a.md"), "# A\n").unwrap();
+        let manager = manager_with_vault(temp_dir.path(), |vault| {
+            vault.allowed_operations = Some(["read".to_string()].into());
+        });
+        manager.initialize().await.unwrap();
+
+        let error = manager
+            .write_file(Path::new("b.md"), "# B\n", Precondition::Blind, "add")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("allowed_operations"), "{error}");
+        assert!(
+            manager
+                .delete_file(Path::new("a.md"), Precondition::Blind, "rm")
+                .await
+                .is_err()
+        );
+        assert!(!temp_dir.path().join("b.md").exists());
+        assert!(temp_dir.path().join("a.md").exists());
+        // Reading is always allowed.
+        assert_eq!(manager.read_file(Path::new("a.md")).await.unwrap(), "# A\n");
+    }
+
+    /// Each kind of change needs its own operation, and a move built as a
+    /// copy plus a remove (as a link-aware move is) needs `move`, not
+    /// `write` and `delete`.
+    #[tokio::test]
+    async fn allowed_operations_is_checked_per_kind_of_change() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::write(temp_dir.path().join("a.md"), "# A\n").unwrap();
+        let manager = manager_with_vault(temp_dir.path(), |vault| {
+            vault.allowed_operations = Some(["read".to_string(), "move".to_string()].into());
+        });
+        manager.initialize().await.unwrap();
+
+        let token = manager.hash_bytes(b"# A\n").unwrap();
+        let moved = ChangePlan::new("move")
+            .upsert("b.md", b"# A\n".to_vec())
+            .expect_blob("a.md", token)
+            .remove("a.md");
+        manager
+            .apply_changes(&moved)
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap();
+        assert!(temp_dir.path().join("b.md").exists());
+
+        let deleted = ChangePlan::new("rm").remove("b.md");
+        assert!(manager.apply_changes(&deleted).await.is_err());
+        let written = ChangePlan::new("add").upsert("c.md", b"# C\n".to_vec());
+        assert!(manager.apply_changes(&written).await.is_err());
+
+        // A move in the same plan doesn't carry an unrelated delete with it.
+        std::fs::write(temp_dir.path().join("other.md"), "# Other\n").unwrap();
+        let token = manager.hash_bytes(b"# A\n").unwrap();
+        let move_and_delete = ChangePlan::new("both")
+            .upsert("d.md", b"# A\n".to_vec())
+            .expect_blob("b.md", token)
+            .remove("b.md")
+            .remove("other.md");
+        assert!(manager.apply_changes(&move_and_delete).await.is_err());
+        assert!(temp_dir.path().join("other.md").exists());
+    }
+
+    /// A vault's own `max_file_size` and `excluded_paths` apply to it, and
+    /// its exclusions add to the server's.
+    #[tokio::test]
+    async fn a_vaults_own_limits_apply() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir(temp_dir.path().join("private")).unwrap();
+        std::fs::write(temp_dir.path().join("big.md"), "x".repeat(200)).unwrap();
+        let manager = manager_with_vault(temp_dir.path(), |vault| {
+            vault.max_file_size = Some(64);
+            vault.excluded_paths = Some(["private".to_string()].into());
+        });
+        manager.initialize().await.unwrap();
+
+        assert!(manager.read_file(Path::new("big.md")).await.is_err());
+        assert!(
+            manager
+                .write_file(
+                    Path::new("private/x.md"),
+                    "# X\n",
+                    Precondition::Blind,
+                    "add"
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            manager
+                .write_file(
+                    Path::new(".obsidian/x.md"),
+                    "# X\n",
+                    Precondition::Blind,
+                    "add"
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    /// `initialize` builds the cache and graph from the vault as it is, so
+    /// running it again drops a note deleted since rather than keeping it.
+    #[tokio::test]
+    async fn initialize_again_reflects_the_vault_as_it_is() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        std::fs::write(temp_dir.path().join("gone.md"), "# Gone\n").unwrap();
+        std::fs::write(temp_dir.path().join("kept.md"), "See [[gone]].\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        std::fs::remove_file(temp_dir.path().join("gone.md")).unwrap();
+        manager.initialize().await.unwrap();
+
+        let cached = manager.all_cached_vault_files().await;
+        assert_eq!(cached.len(), 1);
+        assert!(cached[0].path.ends_with("kept.md"));
+        assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
+    }
+
+    /// `Note.MD` is a note: cached, and parsed, so its links are backlinks.
+    #[tokio::test]
+    async fn upper_case_extension_notes_link() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        std::fs::write(temp_dir.path().join("Target.md"), "# Target\n").unwrap();
+        std::fs::write(temp_dir.path().join("Shouting.MD"), "See [[Target]].\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        let backlinks = manager.get_backlinks(Path::new("Target.md")).await.unwrap();
+        assert_eq!(backlinks.len(), 1, "{backlinks:?}");
     }
 
     #[tokio::test]
@@ -3062,6 +3534,142 @@ mod tests {
             a.content.contains("now links to"),
             "the cache must hold the new revision, not the parsed original"
         );
+    }
+
+    /// Rewrite `path` with `content`, then put its mtime back to `mtime`.
+    fn write_keeping_mtime(path: &Path, content: &str, mtime: std::time::SystemTime) {
+        std::fs::write(path, content).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    /// An edit that keeps the size and lands in the same mtime tick as the
+    /// revision we parsed (FAT and exFAT keep 2 s, HFS+ and many network
+    /// mounts 1 s) has the fingerprint we recorded. Read that close to its
+    /// mtime, a note is checked by content until the tick has passed, the
+    /// rule git uses for its "racily clean" index entries.
+    #[tokio::test]
+    async fn reconcile_sees_a_same_size_edit_within_the_mtime_tick() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        let path = temp_dir.path().join("task.md");
+        let tick = std::time::SystemTime::now();
+        write_keeping_mtime(&path, "- [ ] ship it\n", tick);
+        manager.initialize().await.unwrap();
+
+        // A checkbox toggle: same size, and on a coarse filesystem, same mtime.
+        write_keeping_mtime(&path, "- [x] ship it\n", tick);
+        manager.reconcile_now().await;
+
+        let cached = manager.all_cached_vault_files().await;
+        assert_eq!(cached[0].content, "- [x] ship it\n");
+    }
+
+    /// The content check is only for notes read inside their mtime tick, and
+    /// it finds nothing to report when the bytes are the same.
+    #[tokio::test]
+    async fn reconcile_is_silent_about_an_unchanged_note_read_within_its_tick() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = create_test_config(temp_dir.path());
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("fresh.md"), "# Fresh\n").unwrap();
+        manager.initialize().await.unwrap();
+
+        let captured: Arc<StdMutex<Vec<(String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
+            Box::pin(async {})
+        }));
+        manager.reconcile_now().await;
+        assert!(captured.lock().unwrap().is_empty());
+    }
+
+    /// Capture every `(path, present)` the change listener is handed.
+    fn capture_changes(manager: &VaultManager) -> Arc<StdMutex<Vec<(String, bool)>>> {
+        let captured: Arc<StdMutex<Vec<(String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
+            Box::pin(async {})
+        }));
+        captured
+    }
+
+    /// A note that grows past `max_file_size` outside the process leaves
+    /// the scan, so it has to leave the cache and the graph too. Kept there,
+    /// every sweep would report it deleted again and never settle.
+    #[tokio::test]
+    async fn reconcile_settles_a_note_that_grew_past_the_size_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = create_test_config(temp_dir.path());
+        config.max_file_size = 64;
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("big.md"), "# Big\n").unwrap();
+        manager.initialize().await.unwrap();
+        let captured = capture_changes(&manager);
+
+        std::fs::write(temp_dir.path().join("big.md"), "x".repeat(200)).unwrap();
+        manager.reconcile_now().await;
+        assert_eq!(*captured.lock().unwrap(), [("big.md".to_string(), false)]);
+        assert!(manager.all_cached_vault_files().await.is_empty());
+
+        manager.reconcile_now().await;
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "a second pass must find nothing new: {:?}",
+            captured.lock().unwrap()
+        );
+    }
+
+    /// A note written through a symlinked folder is one the scan never finds,
+    /// since it doesn't follow links. The cache must not hold it either, or
+    /// every sweep reports it deleted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reconcile_settles_a_note_written_through_a_symlinked_folder() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir(temp_dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(temp_dir.path().join("real"), temp_dir.path().join("alias"))
+            .unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        manager.initialize().await.unwrap();
+
+        manager
+            .write_file(
+                Path::new("alias/note.md"),
+                "# Note\n",
+                Precondition::Blind,
+                "add",
+            )
+            .await
+            .unwrap();
+        let captured = capture_changes(&manager);
+        manager.reconcile_now().await;
+        manager.reconcile_now().await;
+
+        // The real path is in scope, so the note shows up once, under it.
+        let changes = captured.lock().unwrap().clone();
+        assert!(
+            changes.iter().all(|(path, _)| path == "real/note.md"),
+            "{changes:?}"
+        );
+        manager.reconcile_now().await;
+        assert_eq!(captured.lock().unwrap().len(), changes.len());
     }
 
     /// A note deleted by somebody else leaves the graph and the cache.

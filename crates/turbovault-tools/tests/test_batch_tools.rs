@@ -435,12 +435,11 @@ async fn test_plan_move_with_links_rewrites_backlink_and_carries_precondition() 
         "old.md",
         "new.md",
     );
+    // The source goes last: a best-effort direct apply that stops partway
+    // leaves a copy behind, never a note with no copy at all.
     assert_eq!(
         plan.changes,
         vec![
-            Change::Remove {
-                path: "old.md".to_string(),
-            },
             Change::Upsert {
                 path: "new.md".to_string(),
                 content: b"# Old\n".to_vec(),
@@ -449,18 +448,25 @@ async fn test_plan_move_with_links_rewrites_backlink_and_carries_precondition() 
                 path: "linker.md".to_string(),
                 content: rewritten_linker.clone().into_bytes(),
             },
+            Change::Remove {
+                path: "old.md".to_string(),
+            },
         ]
     );
     assert_eq!(
         plan.preconditions,
         vec![
+            (
+                "old.md".to_string(),
+                Precondition::ExpectBlob(turbovault_vault::compute_hash("# Old\n"))
+            ),
             ("new.md".to_string(), Precondition::ExpectAbsent),
             (
                 "linker.md".to_string(),
                 Precondition::ExpectBlob(turbovault_vault::compute_hash("see [[old]] here\n"))
             ),
         ],
-        "old.md carries no precondition — expected_hash was None"
+        "with no expected_hash, old.md is held to the content the move read"
     );
 }
 
@@ -485,12 +491,12 @@ async fn test_plan_delete_with_stale_links_rewrites_backlink_and_carries_precond
     assert_eq!(
         plan.changes,
         vec![
-            Change::Remove {
-                path: "doomed.md".to_string(),
-            },
             Change::Upsert {
                 path: "linker.md".to_string(),
                 content: rewritten_linker.clone().into_bytes(),
+            },
+            Change::Remove {
+                path: "doomed.md".to_string(),
             },
         ]
     );
@@ -642,7 +648,7 @@ async fn test_batch_partial_failure_reports_the_op_that_landed() {
     // ...and the manager indexed what landed, so the op that survived the
     // partial is visible to every read path, not just to `ls`.
     let linkers = {
-        let lg = manager.link_graph();
+        let lg = manager.link_graph_flushed().await;
         let graph = lg.read().await;
         graph
             .backlinks(&temp_dir.path().join("existing.md"))
@@ -752,6 +758,122 @@ async fn test_plan_move_leaves_alias_links_alone() {
         planned_content(&plan, "linker.md").as_deref(),
         Some("[[Legacy Name]] and [[fresh]]\n")
     );
+}
+
+/// Make `dir` read-only, returning `false` when that doesn't stop a write
+/// (running as root), so a test that relies on it can skip.
+#[cfg(unix)]
+fn lock_dir(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = dir.join(".probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        std::fs::remove_file(probe).unwrap();
+        return false;
+    }
+    true
+}
+
+#[cfg(unix)]
+fn unlock_dir(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// On a direct vault a move is sequential with no rollback. When the
+/// destination can't be written, the source must still be there.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_move_that_cannot_write_its_destination_keeps_the_source() {
+    let (temp_dir, manager) =
+        setup_vault_with_files(&[("old.md", "# Old\n"), ("locked/keep.md", "# Keep\n")]).await;
+    let locked = temp_dir.path().join("locked");
+    if !lock_dir(&locked) {
+        return;
+    }
+
+    let result = BatchTools::new(manager.clone())
+        .move_file_with_link_updates("old.md", "locked/new.md", None, None, "move")
+        .await;
+    unlock_dir(&locked);
+
+    assert!(result.is_err());
+    assert_eq!(
+        std::fs::read_to_string(temp_dir.path().join("old.md")).unwrap(),
+        "# Old\n"
+    );
+}
+
+/// A move that stops partway says what already landed, rather than
+/// reporting a bare I/O error for a half-applied move.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_move_that_stops_partway_says_what_landed() {
+    let (temp_dir, manager) = setup_vault_with_files(&[
+        ("old.md", "# Old\n"),
+        ("locked/linker.md", "See [[old]].\n"),
+    ])
+    .await;
+    let locked = temp_dir.path().join("locked");
+    if !lock_dir(&locked) {
+        return;
+    }
+
+    let error = BatchTools::new(manager.clone())
+        .move_file_with_link_updates("old.md", "new.md", None, None, "move")
+        .await
+        .unwrap_err()
+        .to_string();
+    unlock_dir(&locked);
+
+    assert!(error.contains("new.md"), "{error}");
+    assert!(error.contains("old.md"), "{error}");
+    assert!(temp_dir.path().join("old.md").exists());
+    assert!(temp_dir.path().join("new.md").exists());
+}
+
+/// A note that started linking to the moved one a moment ago, outside
+/// TurboVault (Obsidian, a sync client), is rewritten too. The freshness gate
+/// is debounced, so a move that trusted the last scheduled pass would leave
+/// that link broken.
+#[tokio::test]
+async fn test_move_rewrites_a_link_added_outside_moments_ago() {
+    let (temp_dir, manager) = setup_vault_with_files(&[("old.md", "# Old\n")]).await;
+    // A read starts the debounce window.
+    manager.ensure_fresh().await;
+    tokio::fs::write(temp_dir.path().join("fresh.md"), "See [[old]].\n")
+        .await
+        .unwrap();
+
+    let updated = BatchTools::new(manager.clone())
+        .move_file_with_link_updates("old.md", "new.md", None, None, "move")
+        .await
+        .unwrap();
+
+    assert_eq!(updated, ["fresh.md"]);
+    assert_eq!(
+        tokio::fs::read_to_string(temp_dir.path().join("fresh.md"))
+            .await
+            .unwrap(),
+        "See [[new]].\n"
+    );
+}
+
+/// The same for the stale-wrap on delete.
+#[tokio::test]
+async fn test_delete_wraps_a_link_added_outside_moments_ago() {
+    let (temp_dir, manager) = setup_vault_with_files(&[("old.md", "# Old\n")]).await;
+    manager.ensure_fresh().await;
+    tokio::fs::write(temp_dir.path().join("fresh.md"), "See [[old]].\n")
+        .await
+        .unwrap();
+
+    let updated = BatchTools::new(manager.clone())
+        .delete_file_with_link_rewrite_to_stale("old.md", None, "delete")
+        .await
+        .unwrap();
+
+    assert_eq!(updated, ["fresh.md"]);
 }
 
 /// Markdown links follow a move the way wikilinks do, in the body and in

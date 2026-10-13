@@ -693,6 +693,40 @@ fn generate_recommendations(
 mod tests {
     use super::*;
 
+    /// Staleness reads the note's real modification time. It was always
+    /// 0.0, the Unix epoch, so every note was decades stale.
+    #[tokio::test]
+    async fn find_stale_notes_tells_old_from_new() {
+        use turbovault_core::config::{ServerConfig, VaultConfig};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("fresh.md"), "# Fresh\n\nWritten today.\n").unwrap();
+        let old = tmp.path().join("old.md");
+        std::fs::write(&old, "# Old\n\nWritten long ago.\n").unwrap();
+        let hundred_days = std::time::Duration::from_secs(100 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(SystemTime::now() - hundred_days)
+            .unwrap();
+
+        let mut config = ServerConfig::new();
+        config
+            .vaults
+            .push(VaultConfig::builder("v", tmp.path()).build().unwrap());
+        let manager = Arc::new(VaultManager::new(config).unwrap());
+        manager.initialize().await.unwrap();
+
+        let stale = QualityTools::new(manager)
+            .find_stale_notes(30, 10)
+            .await
+            .unwrap();
+        let paths: Vec<&str> = stale.iter().map(|score| score.path.as_str()).collect();
+        assert_eq!(paths, ["old.md"]);
+        assert_eq!(stale[0].staleness.days_since_modified, 100);
+    }
+
     #[test]
     fn test_count_syllables() {
         assert_eq!(count_syllables("the"), 1);

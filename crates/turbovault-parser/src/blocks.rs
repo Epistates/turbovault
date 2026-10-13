@@ -28,14 +28,59 @@ static WIKILINK_RE: LazyLock<Regex> =
 /// Preprocess wikilinks to standard markdown links with wikilink: prefix.
 /// This allows pulldown-cmark to parse them as regular links.
 fn preprocess_wikilinks(markdown: &str) -> String {
-    WIKILINK_RE
-        .replace_all(markdown, |caps: &regex::Captures| {
-            let target = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-            let alias = caps.get(2).map(|m| m.as_str().trim());
-            let display_text = alias.unwrap_or(target);
-            format!("[{}](wikilink:{})", display_text, target)
+    replace_outside_code(markdown, &WIKILINK_RE, |caps| {
+        let target = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+        let alias = caps.get(2).map(|m| m.as_str().trim());
+        let display_text = alias.unwrap_or(target);
+        format!("[{}](wikilink:{})", display_text, target)
+    })
+}
+
+/// The CommonMark extensions blocks are parsed with.
+fn block_options() -> Options {
+    Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
+}
+
+/// Replace each match of `re` in `markdown` with `replace(captures)`, except
+/// inside code, fenced, indented or inline, whose text is literal: a
+/// `[[Note]]` there is text, not a link to rewrite.
+fn replace_outside_code(
+    markdown: &str,
+    re: &Regex,
+    replace: impl Fn(&regex::Captures) -> String,
+) -> String {
+    if !re.is_match(markdown) {
+        return markdown.to_string();
+    }
+    // In document order and disjoint, so a binary search finds the one that
+    // could hold a match.
+    let code: Vec<std::ops::Range<usize>> = Parser::new_ext(markdown, block_options())
+        .into_offset_iter()
+        .filter_map(|(event, range)| match event {
+            Event::Start(Tag::CodeBlock(_)) | Event::Code(_) => Some(range),
+            _ => None,
         })
-        .to_string()
+        .collect();
+    let in_code = |offset: usize| {
+        let after = code.partition_point(|range| range.start <= offset);
+        after > 0 && offset < code[after - 1].end
+    };
+
+    let mut out = String::with_capacity(markdown.len());
+    let mut copied = 0;
+    for caps in re.captures_iter(markdown) {
+        let Some(whole) = caps.get(0) else {
+            continue;
+        };
+        if in_code(whole.start()) {
+            continue;
+        }
+        out.push_str(&markdown[copied..whole.start()]);
+        out.push_str(&replace(&caps));
+        copied = whole.end();
+    }
+    out.push_str(&markdown[copied..]);
+    out
 }
 
 /// Regex for links with spaces in URL (not valid CommonMark but common in wikis)
@@ -102,22 +147,20 @@ fn split_link_title(target: &str) -> (&str, Option<&str>) {
 /// title part of the destination, which is how `![a](x.png "Title")` used to
 /// parse to `src: "x.png \"Title\""` with no title at all.
 fn preprocess_links_with_spaces(markdown: &str) -> String {
-    LINK_WITH_SPACES_RE
-        .replace_all(markdown, |caps: &regex::Captures| {
-            let text = &caps[1];
-            let (url, title) = split_link_title(&caps[2]);
-            // Only a destination that genuinely contains a space needs the
-            // angle brackets. Once the title is off, most do not, and leaving
-            // them alone lets pulldown-cmark parse them natively.
-            if !url.contains(' ') {
-                return caps[0].to_string();
-            }
-            match title {
-                Some(title) => format!("[{text}](<{url}> {title})"),
-                None => format!("[{text}](<{url}>)"),
-            }
-        })
-        .to_string()
+    replace_outside_code(markdown, &LINK_WITH_SPACES_RE, |caps| {
+        let text = &caps[1];
+        let (url, title) = split_link_title(&caps[2]);
+        // Only a destination that genuinely contains a space needs the
+        // angle brackets. Once the title is off, most do not, and leaving
+        // them alone lets pulldown-cmark parse them natively.
+        if !url.contains(' ') {
+            return caps[0].to_string();
+        }
+        match title {
+            Some(title) => format!("[{text}](<{url}> {title})"),
+            None => format!("[{text}](<{url}>)"),
+        }
+    })
 }
 
 // ============================================================================
@@ -1463,19 +1506,13 @@ fn parse_blocks_anchored(
     // Extract details blocks
     let (processed_markdown, details_blocks) = extract_details_blocks(&preprocessed);
 
-    // Enable GFM extensions
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TASKLISTS);
-
     // `into_offset_iter` carries each event's source span, which is the only
     // way a block learns where it sits. `current_line` was previously set once
     // at construction and never advanced, so every `ContentBlock::Code` in
     // every document reported the same line the parse started from, which for
     // `parse_blocks` meant a hard-coded 0.
     let line_starts = line_start_offsets(&processed_markdown);
-    let parser = Parser::new_ext(&processed_markdown, options).into_offset_iter();
+    let parser = Parser::new_ext(&processed_markdown, block_options()).into_offset_iter();
     let mut blocks = Vec::new();
     let mut state = BlockParserState::new(start_line, outer_item_line);
 
@@ -1803,6 +1840,35 @@ mod tests {
         } else {
             panic!("Expected Paragraph block");
         }
+    }
+
+    /// A wikilink in code is text: it isn't rewritten into a link, in a
+    /// fence or inline.
+    #[test]
+    fn test_wikilinks_in_code_stay_text() {
+        let markdown = "```\n[[Note|alias]] and [a](my file.md)\n```\n\nRun `[[Code]]` here.\n";
+        let blocks = parse_blocks(markdown);
+
+        let ContentBlock::Code { content, .. } = &blocks[0] else {
+            panic!("expected a code block: {blocks:?}");
+        };
+        assert_eq!(content, "[[Note|alias]] and [a](my file.md)");
+
+        let ContentBlock::Paragraph { inline, .. } = &blocks[1] else {
+            panic!("expected a paragraph: {blocks:?}");
+        };
+        assert!(
+            inline
+                .iter()
+                .any(|e| matches!(e, InlineElement::Code { value } if value == "[[Code]]")),
+            "{inline:?}"
+        );
+        assert!(
+            !inline
+                .iter()
+                .any(|e| matches!(e, InlineElement::Link { .. })),
+            "{inline:?}"
+        );
     }
 
     #[test]

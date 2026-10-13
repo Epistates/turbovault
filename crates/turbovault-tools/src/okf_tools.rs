@@ -322,14 +322,28 @@ impl OkfTools {
 
             let mut written = false;
             if !dry_run {
-                let existing = self.manager.read_file(&index_abs).await.ok();
+                // Only a missing index counts as absent. One that can't be
+                // read is somebody's file, not a gap to fill.
+                let existing = match self.manager.read_file(&index_abs).await {
+                    Ok(existing) => Some(existing),
+                    Err(turbovault_core::Error::FileNotFound { .. }) => None,
+                    Err(e) => return Err(e),
+                };
                 if existing.as_deref() != Some(content.as_str()) {
+                    // Held to what was just read, so an edit made since is
+                    // refused rather than overwritten.
+                    let precondition = match &existing {
+                        Some(existing) => {
+                            Precondition::ExpectBlob(self.manager.hash_bytes(existing.as_bytes())?)
+                        }
+                        None => Precondition::ExpectAbsent,
+                    };
                     let auto_message = format!("generate_index {index_rel}");
                     self.manager
                         .write_file(
                             &index_abs,
                             &content,
-                            Precondition::for_replace(None, true),
+                            precondition,
                             commit_message.unwrap_or(&auto_message),
                         )
                         .await?;
@@ -727,6 +741,33 @@ mod tests {
             .find(|i| i.path == "tables/index.md")
             .unwrap();
         assert!(!tables.written);
+    }
+
+    /// An `index.md` that can't be read is not taken for a missing one and
+    /// overwritten.
+    #[tokio::test]
+    async fn generate_index_keeps_an_index_it_cannot_read() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join("tables")).unwrap();
+        std::fs::write(
+            temp.path().join("tables/orders.md"),
+            "---\ntype: Table\ntitle: Orders\n---\n# x\n",
+        )
+        .unwrap();
+        let unreadable = b"# Hand written\n\xff\xfe\n";
+        std::fs::write(temp.path().join("tables/index.md"), unreadable).unwrap();
+
+        let manager = make_manager(temp.path());
+        manager.initialize().await.unwrap();
+        let result = OkfTools::new(manager)
+            .generate_index(None, true, false, None)
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read(temp.path().join("tables/index.md")).unwrap(),
+            unreadable
+        );
     }
 
     #[test]

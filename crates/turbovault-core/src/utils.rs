@@ -33,6 +33,28 @@ pub fn path_to_slash(path: &Path) -> String {
     }
 }
 
+/// Whether `path` is a *note*: what the note cache, the link graph and the
+/// search index model. Markdown, by extension, in any case: `Note.MD` is as
+/// much a note as `Note.md`.
+///
+/// Every consumer has to use this one test. The freshness sweep compares what
+/// the cache holds against what a scan finds, and the parser decides whether
+/// to read a file's links, so two tests that disagree about a path leave it
+/// cached but unparsed, or reported changed on every pass.
+///
+/// ```
+/// use std::path::Path;
+/// use turbovault_core::is_note;
+///
+/// assert!(is_note(Path::new("wiki/Note.MD")));
+/// assert!(!is_note(Path::new("board.canvas")));
+/// ```
+pub fn is_note(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
 /// The content hash TurboVault hands out for a note: lowercase hex SHA-256 of
 /// its Unicode NFC form. It is the `expected_hash` a Direct-backed write
 /// checks, the hash `read_note` reports, the before/after hash on an audit

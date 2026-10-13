@@ -70,7 +70,7 @@ impl BatchTools {
             });
         }
 
-        self.manager.flush_reindex().await;
+        self.manager.ensure_fresh_now().await;
         // A batch failure that wrote NOTHING (intra-batch collision, a
         // stale/absent precondition, an unreadable link source, any git
         // failure) is reported as `success: false` in the BatchResult
@@ -252,7 +252,7 @@ impl BatchTools {
         dest_expected_hash: Option<&str>,
         message: &str,
     ) -> Result<Vec<String>> {
-        self.manager.flush_reindex().await;
+        self.manager.ensure_fresh_now().await;
         let (plan, updated) = self
             .fold_move_with_links(
                 ChangePlan::new(message.to_string()),
@@ -262,10 +262,11 @@ impl BatchTools {
                 dest_expected_hash,
             )
             .await?;
-        // All-or-nothing contract: a best-effort direct apply that stopped
-        // mid-plan comes back as `Ok` carrying its error (M5 S2), so re-raise
-        // it rather than reporting a half-rewritten move as a success.
-        self.manager.apply_changes(&plan).await?.into_result()?;
+        // A best-effort direct apply that stopped mid-plan comes back as `Ok`
+        // carrying its error (M5 S2), so re-raise it rather than reporting a
+        // half-rewritten move as a success.
+        let outcome = self.manager.apply_changes(&plan).await?;
+        stopped_partway(outcome, &format!("move of {from} to {to}"))?;
         Ok(updated)
     }
 
@@ -279,12 +280,13 @@ impl BatchTools {
         expected_hash: Option<&str>,
         message: &str,
     ) -> Result<Vec<String>> {
-        self.manager.flush_reindex().await;
+        self.manager.ensure_fresh_now().await;
         let (plan, updated) = self
             .fold_delete_with_stale_links(ChangePlan::new(message.to_string()), path, expected_hash)
             .await?;
-        // Same all-or-nothing re-raise as `move_file_with_link_updates`.
-        self.manager.apply_changes(&plan).await?.into_result()?;
+        // Same re-raise as `move_file_with_link_updates`.
+        let outcome = self.manager.apply_changes(&plan).await?;
+        stopped_partway(outcome, &format!("delete of {path}"))?;
         Ok(updated)
     }
 
@@ -596,7 +598,7 @@ impl BatchTools {
         let from_full = self.manager.vault_path().join(from);
 
         let backlink_paths = {
-            let lg = self.manager.link_graph();
+            let lg = self.manager.link_graph_flushed().await;
             let graph = lg.read().await;
             graph
                 .backlinks(&from_full)
@@ -623,17 +625,26 @@ impl BatchTools {
             link_updates.push((rel_str, rewritten, src_hash));
         }
 
-        // Source rename + each link source's rewrite, with preconditions.
-        let mut plan = plan.remove(from).upsert(to, content.into_bytes());
-        if let Some(token) = expected_from {
-            plan = plan.expect_blob(from, token.to_string());
-        }
+        // The source is held to the content this move read, unless the caller
+        // pinned it already: an edit that lands while the backlinks are being
+        // read would otherwise be deleted with it.
+        let from_token = match expected_from {
+            Some(token) => token.to_string(),
+            None => self.manager.hash_bytes(content.as_bytes())?,
+        };
+        let mut plan = plan
+            .upsert(to, content.into_bytes())
+            .expect_blob(from, from_token);
         plan = apply_dest_precondition(plan, to, dest_expected_hash);
         for (rel_path, rewritten, hash) in &link_updates {
             plan = plan
                 .upsert(rel_path.clone(), rewritten.clone().into_bytes())
                 .expect_blob(rel_path.clone(), hash.clone());
         }
+        // The source goes last. A direct apply is sequential with no
+        // rollback, so a failure partway leaves a copy behind rather than no
+        // copy at all.
+        let plan = plan.remove(from);
 
         let updated = link_updates.into_iter().map(|(p, _, _)| p).collect();
         Ok((plan, updated))
@@ -656,7 +667,7 @@ impl BatchTools {
 
         let target_full = self.manager.vault_path().join(path);
         let backlink_paths = {
-            let lg = self.manager.link_graph();
+            let lg = self.manager.link_graph_flushed().await;
             let graph = lg.read().await;
             graph
                 .backlinks(&target_full)
@@ -679,7 +690,7 @@ impl BatchTools {
             link_updates.push((rel_str, rewritten, src_hash));
         }
 
-        let mut plan = plan.remove(path);
+        let mut plan = plan;
         if let Some(token) = expected_target {
             plan = plan.expect_blob(path, token.to_string());
         }
@@ -688,6 +699,9 @@ impl BatchTools {
                 .upsert(rel_path.clone(), rewritten.clone().into_bytes())
                 .expect_blob(rel_path.clone(), hash.clone());
         }
+        // The note goes last, as in a move: a failure partway leaves it in
+        // place with some links already marked, not gone with none marked.
+        let plan = plan.remove(path);
 
         let updated = link_updates.into_iter().map(|(p, _, _)| p).collect();
         Ok((plan, updated))
@@ -704,7 +718,7 @@ impl BatchTools {
         target: &std::path::Path,
     ) -> Vec<turbovault_core::Link> {
         let links = crate::wikilink_rewriter::links_in(content);
-        let lg = self.manager.link_graph();
+        let lg = self.manager.link_graph_flushed().await;
         let graph = lg.read().await;
         links
             .into_iter()
@@ -722,7 +736,7 @@ impl BatchTools {
     /// present.
     async fn list_inbound_backlinks(&self, path: &str) -> Result<Vec<String>> {
         let backlink_paths = {
-            let lg = self.manager.link_graph();
+            let lg = self.manager.link_graph_flushed().await;
             let graph = lg.read().await;
             graph
                 .backlinks(&self.manager.vault_path().join(path))
@@ -840,6 +854,33 @@ fn op_records(
 
 /// The paths a run of plan changes mutates — the span-scoped counterpart of
 /// [`ChangePlan::touched_paths`].
+/// Re-raise the error of a best-effort direct apply that stopped partway,
+/// saying what already landed, so a half-applied `operation` isn't reported
+/// as a bare I/O error. When nothing landed the error is passed on as is.
+fn stopped_partway(outcome: turbovault_vault::ApplyOutcome, operation: &str) -> Result<()> {
+    let Some(error) = outcome.error else {
+        return Ok(());
+    };
+    if outcome.changed.is_empty() {
+        return Err(error);
+    }
+    let landed: Vec<String> = outcome
+        .changed
+        .iter()
+        .map(|(path, present)| {
+            if *present {
+                format!("wrote {path}")
+            } else {
+                format!("removed {path}")
+            }
+        })
+        .collect();
+    Err(Error::other(format!(
+        "{operation} stopped partway: {error}. Already applied: {}. Everything else is as it was.",
+        landed.join(", ")
+    )))
+}
+
 fn changed_paths(changes: &[Change]) -> Vec<String> {
     changes
         .iter()

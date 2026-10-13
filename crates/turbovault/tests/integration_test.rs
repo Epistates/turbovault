@@ -93,7 +93,7 @@ mod tests {
     #[tokio::test]
     async fn test_link_graph_access() {
         let (_temp, manager) = create_test_vault().await;
-        let graph = manager.link_graph();
+        let graph = manager.link_graph_flushed().await;
         let _read_guard = graph.read().await;
         // Should be able to acquire read lock on graph (no assertion needed)
     }

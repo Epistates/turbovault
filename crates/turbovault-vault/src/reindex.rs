@@ -308,7 +308,7 @@ pub async fn apply_commit_diff(
         .map_err(|e| Error::config_error(format!("git diff failed: {}", e)))?;
 
     let vault_root = manager.vault_path().clone();
-    let graph_handle = manager.link_graph();
+    let graph_handle = manager.graph_handle();
 
     for (rel_path, present_in_commit) in &changes {
         let full_path = vault_root.join(rel_path);
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(queue.pending_count(), 0);
 
         // Graph now knows about hub.md (added) and tracks the unresolved link.
-        let lg = manager.link_graph();
+        let lg = manager.graph_handle();
         let graph = lg.read().await;
         assert_eq!(graph.node_count(), 1, "hub.md added to graph");
         assert!(
@@ -438,14 +438,14 @@ mod tests {
         repo.commit_changeset(&ChangePlan::new("c").create("ghost.md", "# Ghost"))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
-        assert_eq!(manager.link_graph().read().await.node_count(), 1);
+        assert_eq!(manager.graph_handle().read().await.node_count(), 1);
 
         let ghost_blob = VaultRepo::blob_oid_of(b"# Ghost").unwrap();
         repo.commit_changeset(&ChangePlan::new("d").delete("ghost.md", ghost_blob.to_string()))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(
-            manager.link_graph().read().await.node_count(),
+            manager.graph_handle().read().await.node_count(),
             0,
             "ghost.md removed after delete commit"
         );
@@ -465,7 +465,7 @@ mod tests {
 
         let changed = queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(changed.len(), 3);
-        assert_eq!(manager.link_graph().read().await.node_count(), 3);
+        assert_eq!(manager.graph_handle().read().await.node_count(), 3);
     }
 
     /// tlx.1: a commit oid the ref-watcher enqueued may no longer be reachable
@@ -495,7 +495,7 @@ mod tests {
         );
         assert_eq!(queue.pending_count(), 0);
         assert_eq!(
-            manager.link_graph().read().await.node_count(),
+            manager.graph_handle().read().await.node_count(),
             1,
             "the real commit applied despite the bogus one ahead of it"
         );
@@ -522,7 +522,7 @@ mod tests {
 
         queue.drain_through(&repo, &manager).await.unwrap();
 
-        let lg = manager.link_graph();
+        let lg = manager.graph_handle();
         let graph = lg.read().await;
         assert_eq!(graph.node_count(), 2, "both files in the graph");
         assert_eq!(
@@ -549,7 +549,7 @@ mod tests {
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         {
-            let lg = manager.link_graph();
+            let lg = manager.graph_handle();
             let graph = lg.read().await;
             assert_eq!(
                 graph.unresolved_link_count(),
@@ -564,7 +564,7 @@ mod tests {
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
 
-        let lg = manager.link_graph();
+        let lg = manager.graph_handle();
         let graph = lg.read().await;
         assert_eq!(graph.node_count(), 2, "both files in the graph");
         assert_eq!(
@@ -600,7 +600,7 @@ mod tests {
         .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
         assert_eq!(
-            manager.link_graph().read().await.edge_count(),
+            manager.graph_handle().read().await.edge_count(),
             1,
             "precondition: linker -> target edge exists"
         );
@@ -616,7 +616,7 @@ mod tests {
         .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
 
-        let lg = manager.link_graph();
+        let lg = manager.graph_handle();
         let graph = lg.read().await;
         assert_eq!(graph.node_count(), 2, "linker + renamed target");
         assert_eq!(graph.edge_count(), 1, "linker -> renamed edge");
@@ -679,7 +679,7 @@ mod tests {
         repo.commit_changeset(&ChangePlan::new("c").create("n.md", "see [[alpha]]"))
             .unwrap();
         queue.drain_through(&repo, &manager).await.unwrap();
-        let unresolved_after_v1 = manager.link_graph().read().await.unresolved_link_count();
+        let unresolved_after_v1 = manager.graph_handle().read().await.unresolved_link_count();
         assert!(unresolved_after_v1 >= 1);
 
         // v2 replaces link target with "beta"
@@ -696,7 +696,7 @@ mod tests {
         // link and recorded [[beta]] — the original test asserted only
         // node_count and would have passed even if the modify reindex did
         // nothing at all.
-        let lg = manager.link_graph();
+        let lg = manager.graph_handle();
         let graph = lg.read().await;
         assert_eq!(graph.node_count(), 1);
         let n_path = manager.vault_path().join("n.md");

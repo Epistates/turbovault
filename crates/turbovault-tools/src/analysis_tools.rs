@@ -49,7 +49,7 @@ impl AnalysisTools {
 
     /// Detect cycles (mutual linking patterns)
     pub async fn detect_cycles(&self) -> Result<Vec<Vec<String>>> {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let graph_read = graph.read().await;
 
         let cycles = graph_read

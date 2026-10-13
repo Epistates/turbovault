@@ -67,7 +67,7 @@ impl FrontmatterSqlEngine {
         let mut tag_count = 0usize;
 
         for file_path in &files {
-            if !file_path.to_string_lossy().to_lowercase().ends_with(".md") {
+            if !turbovault_core::is_note(file_path) {
                 continue;
             }
 
@@ -143,7 +143,7 @@ impl FrontmatterSqlEngine {
         let mut sample_paths: Vec<String> = Vec::new();
 
         for file_path in &files {
-            if !file_path.to_string_lossy().to_lowercase().ends_with(".md") {
+            if !turbovault_core::is_note(file_path) {
                 continue;
             }
 
@@ -212,7 +212,7 @@ impl FrontmatterSqlEngine {
 
     /// Populate the `links` table from the vault link graph.
     async fn populate_links(&self, glue: &mut Glue<MemoryStorage>) -> usize {
-        let graph = self.manager.link_graph();
+        let graph = self.manager.link_graph_flushed().await;
         let graph_read = graph.read().await;
         let all_links = graph_read.all_links();
         let mut count = 0usize;

@@ -319,11 +319,7 @@ impl GraphProvider {
         let mut folders: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         for file in &files {
-            if file
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-            {
+            if turbovault_core::is_note(file) {
                 let file_str = manager.relative_path(file);
                 // `file_str` is already `/`-separated (manager.relative_path),
                 // so `parent` is too. Windows path parsing accepts `/` as a

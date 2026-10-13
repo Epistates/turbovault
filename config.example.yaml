@@ -76,24 +76,26 @@ vaults:
     #
     # A plugin that genuinely needs one config file declares that exact path
     # as a capability; see the turbovault-plugin-api docs.
+    #
+    # A vault's list is added to the server's, so it can protect more
+    # directories but never fewer.
     excluded_paths:
       - .obsidian      # Obsidian config folder (plugin code lives here)
       - .trash         # Trash folder
       - .git           # Git folder (hooks are executed on commit)
 
-    # Caching configuration
-    enable_caching: true
-    cache_ttl: 300           # Cache time-to-live in seconds (5 minutes)
-
-    # Template directories (additional to vault root)
-    template_dirs:
-      - templates
-      - .templates
-
-    # Allowed operations (restrict what can be done)
-    # Options: read, write, delete, move, all
+    # Allowed operations: what TurboVault may do to this vault's notes.
+    # Options: read, write, delete, move, all (one name or a list).
+    #   write  - create or change a note
+    #   delete - remove a note
+    #   move   - rename a note (rewriting the links to it also needs write)
+    # `read` alone makes the vault read-only. Reading is always allowed.
+    # An unknown name is refused at startup rather than ignored.
     # Default: all (if not specified)
     allowed_operations: all
+
+    # enable_caching, cache_ttl and template_dirs are deprecated: TurboVault
+    # never read them. They're still accepted, with a warning.
 
   # ------------------------------------------------------------------------------
   # Multi-Vault Setup (Power Users)
@@ -109,8 +111,6 @@ vaults:
   #     - .obsidian
   #     - .trash
   #     - confidential/  # Exclude sensitive folders
-  #   enable_caching: true
-  #   cache_ttl: 3600        # 1 hour cache for work vault
 
   # - name: research
   #   path: /Users/yourname/Documents/ResearchVault
@@ -123,16 +123,12 @@ vaults:
   #   excluded_paths:
   #     - .obsidian
   #     - drafts/
-  #   enable_caching: true
-  #   cache_ttl: 7200  # 2 hours cache
 
   # - name: public-readonly
   #   path: /Users/yourname/Documents/PublicVault
   #   is_default: false
   #   watch_for_changes: true
   #   allowed_operations: read  # Read-only vault
-  #   enable_caching: true
-  #   cache_ttl: 1800  # 30 minutes
 
 # ------------------------------------------------------------------------------
 # SECURITY
@@ -361,8 +357,6 @@ performance:
 #     path: /path/to/vault
 #     is_default: true
 #     watch_for_changes: true
-#     enable_caching: true
-#     cache_ttl: 60
 # observability:
 #   log_level: debug
 #   enable_metrics: true
@@ -375,8 +369,6 @@ performance:
 #     is_default: true
 #     watch_for_changes: true
 #     max_file_size: 5242880
-#     enable_caching: true
-#     cache_ttl: 3600
 # observability:
 #   log_level: info
 #   security_auditing: true
@@ -388,8 +380,6 @@ performance:
 #     path: /path/to/vault
 #     is_default: true
 #     watch_for_changes: false  # Disable watching for performance
-#     enable_caching: true
-#     cache_ttl: 7200  # 2 hours
 # search:
 #   max_results: 20  # Limit results
 # performance:

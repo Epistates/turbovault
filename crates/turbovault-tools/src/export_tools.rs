@@ -87,7 +87,7 @@ impl ExportTools {
         let mut note_count = 0usize;
 
         for file_path in &files {
-            if !file_path.to_string_lossy().to_lowercase().ends_with(".md") {
+            if !turbovault_core::is_note(file_path) {
                 continue;
             }
             if let Ok(vault_file) = self.manager.parse_file(file_path).await {
