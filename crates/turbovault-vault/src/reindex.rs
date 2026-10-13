@@ -179,7 +179,7 @@ impl ReindexQueue {
                     // every commit still queued behind it. Log, advance the
                     // cursor, keep draining — exactly like the apply_commit_diff
                     // error path below.
-                    log::warn!(
+                    tracing::warn!(
                         "reindex: skipping commit {} after first-parent lookup error: {}",
                         commit,
                         e
@@ -194,7 +194,7 @@ impl ReindexQueue {
                         .into_iter()
                         .map(|(path, present)| (path, present, pending.origin)),
                 ),
-                Err(e) => log::warn!("reindex: skipping commit {} after error: {}", commit, e),
+                Err(e) => tracing::warn!("reindex: skipping commit {} after error: {}", commit, e),
             }
             self.advance_cursor(commit);
         }
@@ -321,17 +321,17 @@ pub async fn apply_commit_diff(
                     // remove_file is a no-op if the path is unknown — safe.
                     let _ = graph.remove_file(&full_path);
                     if let Err(e) = graph.add_file(&vault_file) {
-                        log::warn!("reindex add_file({}) failed: {}", rel_path, e);
+                        tracing::warn!("reindex add_file({}) failed: {}", rel_path, e);
                     }
                     if let Err(e) = graph.update_links(&vault_file) {
-                        log::warn!("reindex update_links({}) failed: {}", rel_path, e);
+                        tracing::warn!("reindex update_links({}) failed: {}", rel_path, e);
                     }
                 }
                 Err(e) => {
                     // Likely "file missing" because a LATER queued commit
                     // already deleted it. That commit's drain will do the
                     // graph remove. Log + skip.
-                    log::debug!("reindex skipping {} (parse failed: {})", rel_path, e);
+                    tracing::debug!("reindex skipping {} (parse failed: {})", rel_path, e);
                 }
             }
         } else {

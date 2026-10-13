@@ -99,7 +99,7 @@ impl ToolVisibilitySettings {
     /// both the `VisibilityConfig` (name rules) and `disable_tags` (tag rules).
     pub fn apply_to_layer<H: McpHandler>(self, layer: VisibilityLayer<H>) -> VisibilityLayer<H> {
         if !self.hidden_tags.is_empty() {
-            log::warn!(
+            tracing::warn!(
                 "tool_visibility.hidden_tags is set but tag-based hiding is not yet supported \
                  by turbomcp (hide_tags() API pending). The setting will be ignored. \
                  Use disabled_tags to fully block tagged tools instead."

@@ -390,7 +390,7 @@ impl AuditLog {
             let entry: AuditEntry = match serde_json::from_str(line) {
                 Ok(e) => e,
                 Err(e) => {
-                    log::warn!("Skipping malformed audit entry: {}", e);
+                    tracing::warn!("Skipping malformed audit entry: {}", e);
                     continue;
                 }
             };

@@ -363,13 +363,13 @@ async fn guarded<T>(
         Ok(Ok(result)) => result,
         Ok(Err(panic)) => {
             let detail = panic_message(&panic);
-            log::error!("plugin {plugin_id:?} panicked handling {subject}: {detail}");
+            tracing::error!("plugin {plugin_id:?} panicked handling {subject}: {detail}");
             Err(PluginError::internal(format!(
                 "plugin {plugin_id:?} panicked while handling {subject}: {detail}"
             )))
         }
         Err(_elapsed) => {
-            log::error!(
+            tracing::error!(
                 "plugin {plugin_id:?} exceeded the {PLUGIN_CALL_BUDGET:?} budget handling {subject}"
             );
             Err(PluginError::timeout(format!(
@@ -1317,7 +1317,7 @@ impl ObsidianMcpServer {
         );
         let result = call.catch_unwind().await.unwrap_or_else(|panic| {
             let detail = panic_message(&panic);
-            log::error!("tool {name:?} panicked: {detail}");
+            tracing::error!("tool {name:?} panicked: {detail}");
             Err(McpError::internal(format!(
                 "tool {name:?} failed with an internal error: {detail}"
             )))

@@ -20,9 +20,8 @@ yaml_serde = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
-parking_lot = "0.12"  # For efficient RwLock in metrics
 sha2 = { workspace = true }
 unicode-normalization = { workspace = true }
 shellexpand = { workspace = true }

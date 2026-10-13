@@ -466,7 +466,7 @@ impl DirectSubstrate {
                 Ok(snap_id) => {
                     entry = entry.with_before(SnapshotStore::compute_hash(before), snap_id);
                 }
-                Err(e) => log::warn!("Failed to store before-snapshot: {}", e),
+                Err(e) => tracing::warn!("Failed to store before-snapshot: {}", e),
             }
         }
         if let Some(after) = after.and_then(|a| std::str::from_utf8(a).ok()) {
@@ -474,12 +474,12 @@ impl DirectSubstrate {
                 Ok(snap_id) => {
                     entry = entry.with_after(SnapshotStore::compute_hash(after), snap_id);
                 }
-                Err(e) => log::warn!("Failed to store after-snapshot: {}", e),
+                Err(e) => tracing::warn!("Failed to store after-snapshot: {}", e),
             }
         }
 
         if let Err(e) = audit_log.record(&entry).await {
-            log::warn!("Failed to record audit entry: {}", e);
+            tracing::warn!("Failed to record audit entry: {}", e);
         }
     }
 }
@@ -595,7 +595,7 @@ impl GitSubstrate {
             && let Some(flush) = &self.flush_on_collision
             && let Err(flush_err) = flush().await
         {
-            log::warn!(
+            tracing::warn!(
                 "GWS.14b CAS-collision flush failed (returning original error): {}",
                 flush_err
             );

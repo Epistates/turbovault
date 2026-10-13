@@ -162,7 +162,7 @@ impl VaultProvider {
 
         // Auto-initialize the vault so it's ready to use immediately
         // This provides better DX - users don't need a separate initialize() call
-        log::info!(
+        tracing::info!(
             "Automatically initializing vault '{}' for immediate use",
             name
         );
@@ -178,7 +178,7 @@ impl VaultProvider {
         self.activate_vault_manager(&name).await?;
         stages.finish().await;
 
-        log::info!("Vault '{}' initialized and ready", name);
+        tracing::info!("Vault '{}' initialized and ready", name);
 
         let response = StandardResponse::new(name.clone(), "add_vault", vault_info)
             .with_next_step("set_active_vault")
@@ -186,7 +186,7 @@ impl VaultProvider {
 
         // CACHE PERSISTENCE: Save vault state to persistent cache
         if let Err(e) = self.persist_vault_state().await {
-            log::warn!("Failed to persist vault state to cache: {}", e);
+            tracing::warn!("Failed to persist vault state to cache: {}", e);
             // Not a fatal error - continue anyway
         }
 
@@ -291,7 +291,7 @@ impl VaultProvider {
 
         // CACHE PERSISTENCE: Save active vault state to cache
         if let Err(e) = self.persist_vault_state().await {
-            log::warn!("Failed to persist active vault state to cache: {}", e);
+            tracing::warn!("Failed to persist active vault state to cache: {}", e);
             // Not a fatal error - continue anyway
         }
 

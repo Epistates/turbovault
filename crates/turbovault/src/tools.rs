@@ -56,7 +56,7 @@ pub struct FrontmatterFilter {
 /// missing note gets suggestions, where the result leaves the server (see
 /// `ObsidianMcpServer::call_tool`): only that knows which vault is meant.
 fn to_mcp_error(e: Error) -> McpError {
-    log::warn!("MCP error: {:?}", e);
+    tracing::warn!("MCP error: {:?}", e);
     let category = e.category();
     let text = e.to_string();
     let message = match error_hint(&e) {
@@ -948,7 +948,7 @@ impl CoreToolHandler {
             self.activate_vault_manager(&name)
                 .await
                 .map_err(|e| Error::config_error(e.to_string()))?;
-            log::info!("Initialized vault '{}' (--init)", name);
+            tracing::info!("Initialized vault '{}' (--init)", name);
         }
         Ok(())
     }
@@ -978,7 +978,7 @@ impl CoreToolHandler {
             let active_vault = base_of(&active_vault).unwrap_or(active_vault);
 
             cache.save_vaults(&vault_configs, &active_vault).await?;
-            log::debug!("Vault state persisted to cache");
+            tracing::debug!("Vault state persisted to cache");
         }
         Ok(())
     }
@@ -1060,11 +1060,11 @@ impl CoreToolHandler {
         if snapshot.is_empty() {
             return;
         }
-        log::info!("shutdown: abandoning {} active fanout(s)", snapshot.len());
+        tracing::info!("shutdown: abandoning {} active fanout(s)", snapshot.len());
         let vaults = match self.multi_vault_mgr.list_vaults().await {
             Ok(list) => list,
             Err(e) => {
-                log::warn!("shutdown: list_vaults: {}", e);
+                tracing::warn!("shutdown: list_vaults: {}", e);
                 return;
             }
         };
@@ -1074,7 +1074,7 @@ impl CoreToolHandler {
                 .find(|v| v.config.name == base_vault)
                 .map(|v| v.config.clone())
             else {
-                log::warn!(
+                tracing::warn!(
                     "shutdown: base vault {} disappeared, skipping abandon",
                     base_vault
                 );
@@ -1091,25 +1091,27 @@ impl CoreToolHandler {
             })
             .await;
             match join {
-                Ok(Ok(())) => log::info!(
+                Ok(Ok(())) => tracing::info!(
                     "shutdown: abandoned fanout fanout_id={} on base vault {}",
                     record.fanout_id,
                     base_vault
                 ),
-                Ok(Err(e)) => log::warn!(
+                Ok(Err(e)) => tracing::warn!(
                     "shutdown: failed to abandon fanout fanout_id={} on {}: {}",
                     record.fanout_id,
                     base_vault,
                     e
                 ),
-                Err(e) => log::warn!("shutdown: abandon task panicked for {}: {}", base_vault, e),
+                Err(e) => {
+                    tracing::warn!("shutdown: abandon task panicked for {}: {}", base_vault, e)
+                }
             }
             if let Err(e) = self
                 .multi_vault_mgr
                 .remove_vault(&record.fanout_vault_name)
                 .await
             {
-                log::warn!(
+                tracing::warn!(
                     "shutdown: failed to deregister fanout vault {}: {}",
                     record.fanout_vault_name,
                     e
@@ -1127,12 +1129,12 @@ impl CoreToolHandler {
         match self.scan_orphan_fanouts(None).await {
             Ok(orphans) if orphans.is_empty() => {}
             Ok(orphans) => {
-                log::warn!(
+                tracing::warn!(
                     "Startup: detected {} orphan fanout worktree(s). Inspect via list_orphan_fanouts MCP tool; clean up with `git worktree remove <name>` + `git branch -D wip/<id>`.",
                     orphans.len()
                 );
                 for o in &orphans {
-                    log::warn!(
+                    tracing::warn!(
                         "  orphan: vault={} worktree={} branch={} path={}",
                         o.vault_name,
                         o.worktree_name,
@@ -1141,7 +1143,7 @@ impl CoreToolHandler {
                     );
                 }
             }
-            Err(e) => log::warn!("Startup orphan fanout scan failed: {}", e),
+            Err(e) => tracing::warn!("Startup orphan fanout scan failed: {}", e),
         }
     }
 }
@@ -1191,7 +1193,7 @@ impl CoreToolHandler {
                     .insert(vault_name.to_string(), snapshot_store);
             }
             Err(error) => {
-                log::warn!(
+                tracing::warn!(
                     "Failed to initialize audit log for {}: {} (audit trail disabled)",
                     vault_name,
                     error
@@ -1468,7 +1470,7 @@ impl CoreToolHandler {
                     if let Some(engine) = search_engines.report(&name, &changed)
                         && let Err(e) = engine.apply_changes(changed.clone()).await
                     {
-                        log::warn!(
+                        tracing::warn!(
                             "change-listener: search apply failed for '{name}', evicting: {e}"
                         );
                         search_engines.remove(&name);
@@ -1478,7 +1480,7 @@ impl CoreToolHandler {
                     if let Some(engine) = similarity_engines.report(&name, &changed)
                         && let Err(e) = engine.apply_changes(changed).await
                     {
-                        log::warn!(
+                        tracing::warn!(
                             "change-listener: similarity apply failed for '{name}', evicting: {e}"
                         );
                         similarity_engines.remove(&name);
@@ -1545,7 +1547,7 @@ impl CoreToolHandler {
             .map_err(|e| McpError::internal(format!("Failed to build search engine: {}", e)))?;
         // Notes that changed after the build read them.
         if let Err(e) = engine.apply_changes(missed).await {
-            log::warn!("search engine for '{vault_name}' missed changes, evicting: {e}");
+            tracing::warn!("search engine for '{vault_name}' missed changes, evicting: {e}");
             self.search_engines.remove(vault_name);
         }
         Ok(engine)
@@ -1566,7 +1568,7 @@ impl CoreToolHandler {
             .map_err(|e| McpError::internal(format!("Failed to build similarity engine: {}", e)))?;
         // Notes that changed after the build read them.
         if let Err(e) = engine.apply_changes(missed).await {
-            log::warn!("similarity engine for '{vault_name}' missed changes, evicting: {e}");
+            tracing::warn!("similarity engine for '{vault_name}' missed changes, evicting: {e}");
             self.similarity_engines.remove(&vault_name);
         }
         Ok(engine)
@@ -1835,7 +1837,7 @@ impl CoreToolHandler {
         self.resource_hub.forget(name);
 
         if let Err(error) = self.forget_vault_state(name).await {
-            log::warn!("Failed to persist vault state after removal: {error}");
+            tracing::warn!("Failed to persist vault state after removal: {error}");
         }
         StandardResponse::new(name, "remove_vault", StatusPayload { status: "removed" })
             .with_next_step("list_vaults")

@@ -26,7 +26,6 @@ turbovault-git = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-log = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 rayon = { workspace = true }

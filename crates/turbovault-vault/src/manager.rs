@@ -567,14 +567,14 @@ fn parse_reads(
             let read = match read {
                 Ok(read) => read,
                 Err(e) => {
-                    log::warn!("Failed to read file {}: {}", file_path.display(), e);
+                    tracing::warn!("Failed to read file {}: {}", file_path.display(), e);
                     return None;
                 }
             };
             match parse_note(parser, &file_path, &read) {
                 Ok(vault_file) => Some((file_path, vault_file, read.observed)),
                 Err(e) => {
-                    log::warn!("Failed to parse {}: {}", file_path.display(), e);
+                    tracing::warn!("Failed to parse {}: {}", file_path.display(), e);
                     None
                 }
             }
@@ -592,13 +592,13 @@ fn build_index(parsed: Vec<ParsedNote>) -> (HashMap<PathBuf, CacheEntry>, LinkGr
     let mut in_order = Vec::with_capacity(parsed.len());
 
     for (file_path, vault_file, observed) in parsed {
-        log::debug!(
+        tracing::debug!(
             "Parsed {}: {} links extracted",
             file_path.display(),
             vault_file.links.len()
         );
         if let Err(e) = graph.add_file(&vault_file) {
-            log::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
+            tracing::warn!("Graph add_file failed for {}: {}", file_path.display(), e);
         }
         let file = Arc::new(vault_file);
         in_order.push(Arc::clone(&file));
@@ -607,7 +607,7 @@ fn build_index(parsed: Vec<ParsedNote>) -> (HashMap<PathBuf, CacheEntry>, LinkGr
 
     for vault_file in &in_order {
         if let Err(e) = graph.update_links(vault_file) {
-            log::warn!("Graph update_links failed: {}", e);
+            tracing::warn!("Graph update_links failed: {}", e);
         }
     }
     (cache, graph)
@@ -754,7 +754,7 @@ impl VaultManager {
                 // Finish a write an earlier process landed but did not write
                 // out. If that fails now, the next write tries again.
                 if let Err(error) = repo.recover_interrupted_write() {
-                    log::warn!(
+                    tracing::warn!(
                         "vault '{}': could not finish an interrupted write: {}",
                         default_vault.name,
                         error
@@ -984,7 +984,7 @@ impl VaultManager {
                 let parent = match repo.git_commit_first_parent(commit) {
                     Ok(p) => p,
                     Err(e) => {
-                        log::warn!(
+                        tracing::warn!(
                             "flush_reindex: skipping commit {commit} after first-parent error: {e}"
                         );
                         drain_queue.advance_cursor(commit);
@@ -994,7 +994,9 @@ impl VaultManager {
                 match repo.diff_path_statuses(parent, commit) {
                     Ok(changes) => batches.push((commit, pending.origin, changes)),
                     Err(e) => {
-                        log::warn!("flush_reindex: skipping commit {commit} after diff error: {e}");
+                        tracing::warn!(
+                            "flush_reindex: skipping commit {commit} after diff error: {e}"
+                        );
                         drain_queue.advance_cursor(commit);
                     }
                 }
@@ -1137,11 +1139,11 @@ impl VaultManager {
             // on a partial walk would report every note it did not reach as
             // deleted and tear the link graph down.
             Ok(Err(e)) => {
-                log::warn!("freshness sweep: vault scan failed, derived state unchanged: {e}");
+                tracing::warn!("freshness sweep: vault scan failed, derived state unchanged: {e}");
                 return Vec::new();
             }
             Err(e) => {
-                log::warn!("freshness sweep: scan task failed, derived state unchanged: {e}");
+                tracing::warn!("freshness sweep: scan task failed, derived state unchanged: {e}");
                 return Vec::new();
             }
         };
@@ -1198,7 +1200,7 @@ impl VaultManager {
         if changed.is_empty() {
             return Vec::new();
         }
-        log::debug!(
+        tracing::debug!(
             "freshness sweep: {} path(s) changed outside this process",
             changed.len()
         );
@@ -1231,7 +1233,7 @@ impl VaultManager {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
             // Left racy, so the next pass looks again.
             Err(e) => {
-                log::debug!("freshness sweep: re-reading {}: {e}", path.display());
+                tracing::debug!("freshness sweep: re-reading {}: {e}", path.display());
                 None
             }
         }
@@ -1439,7 +1441,7 @@ impl VaultManager {
     /// Initialize vault by scanning all files
     #[instrument(skip(self), name = "vault_initialize")]
     pub async fn initialize(&self) -> Result<()> {
-        log::info!("Starting vault initialization for: {:?}", self.vault_path);
+        tracing::info!("Starting vault initialization for: {:?}", self.vault_path);
 
         // Scan for markdown files, keeping the metadata the scan already read:
         // it becomes each cache entry's fingerprint, so the first freshness
@@ -1450,7 +1452,7 @@ impl VaultManager {
         let scanned = tokio::task::spawn_blocking(move || spec.walk())
             .await
             .map_err(|e| Error::other(format!("vault scan task failed: {e}")))??;
-        log::info!("Found {} markdown files", scanned.len());
+        tracing::info!("Found {} markdown files", scanned.len());
 
         // Notes only, matching `sync_index`. Caching an admitted-but-not-a-
         // note file here (a `.txt`, a `.canvas`) would put it somewhere no
@@ -1494,7 +1496,7 @@ impl VaultManager {
             .await
             .map_err(|e| Error::other(format!("vault index task failed: {e}")))?;
 
-        log::info!(
+        tracing::info!(
             "Vault initialization complete. Graph now has {} files, {} links",
             graph.node_count(),
             graph.edge_count()
@@ -2074,7 +2076,7 @@ impl VaultManager {
                                 IndexUpdate::Upsert(Arc::new(vault_file), read.observed)
                             }
                             Err(e) => {
-                                log::warn!(
+                                tracing::warn!(
                                     "Failed to parse {} after apply (graph not updated): {}",
                                     full_path.display(),
                                     e
@@ -2083,7 +2085,7 @@ impl VaultManager {
                             }
                         },
                         Some(Err(e)) => {
-                            log::warn!(
+                            tracing::warn!(
                                 "Failed to re-read {} after apply: {}",
                                 full_path.display(),
                                 e
@@ -2133,14 +2135,14 @@ impl VaultManager {
                     match update {
                         IndexUpdate::Upsert(vault_file, _) => {
                             if let Err(e) = graph.add_file(vault_file) {
-                                log::warn!(
+                                tracing::warn!(
                                     "Graph add_file failed for {}: {}",
                                     full_path.display(),
                                     e
                                 );
                             }
                             if let Err(e) = graph.update_links(vault_file) {
-                                log::warn!(
+                                tracing::warn!(
                                     "Graph update_links failed for {}: {}",
                                     full_path.display(),
                                     e

@@ -40,7 +40,7 @@ impl FanoutProvider {
         }) {
             let _ = std::fs::remove_dir_all(worktree);
             if let Err(error) = std::fs::remove_dir(dir) {
-                log::warn!(
+                tracing::warn!(
                     "fanout scratch directory {} was not removed: {error}",
                     dir.display()
                 );

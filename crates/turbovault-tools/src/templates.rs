@@ -396,7 +396,10 @@ impl TemplateEngine {
 
         for field in template.required_fields() {
             let value = field_values.get(&field.name).ok_or_else(|| {
-                turbovault_core::Error::validation_error(format!("Missing required field: {}", field.name))
+                turbovault_core::Error::validation_error(format!(
+                    "Missing required field: {}",
+                    field.name
+                ))
             })?;
             template
                 .validate_field(&field.name, value)
@@ -433,7 +436,10 @@ impl TemplateEngine {
     }
 
     /// Find notes created from specific template
-    pub async fn find_notes_from_template(&self, template_id: &str) -> turbovault_core::Result<Vec<String>> {
+    pub async fn find_notes_from_template(
+        &self,
+        template_id: &str,
+    ) -> turbovault_core::Result<Vec<String>> {
         let files = self.manager.scan_vault().await?;
         let mut results = Vec::new();
 

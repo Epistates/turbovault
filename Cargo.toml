@@ -90,8 +90,6 @@ tempfile = "3"
 criterion = "0.8"
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 
-# Logging
-log = "0.4"
 
 # MCP server framework
 turbomcp = { version = "3.6.0", default-features = false }

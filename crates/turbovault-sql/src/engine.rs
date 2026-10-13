@@ -97,7 +97,7 @@ impl FrontmatterSqlEngine {
                         params![rel_path.as_str(), tag.as_str()],
                     );
                     if let Err(e) = inserted {
-                        log::warn!("Tag insert error for {rel_path}: {e}");
+                        tracing::warn!("Tag insert error for {rel_path}: {e}");
                     } else {
                         tag_count += 1;
                     }
@@ -112,7 +112,7 @@ impl FrontmatterSqlEngine {
                 params![json_str],
             );
             if let Err(e) = inserted {
-                log::warn!("Skipping {rel_path}: insert error: {e}");
+                tracing::warn!("Skipping {rel_path}: insert error: {e}");
             }
         }
 

@@ -17,7 +17,7 @@ use turbovault_git::VaultRepo;
 /// the filesystem and never commits, so the working tree silently drifts from
 /// HEAD. Returns `None` otherwise.
 ///
-/// A pure function returning the message rather than an in-place `log::warn!`
+/// A pure function returning the message rather than an in-place `tracing::warn!`
 /// on purpose: every registration site stays a one-liner, and the predicate is
 /// testable without a global logger fixture. It only *warns* — the
 /// registration still succeeds and nothing about the write path changes.
@@ -291,7 +291,7 @@ impl VaultLifecycleTools {
         // turbovault-74p: this is the funnel both registration entry points
         // pass through, so the footgun check belongs here rather than in each.
         if let Some(warning) = direct_over_git_repo_warning(&config) {
-            log::warn!("{warning}");
+            tracing::warn!("{warning}");
         }
         Ok(config)
     }

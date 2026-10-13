@@ -5641,7 +5641,6 @@ dependencies = [
  "git2",
  "jsonschema",
  "libtest-mimic",
- "log",
  "percent-encoding",
  "schemars 1.2.3",
  "serde",
@@ -5676,7 +5675,6 @@ name = "turbovault-audit"
 version = "3.3.0"
 dependencies = [
  "chrono",
- "log",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -5684,6 +5682,7 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
+ "tracing",
  "turbovault-core",
  "uuid",
 ]
@@ -5703,8 +5702,6 @@ name = "turbovault-core"
 version = "3.3.0"
 dependencies = [
  "chrono",
- "log",
- "parking_lot",
  "schemars 1.2.3",
  "serde",
  "serde_json",
@@ -5714,6 +5711,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
  "unicode-normalization",
  "uuid",
  "winnow",
@@ -5801,7 +5799,6 @@ name = "turbovault-sql"
 version = "3.3.0"
 dependencies = [
  "gluesql",
- "log",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5816,7 +5813,6 @@ version = "3.3.0"
 dependencies = [
  "chrono",
  "git2",
- "log",
  "proptest",
  "rayon",
  "schemars 1.2.3",
@@ -5848,7 +5844,6 @@ version = "3.3.0"
 dependencies = [
  "futures",
  "git2",
- "log",
  "proptest",
  "rayon",
  "schemars 1.2.3",

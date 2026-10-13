@@ -241,12 +241,12 @@ impl SearchEngine {
         match default_index_dir(manager.vault_path()) {
             Some(dir) => match Self::open(Arc::clone(&manager), &dir).await {
                 Ok(engine) => return Ok(engine),
-                Err(e) => log::info!(
+                Err(e) => tracing::info!(
                     "search index at {} not usable ({e}); indexing in memory",
                     dir.display()
                 ),
             },
-            None => log::info!("no cache directory for the search index; indexing in memory"),
+            None => tracing::info!("no cache directory for the search index; indexing in memory"),
         }
         Self::new(manager).await
     }
@@ -402,7 +402,7 @@ impl SearchEngine {
             writer.delete_term(tantivy::Term::from_field_text(self.field_path, gone));
             changed += 1;
         }
-        log::debug!("search index: {changed} note(s) re-indexed since it was last written");
+        tracing::debug!("search index: {changed} note(s) re-indexed since it was last written");
         self.commit(&mut writer)?;
         Ok(changed)
     }

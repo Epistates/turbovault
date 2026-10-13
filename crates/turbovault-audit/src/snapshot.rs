@@ -59,7 +59,7 @@ impl SnapshotStore {
             && (self.written.fetch_add(1, Ordering::Relaxed) + 1).is_multiple_of(PRUNE_EVERY)
             && let Err(error) = self.prune().await
         {
-            log::warn!("Snapshot retention pass failed: {}", error);
+            tracing::warn!("Snapshot retention pass failed: {}", error);
         }
         Ok(id)
     }
