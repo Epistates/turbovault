@@ -167,6 +167,45 @@ pub fn markdown_link_path(path: &str) -> String {
     percent_encoding::utf8_percent_encode(path, LINK_PATH_ESCAPES).to_string()
 }
 
+/// Where a Markdown link destination written at byte `start` of `text` ends:
+/// past the `>` of `<My Note.md>`, or for an unbracketed destination at the
+/// first whitespace or at the `)` that closes the link (parentheses inside
+/// it must balance). `None` when there is no destination at `start`.
+///
+/// # Examples
+///
+/// ```
+/// use turbovault_parser::parsers::link_utils::link_destination_end;
+///
+/// let link = "[x](a(1).md \"title\")";
+/// assert_eq!(&link[4..link_destination_end(link, 4).unwrap()], "a(1).md");
+/// assert_eq!(link_destination_end("<My Note.md>", 0), Some(12));
+/// ```
+pub fn link_destination_end(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut end = start;
+    if bytes.get(start) == Some(&b'<') {
+        while *bytes.get(end)? != b'>' {
+            end += if bytes[end] == b'\\' { 2 } else { 1 };
+        }
+        return Some(end + 1);
+    }
+    let mut parens = 0usize;
+    while let Some(&byte) = bytes.get(end) {
+        match byte {
+            b'\\' => end += 1,
+            b'(' => parens += 1,
+            b')' if parens == 0 => break,
+            b')' => parens -= 1,
+            b' ' | b'\t' | b'\r' | b'\n' => break,
+            _ => {}
+        }
+        end += 1;
+    }
+    let end = end.min(bytes.len());
+    (end > start).then_some(end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

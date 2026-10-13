@@ -127,6 +127,7 @@ pub mod parsers;
 mod standalone;
 
 // Main exports
+pub use engine::ReferenceDefinition;
 pub use frontmatter::{MAX_FRONTMATTER_BYTES, MAX_FRONTMATTER_DEPTH, parse_frontmatter_yaml};
 pub use models::TaskStatus;
 pub use parsers::Parser;
@@ -209,6 +210,24 @@ pub fn parse_markdown_links(content: &str) -> Vec<turbovault_core::Link> {
         ..ParseOptions::none()
     };
     engine.parse(&opts).markdown_links
+}
+
+/// Parse the reference definitions (`[label]: destination`) that reference
+/// links in `content` take their destinations from. The links themselves,
+/// `[text][label]`, `[label][]` and `[label]`, are among
+/// [`parse_markdown_links`], with the definition's destination as target.
+///
+/// # Example
+/// ```
+/// use turbovault_parser::parse_reference_definitions;
+///
+/// let content = "See [the paper][p].\n\n[p]: papers/My%20Paper.md \"Title\"\n";
+/// let definitions = parse_reference_definitions(content);
+/// assert_eq!(definitions[0].target, "papers/My Paper.md");
+/// assert_eq!(&content[definitions[0].destination.clone()], "papers/My%20Paper.md");
+/// ```
+pub fn parse_reference_definitions(content: &str) -> Vec<ReferenceDefinition> {
+    engine::reference_definitions(content)
 }
 
 /// Parse tags from content.

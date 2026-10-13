@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Moving a note rewrites reference links to it.** A reference link, `[text][ref]`, `[ref][]` or `[ref]`, takes its destination from a definition elsewhere in the note, `[ref]: old.md`, and that definition was left pointing at the old path. It's now re-pointed the way an inline Markdown link is, keeping its form, escaping, fragment and title, so every link through it follows the move. Deleting a note marks its reference links stale as well, and `[ref][]` is now struck through whole rather than as `~~[ref]~~[]`. `parse_reference_definitions` is new in `turbovault-parser`.
+- **A wikilink is no longer also a Markdown link when a definition shares its name.** CommonMark reads the `[Note]` inside `[[Note]]` as a shortcut reference whenever the note defines `[note]: ...`, so the wikilink was reported a second time, as a link to that definition's destination, adding a backlink to whatever it pointed at.
+
 ## [3.3.0] - 2026-10-12
 
 This release brings TurboVault's reading of notes in line with current Obsidian. The one behavior change: `tags`, `aliases` and `cssclasses` written the pre-1.9 way (a string, or the singular keys) no longer count, as they already don't in Obsidian. `validate_vault` lists every note still written that way.
