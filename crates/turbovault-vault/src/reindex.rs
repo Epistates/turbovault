@@ -304,7 +304,7 @@ pub async fn apply_commit_diff(
 ) -> Result<Vec<(String, bool)>> {
     let changes = repo
         .diff_path_statuses(parent, commit)
-        .map_err(|e| Error::config_error(format!("git diff failed: {}", e)))?;
+        .map_err(|e| Error::other(format!("git diff failed: {}", e)))?;
 
     let vault_root = manager.vault_path().clone();
     let graph_handle = manager.graph_handle();

@@ -106,7 +106,7 @@ pub fn bytes_to_lower_hex(bytes: impl AsRef<[u8]>) -> String {
 /// Works with any type that implements Serialize (including slices)
 pub fn to_json_string<T: serde::Serialize + ?Sized>(data: &T, context: &str) -> Result<String> {
     serde_json::to_string_pretty(data)
-        .map_err(|e| Error::config_error(format!("Failed to serialize {} as JSON: {}", context, e)))
+        .map_err(|e| Error::other(format!("Failed to serialize {} as JSON: {}", context, e)))
 }
 
 /// A path inside a vault, checked against where it lands on disk.

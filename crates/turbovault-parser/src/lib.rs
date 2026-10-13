@@ -342,8 +342,8 @@ pub mod prelude {
 
     // Individual parsers
     pub use crate::{
-        parse_blocks, parse_blocks_from_line, parse_callouts, parse_callouts_full,
-        parse_citations, parse_embeds, parse_headings, parse_markdown_links, parse_tags,
-        parse_tasks, parse_wikilinks, slugify, to_plain_text,
+        parse_blocks, parse_blocks_from_line, parse_callouts, parse_callouts_full, parse_citations,
+        parse_embeds, parse_headings, parse_markdown_links, parse_tags, parse_tasks,
+        parse_wikilinks, slugify, to_plain_text,
     };
 }

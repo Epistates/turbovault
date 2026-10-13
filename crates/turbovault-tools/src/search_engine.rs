@@ -286,7 +286,7 @@ impl SearchEngine {
         let field = |name: &str| {
             schema
                 .get_field(name)
-                .map_err(|e| Error::config_error(format!("search index has no {name} field: {e}")))
+                .map_err(|e| Error::other(format!("search index has no {name} field: {e}")))
         };
         let (field_path, field_title, field_content, field_tags, field_checksum) = (
             field("path")?,
@@ -297,12 +297,12 @@ impl SearchEngine {
         );
         let writer = index
             .writer(50_000_000)
-            .map_err(|e| Error::config_error(format!("Failed to create index writer: {}", e)))?;
+            .map_err(|e| Error::other(format!("Failed to create index writer: {}", e)))?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
-            .map_err(|e| Error::config_error(format!("Failed to create reader: {}", e)))?;
+            .map_err(|e| Error::other(format!("Failed to create reader: {}", e)))?;
         Ok(Self {
             manager,
             index,
@@ -353,10 +353,10 @@ impl SearchEngine {
     fn commit(&self, writer: &mut IndexWriter) -> Result<()> {
         writer
             .commit()
-            .map_err(|e| Error::config_error(format!("Failed to commit index: {}", e)))?;
+            .map_err(|e| Error::other(format!("Failed to commit index: {}", e)))?;
         self.reader
             .reload()
-            .map_err(|e| Error::config_error(format!("Failed to reload index reader: {e}")))
+            .map_err(|e| Error::other(format!("Failed to reload index reader: {e}")))
     }
 
     /// Index every note, replacing whatever the index held.
@@ -365,11 +365,11 @@ impl SearchEngine {
         let mut writer = self.writer.lock().await;
         writer
             .delete_all_documents()
-            .map_err(|e| Error::config_error(format!("Failed to clear index: {e}")))?;
+            .map_err(|e| Error::other(format!("Failed to clear index: {e}")))?;
         for note in notes {
             writer
                 .add_document(self.document(note))
-                .map_err(|e| Error::config_error(format!("Failed to index: {e}")))?;
+                .map_err(|e| Error::other(format!("Failed to index: {e}")))?;
         }
         self.commit(&mut writer)
     }
@@ -393,7 +393,7 @@ impl SearchEngine {
                     ));
                     writer
                         .add_document(self.document(note))
-                        .map_err(|e| Error::config_error(format!("Failed to index: {e}")))?;
+                        .map_err(|e| Error::other(format!("Failed to index: {e}")))?;
                     changed += 1;
                 }
             }
@@ -414,10 +414,10 @@ impl SearchEngine {
         for segment in searcher.segment_readers() {
             let store = segment
                 .get_store_reader(1)
-                .map_err(|e| Error::config_error(format!("Failed to read index store: {e}")))?;
+                .map_err(|e| Error::other(format!("Failed to read index store: {e}")))?;
             for document in store.iter::<TantivyDocument>(segment.alive_bitset()) {
                 let document = document
-                    .map_err(|e| Error::config_error(format!("Failed to read index store: {e}")))?;
+                    .map_err(|e| Error::other(format!("Failed to read index store: {e}")))?;
                 let text = |field| {
                     document
                         .get_first(field)
@@ -474,9 +474,9 @@ impl SearchEngine {
             let term = tantivy::Term::from_field_text(self.field_path, &rel_path);
             writer.delete_term(term);
             if let Some(note) = self.document_for(&rel_path).await {
-                writer.add_document(self.document(note)).map_err(|e| {
-                    Error::config_error(format!("apply_changes: index {rel_path}: {e}"))
-                })?;
+                writer
+                    .add_document(self.document(note))
+                    .map_err(|e| Error::other(format!("apply_changes: index {rel_path}: {e}")))?;
             }
         }
         self.commit(&mut writer)
@@ -588,7 +588,7 @@ fn remove_orphaned_indexes(root: &std::path::Path, keep: &std::path::Path) {
 /// layout, this TurboVault), or start a new one there.
 fn open_index_dir(dir: &std::path::Path, marker: &IndexMarker) -> Result<Index> {
     let io = |e: std::io::Error| Error::io_at(dir.display().to_string(), e);
-    let tantivy = |e: tantivy::TantivyError| Error::config_error(format!("search index: {e}"));
+    let tantivy = |e: tantivy::TantivyError| Error::other(format!("search index: {e}"));
     create_private_dir(dir).map_err(io)?;
     let directory = CacheDirectory::open(dir).map_err(tantivy)?;
 
@@ -596,7 +596,7 @@ fn open_index_dir(dir: &std::path::Path, marker: &IndexMarker) -> Result<Index> 
     // the caller index in memory instead.
     let lock = directory
         .acquire_lock(&INDEX_WRITER_LOCK)
-        .map_err(|e| Error::config_error(format!("search index is in use: {e}")))?;
+        .map_err(|e| Error::other(format!("search index is in use: {e}")))?;
 
     let marker_path = dir.join(INDEX_MARKER);
     let current = std::fs::read_to_string(&marker_path)
@@ -691,7 +691,7 @@ impl SearchQuery {
                 &query,
                 &TopDocs::with_limit(limit * 2).order_by_score(), // Get extra docs for filtering
             )
-            .map_err(|e| Error::config_error(format!("Search failed: {}", e)))?;
+            .map_err(|e| Error::other(format!("Search failed: {}", e)))?;
 
         let mut results = Vec::new();
 
@@ -699,7 +699,7 @@ impl SearchQuery {
             // Retrieve the stored document from the index
             let tantivy_doc: TantivyDocument = searcher
                 .doc(doc_address)
-                .map_err(|e| Error::config_error(format!("Failed to retrieve doc: {}", e)))?;
+                .map_err(|e| Error::other(format!("Failed to retrieve doc: {}", e)))?;
 
             // Extract field values directly — avoids JSON serialize/deserialize round-trip
             let path = tantivy_doc

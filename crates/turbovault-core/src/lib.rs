@@ -92,7 +92,7 @@ pub mod vault_roots;
 pub use atomic_write::{is_temp_file_name, write_atomic};
 pub use change_plan::{Change, ChangePlan};
 pub use config::*;
-pub use error::{Error, ErrorCategory, OperationNotAllowed, Result};
+pub use error::{Error, ErrorCategory, Result};
 pub use events::{VaultChange, VaultEventSink, WriteAttribution};
 pub use models::*;
 pub use multi_vault::{MultiVaultManager, VaultInfo};

@@ -105,7 +105,7 @@ impl FrontmatterSqlEngine {
             }
 
             let json_str = serde_json::to_string(&Value::Object(row))
-                .map_err(|e| Error::config_error(format!("JSON serialization error: {e}")))?;
+                .map_err(|e| Error::other(format!("JSON serialization error: {e}")))?;
             let inserted = exec_with(
                 &mut glue,
                 "INSERT INTO files VALUES ($1)",
@@ -300,9 +300,11 @@ struct SchemaInfo {
 fn run_select(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>> {
     let plans = glue
         .plan(sql)
-        .map_err(|e| Error::config_error(format!("SQL error: {e}")))?;
+        .map_err(|e| Error::validation_error(format!("SQL error: {e}")))?;
     if plans.is_empty() {
-        return Err(Error::config_error("SQL error: no statement".to_string()));
+        return Err(Error::validation_error(
+            "SQL error: no statement".to_string(),
+        ));
     }
     if !plans.iter().all(|plan| {
         matches!(
@@ -310,7 +312,7 @@ fn run_select(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>>
             StatementPlan::Query(_) | StatementPlan::ShowColumns { .. }
         )
     }) {
-        return Err(Error::config_error(
+        return Err(Error::validation_error(
             "query_frontmatter_sql only runs SELECT statements: the tables are a read-only \
              view of the vault"
                 .to_string(),
@@ -320,7 +322,7 @@ fn run_select(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>>
         .iter()
         .map(|plan| {
             glue.execute_stmt(plan)
-                .map_err(|e| Error::config_error(format!("SQL error: {e}")))
+                .map_err(|e| Error::validation_error(format!("SQL error: {e}")))
         })
         .collect()
 }
@@ -365,7 +367,7 @@ fn exec_with(
     params: Vec<ParamLiteral>,
 ) -> Result<Vec<Payload>> {
     glue.execute_with_params(sql, params)
-        .map_err(|e| Error::config_error(format!("SQL error: {e}")))
+        .map_err(|e| Error::validation_error(format!("SQL error: {e}")))
 }
 
 #[cfg(test)]

@@ -568,7 +568,7 @@ impl GitSubstrate {
                     run_plan(&repo, &plan_owned, include_ignored)
                 })
                 .await
-                .map_err(|e| Error::config_error(format!("git changeset task failed: {}", e)))?
+                .map_err(|e| Error::other(format!("git changeset task failed: {}", e)))?
             }
             None => {
                 let vault_path = self.vault_path.clone();
@@ -583,7 +583,7 @@ impl GitSubstrate {
                     run_plan(&repo, &plan_owned, include_ignored)
                 })
                 .await
-                .map_err(|e| Error::config_error(format!("git changeset task failed: {}", e)))?
+                .map_err(|e| Error::other(format!("git changeset task failed: {}", e)))?
             }
         };
 
@@ -651,7 +651,7 @@ fn git_err_to_core(e: turbovault_git::Error) -> Error {
         turbovault_git::Error::Core(turbovault_core::Error::ConcurrencyError { reason }) => {
             Error::ConcurrencyError { reason }
         }
-        other => Error::config_error(format!("git substrate error: {}", other)),
+        other => Error::other(format!("git substrate error: {}", other)),
     }
 }
 

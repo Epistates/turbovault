@@ -58,17 +58,13 @@ pub struct FrontmatterFilter {
 fn to_mcp_error(e: Error) -> McpError {
     log::warn!("MCP error: {:?}", e);
     let category = e.category();
-    // A wrapped error is reported as itself, without the wrapper's label.
-    let text = match &e {
-        Error::Wrapped(inner) => inner.to_string(),
-        _ => e.to_string(),
-    };
+    let text = e.to_string();
     let message = match error_hint(&e) {
         Some(hint) => format!("{text}. {hint}"),
         None => text,
     };
     let mut data = serde_json::json!({ "category": category_name(category) });
-    if let Some(path) = error_path(&e) {
+    if let Some(path) = e.path() {
         data["path"] = serde_json::json!(turbovault_core::path_to_slash(path));
     }
     let error = match category {
@@ -97,20 +93,9 @@ fn category_name(category: ErrorCategory) -> &'static str {
     }
 }
 
-/// The path an error is about, if it names one.
-fn error_path(error: &Error) -> Option<&Path> {
-    match error {
-        Error::FileNotFound { path }
-        | Error::PathTraversalAttempt { path }
-        | Error::ProtectedPath { path, .. }
-        | Error::FileTooLarge { path, .. } => Some(path),
-        _ => None,
-    }
-}
-
 /// What a caller can do about `error`, for the ones where that is known.
 fn error_hint(error: &Error) -> Option<String> {
-    if error.as_operation_not_allowed().is_some() {
+    if matches!(error, Error::OperationNotAllowed { .. }) {
         return Some(
             "The vault's allowed_operations setting permits only the operations listed. The \
              server's operator can change it; until then, use another vault for this change"

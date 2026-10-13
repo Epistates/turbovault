@@ -279,10 +279,10 @@ impl VaultCache {
             change(&mut registry);
 
             let vaults_yaml = yaml_serde::to_string(&registry)
-                .map_err(|e| Error::config_error(format!("Failed to serialize vaults: {}", e)))?;
+                .map_err(|e| Error::other(format!("Failed to serialize vaults: {}", e)))?;
             crate::write_atomic(&vaults_file, vaults_yaml.as_bytes()).map_err(Error::io)?;
             let metadata_json = serde_json::to_string_pretty(&metadata)
-                .map_err(|e| Error::config_error(format!("Failed to serialize metadata: {}", e)))?;
+                .map_err(|e| Error::other(format!("Failed to serialize metadata: {}", e)))?;
             crate::write_atomic(&metadata_file, metadata_json.as_bytes()).map_err(Error::io)
         })
         .await

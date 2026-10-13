@@ -188,7 +188,7 @@ impl BatchTools {
                 .skip(before)
                 .find(|p| !seen_paths.insert(p.clone()))
             {
-                return Err(Error::config_error(format!(
+                return Err(Error::validation_error(format!(
                     "intra-batch path collision (turbovault-0g4.5): operation {} writes '{}', which an earlier operation in this batch already writes. A path may be mutated by at most one operation per batch — split the conflicting writes across separate batches.",
                     idx, dup
                 )));
@@ -352,7 +352,7 @@ impl BatchTools {
                 expected_hash,
             } => {
                 if old_target.is_empty() {
-                    return Err(Error::config_error(
+                    return Err(Error::validation_error(
                         "UpdateLinks: old_target must not be empty (str::replace(\"\", _) would insert new_target at every character boundary)",
                     ));
                 }
@@ -425,7 +425,7 @@ impl BatchTools {
             "refuse" => {
                 let backlinks = self.list_inbound_backlinks(path).await?;
                 if !backlinks.is_empty() {
-                    return Err(Error::config_error(format!(
+                    return Err(Error::validation_error(format!(
                         "DeleteNote refused (turbovault-0g4.7): '{}' has {} inbound backlink(s) [{}]. Pass on_backlinks=\"rewrite-stale-callout\" to strikethrough every linker in the same commit, or \"force\" to delete and leave them broken.",
                         path,
                         backlinks.len(),
@@ -435,7 +435,7 @@ impl BatchTools {
                 remove_expecting(plan, path, expected_hash)
             }
             other => {
-                return Err(Error::config_error(format!(
+                return Err(Error::validation_error(format!(
                     "DeleteNote: unknown on_backlinks mode '{}' (expected refuse|rewrite-stale-callout|force)",
                     other
                 )));
@@ -533,7 +533,7 @@ impl BatchTools {
         let mt = crate::MetadataTools::new(Arc::clone(&self.manager));
         let (maybe, _info) = mt.compute_manage_tags(path, operation, Some(tags)).await?;
         let new_content = maybe.ok_or_else(|| {
-            Error::config_error(format!(
+            Error::validation_error(format!(
                 "ManageTags operation '{}' produces no write; only 'add'/'remove' are valid in a batch ('list' is read-only)",
                 operation
             ))
@@ -602,7 +602,7 @@ impl BatchTools {
             let graph = lg.read().await;
             graph
                 .backlinks(&from_full)
-                .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
+                .map_err(|e| Error::other(format!("backlink lookup: {}", e)))?
                 .into_iter()
                 .map(|(p, _links)| p)
                 .collect::<Vec<_>>()
@@ -678,7 +678,7 @@ impl BatchTools {
             let graph = lg.read().await;
             graph
                 .backlinks(&target_full)
-                .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
+                .map_err(|e| Error::other(format!("backlink lookup: {}", e)))?
                 .into_iter()
                 .map(|(p, _links)| p)
                 .collect::<Vec<_>>()
@@ -747,7 +747,7 @@ impl BatchTools {
             let graph = lg.read().await;
             graph
                 .backlinks(&self.manager.vault_path().join(path))
-                .map_err(|e| Error::config_error(format!("backlink lookup: {}", e)))?
+                .map_err(|e| Error::other(format!("backlink lookup: {}", e)))?
                 .into_iter()
                 .map(|(p, _)| p)
                 .collect::<Vec<_>>()
@@ -781,7 +781,7 @@ impl BatchTools {
             .strip_prefix(self.manager.vault_path())
             .unwrap_or(full_src);
         rel.to_str()
-            .ok_or_else(|| Error::config_error(format!("non-utf8 source path: {:?}", rel)))?;
+            .ok_or_else(|| Error::invalid_path(format!("non-utf8 source path: {:?}", rel)))?;
         Ok(turbovault_core::path_to_slash(rel))
     }
 }
