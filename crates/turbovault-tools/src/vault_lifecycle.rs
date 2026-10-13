@@ -349,17 +349,18 @@ impl VaultLifecycleTools {
 
     // Private helpers
 
-    /// Expand tilde and environment variables in path, then canonicalize to absolute path
+    /// Expand a leading `~` in path, then canonicalize to absolute path.
     ///
-    /// Uses shellexpand for tilde/env expansion (best-in-class library)
+    /// The path comes from a tool caller, so `$VAR` is deliberately left as
+    /// written: expanding it would read the server's environment into a
+    /// directory name or an error message the caller sees. The operator's own
+    /// paths (`--vault`, the config file) still get full expansion.
     fn expand_path(path: &Path) -> Result<PathBuf> {
         let path_str = path
             .to_str()
             .ok_or_else(|| Error::invalid_path("Path contains invalid UTF-8".to_string()))?;
 
-        // Expand tilde and environment variables
-        let expanded = shellexpand::full(path_str)
-            .map_err(|e| Error::invalid_path(format!("Failed to expand path: {}", e)))?;
+        let expanded = shellexpand::tilde(path_str);
 
         let expanded_path = PathBuf::from(expanded.as_ref());
 
@@ -471,5 +472,43 @@ mod tests {
         assert!(expanded.is_absolute());
         assert!(!expanded.to_string_lossy().contains('~'));
         assert!(!expanded.exists(), "test must not create anything in home");
+    }
+
+    /// A tool caller chooses this path, so expanding `$VAR` in it would read
+    /// the server's environment and echo it back in an error or a directory
+    /// name. Only `~` is expanded; a variable stays as written.
+    #[test]
+    fn expand_path_leaves_environment_variables_alone() {
+        let expanded =
+            VaultLifecycleTools::expand_path(Path::new("/turbovault-no-such-dir/$HOME/${PATH}"))
+                .expect("expansion");
+
+        assert_eq!(
+            expanded,
+            Path::new("/turbovault-no-such-dir/$HOME/${PATH}"),
+            "environment variables must not be expanded in tool input"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_vault_error_does_not_reveal_the_environment() {
+        let tools = VaultLifecycleTools::new(Arc::new(
+            MultiVaultManager::new(ServerConfig::default()).unwrap(),
+        ));
+        let error = tools
+            .add_vault_from_path(
+                "probe",
+                Path::new("/turbovault-no-such-dir/$HOME"),
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .expect_err("the path does not exist");
+
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert!(
+            home.is_empty() || !error.to_string().contains(&home),
+            "error echoed $HOME's value: {error}"
+        );
     }
 }
