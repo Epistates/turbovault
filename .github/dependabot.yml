@@ -15,3 +15,9 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+  # The digest-pinned base images in Dockerfile.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

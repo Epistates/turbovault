@@ -51,6 +51,8 @@ htmlcov/
 !crates/*/tests/fixtures/*.md
 # Fuzz seeds are inputs too, for the same reason.
 !fuzz/seeds/**/*.md
+# The example vault the Docker setup mounts.
+!examples/**/*.md
 !/LICENSE*
 !LICENSE
 

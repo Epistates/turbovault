@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Smoke-test a built turbovault binary: `--version`, then a stdio MCP session.
+"""Smoke-test a built turbovault: `--version`, then a stdio MCP session.
 
-Usage: smoke_test.py <path-to-binary> [expected-version]
+Usage: smoke_test.py [--expect-version VERSION] COMMAND [ARG...]
+
+COMMAND is the binary, or anything that runs it with stdio attached, such as
+`docker run -i --rm turbovault:ci`.
 
 The session sends `initialize`, the `initialized` notification and
 `tools/list`, then closes stdin, which ends the server. It checks the server
@@ -23,12 +26,19 @@ def fail(message):
 
 
 def main():
-    if len(sys.argv) not in (2, 3):
+    args = sys.argv[1:]
+    expected = None
+    if args[:1] == ["--expect-version"]:
+        if len(args) < 2:
+            sys.exit(__doc__)
+        expected, args = args[1], args[2:]
+    if not args:
         sys.exit(__doc__)
-    binary = os.path.abspath(sys.argv[1])
-    expected = sys.argv[2] if len(sys.argv) == 3 else None
+    command = list(args)
+    if os.path.exists(command[0]):
+        command[0] = os.path.abspath(command[0])
 
-    version = subprocess.run([binary, "--version"], capture_output=True, text=True,
+    version = subprocess.run(command + ["--version"], capture_output=True, text=True,
                              timeout=TIMEOUT)
     if version.returncode != 0:
         fail(f"--version exited {version.returncode}: {version.stderr.strip()}")
@@ -49,7 +59,7 @@ def main():
 
     # An empty working directory, so the server's per-project state starts clean.
     with tempfile.TemporaryDirectory() as cwd:
-        session = subprocess.run([binary], input=stdin, capture_output=True, text=True,
+        session = subprocess.run(command, input=stdin, capture_output=True, text=True,
                                  timeout=TIMEOUT, cwd=cwd)
 
     responses = {}

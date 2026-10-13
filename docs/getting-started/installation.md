@@ -35,12 +35,15 @@ cargo build --release
 ./target/release/turbovault --help
 ```
 
-### Method 3: Docker (Coming Soon)
+### Method 3: Docker
 
 ```bash
-docker run -v /path/to/vault:/vault epistates/turbovault:latest \
-  turbovault --vault /vault
+docker run -i --rm -v /path/to/vault:/var/obsidian-vault ghcr.io/epistates/turbovault:latest
 ```
+
+Multi-arch images (amd64, arm64) are published to GitHub Container Registry with
+each release. See [Docker Deployment](../deployment/docker.md) for MCP client
+configuration and network transports.
 
 ## Verification
 
