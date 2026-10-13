@@ -59,7 +59,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Graph analyses run off the async workers and count a note's links without cloning them.
   - The vector plugin's dense index takes new chunks into its live graph and skips removed ones, instead of rebuilding on the next search after any edit. `turbovault-vector` 0.1.2. Its persistence (a JSON file per note) and embedding under the engine's lock are unchanged for now.
 - **Similarity, `find_duplicates` and `compare_notes` cover notes only**, as search does. `.txt` and `.canvas` files were scored too.
-- **Deprecated:** `VaultManager::link_graph()`, which skips the freshness gate, in favor of `link_graph_flushed()`. `enable_caching`, `cache_ttl` and `template_dirs` on a vault were never read; they're still accepted, with a warning.
+
+### Removed
+
+Everything below was unused, or marked for removal in this major release. A config file that still sets a removed setting loads as before, and the setting is ignored.
+
+- **`turbovault-vault`:** `AtomicFileOps`, `FileOp` and `TransactionResult` (`atomic`), and `VaultWatcher`, `WatcherConfig` and `VaultEvent` (`watcher`). Writes go through the write substrate, and the freshness gate notices outside changes. `VaultManager::link_graph()`, which skipped the freshness gate: use `link_graph_flushed()`.
+- **`turbovault-parser`:** the per-element parsers deprecated since 1.2, `parsers::{callouts, embeds, headings, markdown_links, tags, tasks, wikilinks}`, and `parsers::frontmatter_parser` with `extract_frontmatter`. The `parse_*` functions and `Parser` cover them.
+- **`turbovault-core`:**
+  - `metrics` (`Counter`, `Histogram`, `HistogramStats`, `HistogramTimer`, `MetricsContext`)
+  - `resilience` (`RetryConfig`, `CircuitState`, `CircuitBreaker`, `FallbackStrategy`, `SimpleFallback`)
+  - `CSVBuilder` and `TransactionBuilder`
+  - `PathValidator::validate_path_exists` and `validate_multiple`, which skip the protected-directory policy; use `VaultManager::resolve_path`
+  - `Error::Wrapped`, `Error::as_operation_not_allowed` and the `OperationNotAllowed` struct
+  - the `ServerConfig` settings TurboVault never read: `enable_caching`, `cache_ttl`, `template_dirs`, `default_template_variables`, `editor_backup_enabled`, `editor_atomic_writes`, `max_backup_files`, `max_edit_history`, `backup_retention_days`, `link_graph_enabled`, `link_suggestions_enabled`, `max_link_suggestions`, `link_similarity_threshold`, `full_text_search_enabled`, `index_rebuild_interval`, `multi_vault_enabled`, `metrics_enabled` and `debug_mode`
+  - `VaultConfig`'s `enable_caching`, `cache_ttl` and `template_dirs`
+- **`turbovault-tools`:** `response_utils`, `ResponseFormatter` (`OutputFormat` stays), `SearchEngine::search_by_tags`, and `AnalysisTools::{list_orphaned_notes, detect_cycles, get_link_density, get_connectivity_metrics}`, which duplicated `GraphTools`.
+- **`turbovault`:** the `stdio` feature, which enabled nothing; STDIO is always built in.
+- **Dependencies:** `notify`, `tokio-util`, `walkdir`, `dashmap`, `config`, `log` and `parking_lot`.
 
 ### Fixed
 
