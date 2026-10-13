@@ -283,7 +283,7 @@ impl VaultCache {
     }
 
     /// Load vault configurations from cache. A registry that can't be read
-    /// is set aside (see [`read_registry`]) and reported as an error.
+    /// is set aside (see `read_registry`) and reported as an error.
     pub async fn load_vaults(&self) -> Result<Vec<VaultConfig>> {
         let vaults_file = self.vaults_file.clone();
         let vaults = tokio::task::spawn_blocking(move || read_registry(&vaults_file))
