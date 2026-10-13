@@ -21,7 +21,9 @@ use turbovault_tools::{
 };
 use turbovault_vault::{ChangeListener, CommitOrigin, VaultManager};
 
+mod core_prompts;
 mod engine_slots;
+mod note_resources;
 mod providers;
 pub use providers::ObsidianMcpServer;
 
@@ -706,6 +708,11 @@ pub(super) struct CoreToolHandler {
     /// once at startup from `--allowed-vault-roots` and the transport, and
     /// shared by every clone.
     vault_root_policy: Arc<std::sync::RwLock<VaultRootPolicy>>,
+    /// Notes published as MCP resources, and the sessions subscribed to them
+    /// or listing them. Fed by every vault's change listener.
+    resource_hub: Arc<note_resources::ResourceHub>,
+    /// A task checking subscribed vaults for outside edits is running.
+    subscription_sweep: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// One row of `ObsidianMcpServer.active_fanouts`.
@@ -755,6 +762,8 @@ impl CoreToolHandler {
             active_fanouts: Arc::new(RwLock::new(HashMap::new())),
             event_sink: Arc::new(std::sync::OnceLock::new()),
             vault_root_policy: Arc::new(std::sync::RwLock::new(VaultRootPolicy::anywhere())),
+            resource_hub: Arc::default(),
+            subscription_sweep: Arc::default(),
         })
     }
 
@@ -1281,6 +1290,17 @@ impl CoreToolHandler {
         // manager only invokes this callback (R2 dependency inversion).
         let search_engines = Arc::clone(&self.search_engines);
         let similarity_engines = Arc::clone(&self.similarity_engines);
+        // Publish the vault's notes as resources before the listener can
+        // report a change to them. The hub holds no manager either.
+        let resource_hub = Arc::clone(&self.resource_hub);
+        resource_hub.seed(
+            vault_name,
+            manager
+                .cached_notes()
+                .await
+                .iter()
+                .map(|note| manager.relative_path(&note.path)),
+        );
         // The sink holds only the hook bus, never a manager, so capturing it
         // does not reintroduce the reference cycle the maps above avoid.
         #[cfg(feature = "plugin-api")]
@@ -1315,6 +1335,9 @@ impl CoreToolHandler {
                     .into_iter()
                     .map(|(path, present, _)| (path, present))
                     .collect();
+                // Every change, this process's or another editor's, is news
+                // to a subscriber.
+                resource_hub.apply(&name, &changed);
                 let search_engines = Arc::clone(&search_engines);
                 let similarity_engines = Arc::clone(&similarity_engines);
                 let name = name.clone();
@@ -1695,6 +1718,7 @@ impl CoreToolHandler {
         self.similarity_engines.remove(name);
         self.vault_managers.write().await.remove(name);
         self.git_locks.write().await.remove(name);
+        self.resource_hub.forget(name);
 
         if let Err(error) = self.forget_vault_state(name).await {
             log::warn!("Failed to persist vault state after removal: {error}");

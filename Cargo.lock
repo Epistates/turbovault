@@ -5728,6 +5728,7 @@ dependencies = [
  "jsonschema",
  "libtest-mimic",
  "log",
+ "percent-encoding",
  "schemars 1.2.2",
  "serde",
  "serde_json",

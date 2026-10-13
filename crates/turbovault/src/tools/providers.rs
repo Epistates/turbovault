@@ -113,6 +113,51 @@ use self::relationship::RelationshipProvider;
 use self::templates::TemplateProvider;
 use self::vault::VaultProvider;
 use super::CoreToolHandler;
+use super::{core_prompts, note_resources};
+
+/// The most items one page of a `*/list` response carries.
+const LIST_PAGE_SIZE: usize = 500;
+
+/// Tools whose results are notes, each answered with a `resource_link` to
+/// every note it returns after the JSON text, so a client can open, attach
+/// or subscribe to one without composing its URI.
+const RESOURCE_LINK_TOOLS: &[&str] = &[
+    "search",
+    "advanced_search",
+    "search_by_frontmatter",
+    "recommend_related",
+];
+
+/// `result` with a `resource_link` to each note in its `data`.
+fn with_note_links(mut result: ToolResult) -> ToolResult {
+    if result.is_error == Some(true) {
+        return result;
+    }
+    let Some(structured) = result.structured_content.as_ref() else {
+        return result;
+    };
+    let Some(vault) = structured.get("vault").and_then(|vault| vault.as_str()) else {
+        return result;
+    };
+    let links: Vec<Content> = structured
+        .get("data")
+        .and_then(|data| data.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|hit| {
+            let path = hit.get("path")?.as_str()?;
+            let mut resource = Resource::new(note_resources::note_uri(vault, path), path)
+                .with_mime_type("text/markdown");
+            resource.title = hit
+                .get("title")
+                .and_then(|title| title.as_str())
+                .map(str::to_string);
+            Some(Content::resource_link(resource))
+        })
+        .collect();
+    result.content.extend(links);
+    result
+}
 
 /// `tool` with its outputSchema trimmed to what a client needs to read the
 /// result. schemars turns every Rust doc comment into a `description` written
@@ -1008,31 +1053,27 @@ impl McpHandler for ObsidianMcpServer {
 
     /// Advertise only what TurboVault actually implements.
     ///
-    /// TurboMCP derives `listChanged: true` from a non-empty listing, but the
-    /// catalog here is fixed when the server is assembled — plugins mount once
-    /// and nothing mutates the lists afterwards — and TurboVault emits no
-    /// `notifications/*/list_changed`. Repeating the derived claim would tell a
-    /// client it will be informed of changes it will never hear about; a client
-    /// that trusts that promise stops re-listing. A URI space that genuinely
-    /// varies is published as a resource template instead, which is stable.
+    /// TurboMCP derives `listChanged: true` from a non-empty listing. The tool
+    /// and prompt catalogs are fixed when the server is assembled (plugins
+    /// mount once and nothing changes them afterwards), so repeating that
+    /// claim for them would promise notifications that never come, and a
+    /// client that trusts it stops re-listing. Resources are different: every
+    /// note is one, and the vault's change listener tells subscribers when a
+    /// note changes and listers when notes come and go.
     fn server_capabilities(&self) -> ServerCapabilities {
         let mut capabilities = self.composite.server_capabilities();
         if let Some(tools) = capabilities.tools.as_mut() {
             tools.list_changed = Some(false);
         }
-        if let Some(resources) = capabilities.resources.as_mut() {
-            resources.list_changed = Some(false);
-        }
-        if let Some(prompts) = capabilities.prompts.as_mut() {
-            prompts.list_changed = Some(false);
-        }
-        // Completion is only meaningful for a prompt argument or a template
-        // expression, so advertise it exactly when something can be completed.
-        // The vault's own catalog has neither.
-        #[cfg(feature = "plugin-api")]
-        if !self.prompts.is_empty() || !self.resource_templates.is_empty() {
-            capabilities.completions = Some(turbomcp_types::CompletionCapabilities {});
-        }
+        capabilities.resources = Some(turbomcp_types::ResourcesCapabilities {
+            subscribe: Some(true),
+            list_changed: Some(true),
+        });
+        capabilities.prompts = Some(turbomcp_types::PromptsCapabilities {
+            list_changed: Some(false),
+        });
+        // Prompt arguments and the note template's variables complete.
+        capabilities.completions = Some(turbomcp_types::CompletionCapabilities {});
         capabilities
     }
 
@@ -1040,16 +1081,63 @@ impl McpHandler for ObsidianMcpServer {
         self.tools.as_ref().clone()
     }
 
+    /// The vault's fixed resources, then every note of every vault in use.
     fn list_resources(&self) -> Vec<Resource> {
-        self.resources.as_ref().clone()
+        let mut resources = self.resources.as_ref().clone();
+        resources.extend(self.core.note_resources());
+        resources
+    }
+
+    /// A client that lists resources is told when the list changes.
+    fn list_resources_for(&self, ctx: &RequestContext) -> Vec<Resource> {
+        self.core.remember_resource_listener(ctx);
+        self.list_resources()
     }
 
     fn list_resource_templates(&self) -> Vec<ResourceTemplate> {
-        self.resource_templates.as_ref().clone()
+        let mut templates = vec![note_resources::note_template()];
+        templates.extend(self.resource_templates.iter().cloned());
+        templates
     }
 
+    /// Lists are paged once they are long enough to need it, which in
+    /// practice means the note resources of a large vault: every other list
+    /// fits in one page.
+    fn page_size(&self) -> Option<usize> {
+        Some(LIST_PAGE_SIZE)
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        uri: &'a str,
+        ctx: &'a RequestContext,
+    ) -> impl std::future::Future<Output = McpResult<()>> + MaybeSend + 'a {
+        async move {
+            if !uri.starts_with(note_resources::NOTE_URI_PREFIX)
+                && !self.resource_routes.contains_key(uri)
+            {
+                return Err(McpError::resource_not_found(uri));
+            }
+            self.core.subscribe_resource(uri, ctx).await
+        }
+    }
+
+    fn unsubscribe<'a>(
+        &'a self,
+        uri: &'a str,
+        ctx: &'a RequestContext,
+    ) -> impl std::future::Future<Output = McpResult<()>> + MaybeSend + 'a {
+        async move {
+            self.core.unsubscribe_resource(uri, ctx);
+            Ok(())
+        }
+    }
+
+    /// The vault's workflow prompts, then any plugin's.
     fn list_prompts(&self) -> Vec<Prompt> {
-        self.prompts.as_ref().clone()
+        let mut prompts = core_prompts::prompts();
+        prompts.extend(self.prompts.iter().cloned());
+        prompts
     }
 
     fn call_tool<'a>(
@@ -1104,7 +1192,11 @@ impl McpHandler for ObsidianMcpServer {
             if self.plugin_owning_name(name).is_some() {
                 return Ok(result);
             }
-            Ok(CoreToolHandler::compact_json_text(result))
+            let result = CoreToolHandler::compact_json_text(result);
+            if RESOURCE_LINK_TOOLS.contains(&name) {
+                return Ok(with_note_links(result));
+            }
+            Ok(result)
         }
     }
 
@@ -1114,6 +1206,9 @@ impl McpHandler for ObsidianMcpServer {
         ctx: &'a RequestContext,
     ) -> impl std::future::Future<Output = McpResult<ResourceResult>> + MaybeSend + 'a {
         async move {
+            if uri.starts_with(note_resources::NOTE_URI_PREFIX) {
+                return self.core.read_note_resource(uri).await;
+            }
             let routed = match self.resource_routes.get(uri) {
                 Some(routed) => routed.as_str(),
                 // Not enumerated. A plugin owns its whole URI scheme, so a URI
@@ -1142,6 +1237,9 @@ impl McpHandler for ObsidianMcpServer {
         ctx: &'a RequestContext,
     ) -> impl std::future::Future<Output = McpResult<PromptResult>> + MaybeSend + 'a {
         async move {
+            if core_prompts::is_core_prompt(name) {
+                return core_prompts::get(name, args.as_ref());
+            }
             let routed = self
                 .prompt_routes
                 .get(name)
@@ -1162,14 +1260,20 @@ impl McpHandler for ObsidianMcpServer {
         ctx: &'a RequestContext,
     ) -> impl std::future::Future<Output = McpResult<serde_json::Value>> + MaybeSend + 'a {
         async move {
+            if let Some(result) = self.core.complete_core(&params).await {
+                return result;
+            }
             #[cfg(feature = "plugin-api")]
             {
                 self.complete_through_plugin(params, ctx).await
             }
             #[cfg(not(feature = "plugin-api"))]
             {
-                let _ = (params, ctx);
-                Err(McpError::capability_not_supported("completion/complete"))
+                let _ = ctx;
+                Err(McpError::invalid_params(format!(
+                    "nothing completes for {}",
+                    params.get("ref").cloned().unwrap_or_default()
+                )))
             }
         }
     }
@@ -1757,10 +1861,10 @@ mod tests {
         }
     }
 
-    /// Advertised capabilities are promises. TurboVault's catalog is fixed at
-    /// assembly and it sends no `list_changed` notifications, so claiming
-    /// otherwise would tell a client to stop re-listing and wait for a message
-    /// that never arrives.
+    /// Advertised capabilities are promises. The tool and prompt catalogs are
+    /// fixed at assembly, so claiming `listChanged` for them would tell a
+    /// client to stop re-listing and wait for a message that never arrives.
+    /// Notes are resources that change, and subscribers and listers are told.
     #[test]
     fn composed_capabilities_promise_only_what_is_implemented() {
         let server = ObsidianMcpServer::new().expect("provider composition");
@@ -1771,12 +1875,18 @@ mod tests {
             Some(false)
         );
         let resources = capabilities.resources.expect("resources capability");
-        assert_eq!(resources.list_changed, Some(false));
-        assert_eq!(resources.subscribe, None);
-        assert!(capabilities.prompts.is_none());
+        assert_eq!(resources.list_changed, Some(true));
+        assert_eq!(resources.subscribe, Some(true));
+        assert_eq!(
+            capabilities
+                .prompts
+                .expect("prompts capability")
+                .list_changed,
+            Some(false)
+        );
         assert!(
-            capabilities.completions.is_none(),
-            "the vault's own catalog has no completable argument"
+            capabilities.completions.is_some(),
+            "prompt arguments and the note template complete"
         );
     }
 
