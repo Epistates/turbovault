@@ -66,6 +66,7 @@
 
 pub mod cli;
 pub mod resources;
+pub mod security;
 pub mod tool_visibility;
 pub mod tools;
 

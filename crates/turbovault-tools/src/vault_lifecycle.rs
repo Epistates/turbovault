@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use turbovault_core::VaultRootPolicy;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
 use turbovault_core::prelude::*;
 use turbovault_git::VaultRepo;
@@ -37,12 +38,27 @@ pub fn direct_over_git_repo_warning(config: &VaultConfig) -> Option<String> {
 pub struct VaultLifecycleTools {
     /// Multi-vault manager for registration/switching
     multi_manager: Arc<MultiVaultManager>,
+    /// Which directories `create_vault` and `add_vault_from_path` accept.
+    root_policy: VaultRootPolicy,
 }
 
 impl VaultLifecycleTools {
-    /// Create new lifecycle tools
+    /// Create new lifecycle tools. Registration may point anywhere except
+    /// the directories [`VaultRootPolicy`] always refuses; see
+    /// [`Self::with_root_policy`] to restrict it further.
     pub fn new(multi_manager: Arc<MultiVaultManager>) -> Self {
-        Self { multi_manager }
+        Self {
+            multi_manager,
+            root_policy: VaultRootPolicy::anywhere(),
+        }
+    }
+
+    /// Check every path `create_vault` and `add_vault_from_path` are given
+    /// against `policy`.
+    #[must_use]
+    pub fn with_root_policy(mut self, policy: VaultRootPolicy) -> Self {
+        self.root_policy = policy;
+        self
     }
 
     /// Create a new vault at the specified path
@@ -109,8 +125,9 @@ impl VaultLifecycleTools {
             )));
         }
 
-        // Expand tilde and convert to absolute path
-        let expanded_path = Self::expand_path(path)?;
+        // Expand tilde and convert to absolute path, then check it against
+        // the root policy before anything is created there.
+        let expanded_path = self.root_policy.check(&Self::expand_path(path)?)?;
 
         // Build the config before touching the filesystem: a rejected backend
         // selection must not leave a half-created vault directory behind.
@@ -196,8 +213,10 @@ impl VaultLifecycleTools {
             )));
         }
 
-        // Expand tilde and convert to absolute path
-        let expanded_path = Self::expand_path(path)?;
+        // Expand tilde and convert to absolute path, then check it against
+        // the root policy first, so a refused path's existence isn't revealed
+        // either.
+        let expanded_path = self.root_policy.check(&Self::expand_path(path)?)?;
 
         // Registration is intentionally distinct from creation: a typoed path
         // must not silently become a new empty vault.
@@ -541,5 +560,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(info.path, requested.canonicalize().unwrap());
+    }
+
+    /// `add_vault("~")` then `read_note(".ssh/id_rsa")` was the whole attack.
+    #[tokio::test]
+    async fn the_home_directory_cannot_be_registered() {
+        let manager = Arc::new(MultiVaultManager::new(ServerConfig::default()).unwrap());
+        let tools = VaultLifecycleTools::new(manager.clone());
+        for path in ["~", "~/.ssh"] {
+            let error = tools
+                .add_vault_from_path("home", Path::new(path), WriteBackend::Direct, None)
+                .await
+                .expect_err("home is never a vault");
+            assert!(
+                error.to_string().contains("cannot be registered"),
+                "{error}"
+            );
+        }
+        let error = tools
+            .create_vault(
+                "dot",
+                Path::new("~/.turbovault-test-never-created"),
+                None,
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .expect_err("a hidden directory in home is never a vault");
+        assert!(error.to_string().contains("hidden directory"), "{error}");
+        assert!(manager.list_vaults().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn registration_stays_inside_the_allowed_roots() {
+        let allowed = tempfile::TempDir::new().unwrap();
+        let other = tempfile::TempDir::new().unwrap();
+        let tools = VaultLifecycleTools::new(Arc::new(
+            MultiVaultManager::new(ServerConfig::default()).unwrap(),
+        ))
+        .with_root_policy(VaultRootPolicy::within([allowed.path()]).unwrap());
+
+        tools
+            .create_vault(
+                "inside",
+                &allowed.path().join("Vault"),
+                None,
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .unwrap();
+        let error = tools
+            .add_vault_from_path("outside", other.path(), WriteBackend::Direct, None)
+            .await
+            .expect_err("outside the roots");
+        assert!(error.to_string().contains("allowed_vault_roots"), "{error}");
+        let error = tools
+            .create_vault(
+                "outside",
+                &other.path().join("New"),
+                None,
+                WriteBackend::Direct,
+                None,
+            )
+            .await
+            .expect_err("outside the roots");
+        assert!(error.to_string().contains("allowed_vault_roots"), "{error}");
+        assert!(
+            !other.path().join("New").exists(),
+            "a refused create_vault must not create the directory"
+        );
     }
 }

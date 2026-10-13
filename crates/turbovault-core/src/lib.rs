@@ -90,6 +90,7 @@ pub mod resilience;
 pub mod task_parser;
 pub mod utils;
 pub mod validation;
+pub mod vault_roots;
 
 pub use atomic_write::write_atomic;
 pub use change_plan::{Change, ChangePlan};
@@ -112,6 +113,7 @@ pub use validation::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Severity,
     ValidationIssue, ValidationReport, ValidationSummary, Validator,
 };
+pub use vault_roots::VaultRootPolicy;
 
 /// Re-export commonly used types
 pub mod prelude {

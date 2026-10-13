@@ -11,7 +11,11 @@ use turbomcp::{McpServerExt, ProtocolConfig, VisibilityLayer};
 use turbovault_core::ConfigProfile;
 use turbovault_core::cache::VaultCache;
 use turbovault_core::config::{VaultGitConfig, WriteBackend};
-use turbovault_tools::{OutputFormat, VaultLifecycleTools, direct_over_git_repo_warning};
+use turbovault_tools::{
+    OutputFormat, VaultLifecycleTools, VaultRootPolicy, direct_over_git_repo_warning,
+};
+
+use crate::security::{AuthMode, RateLimitSettings, SecuritySettings};
 
 /// TurboVault Server - AI-powered vault management
 #[derive(Parser, Debug)]
@@ -58,13 +62,90 @@ pub struct Args {
     #[arg(long, default_value = "3000", env = "TURBOVAULT_PORT")]
     port: u16,
 
-    /// Socket path for the unix transport
+    /// Socket path for the unix transport. Defaults to `turbovault.sock` in
+    /// a private (0700) directory under `$XDG_RUNTIME_DIR`, or under
+    /// `~/.turbovault/run` without one.
+    #[arg(long, env = "TURBOVAULT_SOCKET_PATH")]
+    socket_path: Option<String>,
+
+    /// Comma-separated directories `add_vault` and `create_vault` may
+    /// register vaults inside. Without it, runtime registration accepts any
+    /// directory on stdio and none on a network transport. The home
+    /// directory, its hidden and application-data directories, and system
+    /// directories are refused either way. Overrides
+    /// `security.allowed_vault_roots` in the config file.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_ALLOWED_VAULT_ROOTS")]
+    allowed_vault_roots: Vec<PathBuf>,
+
+    /// HTTP authentication: `none`, `bearer` (shared secret tokens from
+    /// --auth-token-file or TURBOVAULT_AUTH_TOKEN) or `jwt` (tokens from an
+    /// OAuth authorization server). Required to listen beyond loopback.
+    #[arg(long, value_enum, env = "TURBOVAULT_AUTH_MODE")]
+    auth_mode: Option<AuthMode>,
+
+    /// `bearer` mode: file of accepted tokens, one per line, each at least
+    /// 32 characters.
+    #[arg(long, env = "TURBOVAULT_AUTH_TOKEN_FILE")]
+    auth_token_file: Option<PathBuf>,
+
+    /// This server's canonical URL, which tokens must be issued for.
+    /// Defaults to `http://<host>:<port>/mcp`.
+    #[arg(long, env = "TURBOVAULT_AUTH_RESOURCE")]
+    auth_resource: Option<String>,
+
+    /// `jwt` mode: the expected token issuer.
+    #[arg(long, env = "TURBOVAULT_AUTH_ISSUER")]
+    auth_issuer: Option<String>,
+
+    /// `jwt` mode: URL of the issuer's signing keys (JWKS).
+    #[arg(long, env = "TURBOVAULT_AUTH_JWKS_URI")]
+    auth_jwks_uri: Option<String>,
+
+    /// `jwt` mode: the expected audience. Defaults to --auth-resource.
+    #[arg(long, env = "TURBOVAULT_AUTH_AUDIENCE")]
+    auth_audience: Option<String>,
+
+    /// `jwt` mode: comma-separated scopes every token must carry.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_AUTH_REQUIRED_SCOPES")]
+    auth_required_scopes: Vec<String>,
+
+    /// Comma-separated authorization servers to advertise in the protected
+    /// resource metadata. Defaults to the JWT issuer.
     #[arg(
         long,
-        default_value = "/tmp/turbovault.sock",
-        env = "TURBOVAULT_SOCKET_PATH"
+        value_delimiter = ',',
+        env = "TURBOVAULT_AUTH_AUTHORIZATION_SERVERS"
     )]
-    socket_path: String,
+    auth_authorization_servers: Vec<String>,
+
+    /// HTTP requests each client may make per --rate-limit-window-secs. `0`
+    /// turns rate limiting off. Defaults to off on loopback and 600 a minute
+    /// otherwise.
+    #[arg(long, env = "TURBOVAULT_RATE_LIMIT")]
+    rate_limit: Option<u32>,
+
+    /// Rate limit window in seconds (default 60).
+    #[arg(long, env = "TURBOVAULT_RATE_LIMIT_WINDOW_SECS")]
+    rate_limit_window_secs: Option<u64>,
+
+    /// Comma-separated browser origins the HTTP transport accepts, besides
+    /// localhost.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_ALLOWED_ORIGINS")]
+    allowed_origins: Vec<String>,
+
+    /// Comma-separated reverse proxy addresses or CIDRs whose forwarded
+    /// client address headers are trusted, for per-client rate limiting.
+    #[arg(long, value_delimiter = ',', env = "TURBOVAULT_TRUSTED_PROXIES")]
+    trusted_proxies: Vec<String>,
+
+    /// Listen beyond loopback without authentication. Only for deployments
+    /// that authenticate in front of TurboVault.
+    #[arg(
+        long,
+        env = "TURBOVAULT_ALLOW_UNAUTHENTICATED_NETWORK",
+        action = clap::ArgAction::SetTrue
+    )]
+    allow_unauthenticated_network: bool,
 
     /// Output format for non-STDIO transports (json, human, text)
     /// Note: STDIO transport always uses JSON per MCP protocol specification
@@ -178,6 +259,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Validate output format (unless STDIO transport, which always uses JSON)
     let output_format = resolve_output_format(&args)?;
     validate_transport(&args.transport)?;
+    let security = load_security_settings(&args).await?;
+    security.check_exposure(&args.transport, &args.host)?;
+    let root_policy = security.vault_root_policy(&args.transport)?;
 
     // One tracing subscriber for every transport and format, so `tracing`
     // events and `log` records (bridged by tracing-log) both reach it. STDIO
@@ -218,6 +302,16 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     log::info!("MCP Server created (vault-agnostic mode)");
+    match root_policy.roots() {
+        Some(roots) => log::info!("Runtime vault registration is limited to {roots:?}"),
+        None if root_policy.allows_registration() => {}
+        None => log::info!(
+            "Runtime vault registration is off on the {} transport; set \
+             --allowed-vault-roots to allow it",
+            args.transport
+        ),
+    }
+    server.set_vault_root_policy(root_policy.clone());
 
     // Initialize persistent cache in the server
     if let Err(e) = server.init_cache().await {
@@ -251,6 +345,17 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 // Add each cached vault to the multi-vault manager
                 for vault_config in cached_vaults {
+                    // A cached vault was most likely registered by a tool
+                    // call, so it is held to the same policy one is now.
+                    // Vaults from --vault and the config file are registered
+                    // again below whatever happens here.
+                    if let Err(reason) = restorable(&vault_config, &root_policy) {
+                        log::warn!(
+                            "Not restoring cached vault '{}': {reason}",
+                            vault_config.name
+                        );
+                        continue;
+                    }
                     // turbovault-74p: a cached Direct vault over a git repo is
                     // the same bypass, restored — warn on every recovery too.
                     if let Some(warning) = direct_over_git_repo_warning(&vault_config) {
@@ -389,9 +494,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             let addr = format!("{}:{}", args.host, args.port);
             log::info!("Running HTTP server on {}", addr);
             log::info!("Output format: {:?}", output_format);
+            let config = crate::security::http_server_config(&security, &args.host, args.port)?;
             server
                 .builder()
-                .with_protocol(ProtocolConfig::multi_version())
+                .with_config(config)
                 .transport(turbomcp::Transport::http(&addr))
                 .serve()
                 .await?;
@@ -422,12 +528,19 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         #[cfg(feature = "unix")]
         "unix" => {
-            log::info!("Running Unix socket server on {}", args.socket_path);
+            let socket_path = match args.socket_path.clone() {
+                Some(path) => path,
+                None => crate::security::default_socket_path()?
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            crate::security::warn_if_socket_dir_is_shared(std::path::Path::new(&socket_path));
+            log::info!("Running Unix socket server on {}", socket_path);
             log::info!("Output format: {:?}", output_format);
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
-                .transport(turbomcp::Transport::unix(&args.socket_path))
+                .transport(turbomcp::Transport::unix(&socket_path))
                 .serve()
                 .await?;
         }
@@ -638,6 +751,87 @@ fn validate_transport(transport: &str) -> Result<(), String> {
     }
 }
 
+/// The `security` settings: the config file's section, with the matching
+/// command-line flags taking precedence.
+async fn load_security_settings(
+    args: &Args,
+) -> Result<SecuritySettings, Box<dyn std::error::Error>> {
+    let configured_path = args
+        .config
+        .clone()
+        .or_else(|| default_config_path().filter(|path| path.exists()));
+    let file = match configured_path {
+        Some(path) => SecuritySettings::load(&path).await?,
+        None => SecuritySettings::default(),
+    };
+    Ok(merge_security_flags(file, args))
+}
+
+fn merge_security_flags(mut settings: SecuritySettings, args: &Args) -> SecuritySettings {
+    if !args.allowed_vault_roots.is_empty() {
+        settings.allowed_vault_roots = args.allowed_vault_roots.clone();
+    }
+    let auth = &mut settings.auth;
+    if let Some(mode) = args.auth_mode {
+        auth.mode = mode;
+    }
+    auth.token_file = args.auth_token_file.clone().or(auth.token_file.take());
+    auth.resource = args.auth_resource.clone().or(auth.resource.take());
+    auth.issuer = args.auth_issuer.clone().or(auth.issuer.take());
+    auth.jwks_uri = args.auth_jwks_uri.clone().or(auth.jwks_uri.take());
+    auth.audience = args.auth_audience.clone().or(auth.audience.take());
+    if !args.auth_required_scopes.is_empty() {
+        auth.required_scopes = args.auth_required_scopes.clone();
+    }
+    if !args.auth_authorization_servers.is_empty() {
+        auth.authorization_servers = args.auth_authorization_servers.clone();
+    }
+    if args.rate_limit.is_some() || args.rate_limit_window_secs.is_some() {
+        let current = settings.rate_limit;
+        settings.rate_limit = Some(RateLimitSettings {
+            requests: args
+                .rate_limit
+                .or(current.map(|limit| limit.requests))
+                .unwrap_or(crate::security::DEFAULT_NETWORK_RATE_LIMIT),
+            window_secs: args
+                .rate_limit_window_secs
+                .or(current.map(|limit| limit.window_secs))
+                .unwrap_or(60),
+        });
+    }
+    if !args.allowed_origins.is_empty() {
+        settings.allowed_origins = args.allowed_origins.clone();
+    }
+    if !args.trusted_proxies.is_empty() {
+        settings.trusted_proxies = args.trusted_proxies.clone();
+    }
+    settings.allow_unauthenticated_network |= args.allow_unauthenticated_network;
+    settings
+}
+
+/// Whether a vault from the persistent cache may be registered again, under
+/// the same rules a runtime registration is.
+fn restorable(
+    config: &turbovault_core::VaultConfig,
+    policy: &VaultRootPolicy,
+) -> Result<(), String> {
+    if is_fanout_vault_name(&config.name) {
+        return Err("it is a fanout worktree from an earlier session".to_string());
+    }
+    policy
+        .check(&config.path)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// `<base>-fanout-<8 hex>`, the name `begin_fanout` registers its scratch
+/// worktree under.
+fn is_fanout_vault_name(name: &str) -> bool {
+    name.rsplit_once("-fanout-").is_some_and(|(base, id)| {
+        !base.is_empty() && id.len() == 8 && id.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
 fn paths_refer_to_same_vault(existing: &std::path::Path, requested: &std::path::Path) -> bool {
     match (existing.canonicalize(), requested.canonicalize()) {
         (Ok(existing), Ok(requested)) => existing == requested,
@@ -759,6 +953,66 @@ mod tests {
         let mut argv = vec!["turbovault"];
         argv.extend_from_slice(extra);
         Args::try_parse_from(argv).expect("CLI arguments")
+    }
+
+    #[test]
+    fn fanout_vault_names_are_recognized() {
+        assert!(is_fanout_vault_name("notes-fanout-0a1b2c3d"));
+        assert!(!is_fanout_vault_name("notes-fanout-plan"));
+        assert!(!is_fanout_vault_name("-fanout-0a1b2c3d"));
+        assert!(!is_fanout_vault_name("notes"));
+    }
+
+    #[test]
+    fn cached_vaults_are_held_to_the_root_policy() {
+        let vault = tempfile::TempDir::new().unwrap();
+        let config = turbovault_core::VaultConfig::builder("notes", vault.path())
+            .build()
+            .unwrap();
+        assert!(restorable(&config, &VaultRootPolicy::anywhere()).is_ok());
+        assert!(restorable(&config, &VaultRootPolicy::closed()).is_err());
+
+        let fanout = turbovault_core::VaultConfig::builder("notes-fanout-0a1b2c3d", vault.path())
+            .build()
+            .unwrap();
+        assert!(restorable(&fanout, &VaultRootPolicy::anywhere()).is_err());
+    }
+
+    #[test]
+    fn security_flags_override_the_config_file() {
+        let file = SecuritySettings::from_yaml_str(
+            "security:\n  allowed_vault_roots: [/srv/a]\n  auth:\n    mode: jwt\n    issuer: https://a\n  rate_limit:\n    requests: 5\n    window_secs: 10\n",
+        )
+        .unwrap();
+        let merged = merge_security_flags(
+            file,
+            &args(&[
+                "--allowed-vault-roots",
+                "/srv/b,/srv/c",
+                "--auth-mode",
+                "bearer",
+                "--rate-limit",
+                "7",
+            ]),
+        );
+        assert_eq!(
+            merged.allowed_vault_roots,
+            [PathBuf::from("/srv/b"), PathBuf::from("/srv/c")]
+        );
+        assert_eq!(merged.auth.mode, AuthMode::Bearer);
+        assert_eq!(merged.auth.issuer.as_deref(), Some("https://a"));
+        assert_eq!(
+            merged.rate_limit,
+            Some(RateLimitSettings {
+                requests: 7,
+                window_secs: 10
+            })
+        );
+    }
+
+    #[test]
+    fn socket_path_has_no_shared_default() {
+        assert_eq!(args(&[]).socket_path, None);
     }
 
     #[test]

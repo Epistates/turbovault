@@ -33,7 +33,7 @@ default = []
 
 # Individual transports - add what you need
 stdio = []                                    # Always included, no external deps
-http = ["turbomcp/http"]                     # Add HTTP server support (~200 KB)
+http = ["turbomcp/http", "turbomcp/auth"]    # Add HTTP server support, with bearer/JWT authorization
 websocket = ["turbomcp/websocket"]           # Add WebSocket support (~200 KB)
 tcp = ["turbomcp/tcp"]                       # Add TCP server support (~100 KB)
 unix = ["turbomcp/unix"]                     # Add Unix socket support (~100 KB) [Unix-only]
