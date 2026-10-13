@@ -168,6 +168,7 @@ impl ValidationTools {
             Severity::Warning => "warning".to_string(),
             Severity::Error => "error".to_string(),
             Severity::Critical => "critical".to_string(),
+            other => format!("{other:?}").to_lowercase(),
         }
     }
 }

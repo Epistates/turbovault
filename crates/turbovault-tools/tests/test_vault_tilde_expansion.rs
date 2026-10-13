@@ -17,10 +17,7 @@ async fn test_add_vault_with_absolute_temp_path() {
         .await
         .unwrap();
 
-    let config = ServerConfig {
-        vaults: vec![],
-        ..Default::default()
-    };
+    let config = ServerConfig::with_vaults(vec![]);
 
     let multi_mgr = std::sync::Arc::new(MultiVaultManager::new(config).unwrap());
     let lifecycle_tools = VaultLifecycleTools::new(multi_mgr.clone());

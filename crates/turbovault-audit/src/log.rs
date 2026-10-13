@@ -35,6 +35,7 @@ impl std::fmt::Display for OperationType {
 /// A single audit log entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct AuditEntry {
     pub id: String,
     pub timestamp: String,
@@ -187,6 +188,7 @@ impl AuditFilter {
 /// Audit trail statistics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct AuditStats {
     pub total_operations: usize,
     pub operations_by_type: HashMap<String, usize>,
@@ -200,6 +202,7 @@ pub struct AuditStats {
 /// The result of checking an audit log's hash chain.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct ChainVerification {
     /// Lines in the log.
     pub entries: usize,

@@ -24,6 +24,7 @@ use crate::config::ServerConfig;
 
 /// Profile selector for pre-configured deployments
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ConfigProfile {
     /// Development: Verbose logging, all operations, metrics enabled
     Development,

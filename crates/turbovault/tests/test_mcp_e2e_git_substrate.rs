@@ -157,10 +157,7 @@ async fn e2e_require_commit_message_gate() {
         repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
             .unwrap();
     }
-    let git_cfg = VaultGitConfig {
-        require_commit_message: true,
-        ..VaultGitConfig::default()
-    };
+    let git_cfg = VaultGitConfig::default().with_require_commit_message(true);
     let vault_config = VaultConfig::builder("req", tmp.path())
         .write_backend(WriteBackend::Git)
         .git(git_cfg)

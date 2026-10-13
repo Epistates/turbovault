@@ -326,7 +326,9 @@ impl LinkGraph {
                 | LinkType::BlockRef
                 | LinkType::HeadingRef
                 | LinkType::MarkdownLink => is_note_reference(&link.target),
-                LinkType::Anchor | LinkType::ExternalLink => false,
+                // A link form added later is kept out of the graph until it
+                // is known to point at a note.
+                _ => false,
             };
             if is_graph_link {
                 // Skip same-document anchors like [[#Heading]]

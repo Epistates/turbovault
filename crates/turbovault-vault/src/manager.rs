@@ -786,6 +786,12 @@ impl VaultManager {
                 );
                 (WriteSubstrate::Git(git), Some(queue))
             }
+            backend => {
+                return Err(Error::config_error(format!(
+                    "vault '{}' has write_backend={backend:?}, which this build can't write",
+                    default_vault.name
+                )));
+            }
         };
 
         let scan_spec = Arc::new(ScanSpec::new(&config, vault_path.clone()));

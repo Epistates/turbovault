@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Obsidian task checkbox states
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TaskStatus {
     /// `[ ]` — pending/incomplete
     Pending,

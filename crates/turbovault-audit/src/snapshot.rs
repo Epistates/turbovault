@@ -210,11 +210,8 @@ mod tests {
     #[tokio::test]
     async fn prune_keeps_the_most_recently_used_up_to_max_count() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let store =
-            SnapshotStore::new(temp_dir.path().to_path_buf()).with_retention(SnapshotRetention {
-                max_count: Some(2),
-                max_age_days: None,
-            });
+        let store = SnapshotStore::new(temp_dir.path().to_path_buf())
+            .with_retention(SnapshotRetention::default().with_max_count(2));
         let a = store.store("a").await.unwrap();
         let b = store.store("b").await.unwrap();
         let c = store.store("c").await.unwrap();
@@ -232,11 +229,8 @@ mod tests {
     #[tokio::test]
     async fn prune_drops_snapshots_unused_past_max_age() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let store =
-            SnapshotStore::new(temp_dir.path().to_path_buf()).with_retention(SnapshotRetention {
-                max_count: None,
-                max_age_days: Some(7),
-            });
+        let store = SnapshotStore::new(temp_dir.path().to_path_buf())
+            .with_retention(SnapshotRetention::default().with_max_age_days(7));
         let old = store.store("old").await.unwrap();
         let reused = store.store("reused").await.unwrap();
         age(&store, &old, 10);

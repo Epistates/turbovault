@@ -149,6 +149,7 @@ impl LineIndex {
 
 /// Type of link in Obsidian content
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum LinkType {
     /// Wikilink: `[[Note]]`
     WikiLink,
@@ -217,6 +218,7 @@ pub struct Tag {
 
 /// A task item in vault content
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TaskItem {
     /// Task description with trailing Obsidian Tasks metadata removed.
     pub content: String,
@@ -390,6 +392,7 @@ fn parse_date_opt(value: Option<&str>) -> Option<NaiveDate> {
 
 /// Type of callout block
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum CalloutType {
     Note,
     Tip,

@@ -786,11 +786,8 @@ impl CoreToolHandler {
     /// Like [`Self::new`], with `config` as the base every vault manager is
     /// built from (a profile's [`turbovault_core::ConfigProfile::create_config`]).
     /// Its `vaults` are ignored; vaults are registered at runtime.
-    pub fn with_config(config: ServerConfig) -> Result<Self> {
-        let config = ServerConfig {
-            vaults: vec![],
-            ..config
-        };
+    pub fn with_config(mut config: ServerConfig) -> Result<Self> {
+        config.vaults.clear();
         let mgr = MultiVaultManager::empty(config)?;
         Ok(Self {
             multi_vault_mgr: Arc::new(mgr),
@@ -1944,6 +1941,10 @@ impl CoreToolHandler {
             WriteBackend::Git => VaultRepo::blob_oid_of(content.as_bytes())
                 .map(|oid| oid.to_string())
                 .map_err(|e| McpError::internal(format!("blob_oid_of failed: {}", e))),
+            other => Err(McpError::internal(format!(
+                "no content hash for the {} write backend",
+                other.name()
+            ))),
         }
     }
 

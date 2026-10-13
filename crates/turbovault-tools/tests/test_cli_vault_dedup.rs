@@ -21,14 +21,11 @@ async fn test_vault_exists_detection() {
     let vault_path = temp.path().join("default_vault");
     tokio::fs::create_dir_all(&vault_path).await.unwrap();
 
-    let config = ServerConfig {
-        vaults: vec![
+    let config = ServerConfig::with_vaults(vec![
             VaultConfig::builder("default", &vault_path)
                 .build()
                 .unwrap(),
-        ],
-        ..Default::default()
-    };
+        ]);
 
     let multi_mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
@@ -48,14 +45,11 @@ async fn test_cli_vault_dedup_same_path() {
     tokio::fs::create_dir_all(&vault_path).await.unwrap();
 
     // Simulate cache recovery: vault "default" already exists
-    let config = ServerConfig {
-        vaults: vec![
+    let config = ServerConfig::with_vaults(vec![
             VaultConfig::builder("default", &vault_path)
                 .build()
                 .unwrap(),
-        ],
-        ..Default::default()
-    };
+        ]);
 
     let multi_mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
@@ -90,14 +84,11 @@ async fn test_cli_vault_dedup_different_path() {
     tokio::fs::create_dir_all(&cli_vault_path).await.unwrap();
 
     // Simulate cache recovery: vault "default" exists with cached_vault_path
-    let config = ServerConfig {
-        vaults: vec![
+    let config = ServerConfig::with_vaults(vec![
             VaultConfig::builder("default", &cached_vault_path)
                 .build()
                 .unwrap(),
-        ],
-        ..Default::default()
-    };
+        ]);
 
     let multi_mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
@@ -132,14 +123,11 @@ async fn test_path_canonicalization_for_dedup() {
         let symlink_path = temp.path().join("vault_symlink");
         std::os::unix::fs::symlink(&vault_path, &symlink_path).unwrap();
 
-        let config = ServerConfig {
-            vaults: vec![
+        let config = ServerConfig::with_vaults(vec![
                 VaultConfig::builder("default", &vault_path)
                     .build()
                     .unwrap(),
-            ],
-            ..Default::default()
-        };
+            ]);
 
         let multi_mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
@@ -153,14 +141,11 @@ async fn test_path_canonicalization_for_dedup() {
     }
 
     // Test relative vs absolute path (works on all platforms)
-    let config = ServerConfig {
-        vaults: vec![
+    let config = ServerConfig::with_vaults(vec![
             VaultConfig::builder("default", &vault_path)
                 .build()
                 .unwrap(),
-        ],
-        ..Default::default()
-    };
+        ]);
 
     let multi_mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
@@ -181,10 +166,7 @@ async fn test_cli_vault_no_cache_conflict() {
     tokio::fs::create_dir_all(&vault_path).await.unwrap();
 
     // Start with empty vault list (no cache recovery)
-    let config = ServerConfig {
-        vaults: vec![],
-        ..Default::default()
-    };
+    let config = ServerConfig::with_vaults(vec![]);
 
     let multi_mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
@@ -221,10 +203,7 @@ async fn test_cli_vault_dedup_complete_flow() {
 
     // Scenario 1: No cached vault - should add successfully
     {
-        let config = ServerConfig {
-            vaults: vec![],
-            ..Default::default()
-        };
+        let config = ServerConfig::with_vaults(vec![]);
         let mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
         let vault_exists = mgr.vault_exists("default").await;
@@ -241,14 +220,11 @@ async fn test_cli_vault_dedup_complete_flow() {
 
     // Scenario 2: Cached vault exists with same path - should skip (no error)
     {
-        let config = ServerConfig {
-            vaults: vec![
+        let config = ServerConfig::with_vaults(vec![
                 VaultConfig::builder("default", &cached_path)
                     .build()
                     .unwrap(),
-            ],
-            ..Default::default()
-        };
+            ]);
         let mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
         let vault_exists = mgr.vault_exists("default").await;
@@ -264,14 +240,11 @@ async fn test_cli_vault_dedup_complete_flow() {
 
     // Scenario 3: Cached vault exists with different path - should warn and use cached
     {
-        let config = ServerConfig {
-            vaults: vec![
+        let config = ServerConfig::with_vaults(vec![
                 VaultConfig::builder("default", &cached_path)
                     .build()
                     .unwrap(),
-            ],
-            ..Default::default()
-        };
+            ]);
         let mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 
         let vault_exists = mgr.vault_exists("default").await;
@@ -303,14 +276,11 @@ async fn test_add_duplicate_vault_returns_error() {
     tokio::fs::create_dir_all(&vault_path).await.unwrap();
     tokio::fs::create_dir_all(&other_path).await.unwrap();
 
-    let config = ServerConfig {
-        vaults: vec![
+    let config = ServerConfig::with_vaults(vec![
             VaultConfig::builder("default", &vault_path)
                 .build()
                 .unwrap(),
-        ],
-        ..Default::default()
-    };
+        ]);
 
     let multi_mgr = Arc::new(MultiVaultManager::new(config).unwrap());
 

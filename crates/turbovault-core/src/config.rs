@@ -21,6 +21,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum WriteBackend {
     /// The non-git write path: `VaultManager` mutators write directly to the
     /// filesystem. The default. Accepts `legacy` as a serde alias.
@@ -30,6 +31,16 @@ pub enum WriteBackend {
     /// The git-native write substrate (`turbovault-git`). Requires the vault
     /// path to be a git repository.
     Git,
+}
+
+impl WriteBackend {
+    /// The name config files use for this backend: `direct` or `git`.
+    pub fn name(self) -> &'static str {
+        match self {
+            WriteBackend::Direct => "direct",
+            WriteBackend::Git => "git",
+        }
+    }
 }
 
 /// turbovault-kdq: parse the backend out of a runtime registration parameter
@@ -81,6 +92,7 @@ pub struct GitAuthor {
 /// [`VaultConfig::write_backend`] is `Git`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct VaultGitConfig {
     /// Target branch for commits. `None` = use the repo's current HEAD branch.
     #[serde(default)]
@@ -130,9 +142,42 @@ impl Default for VaultGitConfig {
     }
 }
 
+impl VaultGitConfig {
+    /// Commit to `branch` rather than the checked-out one.
+    pub fn with_branch(mut self, branch: impl Into<String>) -> Self {
+        self.branch = Some(branch.into());
+        self
+    }
+
+    /// Author commits as `author`.
+    pub fn with_author(mut self, author: GitAuthor) -> Self {
+        self.author = Some(author);
+        self
+    }
+
+    /// Merge fanout branches back with `strategy`.
+    pub fn with_merge_strategy(mut self, strategy: GitMergeStrategy) -> Self {
+        self.merge_strategy = strategy;
+        self
+    }
+
+    /// Whether gitignored paths may be written. See the field.
+    pub fn with_include_ignored(mut self, include_ignored: bool) -> Self {
+        self.include_ignored = include_ignored;
+        self
+    }
+
+    /// Whether every write must carry a commit message. See the field.
+    pub fn with_require_commit_message(mut self, required: bool) -> Self {
+        self.require_commit_message = required;
+        self
+    }
+}
+
 /// Configuration for a single vault
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[non_exhaustive]
 pub struct VaultConfig {
     /// Unique identifier for this vault
     pub name: String,
@@ -352,6 +397,7 @@ impl VaultConfigBuilder {
 
 /// Global server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ServerConfig {
     /// List of configured vaults
     pub vaults: Vec<VaultConfig>,
@@ -391,6 +437,7 @@ pub struct ServerConfig {
 /// back. Both limits are off by default, so nothing is ever deleted.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SnapshotRetention {
     /// Keep at most this many snapshots, the most recently used.
     pub max_count: Option<usize>,
@@ -402,6 +449,18 @@ impl SnapshotRetention {
     /// Whether either limit is set.
     pub fn is_limited(&self) -> bool {
         self.max_count.is_some() || self.max_age_days.is_some()
+    }
+
+    /// Keep at most `count` snapshots.
+    pub fn with_max_count(mut self, count: usize) -> Self {
+        self.max_count = Some(count);
+        self
+    }
+
+    /// Delete snapshots not used for `days` days.
+    pub fn with_max_age_days(mut self, days: u32) -> Self {
+        self.max_age_days = Some(days);
+        self
     }
 }
 
@@ -430,6 +489,14 @@ impl ServerConfig {
     /// Create new configuration
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The default configuration with `vaults` configured.
+    pub fn with_vaults(vaults: Vec<VaultConfig>) -> Self {
+        Self {
+            vaults,
+            ..Self::default()
+        }
     }
 
     /// Validate configuration
