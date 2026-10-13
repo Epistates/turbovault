@@ -80,10 +80,15 @@ impl DiscoveryProvider {
             search_query = search_query.exclude(excludes);
         }
 
-        let results = engine
-            .advanced_search(search_query)
-            .await
-            .map_err(to_mcp_error)?;
+        // tantivy refuses a limit of 0, and the answer is known anyway.
+        let results = if result_limit == 0 {
+            Vec::new()
+        } else {
+            engine
+                .advanced_search(search_query)
+                .await
+                .map_err(to_mcp_error)?
+        };
         let result_data =
             serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?;
         let count = extract_count(&result_data);

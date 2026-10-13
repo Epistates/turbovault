@@ -56,11 +56,12 @@ const MAX_REPORT_ITEMS: usize = 500;
 const MAX_AUDIT_ENTRIES: usize = 1000;
 
 /// A result-count argument as the tool uses it: `default` when absent, and
-/// otherwise held to `1..=max`. Zero would panic tantivy's collectors, and a
-/// huge value can overflow arithmetic or ask for an allocation that aborts
-/// the whole process, so no count reaches the engines unclamped.
+/// otherwise at most `max`. A huge value can overflow arithmetic or ask for
+/// an allocation that aborts the whole process, so no count reaches the
+/// engines unclamped. Zero still means no results; a tool whose engine
+/// can't take zero answers it without asking.
 fn clamp_count(requested: Option<usize>, default: usize, max: usize) -> usize {
-    requested.unwrap_or(default).clamp(1, max)
+    requested.unwrap_or(default).min(max)
 }
 
 /// Extract count from serde_json::Value array (eliminates DRY violation)

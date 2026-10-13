@@ -3,7 +3,8 @@
 //! `advanced_search` with `limit: 0` panicked inside tantivy, and a huge
 //! limit overflowed `limit * 2` or asked a collector to preallocate a vector
 //! that size, which aborts the process rather than failing one call. Each
-//! tool below must answer both extremes with an ordinary result.
+//! tool below must answer both extremes with an ordinary result: no results
+//! for zero, and at most its own maximum for anything larger.
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -85,16 +86,24 @@ async fn result_limits_are_clamped() {
 }
 
 #[tokio::test]
-async fn a_clamped_limit_still_returns_results() {
+async fn limits_mean_what_they_say() {
     let (_tmp, server) = setup().await;
-    let response = call(
+    let none = call(
         &server,
         "advanced_search",
         json!({"query": "vaults", "limit": 0}),
     )
     .await;
-    assert!(
-        response["count"].as_u64().unwrap_or_default() >= 1,
-        "limit 0 is read as 1, not as no results: {response}"
+    assert_eq!(none["count"], 0, "limit 0 asks for no results: {none}");
+
+    let capped = call(
+        &server,
+        "advanced_search",
+        json!({"query": "vaults", "limit": u64::MAX}),
+    )
+    .await;
+    assert_eq!(
+        capped["count"], 5,
+        "a huge limit returns every match: {capped}"
     );
 }
