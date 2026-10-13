@@ -133,13 +133,8 @@ pub fn parse_base(yaml: &str) -> Result<Base> {
         }
     }
 
-    for key in ["summaries"] {
-        if document.get(key).is_some_and(|v| !v.is_null()) {
-            // Summaries only aggregate what a view shows; rows are
-            // unaffected, so they are ignored rather than refused.
-            let _ = key;
-        }
-    }
+    // `summaries` only aggregate what a view shows; the rows are the same
+    // without them, so they are ignored rather than refused.
 
     Ok(Base {
         filters,
