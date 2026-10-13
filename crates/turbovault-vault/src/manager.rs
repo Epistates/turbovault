@@ -133,11 +133,55 @@ struct FileFingerprint {
 
 impl FileFingerprint {
     async fn observe(path: &Path) -> Option<Self> {
+        Self::observe_with_times(path)
+            .await
+            .map(|(fingerprint, _)| fingerprint)
+    }
+
+    /// The fingerprint, and the file's times from the same stat.
+    async fn observe_with_times(path: &Path) -> Option<(Self, FileTimes)> {
         let metadata = tokio::fs::metadata(path).await.ok()?;
-        Some(Self {
+        let fingerprint = Self {
             size_bytes: metadata.len(),
             modified: metadata.modified().ok(),
-        })
+        };
+        Some((fingerprint, FileTimes::of(&metadata)))
+    }
+}
+
+/// When a note was created and last modified, for its [`FileMetadata`].
+#[derive(Debug, Clone, Copy, Default)]
+struct FileTimes {
+    created: Option<SystemTime>,
+    modified: Option<SystemTime>,
+}
+
+impl FileTimes {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        let modified = metadata.modified().ok();
+        Self {
+            // Not every filesystem keeps a birth time; the last change is the
+            // nearest thing it does keep.
+            created: metadata.created().ok().or(modified),
+            modified,
+        }
+    }
+
+    /// Record these times on `file`, as the seconds since the Unix epoch
+    /// [`FileMetadata`] keeps. The parser has the content but not the file,
+    /// so the times are the caller's to fill in.
+    fn stamp(self, file: &mut VaultFile) {
+        let seconds = |time: SystemTime| {
+            time.duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|since| since.as_secs_f64())
+        };
+        if let Some(created) = self.created.and_then(seconds) {
+            file.metadata.created_at = created;
+        }
+        if let Some(modified) = self.modified.and_then(seconds) {
+            file.metadata.modified_at = modified;
+        }
     }
 }
 
@@ -460,19 +504,32 @@ impl ScanSpec {
 async fn read_note_with_fingerprint(
     path: &Path,
     expected: Option<FileFingerprint>,
-) -> std::io::Result<(String, Option<Observed>)> {
+) -> std::io::Result<NoteRead> {
     let before = match expected {
         Some(fingerprint) => Some(fingerprint),
         None => FileFingerprint::observe(path).await,
     };
     let content = tokio::fs::read_to_string(path).await?;
-    let after = FileFingerprint::observe(path).await;
+    let (after, times) = match FileFingerprint::observe_with_times(path).await {
+        Some((fingerprint, times)) => (Some(fingerprint), times),
+        None => (None, FileTimes::default()),
+    };
     let read_at = SystemTime::now();
     let observed = if before == after { after } else { None };
-    Ok((
+    Ok(NoteRead {
         content,
-        observed.map(|fingerprint| Observed::at(fingerprint, read_at)),
-    ))
+        observed: observed.map(|fingerprint| Observed::at(fingerprint, read_at)),
+        times,
+    })
+}
+
+/// What [`read_note_with_fingerprint`] read.
+struct NoteRead {
+    content: String,
+    /// `None` when the note changed during the read, so the next sweep
+    /// looks again.
+    observed: Option<Observed>,
+    times: FileTimes,
 }
 
 /// Main vault manager with file operations and watching
@@ -1048,13 +1105,13 @@ impl VaultManager {
         checksum: &str,
     ) -> Option<bool> {
         match read_note_with_fingerprint(path, Some(found)).await {
-            Ok((content, observed)) if turbovault_core::compute_hash(&content) == checksum => {
+            Ok(read) if turbovault_core::compute_hash(&read.content) == checksum => {
                 let mut cache = self.file_cache.write().await;
                 // Unless a write recorded a newer revision meanwhile.
                 if let Some(entry) = cache.get_mut(path)
                     && entry.observed.map(|o| o.fingerprint) == Some(found)
                 {
-                    entry.observed = observed;
+                    entry.observed = read.observed;
                 }
                 None
             }
@@ -1296,8 +1353,9 @@ impl VaultManager {
         for (file_path, read) in reads {
             log::debug!("Processing file: {:?}", file_path);
             match read {
-                Ok((content, observed)) => match self.parser.parse_file(&file_path, &content) {
+                Ok(read) => match self.parse_read(&file_path, &read) {
                     Ok(vault_file) => {
+                        let observed = read.observed;
                         log::debug!(
                             "Parsed {}: {} links extracted",
                             file_path.display(),
@@ -1831,6 +1889,23 @@ impl VaultManager {
         cache.insert(path, CacheEntry { file, observed });
     }
 
+    /// Whether a scan would find `path` (see [`ScanSpec::admits`]).
+    async fn in_scope(&self, path: &Path) -> bool {
+        let spec = Arc::clone(&self.scan_spec);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || spec.admits(&path))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Parse what [`read_note_with_fingerprint`] read from `path`, with the
+    /// file's own created and modified times, which the parser can't know.
+    fn parse_read(&self, path: &Path, read: &NoteRead) -> Result<VaultFile> {
+        let mut file = self.parser.parse_file(path, &read.content)?;
+        read.times.stamp(&mut file);
+        Ok(file)
+    }
+
     /// Bring the link graph + note cache into agreement with a substrate
     /// apply's verdict on which paths are now present (design R7 — one
     /// post-apply sync shared by `write_file`/`delete_file`/`move_file`,
@@ -1843,15 +1918,6 @@ impl VaultManager {
     /// was cached regardless of extension; this unifies on the stricter,
     /// already-established `write_file` behavior. No existing caller relies
     /// on a non-markdown file appearing in the cache after a move.)
-    /// Whether a scan would find `path` (see [`ScanSpec::admits`]).
-    async fn in_scope(&self, path: &Path) -> bool {
-        let spec = Arc::clone(&self.scan_spec);
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || spec.admits(&path))
-            .await
-            .unwrap_or(false)
-    }
-
     async fn sync_index(&self, changed: &[(String, bool)]) {
         for (rel_path, present) in changed {
             let full_path = self.vault_path.join(rel_path);
@@ -1862,8 +1928,9 @@ impl VaultManager {
             let in_scope = self.in_scope(&full_path).await;
             if *present && in_scope {
                 match read_note_with_fingerprint(&full_path, None).await {
-                    Ok((content, observed)) => match self.parser.parse_file(&full_path, &content) {
+                    Ok(read) => match self.parse_read(&full_path, &read) {
                         Ok(vault_file) => {
+                            let observed = read.observed;
                             {
                                 let mut graph = self.link_graph.write().await;
                                 if let Err(e) = graph.add_file(&vault_file) {
@@ -1963,11 +2030,10 @@ impl VaultManager {
     #[instrument(skip(self), fields(file = ?path), name = "vault_parse_file")]
     pub async fn parse_file(&self, path: &Path) -> Result<VaultFile> {
         let full_path = self.resolve_path(path)?;
-        let content = tokio::fs::read_to_string(&full_path)
+        let read = read_note_with_fingerprint(&full_path, None)
             .await
             .map_err(|e| Error::io_at(self.relative_path(&full_path), e))?;
-        self.parser
-            .parse_file(&full_path, &content)
+        self.parse_read(&full_path, &read)
             .map_err(|e| Error::parse_error(e.to_string()))
     }
 
@@ -1982,17 +2048,16 @@ impl VaultManager {
             return Ok(()); // Not something the cache or the graph models.
         }
         match read_note_with_fingerprint(&full_path, None).await {
-            Ok((content, observed)) => {
+            Ok(read) => {
                 let vault_file = self
-                    .parser
-                    .parse_file(&full_path, &content)
+                    .parse_read(&full_path, &read)
                     .map_err(|error| Error::parse_error(error.to_string()))?;
                 {
                     let mut graph = self.link_graph.write().await;
                     graph.add_file(&vault_file)?;
                     graph.update_links(&vault_file)?;
                 }
-                self.insert_cache_entry(full_path, vault_file, observed)
+                self.insert_cache_entry(full_path, vault_file, read.observed)
                     .await;
                 Ok(())
             }
