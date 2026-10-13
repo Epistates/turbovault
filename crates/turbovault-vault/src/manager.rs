@@ -2512,10 +2512,7 @@ mod tests {
         std::fs::write(temp_dir.path().join("Shouting.MD"), "See [[Target]].\n").unwrap();
         manager.initialize().await.unwrap();
 
-        let backlinks = manager
-            .get_backlinks(Path::new("Target.md"))
-            .await
-            .unwrap();
+        let backlinks = manager.get_backlinks(Path::new("Target.md")).await.unwrap();
         assert_eq!(backlinks.len(), 1, "{backlinks:?}");
     }
 
