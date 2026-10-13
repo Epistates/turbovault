@@ -113,7 +113,7 @@ impl GraphProvider {
         read_only = true,
     )]
     async fn get_hub_notes(&self, top_n: Option<usize>) -> McpResult<serde_json::Value> {
-        let top_n = top_n.unwrap_or(10);
+        let top_n = clamp_count(top_n, 10, MAX_REPORT_ITEMS);
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let hubs = tools.get_hub_notes(top_n).await.map_err(to_mcp_error)?;

@@ -38,7 +38,11 @@ impl RelationshipProvider {
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = RelationshipTools::new(manager);
-        let limit = usize::try_from(limit.unwrap_or(5)).unwrap_or(0);
+        let limit = clamp_count(
+            limit.map(|limit| usize::try_from(limit).unwrap_or(0)),
+            5,
+            MAX_SEARCH_RESULTS,
+        );
         let suggestions = tools
             .suggest_links(&file, limit)
             .await

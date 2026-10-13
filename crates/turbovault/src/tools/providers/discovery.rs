@@ -65,7 +65,7 @@ impl DiscoveryProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
 
-        let result_limit = limit.unwrap_or(10);
+        let result_limit = clamp_count(limit, 10, MAX_SEARCH_RESULTS);
         let mut search_query = SearchQuery::new(query).limit(result_limit);
 
         if let Some(tags) = tags {
