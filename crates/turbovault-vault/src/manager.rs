@@ -321,6 +321,49 @@ impl ScanSpec {
                 && self.allowed_extensions.contains(&ext.to_lowercase()))
     }
 
+    /// Whether `path` is a file [`Self::walk`] would report: the same test,
+    /// for one path.
+    ///
+    /// The cache must hold exactly what a walk can find. A note it holds that
+    /// the walk can't (one that grew past `max_file_size`, or was written
+    /// through a symlinked folder) would be reported deleted by every sweep
+    /// and never settle.
+    fn admits(&self, path: &Path) -> bool {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return false;
+        };
+        let mut current = self.root.clone();
+        let mut components = relative.components().peekable();
+        while let Some(component) = components.next() {
+            let std::path::Component::Normal(part) = component else {
+                return false;
+            };
+            let Some(name) = part.to_str() else {
+                return false;
+            };
+            if PROTECTED_COMPONENTS.contains(&name) || self.excluded.contains(name) {
+                return false;
+            }
+            current.push(part);
+            // Not followed, as in the walk.
+            let Ok(metadata) = std::fs::symlink_metadata(&current) else {
+                return false;
+            };
+            if components.peek().is_some() {
+                if !metadata.is_dir() {
+                    return false;
+                }
+                continue;
+            }
+            let admitted = current
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| self.admits_extension(ext));
+            return metadata.is_file() && admitted && metadata.len() <= self.max_file_size;
+        }
+        false
+    }
+
     /// Walk the vault and return every note the configuration admits, carrying
     /// the `(size, mtime)` the walk had to read anyway.
     ///
@@ -1723,6 +1766,15 @@ impl VaultManager {
     /// was cached regardless of extension; this unifies on the stricter,
     /// already-established `write_file` behavior. No existing caller relies
     /// on a non-markdown file appearing in the cache after a move.)
+    /// Whether a scan would find `path` (see [`ScanSpec::admits`]).
+    async fn in_scope(&self, path: &Path) -> bool {
+        let spec = Arc::clone(&self.scan_spec);
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || spec.admits(&path))
+            .await
+            .unwrap_or(false)
+    }
+
     async fn sync_index(&self, changed: &[(String, bool)]) {
         for (rel_path, present) in changed {
             let full_path = self.vault_path.join(rel_path);
@@ -1730,7 +1782,8 @@ impl VaultManager {
                 continue;
             }
 
-            if *present {
+            let in_scope = self.in_scope(&full_path).await;
+            if *present && in_scope {
                 match read_note_with_fingerprint(&full_path, None).await {
                     Ok((content, observed)) => match self.parser.parse_file(&full_path, &content) {
                         Ok(vault_file) => {
@@ -1780,7 +1833,12 @@ impl VaultManager {
                 // atomic with the recreating write) rather than closing it
                 // outright; a full fix serializes sync_index with apply()
                 // per path, add if this ever proves observable in practice.
-                if tokio::fs::try_exists(&full_path).await.unwrap_or(false) {
+                //
+                // A note that is there but out of the scan's reach (too
+                // large, or behind a symlinked folder) is evicted however it
+                // was reported, so the cache never holds what a sweep can't
+                // find.
+                if in_scope {
                     continue;
                 }
                 {
@@ -3218,6 +3276,84 @@ mod tests {
         }));
         manager.reconcile_now().await;
         assert!(captured.lock().unwrap().is_empty());
+    }
+
+    /// Capture every `(path, present)` the change listener is handed.
+    fn capture_changes(manager: &VaultManager) -> Arc<StdMutex<Vec<(String, bool)>>> {
+        let captured: Arc<StdMutex<Vec<(String, bool)>>> = Arc::new(StdMutex::new(Vec::new()));
+        let cap = Arc::clone(&captured);
+        manager.set_change_listener(Arc::new(move |changed| {
+            cap.lock().unwrap().extend(
+                changed
+                    .into_iter()
+                    .map(|(path, present, _)| (path, present)),
+            );
+            Box::pin(async {})
+        }));
+        captured
+    }
+
+    /// A note that grows past `max_file_size` outside the process leaves
+    /// the scan, so it has to leave the cache and the graph too. Kept there,
+    /// every sweep would report it deleted again and never settle.
+    #[tokio::test]
+    async fn reconcile_settles_a_note_that_grew_past_the_size_limit() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = create_test_config(temp_dir.path());
+        config.max_file_size = 64;
+        let manager = VaultManager::new(config).unwrap();
+        std::fs::write(temp_dir.path().join("big.md"), "# Big\n").unwrap();
+        manager.initialize().await.unwrap();
+        let captured = capture_changes(&manager);
+
+        std::fs::write(temp_dir.path().join("big.md"), "x".repeat(200)).unwrap();
+        manager.reconcile_now().await;
+        assert_eq!(*captured.lock().unwrap(), [("big.md".to_string(), false)]);
+        assert!(manager.all_cached_vault_files().await.is_empty());
+
+        manager.reconcile_now().await;
+        assert_eq!(
+            captured.lock().unwrap().len(),
+            1,
+            "a second pass must find nothing new: {:?}",
+            captured.lock().unwrap()
+        );
+    }
+
+    /// A note written through a symlinked folder is one the scan never finds,
+    /// since it doesn't follow links. The cache must not hold it either, or
+    /// every sweep reports it deleted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reconcile_settles_a_note_written_through_a_symlinked_folder() {
+        let temp_dir = TempDir::new().unwrap();
+        std::fs::create_dir(temp_dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(temp_dir.path().join("real"), temp_dir.path().join("alias"))
+            .unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        manager.initialize().await.unwrap();
+
+        manager
+            .write_file(
+                Path::new("alias/note.md"),
+                "# Note\n",
+                Precondition::Blind,
+                "add",
+            )
+            .await
+            .unwrap();
+        let captured = capture_changes(&manager);
+        manager.reconcile_now().await;
+        manager.reconcile_now().await;
+
+        // The real path is in scope, so the note shows up once, under it.
+        let changes = captured.lock().unwrap().clone();
+        assert!(
+            changes.iter().all(|(path, _)| path == "real/note.md"),
+            "{changes:?}"
+        );
+        manager.reconcile_now().await;
+        assert_eq!(captured.lock().unwrap().len(), changes.len());
     }
 
     /// A note deleted by somebody else leaves the graph and the cache.
