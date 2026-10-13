@@ -36,7 +36,8 @@ async fn every_template_creates_and_registers_its_expected_structure() {
             .unwrap_or_else(|error| panic!("create {template} template: {error}"));
 
         assert_eq!(info.name, template);
-        assert_eq!(info.path, path);
+        // Registered as it resolves, the way an existing vault is.
+        assert_eq!(info.path, path.canonicalize().unwrap());
         assert!(path.join(".obsidian").is_dir());
         for directory in directories {
             assert!(path.join(directory).is_dir(), "{template}/{directory}");
