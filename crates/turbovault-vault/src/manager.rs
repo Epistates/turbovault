@@ -626,9 +626,6 @@ struct NoteRead {
 pub struct VaultManager {
     config: ServerConfig,
     vault_path: PathBuf,
-    /// `vault_path` as the filesystem resolves it, for paths that reach the
-    /// manager already resolved (on Windows, `\\?\C:\...`). Set on first use.
-    resolved_vault_path: OnceLock<PathBuf>,
     parser: Parser,
     link_graph: Arc<RwLock<LinkGraph>>,
     file_cache: Arc<RwLock<HashMap<PathBuf, CacheEntry>>>,
@@ -665,8 +662,10 @@ pub struct VaultManager {
     reconcile: tokio::sync::Mutex<ReconcileState>,
     /// Vault-relative paths with a write in flight. See [`WriteClaim`].
     write_claims: StdMutex<HashMap<String, usize>>,
-    /// Where the vault root really is, every symlink to it followed: worked
-    /// out by the first path resolution that succeeds, then reused.
+    /// `vault_path` as the filesystem resolves it, every symlink to it
+    /// followed (on Windows, `\\?\C:\...`): what path resolution checks real
+    /// locations against, and what paths that reach the manager already
+    /// resolved start with. Worked out once, by the first use that succeeds.
     real_root: OnceLock<PathBuf>,
     /// The protected directory names, folded the way `protected_component`
     /// compares them, once rather than on every path component.
@@ -802,7 +801,6 @@ impl VaultManager {
             protected_names,
             config,
             vault_path,
-            resolved_vault_path: OnceLock::new(),
             parser,
             link_graph: Arc::new(RwLock::new(LinkGraph::new())),
             file_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -1396,9 +1394,7 @@ impl VaultManager {
     /// `path` is not under the vault root.
     pub fn relative_path(&self, path: &Path) -> String {
         let rendered = path_to_slash(path);
-        let resolved = self.resolved_vault_path.get_or_init(|| {
-            std::fs::canonicalize(&self.vault_path).unwrap_or_else(|_| self.vault_path.clone())
-        });
+        let resolved = self.real_root().unwrap_or(&self.vault_path);
         for root in [&self.vault_path, resolved] {
             let root = path_to_slash(root);
             if let Some(relative) = rendered
@@ -1904,14 +1900,17 @@ impl VaultManager {
     /// [`PathValidator::resolve_in_vault`], with the vault root's real
     /// location worked out once rather than on every call.
     fn resolve_in_vault(&self, path: &Path) -> Result<turbovault_core::ResolvedPath> {
-        let real_root = match self.real_root.get() {
-            Some(real_root) => real_root,
-            None => {
-                let real_root = PathValidator::real_root(&self.vault_path)?;
-                self.real_root.get_or_init(|| real_root)
-            }
-        };
-        PathValidator::resolve_in_vault_at(&self.vault_path, real_root, path)
+        PathValidator::resolve_in_vault_at(&self.vault_path, self.real_root()?, path)
+    }
+
+    /// The vault root's real location (see the `real_root` field). Only a
+    /// successful resolution is kept, so a failure is retried next time.
+    fn real_root(&self) -> Result<&PathBuf> {
+        if let Some(real_root) = self.real_root.get() {
+            return Ok(real_root);
+        }
+        let real_root = PathValidator::real_root(&self.vault_path)?;
+        Ok(self.real_root.get_or_init(|| real_root))
     }
 
     /// Refuse a path that lies inside the vault but under a protected

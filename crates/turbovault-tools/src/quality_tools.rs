@@ -834,7 +834,11 @@ mod tests {
             assert_eq!(found.newer_links, newer, "{}", rel.display());
         }
         // a and c are newer than the hub; b is older.
-        assert_eq!(facts[&tmp.path().join("hub.md")].newer_links, 2);
+        let hub = facts
+            .iter()
+            .find(|(path, _)| path.file_name() == Some(std::ffi::OsStr::new("hub.md")))
+            .expect("hub.md has facts");
+        assert_eq!(hub.1.newer_links, 2);
     }
 
     #[test]
