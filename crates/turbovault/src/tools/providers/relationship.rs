@@ -21,53 +21,70 @@ impl Deref for RelationshipProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl RelationshipProvider {
     // ==================== Relationship Operations ====================
 
     /// Suggest files to link
     #[tool(
-        description = "AI-powered link suggestions for a note (returns top N candidates with reasoning)",
+        description = "Suggest notes that a note could link to, ranked by how many other notes link to both, each with its reasons. Use it when filling in a note's connections; recommend_related matches on content instead.",
+        title = "Suggest Links",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn suggest_links(
         &self,
+        #[description(
+            "Vault-relative path of the note to suggest links for, including the extension, such as `projects/Plan.md`."
+        )]
         file: String,
-        limit: Option<i32>,
+        #[description("Most suggestions to return. Default 5, maximum 100.")] limit: Option<i32>,
+        #[description(
+            "How many top suggestions to skip, for the next page. Default 0, at most 1000."
+        )]
+        offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = RelationshipTools::new(manager);
-        let limit = clamp_count(
+        let request = PageRequest::ranked(
+            offset,
             limit.map(|limit| usize::try_from(limit).unwrap_or(0)),
             5,
             MAX_SEARCH_RESULTS,
         );
-        let suggestions = tools
-            .suggest_links(&file, limit)
+        let mut result_data = tools
+            .suggest_links(&file, request.fetch())
             .await
             .map_err(to_mcp_error)?;
-
-        let result_data =
-            serde_json::to_value(&suggestions).map_err(|e| McpError::internal(e.to_string()))?;
-        let count = result_data["suggestions"].as_array().map_or(0, Vec::len);
+        let page = request.slice_field(&mut result_data, "suggestions", true);
 
         let response = StandardResponse::new(vault_name, "suggest_links", result_data)
-            .with_count(count)
-            .with_meta("limit", serde_json::json!(limit));
+            .with_page(page)
+            .with_meta("limit", serde_json::json!(request.limit));
 
         response.to_json()
     }
 
     /// Get link strength between two files
     #[tool(
-        description = "Calculate connection strength between two notes (0.0-1.0 score based on multiple factors)",
+        description = "Score how strongly two notes are connected, from 0.0 to 1.0, from links between them in each direction and notes that link to both, with the counts behind it and a plain-language reading.",
+        title = "Get Link Strength",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn get_link_strength(
         &self,
+        #[description(
+            "Vault-relative path of the first note, including the extension, such as `projects/Plan.md`."
+        )]
         source: String,
+        #[description("Vault-relative path of the second note, including the extension.")]
         target: String,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -89,21 +106,30 @@ impl RelationshipProvider {
 
     /// Get centrality ranking
     #[tool(
-        description = "Rank all notes by graph centrality metrics (betweenness, closeness, eigenvector)",
+        description = "Rank notes by how central they are in the link graph, most central first, with betweenness, closeness and eigenvector-style scores and a label such as `Central hub`. Returns the top 50 unless asked for more; get_hub_notes is a simpler ranking by link count.",
+        title = "Get Centrality Ranking",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_centrality_ranking(&self) -> McpResult<serde_json::Value> {
+    async fn get_centrality_ranking(
+        &self,
+        #[description("Most notes to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many top-ranked notes to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = RelationshipTools::new(manager);
-        let ranking = tools.get_centrality_ranking().await.map_err(to_mcp_error)?;
-
-        let result_data =
-            serde_json::to_value(&ranking).map_err(|e| McpError::internal(e.to_string()))?;
-        let count = result_data["rankings"].as_array().map_or(0, Vec::len);
+        let mut result_data = tools.get_centrality_ranking().await.map_err(to_mcp_error)?;
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let page = request.slice_field(&mut result_data, "rankings", false);
 
         let response = StandardResponse::new(vault_name, "get_centrality_ranking", result_data)
-            .with_count(count)
+            .with_page(page)
             .with_meta(
                 "metrics",
                 serde_json::json!(["betweenness", "closeness", "eigenvector"]),

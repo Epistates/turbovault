@@ -9,7 +9,7 @@ use turbomcp::prelude::*;
 use turbovault_audit::{AuditFilter, AuditLog, OperationType, SnapshotStore};
 use turbovault_core::ServerConfig;
 use turbovault_core::config::{GitMergeStrategy as ConfigMergeStrategy, VaultConfig, WriteBackend};
-use turbovault_core::error::Error;
+use turbovault_core::error::{Error, ErrorCategory};
 use turbovault_core::events::{VaultChange, VaultEventSink, WriteAttribution};
 use turbovault_core::prelude::MultiVaultManager;
 use turbovault_tools::{
@@ -44,11 +44,159 @@ pub struct FrontmatterFilter {
     pub value: String,
 }
 
-/// Helper to convert internal Error to McpError
+/// Turn a domain error into the error a tool returns.
+///
+/// The MCP error kind follows [`Error::category`], so a client can tell a
+/// missing note from bad input from a fault in the server (TurboMCP carries
+/// the kind in the result's `_meta`, and `data` below with it). The message
+/// says what to do next where there is something to do, since a model reads
+/// it to decide its next call. Paths in it are made vault-relative, and a
+/// missing note gets suggestions, where the result leaves the server (see
+/// `ObsidianMcpServer::call_tool`): only that knows which vault is meant.
 fn to_mcp_error(e: Error) -> McpError {
-    // Log full error for server-side debugging before sanitizing for client
     log::warn!("MCP error: {:?}", e);
-    McpError::internal(e.to_string())
+    let category = e.category();
+    // A wrapped error is reported as itself, without the wrapper's label.
+    let text = match &e {
+        Error::Wrapped(inner) => inner.to_string(),
+        _ => e.to_string(),
+    };
+    let message = match error_hint(&e) {
+        Some(hint) => format!("{text}. {hint}"),
+        None => text,
+    };
+    let mut data = serde_json::json!({ "category": category_name(category) });
+    if let Some(path) = error_path(&e) {
+        data["path"] = serde_json::json!(turbovault_core::path_to_slash(path));
+    }
+    let error = match category {
+        ErrorCategory::NotFound => {
+            McpError::new(turbomcp_core::error::ErrorKind::ResourceNotFound, message)
+        }
+        // A stale `expected_hash` is a request to retry with different
+        // arguments, which is what invalid params tells a client.
+        ErrorCategory::InvalidInput | ErrorCategory::Conflict => McpError::invalid_params(message),
+        ErrorCategory::PermissionDenied => McpError::permission_denied(message),
+        ErrorCategory::Unavailable => McpError::unavailable(message),
+        _ => McpError::internal(message),
+    };
+    error.with_data(data)
+}
+
+/// The snake_case name an [`ErrorCategory`] goes by in error `data`.
+fn category_name(category: ErrorCategory) -> &'static str {
+    match category {
+        ErrorCategory::NotFound => "not_found",
+        ErrorCategory::InvalidInput => "invalid_input",
+        ErrorCategory::PermissionDenied => "permission_denied",
+        ErrorCategory::Conflict => "conflict",
+        ErrorCategory::Unavailable => "unavailable",
+        _ => "internal",
+    }
+}
+
+/// The path an error is about, if it names one.
+fn error_path(error: &Error) -> Option<&Path> {
+    match error {
+        Error::FileNotFound { path }
+        | Error::PathTraversalAttempt { path }
+        | Error::ProtectedPath { path, .. }
+        | Error::FileTooLarge { path, .. } => Some(path),
+        _ => None,
+    }
+}
+
+/// What a caller can do about `error`, for the ones where that is known.
+fn error_hint(error: &Error) -> Option<String> {
+    if error.as_operation_not_allowed().is_some() {
+        return Some(
+            "The vault's allowed_operations setting permits only the operations listed. The \
+             server's operator can change it; until then, use another vault for this change"
+                .to_string(),
+        );
+    }
+    let hint = match error {
+        Error::FileNotFound { .. } => {
+            "Paths are relative to the vault root and include the extension, such as \
+             `projects/Plan.md`. Use search to find a note by name"
+        }
+        Error::PathTraversalAttempt { .. } => {
+            "Use a path relative to the vault root, with no leading `/` and no `..` that leaves \
+             the vault"
+        }
+        Error::ProtectedPath { component, .. } => {
+            return Some(format!(
+                "`{component}` holds {}, so the note tools never read or write it",
+                protected_contents(component)
+            ));
+        }
+        Error::FileTooLarge { .. } => {
+            "The server's max_file_size setting caps what the note tools read and write"
+        }
+        Error::ConcurrencyError { .. } => {
+            "The note changed since you read it. Read it again for its current hash, then retry \
+             with that hash as expected_hash"
+        }
+        _ => return None,
+    };
+    Some(hint.to_string())
+}
+
+/// `text` with every path under one of `roots` written relative to it.
+fn relativize_paths(text: &str, roots: &[PathBuf]) -> String {
+    let mut text = text.to_string();
+    for root in roots {
+        let root = root.to_string_lossy();
+        let root = root.trim_end_matches(['/', '\\']);
+        if root.is_empty() {
+            continue;
+        }
+        for separator in ['/', '\\'] {
+            text = text.replace(&format!("{root}{separator}"), "");
+        }
+    }
+    text
+}
+
+/// The `limit` paths among `candidates` whose file names are closest to the
+/// one `missing` names, closest first. A same-named note in another folder
+/// ranks first; nothing that is not at least a near match is offered.
+fn closest_paths(missing: &str, candidates: &[String], limit: usize) -> Vec<String> {
+    fn stem(path: &str) -> String {
+        let name = path
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(path)
+            .to_lowercase();
+        name.strip_suffix(".md").map(str::to_string).unwrap_or(name)
+    }
+    let wanted = stem(missing);
+    if wanted.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(f64, &String)> = candidates
+        .iter()
+        .filter_map(|candidate| {
+            let score = strsim::normalized_levenshtein(&wanted, &stem(candidate));
+            (score >= 0.6).then_some((score, candidate))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, path)| path.clone())
+        .collect()
+}
+
+/// What a protected directory holds, for [`error_hint`].
+fn protected_contents(component: &str) -> &'static str {
+    match component.to_ascii_lowercase().as_str() {
+        ".obsidian" => "Obsidian's settings and plugin code",
+        ".git" => "the vault's Git repository",
+        ".turbovault" => "TurboVault's audit trail and state",
+        _ => "files this vault's excluded_paths keep out of reach",
+    }
 }
 
 /// Most results a search-style tool returns in one call.
@@ -67,12 +215,109 @@ fn clamp_count(requested: Option<usize>, default: usize, max: usize) -> usize {
     requested.unwrap_or(default).min(max)
 }
 
-/// Extract count from serde_json::Value array (eliminates DRY violation)
-#[inline]
-fn extract_count(value: &serde_json::Value) -> usize {
-    match value {
-        serde_json::Value::Array(arr) => arr.len(),
-        _ => 0,
+/// How many items a list-returning tool gives back when the caller doesn't
+/// say: enough for an overview, and never megabytes by accident.
+const DEFAULT_PAGE_SIZE: usize = 50;
+/// Furthest a ranked list (search results, suggestions) can be paged into.
+const MAX_RANKED_OFFSET: usize = 1000;
+
+/// Where one page of a list sits in the whole, reported under
+/// `meta.pagination`. Every list-returning tool takes the same two inputs:
+/// `limit` (how many to return, capped per tool) and `offset` (how many to
+/// skip, default 0). `next_offset` is the `offset` that returns the next
+/// page, and is absent on the last one. `total` is absent where counting
+/// every match would cost what the tool exists to avoid, such as a ranked
+/// search.
+#[derive(serde::Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+struct Page {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<usize>,
+    offset: usize,
+    limit: usize,
+    returned: usize,
+    truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_offset: Option<usize>,
+}
+
+/// The `offset` and `limit` a tool asked for, resolved: `limit` defaults to
+/// `default` and is capped at `max`, as [`clamp_count`] does.
+#[derive(Debug, Clone, Copy)]
+struct PageRequest {
+    offset: usize,
+    limit: usize,
+}
+
+impl PageRequest {
+    fn new(offset: Option<usize>, limit: Option<usize>, default: usize, max: usize) -> Self {
+        Self {
+            offset: offset.unwrap_or(0),
+            limit: clamp_count(limit, default, max),
+        }
+    }
+
+    /// A request against a ranked source, which has to produce every item
+    /// up to the end of the page: the offset stops at [`MAX_RANKED_OFFSET`]
+    /// so no request can make it rank without bound.
+    fn ranked(offset: Option<usize>, limit: Option<usize>, default: usize, max: usize) -> Self {
+        let mut request = Self::new(offset, limit, default, max);
+        request.offset = request.offset.min(MAX_RANKED_OFFSET);
+        request
+    }
+
+    /// How many leading items a ranked source must produce to fill this
+    /// page and tell whether another follows.
+    fn fetch(&self) -> usize {
+        self.offset.saturating_add(self.limit).saturating_add(1)
+    }
+
+    /// This page of `items`, the whole list.
+    fn slice<T>(&self, items: Vec<T>) -> (Vec<T>, Page) {
+        let total = items.len();
+        self.take(items, Some(total))
+    }
+
+    /// This page of `items`, the first [`Self::fetch`] items of a list whose
+    /// full length is unknown.
+    fn slice_ranked<T>(&self, items: Vec<T>) -> (Vec<T>, Page) {
+        self.take(items, None)
+    }
+
+    /// This page of `items`, the first [`Self::fetch`] items of a list of
+    /// `total` items.
+    fn slice_leading<T>(&self, items: Vec<T>, total: usize) -> (Vec<T>, Page) {
+        self.take(items, Some(total))
+    }
+
+    /// Cut the array under `key` in `data` to this page. `ranked` says the
+    /// array holds only the first [`Self::fetch`] items of a longer list.
+    fn slice_field(&self, data: &mut serde_json::Value, key: &str, ranked: bool) -> Page {
+        let items = match data.get_mut(key).map(serde_json::Value::take) {
+            Some(serde_json::Value::Array(items)) => items,
+            _ => Vec::new(),
+        };
+        let (items, page) = if ranked {
+            self.slice_ranked(items)
+        } else {
+            self.slice(items)
+        };
+        data[key] = serde_json::Value::Array(items);
+        page
+    }
+
+    fn take<T>(&self, items: Vec<T>, total: Option<usize>) -> (Vec<T>, Page) {
+        let mut rest = items.into_iter().skip(self.offset);
+        let page: Vec<T> = rest.by_ref().take(self.limit).collect();
+        let more = rest.next().is_some();
+        let info = Page {
+            total,
+            offset: self.offset,
+            limit: self.limit,
+            returned: page.len(),
+            truncated: more,
+            next_offset: more.then(|| self.offset + self.limit),
+        };
+        (page, info)
     }
 }
 
@@ -279,6 +524,25 @@ impl<T: serde::Serialize> StandardResponse<T> {
     /// Set success flag
     pub fn with_success(mut self, success: bool) -> Self {
         self.success = success;
+        self
+    }
+
+    /// Record which page of a longer list `data` is: `count` becomes the
+    /// number returned, `meta.pagination` says where it sits in the whole,
+    /// and a cut list gets a warning naming the offset to continue from.
+    fn with_page(mut self, page: Page) -> Self {
+        self.count = Some(page.returned);
+        if let Some(next) = page.next_offset {
+            let of = page
+                .total
+                .map_or_else(String::new, |total| format!(" of {total}"));
+            self.warnings.push(format!(
+                "Showing {}{of}. Call again with offset {next} for more",
+                page.returned
+            ));
+        }
+        self.meta
+            .insert("pagination".to_string(), serde_json::json!(page));
         self
     }
 
@@ -742,6 +1006,80 @@ impl CoreToolHandler {
         self.activate_vault_manager(&vault_name).await
     }
 
+    /// Finish a failed tool result for the model that reads it. A path under
+    /// a registered vault is written relative to it, so no absolute server
+    /// path leaves the server, and a note that was not found gets up to
+    /// three close matches from the active vault. Other results pass through.
+    async fn polish_error_result(&self, mut result: ToolResult) -> ToolResult {
+        if result.is_error != Some(true) {
+            return result;
+        }
+        let roots = self.vault_roots().await;
+        for content in &mut result.content {
+            if let Content::Text(text) = content {
+                text.text = relativize_paths(&text.text, &roots);
+            }
+        }
+
+        let Some(data) = result
+            .meta
+            .as_mut()
+            .and_then(|meta| meta.get_mut(turbomcp_core::meta_keys::ERROR_DATA))
+        else {
+            return result;
+        };
+        let Some(path) = data
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(|path| relativize_paths(path, &roots))
+        else {
+            return result;
+        };
+        data["path"] = serde_json::json!(path);
+        if data["category"] != "not_found" {
+            return result;
+        }
+        let suggestions = self.closest_note_paths(&path).await;
+        if suggestions.is_empty() {
+            return result;
+        }
+        data["suggestions"] = serde_json::json!(suggestions);
+        if let Some(Content::Text(text)) = result.content.first_mut() {
+            text.text = format!("{}. Did you mean: {}?", text.text, suggestions.join(", "));
+        }
+        result
+    }
+
+    /// Every registered vault's root, as configured and as it resolves.
+    async fn vault_roots(&self) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        for vault in self.multi_vault_mgr.list_vaults().await.unwrap_or_default() {
+            if let Ok(real) = vault.path.canonicalize()
+                && real != vault.path
+            {
+                roots.push(real);
+            }
+            roots.push(vault.path);
+        }
+        roots
+    }
+
+    /// Up to three notes in the active vault whose names are closest to
+    /// `missing`, for a not-found error.
+    async fn closest_note_paths(&self, missing: &str) -> Vec<String> {
+        let Ok(manager) = self.get_active_vault_manager().await else {
+            return Vec::new();
+        };
+        let Ok(files) = manager.scan_vault().await else {
+            return Vec::new();
+        };
+        let candidates: Vec<String> = files
+            .iter()
+            .map(|file| manager.relative_path(file))
+            .collect();
+        closest_paths(missing, &candidates, 3)
+    }
+
     /// turbovault-qae.5.5: THE activation path — the ONE place that builds a
     /// `VaultManager` and publishes it into `vault_managers`.
     ///
@@ -993,15 +1331,22 @@ impl CoreToolHandler {
         self.multi_vault_mgr
             .get_vault_config(vault_name)
             .await
-            .map_err(|e| McpError::invalid_request(format!("no vault named {vault_name:?}: {e}")))
+            .map_err(|e| {
+                McpError::new(
+                    turbomcp_core::error::ErrorKind::ResourceNotFound,
+                    format!("no vault named {vault_name:?}: {e}. Use list_vaults to see the names"),
+                )
+            })
     }
 
     /// Helper to get active vault name
     async fn get_active_vault_name(&self) -> McpResult<String> {
         let vault_name = self.multi_vault_mgr.get_active_vault().await;
         if vault_name.is_empty() {
-            return Err(McpError::internal(
-                "No active vault. Use add_vault() to register a vault.".to_string(),
+            return Err(McpError::unavailable(
+                "No active vault. Call list_vaults and then set_active_vault, or add_vault to \
+                 register one"
+                    .to_string(),
             ));
         }
         Ok(vault_name)
@@ -1056,7 +1401,7 @@ impl CoreToolHandler {
         match provided {
             Some(m) => Ok(Some(m)),
             None if self.active_vault_requires_commit_message().await => {
-                Err(McpError::invalid_request(
+                Err(McpError::invalid_params(
                     "this vault requires an explicit commit message (git.require_commit_message = true); pass a non-empty `commit_message` for this operation".to_string(),
                 ))
             }
@@ -1213,7 +1558,7 @@ impl CoreToolHandler {
         {
             let fanouts = self.active_fanouts.read().await;
             if let Some(record) = fanouts.get(name) {
-                return Err(McpError::invalid_request(format!(
+                return Err(McpError::invalid_params(format!(
                     "vault {name} has an active fanout (fanout_id={}); abandon_fanout first",
                     record.fanout_id
                 )));
@@ -1222,7 +1567,7 @@ impl CoreToolHandler {
                 .values()
                 .find(|record| record.fanout_vault_name == name)
             {
-                return Err(McpError::invalid_request(format!(
+                return Err(McpError::invalid_params(format!(
                     "vault {name} is a fanout worktree (fanout_id={}); abandon_fanout from the base vault first",
                     record.fanout_id
                 )));
@@ -1303,7 +1648,7 @@ impl CoreToolHandler {
             .await
             .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
         if cfg.write_backend == WriteBackend::Git {
-            return Err(McpError::invalid_request(format!(
+            return Err(McpError::unavailable(format!(
                 "{} is not wired for the git substrate (turbovault-8df). Use `git log` / `git revert` / `git show` from the vault directory directly — every substrate write is one commit with a clear subject. Audit ergonomics through MCP are a planned cutover deliverable; until then this tool returns nothing useful for write_backend=git.",
                 tool_name
             )));
@@ -1362,5 +1707,86 @@ impl CoreToolHandler {
             .await
             .insert(vault_name.to_string(), Arc::clone(&fresh));
         fresh
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind_and_text(error: Error) -> (String, String, serde_json::Value) {
+        let result = to_mcp_error(error).to_tool_result();
+        let meta = result.meta.clone().unwrap_or_default();
+        (
+            meta["io.turbomcp/errorKind"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            result.first_text().unwrap_or_default().to_string(),
+            meta["io.turbomcp/errorData"].clone(),
+        )
+    }
+
+    #[test]
+    fn a_refused_operation_names_allowed_operations() {
+        let (kind, text, data) = kind_and_text(Error::operation_not_allowed(
+            "vault 'notes' does not allow write (allowed_operations: read)",
+        ));
+        assert_eq!(kind, "permission_denied");
+        assert_eq!(data["category"], "permission_denied");
+        assert!(
+            text.starts_with("vault 'notes' does not allow write"),
+            "{text}"
+        );
+        assert!(text.contains("allowed_operations setting"), "{text}");
+        assert!(!text.contains("Wrapped error"), "{text}");
+    }
+
+    #[test]
+    fn a_stale_hash_is_a_conflict_with_a_retry_hint() {
+        let (kind, text, data) =
+            kind_and_text(Error::concurrency_error("hash mismatch on notes/a.md"));
+        assert_eq!(kind, "invalid_params");
+        assert_eq!(data["category"], "conflict");
+        assert!(text.contains("Read it again"), "{text}");
+    }
+
+    #[test]
+    fn a_fault_in_the_server_stays_internal() {
+        let (kind, _, data) = kind_and_text(Error::other(
+            "commit abc landed, but writing it to the working tree failed",
+        ));
+        assert_eq!(kind, "internal");
+        assert_eq!(data["category"], "internal");
+    }
+
+    #[test]
+    fn closest_paths_prefers_the_same_name_in_another_folder() {
+        let candidates = [
+            "projects/Plan.md".to_string(),
+            "Plans.md".to_string(),
+            "Plant care.md".to_string(),
+            "Unrelated.md".to_string(),
+        ];
+        assert_eq!(
+            closest_paths("Plan.md", &candidates, 3),
+            ["projects/Plan.md", "Plans.md"]
+        );
+        assert!(closest_paths("zzz.md", &candidates, 3).is_empty());
+    }
+
+    #[test]
+    fn relativize_paths_strips_every_vault_root() {
+        let roots = [
+            PathBuf::from("/srv/vault"),
+            PathBuf::from(r"C:\Vaults\Work"),
+        ];
+        assert_eq!(
+            relativize_paths(
+                r"File not found: /srv/vault/notes/a.md and C:\Vaults\Work\b.md",
+                &roots
+            ),
+            r"File not found: notes/a.md and b.md"
+        );
     }
 }

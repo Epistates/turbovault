@@ -21,55 +21,98 @@ impl Deref for GraphProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+/// `paths` (graph node paths) as vault-relative paths, sorted. The graph
+/// hands back sets in no fixed order, and a list is only safe to page
+/// through if every call orders it the same way.
+fn relative_paths(manager: &VaultManager, paths: Vec<String>) -> Vec<String> {
+    let mut paths: Vec<String> = paths
+        .iter()
+        .map(|path| manager.relative_path(Path::new(path)))
+        .collect();
+    paths.sort();
+    paths
+}
+
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl GraphProvider {
     // ==================== Search & Links ====================
 
     /// Find all notes that link to this note
     #[tool(
-        description = "Find all notes that link TO this note (incoming links)",
+        description = "List the notes that link to a note (its backlinks), as vault-relative paths. Use before renaming or deleting a note to see what depends on it; get_forward_links gives the other direction.",
+        title = "Get Backlinks",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_backlinks(&self, path: String) -> McpResult<serde_json::Value> {
+    async fn get_backlinks(
+        &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
+        path: String,
+        #[description("Most backlinks to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many backlinks to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = SearchTools::new(manager);
+        let tools = SearchTools::new(manager.clone());
         let backlinks = tools.find_backlinks(&path).await.map_err(to_mcp_error)?;
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (backlinks, page) = request.slice(relative_paths(&manager, backlinks));
 
-        let count = backlinks.len();
         let response =
             StandardResponse::new(vault_name, "get_backlinks", serde_json::json!(backlinks))
-                .with_count(count)
                 .with_next_step("get_forward_links")
                 .with_next_step("get_related_notes");
 
-        let response = if count == 0 {
+        let response = if page.total == Some(0) {
             response.with_warning("Note has no incoming links".to_string())
         } else {
             response
         };
 
-        response.to_json()
+        response.with_page(page).to_json()
     }
 
     /// Find all notes that this note links to
     #[tool(
-        description = "Find all notes that this note links TO (outgoing links)",
+        description = "List the notes a note links to (its outgoing links that resolve to notes), as vault-relative paths. Broken links are not included; get_broken_links lists those.",
+        title = "Get Forward Links",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_forward_links(&self, path: String) -> McpResult<serde_json::Value> {
+    async fn get_forward_links(
+        &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
+        path: String,
+        #[description("Most links to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many links to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = SearchTools::new(manager);
+        let tools = SearchTools::new(manager.clone());
         let links = tools
             .find_forward_links(&path)
             .await
             .map_err(to_mcp_error)?;
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (links, page) = request.slice(relative_paths(&manager, links));
 
-        let count = links.len();
         let response =
             StandardResponse::new(vault_name, "get_forward_links", serde_json::json!(links))
-                .with_count(count)
+                .with_page(page)
                 .with_next_step("get_backlinks")
                 .with_next_step("get_related_notes");
 
@@ -78,27 +121,43 @@ impl GraphProvider {
 
     /// Find related notes (by link proximity)
     #[tool(
-        description = "Find notes connected within N hops in the link graph (default 2 hops)",
+        description = "List the notes within a number of link hops of a note, following links in either direction. Use it to gather a note's neighborhood; recommend_related finds notes with similar content instead.",
+        title = "Get Related Notes",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn get_related_notes(
         &self,
+        #[description(
+            "Vault-relative path of the note to start from, including the extension, such as `projects/Plan.md`."
+        )]
         path: String,
+        #[description(
+            "How many link hops to follow. Default 2, maximum 5; each hop can multiply the result."
+        )]
         max_hops: Option<usize>,
+        #[description("Most notes to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many notes to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = SearchTools::new(manager);
+        let tools = SearchTools::new(manager.clone());
         let max_hops = max_hops.unwrap_or(2).min(5); // Cap at 5 hops to prevent runaway traversal
         let related = tools
             .find_related_notes(&path, max_hops)
             .await
             .map_err(to_mcp_error)?;
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (related, page) = request.slice(relative_paths(&manager, related));
 
-        let count = related.len();
         let response =
             StandardResponse::new(vault_name, "get_related_notes", serde_json::json!(related))
-                .with_count(count)
+                .with_page(page)
                 .with_meta("max_hops", serde_json::json!(max_hops));
 
         response.to_json()
@@ -108,23 +167,41 @@ impl GraphProvider {
 
     /// Find hub notes (highly connected)
     #[tool(
-        description = "Find the top N most connected notes in the vault (default 10). Returns notes ranked by total link count (incoming + outgoing). Hub notes are central to knowledge graph structure and often represent key concepts or index pages.",
+        description = "Rank notes by how many links they have, incoming plus outgoing, most connected first. Each item is `[path, link_count]`. Hubs are usually index pages or central concepts, a good place to start reading.",
+        title = "Get Hub Notes",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_hub_notes(&self, top_n: Option<usize>) -> McpResult<serde_json::Value> {
-        let top_n = clamp_count(top_n, 10, MAX_REPORT_ITEMS);
+    async fn get_hub_notes(
+        &self,
+        #[description("How many hubs to return. Default 10, maximum 500.")] top_n: Option<usize>,
+        #[description(
+            "How many top hubs to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
+        let request = PageRequest::new(offset, top_n, 10, MAX_REPORT_ITEMS);
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = GraphTools::new(manager);
-        let hubs = tools.get_hub_notes(top_n).await.map_err(to_mcp_error)?;
+        let tools = GraphTools::new(manager.clone());
+        let mut hubs = tools
+            .get_hub_notes(usize::MAX)
+            .await
+            .map_err(to_mcp_error)?
+            .into_iter()
+            .map(|(path, count)| (manager.relative_path(Path::new(&path)), count))
+            .collect::<Vec<_>>();
+        hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let (hubs, page) = request.slice(hubs);
 
-        let count = hubs.len();
         let response = StandardResponse::new(
             vault_name,
             "get_hub_notes",
             serde_json::to_value(&hubs).map_err(|e| McpError::internal(e.to_string()))?,
         )
-        .with_count(count)
+        .with_page(page)
         .with_next_step("get_related_notes");
 
         response.to_json()
@@ -132,44 +209,75 @@ impl GraphProvider {
 
     /// Find dead-end notes (incoming but no outgoing)
     #[tool(
-        description = "Find notes with incoming links but NO outgoing links (knowledge dead-ends). Returns list of paths with backlink counts. Dead-ends may indicate incomplete notes, missing connections, or final destination topics.",
+        description = "List notes that other notes link to but that link to nothing themselves. These are often unfinished notes or final topics that could point onward.",
+        title = "Get Dead-End Notes",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_dead_end_notes(&self) -> McpResult<serde_json::Value> {
+    async fn get_dead_end_notes(
+        &self,
+        #[description("Most notes to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many notes to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = GraphTools::new(manager);
+        let tools = GraphTools::new(manager.clone());
         let dead_ends = tools.get_dead_end_notes().await.map_err(to_mcp_error)?;
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (dead_ends, page) = request.slice(relative_paths(&manager, dead_ends));
 
-        let count = dead_ends.len();
         let response = StandardResponse::new(
             vault_name,
             "get_dead_end_notes",
             serde_json::json!(dead_ends),
         )
-        .with_count(count);
+        .with_page(page);
 
         response.to_json()
     }
 
     /// Find isolated clusters in vault
     #[tool(
-        description = "Find disconnected groups of notes (subgraphs with no connections to main graph). Returns clusters as arrays of paths. Isolated clusters may represent separate projects, orphaned content, or incomplete knowledge areas.",
+        description = "List groups of notes that link among themselves but have no link to the rest of the vault. Each item is an array of paths. They often mark separate projects or content that was never connected.",
+        title = "Get Isolated Clusters",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_isolated_clusters(&self) -> McpResult<serde_json::Value> {
+    async fn get_isolated_clusters(
+        &self,
+        #[description("Most clusters to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many clusters to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = GraphTools::new(manager);
-        let clusters = tools.get_isolated_clusters().await.map_err(to_mcp_error)?;
+        let tools = GraphTools::new(manager.clone());
+        let mut clusters = tools
+            .get_isolated_clusters()
+            .await
+            .map_err(to_mcp_error)?
+            .into_iter()
+            .map(|cluster| relative_paths(&manager, cluster))
+            .collect::<Vec<_>>();
+        clusters.sort();
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (clusters, page) = request.slice(clusters);
 
-        let count = clusters.len();
         let response = StandardResponse::new(
             vault_name,
             "get_isolated_clusters",
             serde_json::json!(clusters),
         )
-        .with_count(count);
+        .with_page(page);
 
         response.to_json()
     }
@@ -178,9 +286,13 @@ impl GraphProvider {
 
     /// Quick health check (0-100 score)
     #[tool(
-        description = "Perform fast health assessment of active vault returning 0-100 score",
+        description = "Score the vault's link health from 0 to 100, with counts of notes, links, broken links and orphans. Fast; use it first, then full_health_analysis or get_broken_links for detail.",
+        title = "Quick Health Check",
         tags = ["read", "health"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn quick_health_check(&self) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -204,9 +316,13 @@ impl GraphProvider {
 
     /// Full health analysis with detailed report
     #[tool(
-        description = "Comprehensive vault health report with detailed metrics including broken links, orphan analysis, link density, cluster analysis, and recommendations",
+        description = "Full link-health report: the quick check's counts plus dead-end and hub counts. Slower than quick_health_check on a large vault; the lists themselves come from get_broken_links, get_dead_end_notes and get_hub_notes.",
+        title = "Full Health Analysis",
         tags = ["read", "health"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn full_health_analysis(&self) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -235,48 +351,91 @@ impl GraphProvider {
 
     /// Get all broken links in vault
     #[tool(
-        description = "Find all links pointing to non-existent notes with source path, target path, link text, and line number for each broken link",
+        description = "List links that point to notes that don't exist: the linking note, the target as written, its line, and existing notes with similar names. Fix one by editing the link or creating the missing note.",
+        title = "Get Broken Links",
         tags = ["read", "health"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_broken_links(&self) -> McpResult<serde_json::Value> {
+    async fn get_broken_links(
+        &self,
+        #[description("Most broken links to return. Default 50, maximum 500.")] limit: Option<
+            usize,
+        >,
+        #[description(
+            "How many broken links to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = GraphTools::new(manager);
-        let broken = tools.get_broken_links().await.map_err(to_mcp_error)?;
+        let tools = GraphTools::new(manager.clone());
+        let mut broken = tools.get_broken_links().await.map_err(to_mcp_error)?;
+        for link in &mut broken {
+            link.source_file = manager.relative_path(Path::new(&link.source_file));
+        }
+        broken.sort_by(|a, b| {
+            (&a.source_file, a.line, &a.target).cmp(&(&b.source_file, b.line, &b.target))
+        });
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (broken, page) = request.slice(broken);
 
-        let count = broken.len();
         let response =
-            StandardResponse::new(vault_name, "get_broken_links", serde_json::json!(broken))
-                .with_count(count);
+            StandardResponse::new(vault_name, "get_broken_links", serde_json::json!(broken));
 
-        let response = if count > 0 {
-            response
-                .with_warning(format!("Found {} broken links", count))
-                .with_next_step("export_broken_links")
-        } else {
-            response
+        let response = match page.total {
+            Some(total) if total > 0 => response
+                .with_warning(format!("Found {} broken links", total))
+                .with_next_step("export_broken_links"),
+            _ => response,
         };
 
-        response.to_json()
+        response.with_page(page).to_json()
     }
 
     /// Detect cycles in link graph
     #[tool(
-        description = "Detect circular reference chains in the link graph returning all cycles as arrays of paths",
+        description = "List chains of notes that link around in a circle back to where they started. Each item is an array of paths. Cycles are normal in a wiki; this is for spotting loops in hierarchies that should not have them.",
+        title = "Detect Cycles",
         tags = ["read", "graph"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn detect_cycles(&self) -> McpResult<serde_json::Value> {
+    async fn detect_cycles(
+        &self,
+        #[description("Most cycles to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many cycles to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = GraphTools::new(manager);
-        let cycles = tools.detect_cycles().await.map_err(to_mcp_error)?;
+        let tools = GraphTools::new(manager.clone());
+        // A cycle's paths stay in link order; only the list of cycles is
+        // sorted, so pages are stable.
+        let mut cycles = tools
+            .detect_cycles()
+            .await
+            .map_err(to_mcp_error)?
+            .into_iter()
+            .map(|cycle| {
+                cycle
+                    .iter()
+                    .map(|path| manager.relative_path(Path::new(path)))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        cycles.sort();
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let (cycles, page) = request.slice(cycles);
 
-        let count = cycles.len();
         let response =
-            StandardResponse::new(vault_name, "detect_cycles", serde_json::json!(cycles))
-                .with_count(count);
+            StandardResponse::new(vault_name, "detect_cycles", serde_json::json!(cycles));
 
-        let response = if count > 0 {
+        let response = if page.total.is_some_and(|total| total > 0) {
             response
                 .with_warning("Cycles detected in link graph".to_string())
                 .with_next_step("get_broken_links")
@@ -284,15 +443,19 @@ impl GraphProvider {
             response
         };
 
-        response.to_json()
+        response.with_page(page).to_json()
     }
 
     /// **HOLISTIC VAULT OVERVIEW** - Complete gestalt view for LLMs (FIX 7: Single call replaces 5+ separate calls)
     /// Provides all essential vault structure info at once: organization, health, hubs, orphans, recommendations
     #[tool(
-        description = "Generate holistic vault overview in a single comprehensive call",
+        description = "One-call overview of the vault: note and link counts, health score, folders with note counts, top hubs and dead ends, and suggested next actions. Use it to orient in an unfamiliar vault; get_vault_context is lighter.",
+        title = "Explain Vault",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn explain_vault(&self) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;

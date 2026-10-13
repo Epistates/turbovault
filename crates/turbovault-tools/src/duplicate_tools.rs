@@ -175,9 +175,17 @@ impl DuplicateTools {
 
         // Sort by similarity descending
         groups.sort_by(|a, b| {
+            let paths = |group: &DuplicateGroup| {
+                group
+                    .notes
+                    .iter()
+                    .map(|note| note.path.clone())
+                    .collect::<Vec<_>>()
+            };
             b.similarity
                 .partial_cmp(&a.similarity)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| paths(a).cmp(&paths(b)))
         });
         Ok(groups)
     }

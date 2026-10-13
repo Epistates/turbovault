@@ -294,11 +294,13 @@ impl QualityTools {
             }
         }
 
-        // Sort by staleness (most stale first)
+        // Sort by staleness (most stale first), then by path so equal ages
+        // come back in the same order every call.
         stale.sort_by(|a, b| {
             b.staleness
                 .days_since_modified
                 .cmp(&a.staleness.days_since_modified)
+                .then_with(|| a.path.cmp(&b.path))
         });
         stale.truncate(limit);
         Ok(stale)

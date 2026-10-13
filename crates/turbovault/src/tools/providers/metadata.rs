@@ -21,27 +21,43 @@ impl Deref for MetadataProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl MetadataProvider {
     // ==================== Metadata Operations ====================
 
     /// Query files by metadata pattern
     #[tool(
-        description = "Query notes by frontmatter metadata pattern (equality, comparison, existence checks)",
+        description = "Find notes whose frontmatter matches one simple condition, with each match's frontmatter. For several conditions, joins or sorting use query_frontmatter_sql.",
+        title = "Query Metadata",
         tags = ["read", "frontmatter"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn query_metadata(&self, pattern: String) -> McpResult<serde_json::Value> {
+    async fn query_metadata(
+        &self,
+        #[description(
+            "One condition: `status: \"draft\"` (equals), `tags: contains(\"work\")` (text contains), `priority > 3` or `priority < 3` (numbers)."
+        )]
+        pattern: String,
+        #[description("Most notes to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many matches to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager);
         let results = tools.query_metadata(&pattern).await.map_err(to_mcp_error)?;
 
-        let result_data =
+        let mut result_data =
             serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?;
-        let count = result_data["files"].as_array().map_or(0, Vec::len);
+        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let page = request.slice_field(&mut result_data, "files", false);
 
         let response = StandardResponse::new(vault_name, "query_metadata", result_data)
-            .with_count(count)
+            .with_page(page)
             .with_meta("pattern", serde_json::json!(pattern));
 
         response.to_json()
@@ -49,11 +65,25 @@ impl MetadataProvider {
 
     /// Get metadata value from a file
     #[tool(
-        description = "Extract specific metadata value from a note's frontmatter (supports dot notation for nested keys)",
+        description = "Read one frontmatter value from a note. Use read_note to see all of a note's frontmatter.",
+        title = "Get Metadata Value",
         tags = ["read", "frontmatter"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_metadata_value(&self, file: String, key: String) -> McpResult<serde_json::Value> {
+    async fn get_metadata_value(
+        &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
+        file: String,
+        #[description(
+            "The frontmatter key. Use dots for nested keys, such as `author.name`."
+        )]
+        key: String,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager);
         let value = tools
@@ -69,16 +99,35 @@ impl MetadataProvider {
 
     /// Update frontmatter of a note without touching content
     #[tool(
-        description = "Update YAML frontmatter of a note without modifying content body",
+        description = "Change a note's YAML frontmatter and leave its body untouched. By default the given keys are merged into the existing frontmatter; set merge to false to replace it entirely. For tags, manage_tags adds or removes single tags.",
+        title = "Update Frontmatter",
         tags = ["write", "frontmatter"],
+        read_only = false,
         destructive = true,
+        idempotent = true,
+        open_world = false,
     )]
     async fn update_frontmatter(
         &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
         path: String,
+        #[description(
+            "The frontmatter keys and values to write, such as `{\"status\": \"done\", \"tags\": [\"work\"]}`. A key set to null is written as null."
+        )]
         frontmatter: HashMap<String, serde_json::Value>,
+        #[description(
+            "True (default) to merge these keys into the existing frontmatter; false to replace the whole frontmatter with them."
+        )]
         merge: Option<bool>,
+        #[description(
+            "The note's `hash` from your last read_note; the change is refused if the note changed since. Omit to change whatever is there now."
+        )]
         expected_hash: Option<String>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -113,16 +162,32 @@ impl MetadataProvider {
 
     /// Manage tags on a note (add, remove, list)
     #[tool(
-        description = "Add, remove, or list tags on a note. List returns both frontmatter and inline #tags. Add/remove only modify frontmatter tags array",
+        description = "List, add or remove a note's tags. `list` returns both its frontmatter tags and inline #tags; `add` and `remove` change only the frontmatter `tags` list, creating it if needed.",
+        title = "Manage Tags",
         tags = ["write", "frontmatter"],
+        read_only = false,
         destructive = true,
+        idempotent = true,
+        open_world = false,
     )]
     async fn manage_tags(
         &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
         path: String,
-        operation: String,
+        #[description("`list`, `add` or `remove`.")] operation: String,
+        #[description(
+            "Tags to add or remove, without `#`, such as `[\"work\", \"project/alpha\"]`. Not used by `list`."
+        )]
         tags: Option<Vec<String>>,
+        #[description(
+            "The note's `hash` from your last read_note; an add or remove is refused if the note changed since. Omit to change whatever is there now."
+        )]
         expected_hash: Option<String>,
+        #[description(
+            "Commit message for an add or remove on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -174,11 +239,21 @@ impl MetadataProvider {
 
     /// Get lightweight metadata for multiple files without reading content
     #[tool(
-        description = "Get file metadata (size, modified time, has_frontmatter) for multiple notes without reading full content",
+        description = "Check several notes at once without reading them: whether each exists, its size, when it was modified and whether it has frontmatter.",
+        title = "Get Notes Info",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_notes_info(&self, paths: Vec<String>) -> McpResult<serde_json::Value> {
+    async fn get_notes_info(
+        &self,
+        #[description(
+            "Vault-relative paths of the notes, including extensions, such as `[\"projects/Plan.md\", \"Inbox.md\"]`."
+        )]
+        paths: Vec<String>,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = FileTools::new(manager);
         let results = tools.get_notes_info(&paths).await.map_err(to_mcp_error)?;
@@ -195,28 +270,42 @@ impl MetadataProvider {
 
     /// Move any file within vault (binary-safe, confirmation-protected)
     #[tool(
-        description = "Move or rename any file (images, PDFs, attachments) within vault with double confirmation. Binary-safe, no content processing",
+        description = "Move or rename any file in the vault, such as an image or PDF, byte for byte. Links to it are not updated; to move a note and update the links to it, use move_note. A file already at the destination is replaced.",
+        title = "Move File",
         tags = ["write"],
+        read_only = false,
         destructive = true,
+        idempotent = true,
+        open_world = false,
     )]
     async fn move_file(
         &self,
+        #[description(
+            "Vault-relative path of the file to move, including the extension, such as `attachments/photo.png`."
+        )]
         from: String,
-        to: String,
+        #[description("Vault-relative path to move it to, including the extension.")] to: String,
+        #[description("The same path as `from`, repeated to confirm the move.")]
         confirm_from: String,
-        confirm_to: String,
+        #[description("The same path as `to`, repeated to confirm the move.")] confirm_to: String,
+        #[description(
+            "The file's hash from your last read; the move is refused if it changed since. Omit to move whatever is there now."
+        )]
         expected_hash: Option<String>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the paths."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirmations must match
         if from != confirm_from {
-            return Err(McpError::invalid_request(format!(
+            return Err(McpError::invalid_params(format!(
                 "Confirmation failed: confirm_from '{}' does not match from '{}'. Both must be identical.",
                 confirm_from, from
             )));
         }
         if to != confirm_to {
-            return Err(McpError::invalid_request(format!(
+            return Err(McpError::invalid_params(format!(
                 "Confirmation failed: confirm_to '{}' does not match to '{}'. Both must be identical.",
                 confirm_to, to
             )));

@@ -69,6 +69,78 @@ pub enum Error {
 /// Convenient Result type alias
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// What kind of failure an [`Error`] is, from the caller's side: whether
+/// asking again differently can succeed, and how. Each protocol TurboVault
+/// speaks (MCP tool results, the plugin API) maps these to its own codes, so
+/// a missing note reads as "not found" everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ErrorCategory {
+    /// The note, file or graph entry asked for does not exist.
+    NotFound,
+    /// The request itself is malformed: a bad path, an invalid value, input
+    /// that does not parse.
+    InvalidInput,
+    /// The request is well formed but policy refuses it, such as a path in a
+    /// protected directory.
+    PermissionDenied,
+    /// The target changed since the caller last saw it.
+    Conflict,
+    /// The server is not set up to answer it, such as no active vault.
+    Unavailable,
+    /// Something failed inside the server.
+    Internal,
+}
+
+impl Error {
+    /// The [`ErrorCategory`] this error belongs to.
+    pub fn category(&self) -> ErrorCategory {
+        match self {
+            Error::FileNotFound { .. } | Error::NotFound { .. } => ErrorCategory::NotFound,
+            Error::Io(io_error) if io_error.kind() == io::ErrorKind::NotFound => {
+                ErrorCategory::NotFound
+            }
+            // A protected path is a policy refusal, not a malformed request:
+            // the path is well formed and may well exist.
+            Error::ProtectedPath { .. } => ErrorCategory::PermissionDenied,
+            Error::InvalidPath { .. }
+            | Error::PathTraversalAttempt { .. }
+            | Error::FileTooLarge { .. }
+            | Error::ParseError { .. }
+            | Error::ValidationError { .. } => ErrorCategory::InvalidInput,
+            Error::ConcurrencyError { .. } => ErrorCategory::Conflict,
+            Error::ConfigError { .. } => ErrorCategory::Unavailable,
+            Error::Wrapped(inner) if inner.is::<OperationNotAllowed>() => {
+                ErrorCategory::PermissionDenied
+            }
+            Error::Io(_) | Error::Other(_) | Error::Wrapped(_) => ErrorCategory::Internal,
+        }
+    }
+
+    /// The refusal this error carries if a vault's `allowed_operations`
+    /// refused the change, as [`Error::operation_not_allowed`] made it.
+    pub fn as_operation_not_allowed(&self) -> Option<&OperationNotAllowed> {
+        match self {
+            Error::Wrapped(inner) => inner.downcast_ref::<OperationNotAllowed>(),
+            _ => None,
+        }
+    }
+
+    /// A change the vault's `allowed_operations` doesn't permit. Its
+    /// [`category`](Self::category) is [`ErrorCategory::PermissionDenied`].
+    pub fn operation_not_allowed(reason: impl Into<String>) -> Self {
+        Error::Wrapped(Box::new(OperationNotAllowed(reason.into())))
+    }
+}
+
+/// A change refused by the vault's `allowed_operations` setting. It travels
+/// in [`Error::Wrapped`], which keeps the [`Error`] enum unchanged; use
+/// [`Error::operation_not_allowed`] to make one and
+/// [`Error::as_operation_not_allowed`] to recognize it.
+#[derive(Debug, ThisError)]
+#[error("{0}")]
+pub struct OperationNotAllowed(pub String);
+
 impl Error {
     /// Create an IO error
     pub fn io(err: io::Error) -> Self {
@@ -200,5 +272,20 @@ mod tests {
 
         assert!(matches!(err, Error::Io(_)));
         assert!(err.to_string().contains("denied"));
+    }
+
+    #[test]
+    fn a_refused_operation_is_permission_denied() {
+        let err = Error::operation_not_allowed("vault 'notes' does not allow write");
+
+        assert_eq!(err.category(), ErrorCategory::PermissionDenied);
+        assert_eq!(
+            err.as_operation_not_allowed().map(ToString::to_string),
+            Some("vault 'notes' does not allow write".to_string())
+        );
+        // Any other wrapped error is still a fault in the server.
+        let other = Error::Wrapped(Box::new(io::Error::other("boom")));
+        assert_eq!(other.category(), ErrorCategory::Internal);
+        assert!(other.as_operation_not_allowed().is_none());
     }
 }

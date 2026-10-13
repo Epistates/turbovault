@@ -29,7 +29,7 @@ fn parse_backend_selection(
             ))
         })
         .transpose()
-        .map_err(|error| McpError::invalid_request(format!("Invalid backend_opts: {error}")))?;
+        .map_err(|error| McpError::invalid_params(format!("Invalid backend_opts: {error}")))?;
     Ok((backend, backend_opts))
 }
 
@@ -50,7 +50,7 @@ impl Deref for VaultProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl VaultProvider {
     // ==================== Vault Lifecycle (Multi-Vault Management) ====================
 
@@ -59,15 +59,33 @@ impl VaultProvider {
     // this description is the only place a calling agent can discover the keys
     // it accepts. Spell them out here or they are undiscoverable.
     #[tool(
-        description = "Create and register a new Obsidian vault at the specified filesystem path with an optional template. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
+        description = "Create a new vault folder, optionally from a starter template, and register it. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots).",
+        title = "Create Vault",
         tags = ["write", "admin"],
+        read_only = false,
+        destructive = false,
+        idempotent = false,
+        open_world = false,
     )]
     async fn create_vault(
         &self,
+        #[description(
+            "A short name to refer to the vault by, without spaces, at most 64 characters, such as `research`."
+        )]
         name: String,
+        #[description(
+            "Absolute path of the folder to create, such as `/Users/me/Documents/Research`. `~` is expanded."
+        )]
         path: String,
+        #[description("Starter layout: `default`, `research` or `team`. Omit for an empty vault.")]
         template: Option<String>,
+        #[description(
+            "How writes land: `direct` (default) writes files; `git` commits each change."
+        )]
         write_backend: Option<String>,
+        #[description(
+            "Settings for the `git` backend: `branch`, `author` {name, email}, `merge_strategy` (`merge-commit` or `fast-forward`), `include_ignored`, `require_commit_message`."
+        )]
         backend_opts: Option<HashMap<String, serde_json::Value>>,
     ) -> McpResult<serde_json::Value> {
         let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
@@ -96,14 +114,31 @@ impl VaultProvider {
 
     /// Add an existing vault (automatically initializes it for better DX)
     #[tool(
-        description = "Register an existing Obsidian vault with the MCP server and auto-initialize. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
+        description = "Register an existing vault folder with the server and index it so it's ready to use. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots).",
+        title = "Add Vault",
         tags = ["write", "admin"],
+        read_only = false,
+        destructive = false,
+        idempotent = false,
+        open_world = false,
     )]
     async fn add_vault(
         &self,
+        #[description(
+            "A short name to refer to the vault by, without spaces, at most 64 characters, such as `notes`."
+        )]
         name: String,
+        #[description(
+            "Absolute path of the existing vault folder, such as `/Users/me/Documents/Notes`. `~` is expanded."
+        )]
         path: String,
+        #[description(
+            "How writes land: `direct` (default) writes files; `git` commits each change."
+        )]
         write_backend: Option<String>,
+        #[description(
+            "Settings for the `git` backend: `branch`, `author` {name, email}, `merge_strategy` (`merge-commit` or `fast-forward`), `include_ignored`, `require_commit_message`."
+        )]
         backend_opts: Option<HashMap<String, serde_json::Value>>,
     ) -> McpResult<serde_json::Value> {
         let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
@@ -149,18 +184,30 @@ impl VaultProvider {
 
     /// Remove a vault from registration
     #[tool(
-        description = "Unregister a vault from the MCP server (does NOT delete files)",
+        description = "Unregister a vault from the server. Its files are left untouched.",
+        title = "Remove Vault",
         tags = ["write", "admin"],
+        read_only = false,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn remove_vault(&self, name: String) -> McpResult<serde_json::Value> {
+    async fn remove_vault(
+        &self,
+        #[description("Name of the vault to unregister, as list_vaults shows it.")] name: String,
+    ) -> McpResult<serde_json::Value> {
         self.remove_vault_with_cleanup(&name).await
     }
 
     /// List all registered vaults
     #[tool(
-        description = "List all vaults registered with the MCP server",
+        description = "List the vaults registered with the server: each one's name, path, write backend and whether it's the active vault.",
+        title = "List Vaults",
         tags = ["read", "admin"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn list_vaults(&self) -> McpResult<serde_json::Value> {
         let tools = self.lifecycle_tools();
@@ -179,11 +226,18 @@ impl VaultProvider {
 
     /// Get configuration for a specific vault
     #[tool(
-        description = "Get detailed configuration for a specific vault",
+        description = "Show one vault's full configuration: path, write backend and its settings, excluded paths and limits.",
+        title = "Get Vault Config",
         tags = ["read", "admin"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_vault_config(&self, name: String) -> McpResult<serde_json::Value> {
+    async fn get_vault_config(
+        &self,
+        #[description("Name of the vault, as list_vaults shows it.")] name: String,
+    ) -> McpResult<serde_json::Value> {
         let tools = self.lifecycle_tools();
         let config = tools.get_vault_config(&name).await.map_err(to_mcp_error)?;
 
@@ -199,10 +253,18 @@ impl VaultProvider {
 
     /// Set the active vault
     #[tool(
-        description = "Switch the active vault for subsequent operations",
+        description = "Make a registered vault the active one. Every note, search and graph tool works on the active vault.",
+        title = "Set Active Vault",
         tags = ["write", "admin"],
+        read_only = false,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn set_active_vault(&self, name: String) -> McpResult<serde_json::Value> {
+    async fn set_active_vault(
+        &self,
+        #[description("Name of the vault to make active, as list_vaults shows it.")] name: String,
+    ) -> McpResult<serde_json::Value> {
         let tools = self.lifecycle_tools();
         tools.set_active_vault(&name).await.map_err(to_mcp_error)?;
 
@@ -225,9 +287,13 @@ impl VaultProvider {
 
     /// Get the currently active vault
     #[tool(
-        description = "Get the name of the currently active vault",
+        description = "Name the active vault, the one the note, search and graph tools work on.",
+        title = "Get Active Vault",
         tags = ["read", "admin"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn get_active_vault(&self) -> McpResult<serde_json::Value> {
         let tools = self.lifecycle_tools();

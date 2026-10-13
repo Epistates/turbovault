@@ -184,7 +184,11 @@ impl RelationshipTools {
         }
 
         // Sort by strength descending (total_cmp is panic-free for f64)
-        suggestions.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+        suggestions.sort_by(|a, b| {
+            b.strength
+                .total_cmp(&a.strength)
+                .then_with(|| a.target.cmp(&b.target))
+        });
 
         // Take top N
         let results: Vec<_> = suggestions
@@ -244,7 +248,9 @@ impl RelationshipTools {
         }
 
         // Sort by combined score descending (total_cmp is panic-free for f64)
-        rankings.sort_by(|a, b| b.1.total_cmp(&a.1));
+        // Ties broken by path, so the ranking and its pages are the same on
+        // every call.
+        rankings.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
         // Build result
         let ranked: Vec<_> = rankings

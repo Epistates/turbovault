@@ -245,17 +245,23 @@ async fn guarded<T>(
 
 #[cfg(feature = "plugin-api")]
 fn plugin_error(error: PluginError) -> McpError {
+    // The same kinds the vault's own tools report for the same failures (see
+    // `to_mcp_error`), so a client reads a plugin's "not found" as one.
     match error.code {
-        PluginErrorCode::InvalidInput
-        | PluginErrorCode::NotFound
-        | PluginErrorCode::Conflict
-        | PluginErrorCode::PermissionDenied => McpError::invalid_request(error.message),
+        PluginErrorCode::InvalidInput | PluginErrorCode::Conflict => {
+            McpError::invalid_params(error.message)
+        }
+        PluginErrorCode::NotFound => McpError::new(
+            turbomcp_core::error::ErrorKind::ResourceNotFound,
+            error.message,
+        ),
+        PluginErrorCode::PermissionDenied => McpError::permission_denied(error.message),
+        PluginErrorCode::Unavailable => McpError::unavailable(error.message),
+        PluginErrorCode::Timeout => McpError::timeout(error.message),
         // `_` covers codes added to the non-exhaustive contract after this
         // build: an unknown category is a server-side problem, which is the
         // safe default for a caller that cannot act on it.
-        PluginErrorCode::Unavailable | PluginErrorCode::Internal | PluginErrorCode::Timeout | _ => {
-            McpError::internal(error.message)
-        }
+        PluginErrorCode::Internal | _ => McpError::internal(error.message),
     }
 }
 
@@ -890,7 +896,9 @@ impl Default for ObsidianMcpServer {
 #[allow(clippy::manual_async_fn)]
 impl McpHandler for ObsidianMcpServer {
     fn server_info(&self) -> ServerInfo {
-        let info = ServerInfo::new("obsidian-vault", env!("CARGO_PKG_VERSION"));
+        let info = ServerInfo::new("obsidian-vault", env!("CARGO_PKG_VERSION"))
+            .with_title("TurboVault")
+            .with_website_url(env!("CARGO_PKG_HOMEPAGE"));
         #[cfg(feature = "plugin-api")]
         if !self.plugins.is_empty() {
             let namespaces = self
@@ -990,13 +998,14 @@ impl McpHandler for ObsidianMcpServer {
             let call = std::panic::AssertUnwindSafe(
                 audit_context.scope(self.composite.call_tool(routed, args, ctx)),
             );
-            call.catch_unwind().await.unwrap_or_else(|panic| {
+            let result = call.catch_unwind().await.unwrap_or_else(|panic| {
                 let detail = panic_message(&panic);
                 log::error!("tool {name:?} panicked: {detail}");
                 Err(McpError::internal(format!(
                     "tool {name:?} failed with an internal error: {detail}"
                 )))
-            })
+            })?;
+            Ok(self.core.polish_error_result(result).await)
         }
     }
 
@@ -1379,7 +1388,10 @@ mod tests {
             )
             .await
             .expect_err("create-only write must refuse overwrites");
-        assert_eq!(conflict.jsonrpc_code(), -32600);
+        // A conflict asks the caller to retry with different arguments, the
+        // same invalid-params kind a stale expected_hash gets from the vault's
+        // own tools.
+        assert_eq!(conflict.jsonrpc_code(), -32602);
 
         let updated = server
             .call_tool(
@@ -1414,7 +1426,7 @@ mod tests {
             )
             .await
             .expect_err("stale CAS write must fail");
-        assert_eq!(stale.jsonrpc_code(), -32600);
+        assert_eq!(stale.jsonrpc_code(), -32602);
     }
 
     #[cfg(feature = "plugin-api")]

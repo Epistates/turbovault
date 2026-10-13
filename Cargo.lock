@@ -5503,6 +5503,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "shellexpand",
+ "strsim",
  "tempfile",
  "tokio",
  "turbomcp",

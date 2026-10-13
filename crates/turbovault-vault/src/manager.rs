@@ -598,6 +598,9 @@ struct NoteRead {
 pub struct VaultManager {
     config: ServerConfig,
     vault_path: PathBuf,
+    /// `vault_path` as the filesystem resolves it, for paths that reach the
+    /// manager already resolved (on Windows, `\\?\C:\...`). Set on first use.
+    resolved_vault_path: OnceLock<PathBuf>,
     parser: Parser,
     link_graph: Arc<RwLock<LinkGraph>>,
     file_cache: Arc<RwLock<HashMap<PathBuf, CacheEntry>>>,
@@ -757,6 +760,7 @@ impl VaultManager {
         Ok(Self {
             config,
             vault_path,
+            resolved_vault_path: OnceLock::new(),
             parser,
             link_graph: Arc::new(RwLock::new(LinkGraph::new())),
             file_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -1315,7 +1319,7 @@ impl VaultManager {
             .map(String::as_str)
             .collect();
         allowed.sort_unstable();
-        Err(Error::config_error(format!(
+        Err(Error::operation_not_allowed(format!(
             "vault '{}' does not allow {} (allowed_operations: {})",
             vault.name,
             refused.join(" or "),
@@ -1341,10 +1345,28 @@ impl VaultManager {
     /// Convert a path to a `/`-separated vault-relative string.
     ///
     /// Strips the vault root prefix and normalizes separators to `/` (so paths
-    /// render consistently across platforms). Falls back to the lossy full path
-    /// when `path` is not under the vault root.
+    /// render consistently across platforms). The root is matched as
+    /// configured and as the filesystem resolves it, since on Windows a
+    /// resolved path starts `\\?\C:\` where the configured root starts `C:\`.
+    /// Both are compared as rendered with `/`, so a path that was already
+    /// rendered that way (`//?/C:/...`, which Windows no longer reads as the
+    /// same path) is stripped too. Falls back to the lossy full path when
+    /// `path` is not under the vault root.
     pub fn relative_path(&self, path: &Path) -> String {
-        path_to_slash(path.strip_prefix(&self.vault_path).unwrap_or(path))
+        let rendered = path_to_slash(path);
+        let resolved = self.resolved_vault_path.get_or_init(|| {
+            std::fs::canonicalize(&self.vault_path).unwrap_or_else(|_| self.vault_path.clone())
+        });
+        for root in [&self.vault_path, resolved] {
+            let root = path_to_slash(root);
+            if let Some(relative) = rendered
+                .strip_prefix(root.trim_end_matches('/'))
+                .and_then(|rest| rest.strip_prefix('/'))
+            {
+                return relative.to_string();
+            }
+        }
+        rendered
     }
 
     /// Set the audit log and snapshot store for operation tracking.
@@ -2654,6 +2676,27 @@ mod tests {
 
     /// Obsidian writes a Markdown link to a file with a space in its name
     /// with the space escaped, `[x](My%20Note.md)`.
+    /// A path the filesystem resolved (on Windows `\\?\C:\...`, on macOS a
+    /// temp vault's `/private/var/...`) is still made vault-relative.
+    #[test]
+    fn relative_path_strips_the_resolved_root_too() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+        let resolved = std::fs::canonicalize(temp_dir.path()).unwrap();
+
+        assert_eq!(
+            manager.relative_path(&resolved.join("notes").join("a.md")),
+            "notes/a.md"
+        );
+        assert_eq!(manager.relative_path(&temp_dir.path().join("b.md")), "b.md");
+        // Already rendered with `/`, as the search tools hand paths over.
+        let rendered = turbovault_core::path_to_slash(&resolved.join("c.md"));
+        assert_eq!(manager.relative_path(Path::new(&rendered)), "c.md");
+        // A sibling whose name merely starts with the root's is not inside.
+        let sibling = format!("{}-other/d.md", turbovault_core::path_to_slash(&resolved));
+        assert_eq!(manager.relative_path(Path::new(&sibling)), sibling);
+    }
+
     #[tokio::test]
     async fn percent_escaped_markdown_links_resolve() {
         let temp_dir = TempDir::new().unwrap();

@@ -110,8 +110,8 @@ fn parse_query(pattern: &str) -> Result<QueryFilter> {
         }
     }
 
-    Err(Error::config_error(format!(
-        "Unable to parse query pattern: {}",
+    Err(Error::validation_error(format!(
+        "Unable to parse query pattern: {}. Use `key: \"value\"`, `key: contains(\"text\")`, `key > 3` or `key < 3`",
         pattern
     )))
 }
@@ -154,6 +154,9 @@ impl MetadataTools {
                 }));
             }
         }
+        // The cache has no order of its own; sorting by path makes the
+        // result, and any page of it, the same on every call.
+        matches.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
 
         Ok(json!({
             "query": pattern,

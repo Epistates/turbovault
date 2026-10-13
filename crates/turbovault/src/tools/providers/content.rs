@@ -21,7 +21,26 @@ impl Deref for ContentProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+/// The `##` section headings of `markdown`, in order, leaving out any inside
+/// a fenced code block (the guides show example notes that have their own).
+fn section_headings(markdown: &str) -> Vec<&str> {
+    let mut in_fence = false;
+    markdown
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+                return false;
+            }
+            !in_fence
+        })
+        .filter_map(|line| line.strip_prefix("## "))
+        .map(str::trim)
+        .collect()
+}
+
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl ContentProvider {
     // ==================== Resources (OFM Knowledge Injection) ====================
 
@@ -59,25 +78,22 @@ impl ContentProvider {
 
     /// Get Obsidian Flavored Markdown syntax guide (tool fallback for clients without resource support)
     #[tool(
-        description = "Get Obsidian Flavored Markdown syntax guide for the OFM syntax TurboVault parses, classifies, or preserves",
+        description = "The full guide to Obsidian Flavored Markdown as TurboVault reads it: links, embeds, callouts, frontmatter, tags and conventions, with what each is for. Long; get_ofm_quick_ref is the short version. The same text is the resource obsidian://syntax/complete-guide.",
+        title = "OFM Syntax Guide",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn get_ofm_syntax_guide(&self) -> McpResult<serde_json::Value> {
-        let guide = crate::resources::OFM_SYNTAX_GUIDE.to_string();
+        let guide = crate::resources::OFM_SYNTAX_GUIDE;
 
         Ok(serde_json::json!({
             "title": "Obsidian Flavored Markdown - Syntax Guide",
             "content": guide,
             "format": "markdown",
-            "sections": [
-                "Overview",
-                "Core Philosophy",
-                "Supported Standards",
-                "Markdown Extensions",
-                "Usage Guidelines",
-                "Best Practices"
-            ],
+            "sections": section_headings(guide),
             "alternatives": {
                 "resource": "obsidian://syntax/complete-guide",
                 "quick_ref_tool": "get_ofm_quick_ref",
@@ -88,24 +104,22 @@ impl ContentProvider {
 
     /// Get quick reference for Obsidian Flavored Markdown (tool fallback)
     #[tool(
-        description = "Get condensed OFM cheat sheet with common patterns and best practices",
+        description = "A one-page cheat sheet of Obsidian Flavored Markdown syntax: wikilinks, formatting, tasks, callouts, tables, embeds, frontmatter and block references. Read it before writing notes. The same text is the resource obsidian://syntax/quick-ref.",
+        title = "OFM Quick Reference",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn get_ofm_quick_ref(&self) -> McpResult<serde_json::Value> {
-        let quick_ref = crate::resources::OFM_QUICK_REFERENCE.to_string();
+        let quick_ref = crate::resources::OFM_QUICK_REFERENCE;
 
         Ok(serde_json::json!({
             "title": "Obsidian Flavored Markdown - Quick Reference",
             "content": quick_ref,
             "format": "markdown",
-            "sections": [
-                "Core Syntax",
-                "Obsidian Extensions",
-                "Key Differences",
-                "Best Practices",
-                "Common Patterns"
-            ],
+            "sections": section_headings(quick_ref),
             "alternatives": {
                 "resource": "obsidian://syntax/quick-ref",
                 "complete_guide_tool": "get_ofm_syntax_guide",
@@ -116,9 +130,13 @@ impl ContentProvider {
 
     /// Get example note demonstrating all OFM features (tool fallback)
     #[tool(
-        description = "Get comprehensive example note demonstrating ALL OFM features with real-world patterns",
+        description = "An example note that uses every Obsidian Flavored Markdown feature, to copy patterns from. The same text is the resource obsidian://examples/sample-note.",
+        title = "OFM Example Note",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn get_ofm_examples(&self) -> McpResult<serde_json::Value> {
         let examples = crate::resources::OFM_EXAMPLE_NOTE.to_string();

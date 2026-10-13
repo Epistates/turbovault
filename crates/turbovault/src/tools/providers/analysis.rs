@@ -22,16 +22,28 @@ impl Deref for AnalysisProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl AnalysisProvider {
     // ─── DIFF TOOLS ──────────────────────────────────────────────────
 
     #[tool(
-        description = "Compare two notes side-by-side showing unified diff, line-level and word-level changes, and similarity score",
+        description = "Diff two notes: a unified diff, line and word changes, and a similarity score. Use compare_notes for a similarity verdict without the diff.",
+        title = "Diff Notes",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn diff_notes(&self, left: String, right: String) -> McpResult<serde_json::Value> {
+    async fn diff_notes(
+        &self,
+        #[description(
+            "Vault-relative path of the first note, including the extension, such as `drafts/Plan.md`."
+        )]
+        left: String,
+        #[description("Vault-relative path of the second note, including the extension.")]
+        right: String,
+    ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = DiffTools::new(manager);
@@ -50,13 +62,21 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Compare current note with a previous version from the audit trail",
+        description = "Diff a note's current content against how it was before an operation in the audit trail. Find the operation_id with audit_log. Not available on Git-backed vaults, whose history is in Git.",
+        title = "Diff Note Version",
         tags = ["read", "audit"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn diff_note_version(
         &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
         path: String,
+        #[description("The `id` of an audit_log entry that changed this note.")]
         operation_id: String,
     ) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("diff_note_version")
@@ -72,7 +92,12 @@ impl AnalysisProvider {
             .await
             .map_err(to_mcp_error)?
             .ok_or_else(|| {
-                McpError::internal(format!("Audit entry not found: {}", operation_id))
+                McpError::new(
+                    turbomcp_core::error::ErrorKind::ResourceNotFound,
+                    format!(
+                        "Audit entry not found: {operation_id}. Use audit_log to list operation ids"
+                    ),
+                )
             })?;
 
         let snapshot_id = entry
@@ -80,7 +105,10 @@ impl AnalysisProvider {
             .as_ref()
             .or(entry.after_snapshot_id.as_ref())
             .ok_or_else(|| {
-                McpError::internal("No snapshot available for this operation".to_string())
+                McpError::new(
+                    turbomcp_core::error::ErrorKind::ResourceNotFound,
+                    "No snapshot was kept for this operation".to_string(),
+                )
             })?;
 
         let snapshot_content = audit_tools
@@ -119,11 +147,21 @@ impl AnalysisProvider {
     // ─── QUALITY TOOLS ───────────────────────────────────────────────
 
     #[tool(
-        description = "Evaluate note quality across readability, structure, completeness, and staleness dimensions (0-100 score per dimension plus composite)",
+        description = "Score one note's quality from 0 to 100 on readability, structure, completeness and staleness, plus a weighted overall score and suggestions to improve it.",
+        title = "Evaluate Note Quality",
         tags = ["read", "health"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn evaluate_note_quality(&self, path: String) -> McpResult<serde_json::Value> {
+    async fn evaluate_note_quality(
+        &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
+        path: String,
+    ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
@@ -139,11 +177,21 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Generate vault-wide quality report with score distribution, dimension averages, lowest/highest quality notes, and recommendations",
+        description = "Score every note's quality and summarize: average and distribution, per-dimension averages, the lowest- and highest-scoring notes, and recommendations. Slow on a large vault; use evaluate_note_quality for one note.",
+        title = "Vault Quality Report",
         tags = ["read", "health"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn vault_quality_report(&self, bottom_n: Option<usize>) -> McpResult<serde_json::Value> {
+    async fn vault_quality_report(
+        &self,
+        #[description(
+            "How many of the lowest- and highest-scoring notes to list. Default 10, maximum 500."
+        )]
+        bottom_n: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
@@ -163,11 +211,21 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Extract grounding primitives for a note — the raw material an external LLM judge needs to score hallucination/contradiction/redundancy: candidate factual claims from the prose, declared citations (# Citations), structural signals (Schema/Examples sections), and an 'uncited' flag (makes claims but cites nothing). TurboVault does NOT score grounding itself; it surfaces the data deterministically",
+        description = "Extract what a judge needs to check a note for hallucination, contradiction or redundancy: the factual claims in its prose, its declared citations (a `# Citations` section), structural signals (Schema and Examples sections), and an `uncited` flag for claims with no citations. TurboVault doesn't score grounding itself.",
+        title = "Analyze Note Grounding",
         tags = ["read", "quality", "okf"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn analyze_note_grounding(&self, path: String) -> McpResult<serde_json::Value> {
+    async fn analyze_note_grounding(
+        &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `concepts/Revenue.md`."
+        )]
+        path: String,
+    ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GroundingTools::new(manager);
@@ -183,25 +241,42 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Scan the vault for hallucination-risk notes: notes that make factual claims in prose but declare no citations (# Citations). Returns them sorted by claim count (most claims first) — the notes most worth grounding review or an LLM-judge pass",
+        description = "List notes that make factual claims but declare no citations (no `# Citations` section), most claims first. These are the notes most worth a grounding review; analyze_note_grounding shows one note's claims.",
+        title = "Find Ungrounded Notes",
         tags = ["read", "quality", "okf"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn find_ungrounded_notes(&self, limit: Option<usize>) -> McpResult<serde_json::Value> {
+    async fn find_ungrounded_notes(
+        &self,
+        #[description("Most notes to return. Default 50, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many notes to skip, for the next page. Default 0, at most 1000; use `meta.pagination.next_offset` from the previous call."
+        )]
+        offset: Option<usize>,
+    ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GroundingTools::new(manager);
-        let result = tools
-            .find_ungrounded_notes(clamp_count(limit, 50, MAX_REPORT_ITEMS))
+        let request = PageRequest::ranked(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
+        let mut result = tools
+            .find_ungrounded_notes(request.fetch())
             .await
             .map_err(to_mcp_error)?;
-        let count = result.ungrounded_count;
+        let (notes, page) =
+            request.slice_leading(std::mem::take(&mut result.notes), result.ungrounded_count);
+        result.notes = notes;
         StandardResponse::new(
             &vault_name,
             "find_ungrounded_notes",
             serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
         )
-        .with_count(count)
+        .with_page(page)
+        // This tool's `count` has always been every ungrounded note, not the
+        // page; `meta.pagination.returned` is the page.
+        .with_count(result.ungrounded_count)
         .with_duration(start.elapsed().as_millis() as u64)
         .with_next_steps(&["analyze_note_grounding", "read_note"])
         .to_json()
@@ -211,10 +286,20 @@ impl AnalysisProvider {
 
     #[tool(
         description = "Validate the vault as an Open Knowledge Format (OKF) bundle: checks every note for OKF v0.1 conformance (parseable frontmatter with a non-empty `type`) and surfaces each concept's OKF metadata (type, title, description, resource, timestamp, citation count) plus the bundle's type vocabulary. Reports non-conformant files for use as a CI gate",
+        title = "Validate OKF Bundle",
         tags = ["read", "okf", "frontmatter"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn okf_validate(&self, subtree: Option<String>) -> McpResult<serde_json::Value> {
+    async fn okf_validate(
+        &self,
+        #[description(
+            "Vault-relative folder to check, such as `concepts/`. Omit to check the whole vault."
+        )]
+        subtree: Option<String>,
+    ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = OkfTools::new(manager);
@@ -238,14 +323,28 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Generate or refresh OKF index.md files for progressive disclosure: each indexed directory gets an index.md listing its concept notes (with their frontmatter descriptions) and subdirectories, so agents and humans can navigate the bundle one level at a time instead of loading everything. Idempotent — unchanged indexes are not rewritten",
+        description = "Write or refresh OKF index.md files: each indexed folder gets an index.md listing its notes (with their frontmatter descriptions) and subfolders, so a reader can navigate one level at a time. Replaces an existing index.md; an index that would not change is left alone.",
+        title = "Generate OKF Index",
         tags = ["write", "okf"],
+        read_only = false,
+        destructive = true,
+        idempotent = true,
+        open_world = false,
     )]
     async fn generate_index(
         &self,
+        #[description(
+            "Vault-relative folder to index, such as `concepts/`. Omit for the vault root."
+        )]
         directory: Option<String>,
-        recursive: Option<bool>,
+        #[description("Also index every folder below it. Default false.")] recursive: Option<bool>,
+        #[description(
+            "Report the indexes that would be written without writing them. Default false."
+        )]
         dry_run: Option<bool>,
+        #[description(
+            "Commit message for every index written, on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise each index gets a derived message."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
@@ -305,15 +404,30 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Append an entry to an OKF log.md update history (spec §7). Files the entry under a `## YYYY-MM-DD` date section, newest-first — a new date becomes the top section, an existing date gains another bullet. Creates log.md (with a title) if absent",
+        description = "Add an entry to a folder's OKF log.md history (OKF spec section 7), under a `## YYYY-MM-DD` heading with the newest date first: a new date becomes the top section, an existing date gains another bullet. Creates log.md if there isn't one.",
+        title = "Append OKF Log Entry",
         tags = ["write", "okf"],
+        read_only = false,
+        destructive = false,
+        idempotent = false,
+        open_world = false,
     )]
     async fn append_log_entry(
         &self,
-        text: String,
+        #[description("The entry's text, one line of prose.")] text: String,
+        #[description(
+            "Vault-relative folder whose log.md to append to, such as `concepts/`. Omit for the vault root."
+        )]
         directory: Option<String>,
+        #[description(
+            "The entry's leading bold word, such as `Update`, `Creation` or `Deprecation`. Default `Update`."
+        )]
         kind: Option<String>,
+        #[description("The entry's date as `YYYY-MM-DD`. Default today, in local time.")]
         date: Option<String>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the log path."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
@@ -349,13 +463,26 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Render the vault's concept graph as a single self-contained HTML file: a force-directed graph of every note, a detail panel with the rendered markdown body and 'cited by' backlinks, plus type filter and search. The bundle is embedded as JSON; the graph/markdown libraries load from a CDN. Shareable as a static artifact — open in any browser, no backend. Covers both OKF cross-links and Obsidian wikilinks",
+        description = "Write the vault's link graph as one self-contained HTML page into the vault: an interactive graph of every note, a panel showing each note's rendered text and backlinks, and filtering and search. It opens in any browser with no server; the graph and markdown libraries load from a CDN.",
+        title = "Visualize Vault",
         tags = ["write", "export", "okf"],
+        read_only = false,
+        destructive = true,
+        idempotent = true,
+        open_world = false,
     )]
     async fn visualize(
         &self,
+        #[description(
+            "Vault-relative path to write the HTML to. Default `viz.html`; an existing file there is replaced."
+        )]
         output: Option<String>,
-        name: Option<String>,
+        #[description("Title shown in the page. Default the vault folder's name.")] name: Option<
+            String,
+        >,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the output path."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
@@ -395,32 +522,41 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Find notes that have not been updated recently, sorted by staleness (most stale first)",
+        description = "List notes not modified for a number of days, least recently modified first, with their age. Use it to find notes due for review.",
+        title = "Find Stale Notes",
         tags = ["read", "health"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn find_stale_notes(
         &self,
+        #[description(
+            "Only notes not modified for at least this many days count as stale. Default 90."
+        )]
         threshold_days: Option<u64>,
-        limit: Option<usize>,
+        #[description("Most notes to return. Default 20, maximum 500.")] limit: Option<usize>,
+        #[description(
+            "How many of the stalest notes to skip, for the next page. Default 0, at most 1000."
+        )]
+        offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
+        let request = PageRequest::ranked(offset, limit, 20, MAX_REPORT_ITEMS);
         let result = tools
-            .find_stale_notes(
-                threshold_days.unwrap_or(90),
-                clamp_count(limit, 20, MAX_REPORT_ITEMS),
-            )
+            .find_stale_notes(threshold_days.unwrap_or(90), request.fetch())
             .await
             .map_err(to_mcp_error)?;
-        let count = result.len();
+        let (result, page) = request.slice_ranked(result);
         StandardResponse::new(
             &vault_name,
             "find_stale_notes",
             serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
         )
-        .with_count(count)
+        .with_page(page)
         .with_duration(start.elapsed().as_millis() as u64)
         .with_next_steps(&["evaluate_note_quality", "read_note", "edit_note"])
         .to_json()
@@ -429,52 +565,69 @@ impl AnalysisProvider {
     // ─── SIMILARITY TOOLS ────────────────────────────────────────────
 
     #[tool(
-        description = "Find notes semantically similar to a query using TF-IDF cosine similarity (finds conceptual matches beyond exact keyword overlap)",
+        description = "Find notes about a topic even when they don't use your exact words, ranked by TF-IDF cosine similarity to the query. Use search for exact keywords and phrases.",
+        title = "Semantic Search",
         tags = ["read", "search", "semantic"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn semantic_search(
         &self,
+        #[description("What to look for, in plain words, such as `quarterly revenue forecast`.")]
         query: String,
-        limit: Option<usize>,
+        #[description("Most notes to return. Default 10, maximum 100.")] limit: Option<usize>,
+        #[description("How many top results to skip, for the next page. Default 0, at most 1000.")]
+        offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let engine = self.get_similarity_engine().await?;
-        let results = engine.semantic_search(&query, clamp_count(limit, 10, MAX_SEARCH_RESULTS));
-        let count = results.len();
+        let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
+        let (results, page) = request.slice_ranked(engine.semantic_search(&query, request.fetch()));
         StandardResponse::new(
             &vault_name,
             "semantic_search",
             serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?,
         )
-        .with_count(count)
+        .with_page(page)
         .with_duration(start.elapsed().as_millis() as u64)
         .with_next_steps(&["read_note", "find_similar_notes", "advanced_search"])
         .to_json()
     }
 
     #[tool(
-        description = "Find notes most similar in content to a specific note using TF-IDF cosine similarity",
+        description = "Find the notes whose content is most like a given note's, ranked by TF-IDF cosine similarity. Use find_duplicates to scan the whole vault for near copies.",
+        title = "Find Similar Notes",
         tags = ["read", "search", "semantic"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn find_similar_notes(
         &self,
+        #[description(
+            "Vault-relative path of the note to compare against, including the extension, such as `projects/Plan.md`."
+        )]
         path: String,
-        limit: Option<usize>,
+        #[description("Most notes to return. Default 10, maximum 100.")] limit: Option<usize>,
+        #[description("How many top results to skip, for the next page. Default 0, at most 1000.")]
+        offset: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let vault_name = self.get_active_vault_name().await?;
         let engine = self.get_similarity_engine().await?;
-        let results = engine.find_similar_notes(&path, clamp_count(limit, 10, MAX_SEARCH_RESULTS));
-        let count = results.len();
+        let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
+        let (results, page) =
+            request.slice_ranked(engine.find_similar_notes(&path, request.fetch()));
         StandardResponse::new(
             &vault_name,
             "find_similar_notes",
             serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?,
         )
-        .with_count(count)
+        .with_page(page)
         .with_duration(start.elapsed().as_millis() as u64)
         .with_next_steps(&["read_note", "semantic_search", "get_backlinks"])
         .to_json()
@@ -483,13 +636,23 @@ impl AnalysisProvider {
     // ─── DUPLICATE TOOLS ─────────────────────────────────────────────
 
     #[tool(
-        description = "Find near-duplicate notes across vault using SimHash fingerprinting and TF-IDF cosine similarity verification",
+        description = "Scan the whole vault for pairs of notes with nearly the same content, each with its similarity score, most similar first. Slow on a large vault; compare_notes checks one pair.",
+        title = "Find Duplicates",
         tags = ["read", "search", "semantic"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn find_duplicates(
         &self,
+        #[description(
+            "Lowest similarity, from 0.0 to 1.0, for a pair to count as duplicates. Default 0.8."
+        )]
         threshold: Option<f64>,
+        #[description(
+            "Stop after finding this many pairs. Default 20, maximum 500. The scan ends early, so it can't be paged; raise the limit to see more."
+        )]
         limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
@@ -515,11 +678,23 @@ impl AnalysisProvider {
     }
 
     #[tool(
-        description = "Compare two specific notes showing similarity score, shared terms, diff summary, and actionable recommendation",
+        description = "Compare two notes for overlap: a similarity score, the terms they share, a short diff summary, and a recommendation such as merging them. Use diff_notes for the full line-by-line diff.",
+        title = "Compare Notes",
         tags = ["read", "semantic"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn compare_notes(&self, left: String, right: String) -> McpResult<serde_json::Value> {
+    async fn compare_notes(
+        &self,
+        #[description(
+            "Vault-relative path of the first note, including the extension, such as `drafts/Plan.md`."
+        )]
+        left: String,
+        #[description("Vault-relative path of the second note, including the extension.")]
+        right: String,
+    ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = DuplicateTools::new(manager);

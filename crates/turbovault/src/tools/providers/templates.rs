@@ -21,15 +21,19 @@ impl Deref for TemplateProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl TemplateProvider {
     // ==================== Templates (LLM Note Creation) ====================
 
     /// List available templates
     #[tool(
-        description = "List all available note templates in the active vault",
+        description = "List the note templates create_from_template can use, with each one's id, name and fields. get_template shows one in detail.",
+        title = "List Templates",
         tags = ["read", "template"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn list_templates(&self) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -46,16 +50,26 @@ impl TemplateProvider {
 
     /// Get template details
     #[tool(
-        description = "Get detailed information about a specific template including fields and preview",
+        description = "Show one template: its fields (which are required, their types and defaults) and the note it produces. Use it to fill `fields` for create_from_template.",
+        title = "Get Template",
         tags = ["read", "template"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn get_template(&self, template_id: String) -> McpResult<serde_json::Value> {
+    async fn get_template(
+        &self,
+        #[description("The template's id, as list_templates shows it.")] template_id: String,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = TemplateEngine::new(manager);
-        let template = engine
-            .get_template(&template_id)
-            .ok_or_else(|| McpError::internal(format!("Template {} not found", template_id)))?;
+        let template = engine.get_template(&template_id).ok_or_else(|| {
+            McpError::new(
+                turbomcp_core::error::ErrorKind::ResourceNotFound,
+                format!("Template {template_id} not found. Use list_templates to see the ids"),
+            )
+        })?;
 
         let response = StandardResponse::new(
             vault_name,
@@ -69,16 +83,32 @@ impl TemplateProvider {
 
     /// Create note from template
     #[tool(
-        description = "Create a new note from a template with field substitution and frontmatter",
+        description = "Create a note from a template, filling in its fields and recording the template in the note's frontmatter. Refuses to replace an existing note unless expected_hash says so.",
+        title = "Create Note from Template",
         tags = ["write", "template"],
+        read_only = false,
         destructive = true,
+        idempotent = false,
+        open_world = false,
     )]
     async fn create_from_template(
         &self,
-        template_id: String,
+        #[description("The template's id, as list_templates shows it.")] template_id: String,
+        #[description(
+            "Vault-relative path for the new note, including the extension, such as `meetings/2026-10-13.md`."
+        )]
         file_path: String,
+        #[description(
+            "The field values as a JSON object string, such as `{\"title\": \"Weekly sync\", \"date\": \"2026-10-13\"}`. get_template lists the fields."
+        )]
         fields: String, // JSON string
+        #[description(
+            "Default `absent`, so an existing note is never replaced. Pass the existing note's `hash` from read_note to replace that version, or `blind` to replace whatever is there."
+        )]
         expected_hash: Option<String>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -86,7 +116,7 @@ impl TemplateProvider {
 
         // Parse fields JSON
         let field_values: HashMap<String, String> = serde_json::from_str(&fields)
-            .map_err(|e| McpError::invalid_request(format!("Invalid fields JSON: {}", e)))?;
+            .map_err(|e| McpError::invalid_params(format!("Invalid fields JSON: {}", e)))?;
 
         let message = self
             .resolve_commit_message(commit_message, || {
@@ -130,11 +160,18 @@ impl TemplateProvider {
 
     /// Find notes created from template
     #[tool(
-        description = "Find all notes created from a specific template via frontmatter tracking",
+        description = "List the notes created from a template, found by the template id create_from_template records in their frontmatter.",
+        title = "Find Notes from Template",
         tags = ["read", "template"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
-    async fn find_notes_from_template(&self, template_id: String) -> McpResult<serde_json::Value> {
+    async fn find_notes_from_template(
+        &self,
+        #[description("The template's id, as list_templates shows it.")] template_id: String,
+    ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = TemplateEngine::new(manager);
         let notes = engine
