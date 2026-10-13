@@ -2089,7 +2089,7 @@ impl VaultManager {
                         // its write-lock, so a concurrent blind write that
                         // recreated this path can land between this apply's
                         // completion and this eviction. If the path exists
-                        // again, this "removed" notification is stale — skip it
+                        // again, this "removed" notification is stale, so skip it
                         // and let the write that recreated the path reconcile
                         // the cache via its own present=true branch, instead of
                         // clobbering a legitimately present file.
