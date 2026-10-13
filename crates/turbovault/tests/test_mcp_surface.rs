@@ -353,3 +353,87 @@ async fn prompt_arguments_and_note_template_variables_complete() {
         .unwrap();
     assert_eq!(values(notes), ["Notes.md"]);
 }
+
+/// A cancellation the client already sent.
+#[derive(Debug)]
+struct Cancelled;
+
+impl turbomcp_core::session::Cancellable for Cancelled {
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn slow_tools_report_progress_to_a_client_that_asks() {
+    let (_vault, server) = server_with_vault().await;
+    for tool in [
+        "explain_vault",
+        "full_health_analysis",
+        "vault_quality_report",
+    ] {
+        let session = RecordingSession::plain();
+        let ctx = context(&session).with_progress_token(json!(format!("{tool}-token")));
+        let result = server.call_tool(tool, json!({}), &ctx).await.unwrap();
+        assert!(!result.is_error(), "{tool}");
+
+        let progress = session.sent("notifications/progress");
+        assert!(progress.len() >= 2, "{tool}: {progress:?}");
+        let values: Vec<f64> = progress
+            .iter()
+            .map(|params| params["progress"].as_f64().unwrap())
+            .collect();
+        assert!(
+            values.windows(2).all(|pair| pair[0] < pair[1]),
+            "{tool}: progress only increases: {values:?}"
+        );
+        let last = progress.last().unwrap();
+        assert_eq!(
+            last["progress"], last["total"],
+            "{tool}: the last update completes"
+        );
+        assert_eq!(last["progressToken"], json!(format!("{tool}-token")));
+    }
+
+    // No token, no progress.
+    let session = RecordingSession::plain();
+    server
+        .call_tool("explain_vault", json!({}), &context(&session))
+        .await
+        .unwrap();
+    assert!(session.sent("notifications/progress").is_empty());
+}
+
+#[tokio::test]
+async fn a_cancelled_call_stops_before_it_changes_anything() {
+    let (vault, server) = server_with_vault().await;
+    let session = RecordingSession::plain();
+    let ctx = context(&session).with_cancellation_token(Arc::new(Cancelled));
+
+    let explained = server.call_tool("explain_vault", json!({}), &ctx).await;
+    let cancelled = |result: Result<turbomcp::ToolResult, turbomcp::McpError>| match result {
+        Ok(result) => {
+            result.is_error()
+                && result
+                    .first_text()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains("cancel")
+        }
+        Err(error) => error.to_string().to_lowercase().contains("cancel"),
+    };
+    assert!(cancelled(explained));
+
+    let batch = server
+        .call_tool(
+            "batch_execute",
+            json!({"operations": [{"type": "CreateNote", "path": "Batch.md", "content": "# B\n"}]}),
+            &ctx,
+        )
+        .await;
+    assert!(cancelled(batch));
+    assert!(
+        !vault.path().join("Batch.md").exists(),
+        "a cancelled batch writes nothing"
+    );
+}

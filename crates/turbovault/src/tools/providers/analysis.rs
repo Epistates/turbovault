@@ -198,14 +198,18 @@ impl AnalysisProvider {
             "How many of the lowest- and highest-scoring notes to list. Default 10, maximum 500."
         )]
         bottom_n: Option<usize>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
+        let mut stages = Stages::new(ctx, 1);
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
+        stages.next("Scoring every note").await?;
         let result = tools
             .vault_quality_report(clamp_count(bottom_n, 10, MAX_REPORT_ITEMS))
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
         StandardResponse::new(&vault_name, "vault_quality_report", &result)
             .with_count(result.total_notes)
             .with_duration(start.elapsed().as_millis() as u64)
@@ -638,15 +642,20 @@ impl AnalysisProvider {
             "Stop after finding this many pairs. Default 20, maximum 500. The scan ends early, so it can't be paged; raise the limit to see more."
         )]
         limit: Option<usize>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
+        let mut stages = Stages::new(ctx, 2);
         let (vault_name, manager) = self.get_vault_pair().await?;
+        stages.next("Building the similarity index").await?;
         let engine = self.get_similarity_engine().await?;
+        stages.next("Comparing notes").await?;
         let result = DuplicateTools::new(manager).find_duplicates_with(
             &engine,
             threshold.unwrap_or(0.8),
             clamp_count(limit, 20, MAX_REPORT_ITEMS),
         );
+        stages.finish().await;
         let count = result.len();
         StandardResponse::new(&vault_name, "find_duplicates", &result)
             .with_count(count)

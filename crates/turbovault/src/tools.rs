@@ -669,6 +669,61 @@ impl<T: serde::Serialize> StandardResponse<T> {
     }
 }
 
+/// A long tool call's progress through its stages, reported to a client
+/// that sent a progress token, and the points where a client's cancellation
+/// is honoured.
+///
+/// Cancellation is checked only at the start of a stage that has not changed
+/// anything yet, so a cancelled call either did nothing or finished; a stage
+/// that writes is announced with [`Stages::report`], which never stops.
+pub(super) struct Stages<'a> {
+    ctx: &'a RequestContext,
+    total: f64,
+    done: f64,
+}
+
+impl<'a> Stages<'a> {
+    /// A call of `total` stages.
+    pub(super) fn new(ctx: &'a RequestContext, total: usize) -> Self {
+        Self {
+            ctx,
+            total: total as f64,
+            done: 0.0,
+        }
+    }
+
+    /// Begin the next stage, or stop if the client cancelled the call.
+    pub(super) async fn next(&mut self, message: &str) -> McpResult<()> {
+        if self.ctx.is_cancelled() {
+            return Err(McpError::cancelled(
+                "The client cancelled the call before it changed anything",
+            ));
+        }
+        self.report(message).await;
+        Ok(())
+    }
+
+    /// Begin the next stage without stopping for a cancellation, for a stage
+    /// that follows a change already made.
+    pub(super) async fn report(&mut self, message: &str) {
+        // Progress is optional; a client that can't take it is no reason to
+        // fail the call.
+        let _ = self
+            .ctx
+            .report_progress(self.done, Some(self.total), Some(message))
+            .await;
+        self.done += 1.0;
+    }
+
+    /// Every stage is done.
+    pub(super) async fn finish(self) {
+        let _ = self
+            .ctx
+            .report_progress(self.total, Some(self.total), Some("Done"))
+            .await;
+    }
+}
+
 /// Shared implementation handler used by the focused provider facade.
 #[derive(Clone)]
 pub(super) struct CoreToolHandler {
