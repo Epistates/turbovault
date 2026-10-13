@@ -21,26 +21,36 @@ impl Deref for BatchProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl BatchProvider {
     // ==================== Batch Operations ====================
 
     /// Execute a validated batch of file operations.
     #[tool(
-        description = "Execute multiple file operations. With write_backend=git, the complete batch is one atomic commit with per-path CAS preconditions: every operation applies or none do.",
+        description = "Run several note operations (create, write, edit, delete, move, frontmatter and tag changes) in one call. With write_backend=git, the batch is one atomic commit: every operation applies or none do. On a plain-folder vault they apply in order, and one that fails leaves the earlier ones applied; the result says which.",
+        title = "Batch Execute",
         tags = ["write", "batch"],
+        read_only = false,
         destructive = true,
+        idempotent = false,
+        open_world = false,
     )]
     async fn batch_execute(
         &self,
+        #[description(
+            "The operations, in order. Each is an object with `type` (`CreateNote`, `WriteNote`, `EditNote`, `DeleteNote`, `MoveNote`, `UpdateLinks`, `UpdateFrontmatter`, `ManageTags` or `CreateFromTemplate`) and that operation's fields, which mirror the single-note tools."
+        )]
         operations: Vec<BatchOperation>,
+        #[description(
+            "Commit message for the batch on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the operations."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
         let manager = self.get_active_vault_manager().await?;
 
         if operations.is_empty() {
-            return Err(McpError::internal(
+            return Err(McpError::invalid_params(
                 "Batch operations list cannot be empty".to_string(),
             ));
         }

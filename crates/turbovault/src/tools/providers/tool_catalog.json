@@ -6,15 +6,20 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Vault Context"
     },
-    "description": "Get complete vault context (vaults, stats, capabilities, markdown dialect) in a single discovery call",
+    "description": "Start here. In one call: the active vault and every registered vault, the active vault's note and link counts and health score, the markdown dialect it uses, and the tools grouped by task. If no vault is active, it says how to add one.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "get_vault_context"
+    "name": "get_vault_context",
+    "title": "Get Vault Context"
   },
   {
     "_meta": {
@@ -23,14 +28,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Read Note"
     },
-    "description": "Read markdown content of a note from active vault, either whole or a selected part",
+    "description": "Read a note's markdown, whole or in part. A whole read also returns its `hash`, which write_note, edit_note and the other write tools take as expected_hash so a change made since is not overwritten. Use at most one selector (head_lines, tail_lines, or the section ones); a partial read returns no hash.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "head_lines": {
+          "description": "Return only the first this many lines.",
           "format": "uint",
           "minimum": 0,
           "type": [
@@ -39,12 +49,14 @@
           ]
         },
         "heading_equals": {
+          "description": "Return the section under the heading with exactly this text, without its `#` markers, such as `Next steps`. Case-sensitive.",
           "type": [
             "string",
             "null"
           ]
         },
         "heading_level": {
+          "description": "Return sections that start at headings of this level, 1 to 6. Combine with heading_equals or last_sections to narrow them.",
           "format": "uint8",
           "maximum": 255,
           "minimum": 0,
@@ -54,6 +66,7 @@
           ]
         },
         "last_sections": {
+          "description": "Return only the last this many of the selected sections, such as the latest entries of a log.",
           "format": "uint",
           "minimum": 0,
           "type": [
@@ -62,9 +75,11 @@
           ]
         },
         "path": {
+          "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
           "type": "string"
         },
         "tail_lines": {
+          "description": "Return only the last this many lines.",
           "format": "uint",
           "minimum": 0,
           "type": [
@@ -78,7 +93,8 @@
       ],
       "type": "object"
     },
-    "name": "read_note"
+    "name": "read_note",
+    "title": "Read Note"
   },
   {
     "_meta": {
@@ -87,35 +103,44 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Write Note"
     },
-    "description": "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash (or expected_hash=\"blind\" for an intentional blind overwrite). Git-backed vaults commit the mutation atomically.",
+    "description": "Create a note, replace one, or add text to its start or end. Replacing an existing note needs its expected_hash from read_note, so a change made since isn't lost; creating needs none. For small changes inside a note, edit_note is safer. On a Git-backed vault the write is one commit.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "description": "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path.",
           "type": [
             "string",
             "null"
           ]
         },
         "content": {
+          "description": "The markdown to write, frontmatter included if the note has any.",
           "type": "string"
         },
         "expected_hash": {
+          "description": "The note's `hash` from your last read_note. Required to overwrite an existing note, and the write is refused if the note changed since. `blind` overwrites without checking; `absent` insists the note doesn't exist yet.",
           "type": [
             "string",
             "null"
           ]
         },
         "mode": {
+          "description": "`overwrite` (default) writes the whole note; `append` and `prepend` add the content at the end or start of an existing note.",
           "type": [
             "string",
             "null"
           ]
         },
         "path": {
+          "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`. Missing folders are created.",
           "type": "string"
         }
       },
@@ -125,7 +150,8 @@
       ],
       "type": "object"
     },
-    "name": "write_note"
+    "name": "write_note",
+    "title": "Write Note"
   },
   {
     "_meta": {
@@ -134,35 +160,44 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Edit Note"
     },
-    "description": "Apply targeted edits using SEARCH/REPLACE blocks (safer than full overwrite)",
+    "description": "Change parts of a note with SEARCH/REPLACE blocks, leaving the rest as it is. Safer than write_note for small changes, since only the matched text changes. Each SEARCH text must match once in the note; close matches (whitespace, indentation) are accepted and reported as warnings.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "description": "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path.",
           "type": [
             "string",
             "null"
           ]
         },
         "dry_run": {
+          "description": "Report what the edit would change without writing it. Default false.",
           "type": [
             "boolean",
             "null"
           ]
         },
         "edits": {
+          "description": "One or more blocks of the form `<<<<<<< SEARCH`, the exact text to find, `=======`, the text to put instead, `>>>>>>> REPLACE`, each marker on its own line. To edit text containing a `=======` line, make all three markers 8 or more characters long.",
           "type": "string"
         },
         "expected_hash": {
+          "description": "The note's `hash` from your last read_note; the edit is refused if the note changed since. Omit to edit whatever is there now.",
           "type": [
             "string",
             "null"
           ]
         },
         "path": {
+          "description": "Vault-relative path of the note, including the extension, such as `projects/Plan.md`.",
           "type": "string"
         }
       },
@@ -172,7 +207,8 @@
       ],
       "type": "object"
     },
-    "name": "edit_note"
+    "name": "edit_note",
+    "title": "Edit Note"
   },
   {
     "_meta": {
@@ -182,41 +218,51 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Delete Note"
     },
-    "description": "Delete a note with confirmation, concurrency protection, and backlink safety. By default refuses when inbound links exist; use on_backlinks='rewrite-stale-callout' for an atomic delete+rewrite, or force=true to leave broken links.",
+    "description": "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_backlinks shows what links to it.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "description": "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path.",
           "type": [
             "string",
             "null"
           ]
         },
         "confirm_path": {
+          "description": "The same path again, to confirm the deletion.",
           "type": "string"
         },
         "expected_hash": {
+          "description": "The note's `hash` from your last read_note; the delete is refused if the note changed since. Omit to delete whatever is there now.",
           "type": [
             "string",
             "null"
           ]
         },
         "force": {
+          "description": "Delete even when other notes link to it, leaving their links broken. Default false on a Git-backed vault, true on a plain-folder vault.",
           "type": [
             "boolean",
             "null"
           ]
         },
         "on_backlinks": {
+          "description": "`rewrite-stale-callout` to strike through the links to it in other notes, as part of the same delete.",
           "type": [
             "string",
             "null"
           ]
         },
         "path": {
+          "description": "Vault-relative path of the note, including the extension, such as `drafts/Old.md`.",
           "type": "string"
         }
       },
@@ -226,7 +272,8 @@
       ],
       "type": "object"
     },
-    "name": "delete_note"
+    "name": "delete_note",
+    "title": "Delete Note"
   },
   {
     "_meta": {
@@ -235,38 +282,48 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Move Note"
     },
-    "description": "Move or rename a note. `expected_hash` guards the SOURCE, `dest_expected_hash` the DESTINATION (both accept a hash or a sentinel: \"absent\"|\"exists\"|\"blind\"; dest omitted = \"absent\", the no-clobber guard). Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation.",
+    "description": "Move or rename a note. Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "description": "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the paths.",
           "type": [
             "string",
             "null"
           ]
         },
         "dest_expected_hash": {
+          "description": "What must be at the destination. Default `absent`, so an existing note is never replaced; a note's `hash` allows replacing that exact version, and `blind` replaces anything.",
           "type": [
             "string",
             "null"
           ]
         },
         "expected_hash": {
+          "description": "The note's `hash` from your last read_note; the move is refused if it changed since. Omit to move whatever is there now.",
           "type": [
             "string",
             "null"
           ]
         },
         "from": {
+          "description": "Vault-relative path of the note to move, including the extension, such as `inbox/Plan.md`.",
           "type": "string"
         },
         "to": {
+          "description": "Vault-relative path to move it to, including the extension, such as `projects/Plan.md`. Missing folders are created.",
           "type": "string"
         },
         "update_backlinks": {
+          "description": "Rewrite links to the note in other notes so they follow it. Default true on a Git-backed vault, false on a plain-folder vault.",
           "type": [
             "boolean",
             "null"
@@ -279,7 +336,8 @@
       ],
       "type": "object"
     },
-    "name": "move_note"
+    "name": "move_note",
+    "title": "Move Note"
   },
   {
     "_meta": {
@@ -1042,15 +1100,20 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Templates"
     },
-    "description": "List all available note templates in the active vault",
+    "description": "List the note templates create_from_template can use, with each one's id, name and fields. get_template shows one in detail.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "list_templates"
+    "name": "list_templates",
+    "title": "List Templates"
   },
   {
     "_meta": {
@@ -1060,14 +1123,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Template"
     },
-    "description": "Get detailed information about a specific template including fields and preview",
+    "description": "Show one template: its fields (which are required, their types and defaults) and the note it produces. Use it to fill `fields` for create_from_template.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "template_id": {
+          "description": "The template's id, as list_templates shows it.",
           "type": "string"
         }
       },
@@ -1076,7 +1144,8 @@
       ],
       "type": "object"
     },
-    "name": "get_template"
+    "name": "get_template",
+    "title": "Get Template"
   },
   {
     "_meta": {
@@ -1086,32 +1155,41 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create Note from Template"
     },
-    "description": "Create a new note from a template with field substitution and frontmatter",
+    "description": "Create a note from a template, filling in its fields and recording the template in the note's frontmatter. Refuses to replace an existing note unless expected_hash says so.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "description": "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived.",
           "type": [
             "string",
             "null"
           ]
         },
         "expected_hash": {
+          "description": "Default `absent`, so an existing note is never replaced. Pass the existing note's `hash` from read_note to replace that version, or `blind` to replace whatever is there.",
           "type": [
             "string",
             "null"
           ]
         },
         "fields": {
+          "description": "The field values as a JSON object string, such as `{\"title\": \"Weekly sync\", \"date\": \"2026-10-13\"}`. get_template lists the fields.",
           "type": "string"
         },
         "file_path": {
+          "description": "Vault-relative path for the new note, including the extension, such as `meetings/2026-10-13.md`.",
           "type": "string"
         },
         "template_id": {
+          "description": "The template's id, as list_templates shows it.",
           "type": "string"
         }
       },
@@ -1122,7 +1200,8 @@
       ],
       "type": "object"
     },
-    "name": "create_from_template"
+    "name": "create_from_template",
+    "title": "Create Note from Template"
   },
   {
     "_meta": {
@@ -1132,14 +1211,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Find Notes from Template"
     },
-    "description": "Find all notes created from a specific template via frontmatter tracking",
+    "description": "List the notes created from a template, found by the template id create_from_template records in their frontmatter.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "template_id": {
+          "description": "The template's id, as list_templates shows it.",
           "type": "string"
         }
       },
@@ -1148,7 +1232,8 @@
       ],
       "type": "object"
     },
-    "name": "find_notes_from_template"
+    "name": "find_notes_from_template",
+    "title": "Find Notes from Template"
   },
   {
     "_meta": {
@@ -1157,31 +1242,43 @@
         "admin"
       ]
     },
-    "description": "Create and register a new Obsidian vault at the specified filesystem path with an optional template. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Create Vault"
+    },
+    "description": "Create a new vault folder, optionally from a starter template, and register it. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "backend_opts": {
           "additionalProperties": true,
+          "description": "Settings for the `git` backend: `branch`, `author` {name, email}, `merge_strategy` (`merge-commit` or `fast-forward`), `include_ignored`, `require_commit_message`.",
           "type": [
             "object",
             "null"
           ]
         },
         "name": {
+          "description": "A short name to refer to the vault by, without spaces, at most 64 characters, such as `research`.",
           "type": "string"
         },
         "path": {
+          "description": "Absolute path of the folder to create, such as `/Users/me/Documents/Research`. `~` is expanded.",
           "type": "string"
         },
         "template": {
+          "description": "Starter layout: `default`, `research` or `team`. Omit for an empty vault.",
           "type": [
             "string",
             "null"
           ]
         },
         "write_backend": {
+          "description": "How writes land: `direct` (default) writes files; `git` commits each change.",
           "type": [
             "string",
             "null"
@@ -1194,7 +1291,8 @@
       ],
       "type": "object"
     },
-    "name": "create_vault"
+    "name": "create_vault",
+    "title": "Create Vault"
   },
   {
     "_meta": {
@@ -1203,25 +1301,36 @@
         "admin"
       ]
     },
-    "description": "Register an existing Obsidian vault with the MCP server and auto-initialize. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Add Vault"
+    },
+    "description": "Register an existing vault folder with the server and index it so it's ready to use. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots).",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "backend_opts": {
           "additionalProperties": true,
+          "description": "Settings for the `git` backend: `branch`, `author` {name, email}, `merge_strategy` (`merge-commit` or `fast-forward`), `include_ignored`, `require_commit_message`.",
           "type": [
             "object",
             "null"
           ]
         },
         "name": {
+          "description": "A short name to refer to the vault by, without spaces, at most 64 characters, such as `notes`.",
           "type": "string"
         },
         "path": {
+          "description": "Absolute path of the existing vault folder, such as `/Users/me/Documents/Notes`. `~` is expanded.",
           "type": "string"
         },
         "write_backend": {
+          "description": "How writes land: `direct` (default) writes files; `git` commits each change.",
           "type": [
             "string",
             "null"
@@ -1234,7 +1343,8 @@
       ],
       "type": "object"
     },
-    "name": "add_vault"
+    "name": "add_vault",
+    "title": "Add Vault"
   },
   {
     "_meta": {
@@ -1243,12 +1353,20 @@
         "admin"
       ]
     },
-    "description": "Unregister a vault from the MCP server (does NOT delete files)",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Remove Vault"
+    },
+    "description": "Unregister a vault from the server. Its files are left untouched.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "name": {
+          "description": "Name of the vault to unregister, as list_vaults shows it.",
           "type": "string"
         }
       },
@@ -1257,7 +1375,8 @@
       ],
       "type": "object"
     },
-    "name": "remove_vault"
+    "name": "remove_vault",
+    "title": "Remove Vault"
   },
   {
     "_meta": {
@@ -1267,15 +1386,20 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Vaults"
     },
-    "description": "List all vaults registered with the MCP server",
+    "description": "List the vaults registered with the server: each one's name, path, write backend and whether it's the active vault.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "list_vaults"
+    "name": "list_vaults",
+    "title": "List Vaults"
   },
   {
     "_meta": {
@@ -1285,14 +1409,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Vault Config"
     },
-    "description": "Get detailed configuration for a specific vault",
+    "description": "Show one vault's full configuration: path, write backend and its settings, excluded paths and limits.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "name": {
+          "description": "Name of the vault, as list_vaults shows it.",
           "type": "string"
         }
       },
@@ -1301,7 +1430,8 @@
       ],
       "type": "object"
     },
-    "name": "get_vault_config"
+    "name": "get_vault_config",
+    "title": "Get Vault Config"
   },
   {
     "_meta": {
@@ -1310,12 +1440,20 @@
         "admin"
       ]
     },
-    "description": "Switch the active vault for subsequent operations",
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Set Active Vault"
+    },
+    "description": "Make a registered vault the active one. Every note, search and graph tool works on the active vault.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "name": {
+          "description": "Name of the vault to make active, as list_vaults shows it.",
           "type": "string"
         }
       },
@@ -1324,7 +1462,8 @@
       ],
       "type": "object"
     },
-    "name": "set_active_vault"
+    "name": "set_active_vault",
+    "title": "Set Active Vault"
   },
   {
     "_meta": {
@@ -1334,15 +1473,20 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Get Active Vault"
     },
-    "description": "Get the name of the currently active vault",
+    "description": "Name the active vault, the one the note, search and graph tools work on.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "get_active_vault"
+    "name": "get_active_vault",
+    "title": "Get Active Vault"
   },
   {
     "_meta": {
@@ -1352,9 +1496,13 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Batch Execute"
     },
-    "description": "Execute multiple file operations. With write_backend=git, the complete batch is one atomic commit with per-path CAS preconditions: every operation applies or none do.",
+    "description": "Run several note operations (create, write, edit, delete, move, frontmatter and tag changes) in one call. With write_backend=git, the batch is one atomic commit: every operation applies or none do. On a plain-folder vault they apply in order, and one that fails leaves the earlier ones applied; the result says which.",
     "inputSchema": {
       "$defs": {
         "BatchOperation": {
@@ -1654,12 +1802,14 @@
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "description": "Commit message for the batch on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the operations.",
           "type": [
             "string",
             "null"
           ]
         },
         "operations": {
+          "description": "The operations, in order. Each is an object with `type` (`CreateNote`, `WriteNote`, `EditNote`, `DeleteNote`, `MoveNote`, `UpdateLinks`, `UpdateFrontmatter`, `ManageTags` or `CreateFromTemplate`) and that operation's fields, which mirror the single-note tools.",
           "items": {
             "$ref": "#/$defs/BatchOperation"
           },
@@ -1671,7 +1821,8 @@
       ],
       "type": "object"
     },
-    "name": "batch_execute"
+    "name": "batch_execute",
+    "title": "Batch Execute"
   },
   {
     "_meta": {
@@ -1681,14 +1832,19 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Begin Fanout"
     },
-    "description": "Open an isolated Git worktree for parallel agent writes. Fanout provides isolation, while batch_execute provides all-or-nothing multi-file atomicity.",
+    "description": "Open a private Git worktree of the active vault, registered as its own vault, so a long piece of work can be written there without touching the vault until commit_fanout merges it back (or abandon_fanout drops it). Switch to it with set_active_vault. Git-backed vaults only; for a few files at once, batch_execute is simpler.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "merge_strategy": {
+          "description": "Checked now, but the merge uses the merge_strategy given to commit_fanout: `merge-commit` or `fast-forward`.",
           "type": [
             "string",
             "null"
@@ -1697,7 +1853,8 @@
       },
       "type": "object"
     },
-    "name": "begin_fanout"
+    "name": "begin_fanout",
+    "title": "Begin Fanout"
   },
   {
     "_meta": {
@@ -1707,20 +1864,26 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Commit Fanout"
     },
-    "description": "Merge the active fanout back into its base vault and clean up the scratch worktree.",
+    "description": "Merge the active fanout's work back into its base vault, then remove the worktree and unregister it. The worktree is removed even if the merge fails. Works from the base vault or the fanout itself.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "commit_message": {
+          "description": "Message for the merge commit. A message naming the fanout is used when omitted.",
           "type": [
             "string",
             "null"
           ]
         },
         "merge_strategy": {
+          "description": "`merge-commit` records a merge commit; `fast-forward` moves the base branch to the fanout's tip and fails if the base moved meanwhile. Default the vault's git.merge_strategy, else `merge-commit`.",
           "type": [
             "string",
             "null"
@@ -1729,7 +1892,8 @@
       },
       "type": "object"
     },
-    "name": "commit_fanout"
+    "name": "commit_fanout",
+    "title": "Commit Fanout"
   },
   {
     "_meta": {
@@ -1739,15 +1903,20 @@
       ]
     },
     "annotations": {
-      "destructiveHint": true
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Abandon Fanout"
     },
-    "description": "Discard the active fanout and remove its worktree without changing the base vault.",
+    "description": "Throw away the active fanout: remove its worktree and everything written there, leaving the base vault unchanged. Does nothing if no fanout is active.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "abandon_fanout"
+    "name": "abandon_fanout",
+    "title": "Abandon Fanout"
   },
   {
     "_meta": {
@@ -1757,14 +1926,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "List Orphan Fanouts"
     },
-    "description": "List orphan fanout worktrees left by interrupted server sessions.",
+    "description": "List fanout worktrees left behind by a server session that ended before committing or abandoning them.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "vault": {
+          "description": "Only this vault's orphans, by name. Omit to check every Git-backed vault.",
           "type": [
             "string",
             "null"
@@ -1773,7 +1947,8 @@
       },
       "type": "object"
     },
-    "name": "list_orphan_fanouts"
+    "name": "list_orphan_fanouts",
+    "title": "List Orphan Fanouts"
   },
   {
     "_meta": {
@@ -1783,14 +1958,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Export Health Report"
     },
-    "description": "Export vault health analysis as structured data",
+    "description": "The vault's link-health report (score, counts, broken links, orphans) as one JSON or CSV document in `content`, to save or hand to another tool. To act on the findings, the get_* graph tools return them as data.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "format": {
+          "description": "`json` or `csv`.",
           "type": "string"
         }
       },
@@ -1799,7 +1979,8 @@
       ],
       "type": "object"
     },
-    "name": "export_health_report"
+    "name": "export_health_report",
+    "title": "Export Health Report"
   },
   {
     "_meta": {
@@ -1809,14 +1990,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Export Broken Links"
     },
-    "description": "Export broken links report as structured data",
+    "description": "Every broken link in the vault as one JSON or CSV document in `content`, to save or share. get_broken_links returns them page by page as data.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "format": {
+          "description": "`json` or `csv`.",
           "type": "string"
         }
       },
@@ -1825,7 +2011,8 @@
       ],
       "type": "object"
     },
-    "name": "export_broken_links"
+    "name": "export_broken_links",
+    "title": "Export Broken Links"
   },
   {
     "_meta": {
@@ -1835,14 +2022,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Export Vault Statistics"
     },
-    "description": "Export comprehensive vault statistics as structured data",
+    "description": "Vault statistics (note, link, orphan and word counts, and averages per note) as one JSON or CSV document in `content`, to save or share.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "format": {
+          "description": "`json` or `csv`.",
           "type": "string"
         }
       },
@@ -1851,7 +2043,8 @@
       ],
       "type": "object"
     },
-    "name": "export_vault_stats"
+    "name": "export_vault_stats",
+    "title": "Export Vault Statistics"
   },
   {
     "_meta": {
@@ -1861,14 +2054,19 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "Export Analysis Report"
     },
-    "description": "Export comprehensive vault analysis combining health, stats, links, and clusters",
+    "description": "A combined analysis report (health, statistics, links and clusters) as one JSON or CSV document in `content`. The largest export; use it for a full snapshot to save.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "format": {
+          "description": "`json` or `csv`.",
           "type": "string"
         }
       },
@@ -1877,7 +2075,8 @@
       ],
       "type": "object"
     },
-    "name": "export_analysis_report"
+    "name": "export_analysis_report",
+    "title": "Export Analysis Report"
   },
   {
     "_meta": {
@@ -2316,15 +2515,20 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "OFM Syntax Guide"
     },
-    "description": "Get Obsidian Flavored Markdown syntax guide for the OFM syntax TurboVault parses, classifies, or preserves",
+    "description": "The full guide to Obsidian Flavored Markdown as TurboVault reads it: links, embeds, callouts, frontmatter, tags and conventions, with what each is for. Long; get_ofm_quick_ref is the short version. The same text is the resource obsidian://syntax/complete-guide.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "get_ofm_syntax_guide"
+    "name": "get_ofm_syntax_guide",
+    "title": "OFM Syntax Guide"
   },
   {
     "_meta": {
@@ -2333,15 +2537,20 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "OFM Quick Reference"
     },
-    "description": "Get condensed OFM cheat sheet with common patterns and best practices",
+    "description": "A one-page cheat sheet of Obsidian Flavored Markdown syntax: wikilinks, formatting, tasks, callouts, tables, embeds, frontmatter and block references. Read it before writing notes. The same text is the resource obsidian://syntax/quick-ref.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "get_ofm_quick_ref"
+    "name": "get_ofm_quick_ref",
+    "title": "OFM Quick Reference"
   },
   {
     "_meta": {
@@ -2350,15 +2559,20 @@
       ]
     },
     "annotations": {
-      "readOnlyHint": true
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "title": "OFM Example Note"
     },
-    "description": "Get comprehensive example note demonstrating ALL OFM features with real-world patterns",
+    "description": "An example note that uses every Obsidian Flavored Markdown feature, to copy patterns from. The same text is the resource obsidian://examples/sample-note.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "type": "object"
     },
-    "name": "get_ofm_examples"
+    "name": "get_ofm_examples",
+    "title": "OFM Example Note"
   },
   {
     "_meta": {
@@ -2938,22 +3152,13 @@
       "readOnlyHint": true,
       "title": "Find Duplicates"
     },
-    "description": "Scan the whole vault for pairs of notes with nearly the same content, most similar first, each with its similarity score. Slow on a large vault; compare_notes checks one pair.",
+    "description": "Scan the whole vault for pairs of notes with nearly the same content, each with its similarity score, most similar first. Slow on a large vault; compare_notes checks one pair.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "limit": {
-          "description": "Most pairs to return. Default 20, maximum 500.",
-          "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "offset": {
-          "description": "How many of the most similar pairs to skip, for the next page. Default 0, at most 1000.",
+          "description": "Stop after finding this many pairs. Default 20, maximum 500. The scan ends early, so it can't be paged; raise the limit to see more.",
           "format": "uint",
           "minimum": 0,
           "type": [

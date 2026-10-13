@@ -21,15 +21,19 @@ impl Deref for ContextProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl ContextProvider {
     // ==================== Vault Context (LLM Discovery) ====================
 
     /// Get comprehensive vault context in a single call (LLMX: replaces 4+ separate calls)
     #[tool(
-        description = "Get complete vault context (vaults, stats, capabilities, markdown dialect) in a single discovery call",
+        description = "Start here. In one call: the active vault and every registered vault, the active vault's note and link counts and health score, the markdown dialect it uses, and the tools grouped by task. If no vault is active, it says how to add one.",
+        title = "Get Vault Context",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn get_vault_context(&self) -> McpResult<serde_json::Value> {
         let active_vault = self.multi_vault_mgr.get_active_vault().await;

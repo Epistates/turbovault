@@ -21,7 +21,7 @@ impl Deref for AuditProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl AuditProvider {
     // ─── AUDIT TOOLS ─────────────────────────────────────────────────
 

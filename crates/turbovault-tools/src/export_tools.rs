@@ -54,7 +54,7 @@ impl ExportTools {
         match format {
             "json" => HealthReportExporter::to_json(&report),
             "csv" => HealthReportExporter::to_csv(&report),
-            _ => Err(Error::config_error(
+            _ => Err(Error::validation_error(
                 "Invalid export format. Use 'json' or 'csv'".to_string(),
             )),
         }
@@ -68,7 +68,7 @@ impl ExportTools {
         match format {
             "json" => BrokenLinksExporter::to_json(&links),
             "csv" => BrokenLinksExporter::to_csv(&links),
-            _ => Err(Error::config_error(
+            _ => Err(Error::validation_error(
                 "Invalid export format. Use 'json' or 'csv'".to_string(),
             )),
         }
@@ -119,7 +119,7 @@ impl ExportTools {
         match format {
             "json" => VaultStatsExporter::to_json(&stats_record),
             "csv" => VaultStatsExporter::to_csv(&stats_record),
-            _ => Err(Error::config_error(
+            _ => Err(Error::validation_error(
                 "Invalid export format. Use 'json' or 'csv'".to_string(),
             )),
         }
@@ -168,7 +168,7 @@ impl ExportTools {
         match format {
             "json" => AnalysisReportExporter::to_json(&analysis_report),
             "csv" => AnalysisReportExporter::to_csv(&analysis_report),
-            _ => Err(Error::config_error(
+            _ => Err(Error::validation_error(
                 "Invalid export format. Use 'json' or 'csv'".to_string(),
             )),
         }

@@ -34,23 +34,39 @@ struct PartialReadPayload<'a> {
     slice: SliceResult,
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl FileProvider {
     // ==================== File Operations ====================
 
     /// Read the contents of a note, optionally only part of it
     #[tool(
-        description = "Read markdown content of a note from active vault, either whole or a selected part",
+        description = "Read a note's markdown, whole or in part. A whole read also returns its `hash`, which write_note, edit_note and the other write tools take as expected_hash so a change made since is not overwritten. Use at most one selector (head_lines, tail_lines, or the section ones); a partial read returns no hash.",
+        title = "Read Note",
         tags = ["read"],
         read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
     )]
     async fn read_note(
         &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
         path: String,
-        head_lines: Option<usize>,
-        tail_lines: Option<usize>,
+        #[description("Return only the first this many lines.")] head_lines: Option<usize>,
+        #[description("Return only the last this many lines.")] tail_lines: Option<usize>,
+        #[description(
+            "Return sections that start at headings of this level, 1 to 6. Combine with heading_equals or last_sections to narrow them."
+        )]
         heading_level: Option<u8>,
+        #[description(
+            "Return the section under the heading with exactly this text, without its `#` markers, such as `Next steps`. Case-sensitive."
+        )]
         heading_equals: Option<String>,
+        #[description(
+            "Return only the last this many of the selected sections, such as the latest entries of a log."
+        )]
         last_sections: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -73,7 +89,7 @@ impl FileProvider {
         };
         // Contradictory selectors are the caller's mistake, not a server fault.
         let slice =
-            slice_content(&content, &spec).map_err(|e| McpError::invalid_request(e.to_string()))?;
+            slice_content(&content, &spec).map_err(|e| McpError::invalid_params(e.to_string()))?;
 
         // A partial read deliberately returns no `hash`. That token asserts the
         // caller has seen this file's current state, which is false when only
@@ -112,16 +128,33 @@ impl FileProvider {
 
     /// Write or update a note with optional mode (overwrite, append, prepend)
     #[tool(
-        description = "Write a note with overwrite/append/prepend mode and optimistic concurrency. Existing overwrite targets require expected_hash (or expected_hash=\"blind\" for an intentional blind overwrite). Git-backed vaults commit the mutation atomically.",
+        description = "Create a note, replace one, or add text to its start or end. Replacing an existing note needs its expected_hash from read_note, so a change made since isn't lost; creating needs none. For small changes inside a note, edit_note is safer. On a Git-backed vault the write is one commit.",
+        title = "Write Note",
         tags = ["write"],
+        read_only = false,
         destructive = true,
+        idempotent = false,
+        open_world = false,
     )]
     async fn write_note(
         &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`. Missing folders are created."
+        )]
         path: String,
+        #[description("The markdown to write, frontmatter included if the note has any.")]
         content: String,
+        #[description(
+            "`overwrite` (default) writes the whole note; `append` and `prepend` add the content at the end or start of an existing note."
+        )]
         mode: Option<String>,
+        #[description(
+            "The note's `hash` from your last read_note. Required to overwrite an existing note, and the write is refused if the note changed since. `blind` overwrites without checking; `absent` insists the note doesn't exist yet."
+        )]
         expected_hash: Option<String>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let write_mode = WriteMode::from_str_opt(mode.as_deref()).map_err(to_mcp_error)?;
@@ -187,16 +220,33 @@ impl FileProvider {
 
     /// Edit note using SEARCH/REPLACE blocks
     #[tool(
-        description = "Apply targeted edits using SEARCH/REPLACE blocks (safer than full overwrite)",
+        description = "Change parts of a note with SEARCH/REPLACE blocks, leaving the rest as it is. Safer than write_note for small changes, since only the matched text changes. Each SEARCH text must match once in the note; close matches (whitespace, indentation) are accepted and reported as warnings.",
+        title = "Edit Note",
         tags = ["write"],
+        read_only = false,
         destructive = true,
+        idempotent = false,
+        open_world = false,
     )]
     async fn edit_note(
         &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
+        )]
         path: String,
+        #[description(
+            "One or more blocks of the form `<<<<<<< SEARCH`, the exact text to find, `=======`, the text to put instead, `>>>>>>> REPLACE`, each marker on its own line. To edit text containing a `=======` line, make all three markers 8 or more characters long."
+        )]
         edits: String,
+        #[description(
+            "The note's `hash` from your last read_note; the edit is refused if the note changed since. Omit to edit whatever is there now."
+        )]
         expected_hash: Option<String>,
+        #[description("Report what the edit would change without writing it. Default false.")]
         dry_run: Option<bool>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path."
+        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -232,22 +282,41 @@ impl FileProvider {
 
     /// Delete a note (confirmation-protected)
     #[tool(
-        description = "Delete a note with confirmation, concurrency protection, and backlink safety. By default refuses when inbound links exist; use on_backlinks='rewrite-stale-callout' for an atomic delete+rewrite, or force=true to leave broken links.",
+        description = "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_backlinks shows what links to it.",
+        title = "Delete Note",
         tags = ["write", "delete"],
+        read_only = false,
         destructive = true,
+        idempotent = true,
+        open_world = false,
     )]
     async fn delete_note(
         &self,
+        #[description(
+            "Vault-relative path of the note, including the extension, such as `drafts/Old.md`."
+        )]
         path: String,
-        confirm_path: String,
+        #[description("The same path again, to confirm the deletion.")] confirm_path: String,
+        #[description(
+            "The note's `hash` from your last read_note; the delete is refused if the note changed since. Omit to delete whatever is there now."
+        )]
         expected_hash: Option<String>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the path."
+        )]
         commit_message: Option<String>,
+        #[description(
+            "Delete even when other notes link to it, leaving their links broken. Default false on a Git-backed vault, true on a plain-folder vault."
+        )]
         force: Option<bool>,
+        #[description(
+            "`rewrite-stale-callout` to strike through the links to it in other notes, as part of the same delete."
+        )]
         on_backlinks: Option<String>,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirm_path must match path exactly
         if path != confirm_path {
-            return Err(McpError::invalid_request(format!(
+            return Err(McpError::invalid_params(format!(
                 "Confirmation failed: confirm_path '{}' does not match path '{}'. Both must be identical to proceed with deletion.",
                 confirm_path, path
             )));
@@ -283,7 +352,7 @@ impl FileProvider {
                 .await
                 .map_err(to_mcp_error)?
         } else {
-            return Err(McpError::invalid_request(format!(
+            return Err(McpError::invalid_params(format!(
                 "delete_note refused: '{path}' has {} inbound backlink(s): {}. Pass on_backlinks='rewrite-stale-callout' or force=true.",
                 backlinks.len(),
                 backlinks
@@ -315,17 +384,39 @@ impl FileProvider {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note. `expected_hash` guards the SOURCE, `dest_expected_hash` the DESTINATION (both accept a hash or a sentinel: \"absent\"|\"exists\"|\"blind\"; dest omitted = \"absent\", the no-clobber guard). Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation.",
+        description = "Move or rename a note. Git-backed vaults update inbound links (wikilinks and Markdown links) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
+        title = "Move Note",
         tags = ["write"],
+        read_only = false,
         destructive = true,
+        idempotent = true,
+        open_world = false,
     )]
     async fn move_note(
         &self,
+        #[description(
+            "Vault-relative path of the note to move, including the extension, such as `inbox/Plan.md`."
+        )]
         from: String,
+        #[description(
+            "Vault-relative path to move it to, including the extension, such as `projects/Plan.md`. Missing folders are created."
+        )]
         to: String,
+        #[description(
+            "The note's `hash` from your last read_note; the move is refused if it changed since. Omit to move whatever is there now."
+        )]
         expected_hash: Option<String>,
+        #[description(
+            "What must be at the destination. Default `absent`, so an existing note is never replaced; a note's `hash` allows replacing that exact version, and `blind` replaces anything."
+        )]
         dest_expected_hash: Option<String>,
+        #[description(
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the paths."
+        )]
         commit_message: Option<String>,
+        #[description(
+            "Rewrite links to the note in other notes so they follow it. Default true on a Git-backed vault, false on a plain-folder vault."
+        )]
         update_backlinks: Option<bool>,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;

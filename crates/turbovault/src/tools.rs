@@ -1319,7 +1319,12 @@ impl CoreToolHandler {
         self.multi_vault_mgr
             .get_vault_config(vault_name)
             .await
-            .map_err(|e| McpError::invalid_request(format!("no vault named {vault_name:?}: {e}")))
+            .map_err(|e| {
+                McpError::new(
+                    turbomcp_core::error::ErrorKind::ResourceNotFound,
+                    format!("no vault named {vault_name:?}: {e}. Use list_vaults to see the names"),
+                )
+            })
     }
 
     /// Helper to get active vault name
@@ -1384,7 +1389,7 @@ impl CoreToolHandler {
         match provided {
             Some(m) => Ok(Some(m)),
             None if self.active_vault_requires_commit_message().await => {
-                Err(McpError::invalid_request(
+                Err(McpError::invalid_params(
                     "this vault requires an explicit commit message (git.require_commit_message = true); pass a non-empty `commit_message` for this operation".to_string(),
                 ))
             }
@@ -1541,7 +1546,7 @@ impl CoreToolHandler {
         {
             let fanouts = self.active_fanouts.read().await;
             if let Some(record) = fanouts.get(name) {
-                return Err(McpError::invalid_request(format!(
+                return Err(McpError::invalid_params(format!(
                     "vault {name} has an active fanout (fanout_id={}); abandon_fanout first",
                     record.fanout_id
                 )));
@@ -1550,7 +1555,7 @@ impl CoreToolHandler {
                 .values()
                 .find(|record| record.fanout_vault_name == name)
             {
-                return Err(McpError::invalid_request(format!(
+                return Err(McpError::invalid_params(format!(
                     "vault {name} is a fanout worktree (fanout_id={}); abandon_fanout from the base vault first",
                     record.fanout_id
                 )));
@@ -1631,7 +1636,7 @@ impl CoreToolHandler {
             .await
             .map_err(|e| McpError::internal(format!("No active vault config: {}", e)))?;
         if cfg.write_backend == WriteBackend::Git {
-            return Err(McpError::invalid_request(format!(
+            return Err(McpError::unavailable(format!(
                 "{} is not wired for the git substrate (turbovault-8df). Use `git log` / `git revert` / `git show` from the vault directory directly — every substrate write is one commit with a clear subject. Audit ergonomics through MCP are a planned cutover deliverable; until then this tool returns nothing useful for write_backend=git.",
                 tool_name
             )));
