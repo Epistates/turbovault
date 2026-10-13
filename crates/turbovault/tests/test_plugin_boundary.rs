@@ -917,11 +917,14 @@ async fn plugins_contribute_namespaced_resources_and_prompts() {
         .list_prompts()
         .into_iter()
         .map(|prompt| prompt.name)
+        .filter(|name| name.starts_with("probe_"))
         .collect::<Vec<_>>();
-    assert_eq!(prompts, ["probe_review", "probe_boom"]);
+    assert_eq!(
+        prompts,
+        ["probe_review", "probe_boom"],
+        "plugin prompts follow the vault's own, namespaced"
+    );
 
-    // A server with no plugins advertises no prompts at all, so the capability
-    // has to follow the composed catalog rather than be hard-coded.
     let capabilities = harness.server.server_capabilities();
     assert!(capabilities.prompts.is_some());
     assert!(capabilities.resources.is_some());
@@ -961,10 +964,10 @@ async fn plugins_contribute_namespaced_resources_and_prompts() {
     );
 }
 
-/// A URI space that tracks the vault cannot be an enumerated list: TurboVault
-/// sends no `list_changed`, so a list a client cached at startup would go stale
-/// in silence. Templates are how that space stays reachable, which only works
-/// if a URI nothing listed still routes to its plugin.
+/// A plugin's URI space that tracks the vault cannot be an enumerated list: a
+/// plugin's listing is taken once, at assembly, so a list a client cached
+/// would go stale in silence. Templates are how that space stays reachable,
+/// which only works if a URI nothing listed still routes to its plugin.
 #[tokio::test]
 async fn plugin_resource_templates_route_without_being_enumerated() {
     let harness = Harness::new(PluginCapabilities::none()).await;
@@ -975,6 +978,7 @@ async fn plugin_resource_templates_route_without_being_enumerated() {
         templates
             .iter()
             .map(|template| template.uri_template.as_str())
+            .filter(|template| !template.starts_with("obsidian://"))
             .collect::<Vec<_>>(),
         ["probe://note/{path}"],
         "templates are namespaced like every other plugin primitive"

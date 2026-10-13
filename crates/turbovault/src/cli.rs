@@ -138,6 +138,30 @@ pub struct Args {
     #[arg(long, value_delimiter = ',', env = "TURBOVAULT_TRUSTED_PROXIES")]
     trusted_proxies: Vec<String>,
 
+    /// Export traces over OTLP to this collector endpoint, such as
+    /// `http://localhost:4317`. Off unless set.
+    #[arg(long, env = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    otlp_endpoint: Option<String>,
+
+    /// The service name traces and metrics are reported under.
+    #[arg(long, default_value = "turbovault", env = "OTEL_SERVICE_NAME")]
+    service_name: String,
+
+    /// Serve Prometheus metrics on this port, on 127.0.0.1 only. Off unless
+    /// set.
+    #[arg(long, env = "TURBOVAULT_METRICS_PORT")]
+    metrics_port: Option<u16>,
+
+    /// Don't ask the user before delete_note, a move_note that replaces a
+    /// note, or a forced rollback_note. By default TurboVault asks through
+    /// the client when the client supports elicitation.
+    #[arg(
+        long,
+        env = "TURBOVAULT_NO_CONFIRM_DESTRUCTIVE",
+        action = clap::ArgAction::SetTrue
+    )]
+    no_confirm_destructive: bool,
+
     /// Listen beyond loopback without authentication. Only for deployments
     /// that authenticate in front of TurboVault.
     #[arg(
@@ -267,14 +291,27 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // events and `log` records (bridged by tracing-log) both reach it. STDIO
     // must log JSON to stderr: stdout is the MCP channel. Network transports
     // log to stdout, as JSON or human-readable per --output-format.
-    let _observability_guard = TelemetryConfig::builder()
-        .service_name("turbovault")
+    let mut telemetry = TelemetryConfig::builder()
+        .service_name(&args.service_name)
         .service_version(env!("CARGO_PKG_VERSION"))
         .log_level(args.profile.log_filter())
         .json_logs(args.transport == "stdio" || output_format == OutputFormat::Json)
-        .stderr_output(args.transport == "stdio")
-        .build()
-        .init()?;
+        .stderr_output(args.transport == "stdio");
+    // Traces leave the process only when an endpoint is named, and metrics
+    // are served only when a port is, on loopback.
+    if let Some(endpoint) = &args.otlp_endpoint {
+        telemetry = telemetry.otlp_endpoint(endpoint);
+    }
+    if let Some(port) = args.metrics_port {
+        telemetry = telemetry.prometheus_port(port);
+    }
+    let _observability_guard = telemetry.build().init()?;
+    if let Some(endpoint) = &args.otlp_endpoint {
+        log::info!("Exporting traces over OTLP to {endpoint}");
+    }
+    if let Some(port) = args.metrics_port {
+        log::info!("Serving Prometheus metrics on http://127.0.0.1:{port}/metrics");
+    }
 
     log::info!("Turbo Vault MCP Server v{}", env!("CARGO_PKG_VERSION"));
     log::info!("Profile: {}", args.profile);
@@ -312,6 +349,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         ),
     }
     server.set_vault_root_policy(root_policy.clone());
+    server.set_confirm_destructive(!args.no_confirm_destructive);
 
     // Initialize persistent cache in the server
     if let Err(e) = server.init_cache().await {
@@ -1043,6 +1081,33 @@ mod tests {
         assert_eq!(args.hidden_tools, ["audit_stats"]);
         assert_eq!(args.disabled_tags, ["write", "delete"]);
         assert!(args.require_read_only_tools);
+    }
+
+    #[test]
+    fn parses_the_observability_and_confirmation_flags() {
+        let parsed = args(&[
+            "--otlp-endpoint",
+            "http://localhost:4317",
+            "--metrics-port",
+            "9464",
+            "--service-name",
+            "vault-prod",
+            "--no-confirm-destructive",
+        ]);
+        assert_eq!(
+            parsed.otlp_endpoint.as_deref(),
+            Some("http://localhost:4317")
+        );
+        assert_eq!(parsed.metrics_port, Some(9464));
+        assert_eq!(parsed.service_name, "vault-prod");
+        assert!(parsed.no_confirm_destructive);
+
+        let defaults = args(&[]);
+        assert_eq!(defaults.metrics_port, None);
+        assert!(
+            !defaults.no_confirm_destructive,
+            "confirmation is on by default"
+        );
     }
 
     /// The --vault shorthand's backend selection is a wire-visible name with no

@@ -46,7 +46,10 @@ impl BatchProvider {
             "Commit message for the batch on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived from the operations."
         )]
         commit_message: Option<String>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
+        let mut stages = Stages::new(ctx, 2);
+        stages.next("Checking the operations").await?;
         let vault_name = self.get_active_vault_name().await?;
         let manager = self.get_active_vault_manager().await?;
 
@@ -65,10 +68,14 @@ impl BatchProvider {
         // affected paths, which is not enough to tell a creation from a
         // deletion.
         let planned: Vec<VaultChange> = operations.iter().map(batch_operation_change).collect();
+        // The last point a cancellation can stop the batch: past here it
+        // applies, all of it on a Git-backed vault.
+        stages.next("Applying the operations").await?;
         let result = BatchTools::new(manager)
             .batch_execute(operations, &message)
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
 
         // Report only what landed. A git batch is all-or-nothing so every
         // record succeeds, but a legacy batch stops at the first failure with

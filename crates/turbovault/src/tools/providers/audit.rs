@@ -124,7 +124,7 @@ impl AuditProvider {
     }
 
     #[tool(
-        description = "Undo one operation from the audit trail: restore the note to its content before it, or remove a note it created. Refuses if the note changed since that operation, since the later change would be lost; check rollback_preview, then pass force to roll back anyway. A rollback is itself recorded, so it can be rolled back. Not available on Git-backed vaults.",
+        description = "Undo one operation from the audit trail: restore the note to its content before it, or remove a note it created. Refuses if the note changed since that operation, since the later change would be lost; check rollback_preview, then pass force to roll back anyway (a client that supports elicitation asks the user to confirm). A rollback is itself recorded, so it can be rolled back. Not available on Git-backed vaults.",
         title = "Roll Back Note",
         tags = ["write", "audit"],
         read_only = false,
@@ -140,10 +140,20 @@ impl AuditProvider {
             "Roll back even though the note changed since that operation, discarding the later change. Default false."
         )]
         force: Option<bool>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         self.refuse_audit_on_git_backend("rollback_note").await?;
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
+        if force == Some(true) {
+            self.confirm_destructive(
+                ctx,
+                format!(
+                    "Roll back operation `{operation_id}` in the vault `{vault_name}` even though the note changed since? The later changes will be lost."
+                ),
+            )
+            .await?;
+        }
         let audit_tools = self.get_audit_tools().await?;
         let result = audit_tools
             .rollback(&manager, &operation_id, force.unwrap_or(false))

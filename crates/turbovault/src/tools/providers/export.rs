@@ -46,14 +46,18 @@ impl ExportProvider {
     )]
     async fn export_health_report(
         &self,
+        ctx: &RequestContext,
         #[description("`json` or `csv`.")] format: String,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = ExportTools::new(manager);
+        let mut stages = Stages::new(ctx, 1);
+        stages.next("Analyzing the vault").await?;
         let report = tools
             .export_health_report(&format)
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
 
         let response = StandardResponse::new(
             vault_name,
@@ -81,14 +85,18 @@ impl ExportProvider {
     )]
     async fn export_broken_links(
         &self,
+        ctx: &RequestContext,
         #[description("`json` or `csv`.")] format: String,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = ExportTools::new(manager);
+        let mut stages = Stages::new(ctx, 1);
+        stages.next("Analyzing the vault").await?;
         let links = tools
             .export_broken_links(&format)
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
 
         let response = StandardResponse::new(
             vault_name,
@@ -116,14 +124,18 @@ impl ExportProvider {
     )]
     async fn export_vault_stats(
         &self,
+        ctx: &RequestContext,
         #[description("`json` or `csv`.")] format: String,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = ExportTools::new(manager);
+        let mut stages = Stages::new(ctx, 1);
+        stages.next("Analyzing the vault").await?;
         let stats = tools
             .export_vault_stats(&format)
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
 
         let response = StandardResponse::new(
             vault_name,
@@ -151,14 +163,18 @@ impl ExportProvider {
     )]
     async fn export_analysis_report(
         &self,
+        ctx: &RequestContext,
         #[description("`json` or `csv`.")] format: String,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = ExportTools::new(manager);
+        let mut stages = Stages::new(ctx, 1);
+        stages.next("Analyzing the vault").await?;
         let report = tools
             .export_analysis_report(&format)
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
 
         let response = StandardResponse::new(
             vault_name,

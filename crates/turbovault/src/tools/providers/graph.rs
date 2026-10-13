@@ -372,10 +372,13 @@ impl GraphProvider {
         open_world = false,
         output_schema = StandardResponse<HealthInfo>,
     )]
-    async fn full_health_analysis(&self) -> McpResult<serde_json::Value> {
+    async fn full_health_analysis(&self, ctx: &RequestContext) -> McpResult<serde_json::Value> {
+        let mut stages = Stages::new(ctx, 1);
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
+        stages.next("Analyzing the link graph").await?;
         let health = tools.full_health_analysis().await.map_err(to_mcp_error)?;
+        stages.finish().await;
 
         let mut response =
             StandardResponse::new(vault_name, "full_health_analysis", health.clone());
@@ -509,19 +512,24 @@ impl GraphProvider {
             "`detailed` (default) or `concise`. Concise leaves out `structure` (every folder and its note count, which grows with the vault) and `meta.alternatives`."
         )]
         response_format: Option<ResponseFormat>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         let concise = ResponseFormat::is_concise(response_format);
+        let mut stages = Stages::new(ctx, 3);
         let (vault_name, manager) = self.get_vault_pair().await?;
         let graph_tools = GraphTools::new(manager.clone());
         let analysis_tools = AnalysisTools::new(manager.clone());
 
-        // Get all data efficiently (parallelizable)
+        stages.next("Listing the vault's notes").await?;
         let files = manager.scan_vault().await.map_err(to_mcp_error)?;
+        stages.next("Analyzing links, hubs and dead ends").await?;
         let (health, hubs, dead_ends) = graph_tools.overview(10).await.map_err(to_mcp_error)?;
+        stages.next("Counting notes and links").await?;
         let stats = analysis_tools
             .get_vault_stats()
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
 
         // Organize files by folder
         let mut folders: BTreeMap<String, Vec<String>> = BTreeMap::new();

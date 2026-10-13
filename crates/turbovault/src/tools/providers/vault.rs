@@ -95,8 +95,11 @@ impl VaultProvider {
             "Settings for the `git` backend: `branch`, `author` {name, email}, `merge_strategy` (`merge-commit` or `fast-forward`), `include_ignored`, `require_commit_message`."
         )]
         backend_opts: Option<HashMap<String, serde_json::Value>>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
+        let mut stages = Stages::new(ctx, 1);
+        stages.next("Creating the vault").await?;
         let tools = self.lifecycle_tools();
         let vault_info = tools
             .create_vault(
@@ -108,6 +111,7 @@ impl VaultProvider {
             )
             .await
             .map_err(to_mcp_error)?;
+        stages.finish().await;
 
         let response = StandardResponse::new(name.clone(), "create_vault", vault_info)
             .with_next_step("set_active_vault")
@@ -145,8 +149,11 @@ impl VaultProvider {
             "Settings for the `git` backend: `branch`, `author` {name, email}, `merge_strategy` (`merge-commit` or `fast-forward`), `include_ignored`, `require_commit_message`."
         )]
         backend_opts: Option<HashMap<String, serde_json::Value>>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
+        let mut stages = Stages::new(ctx, 2);
+        stages.next("Registering the vault").await?;
         let tools = self.lifecycle_tools();
         let vault_info = tools
             .add_vault_from_path(&name, Path::new(&path), write_backend, backend_opts)
@@ -166,7 +173,10 @@ impl VaultProvider {
         // published — so an unwired manager published here would mean the
         // drainer / HEAD-ref listener never start and search-staleness never
         // closes for any git vault added at runtime (bite 3a, qae.5.3).
+        // Registered now, so a cancellation no longer stops the call.
+        stages.report("Scanning and indexing the notes").await;
         self.activate_vault_manager(&name).await?;
+        stages.finish().await;
 
         log::info!("Vault '{}' initialized and ready", name);
 

@@ -341,7 +341,7 @@ impl FileProvider {
 
     /// Delete a note (confirmation-protected)
     #[tool(
-        description = "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_backlinks shows what links to it.",
+        description = "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_backlinks shows what links to it. A client that supports elicitation asks the user to confirm first.",
         title = "Delete Note",
         tags = ["write", "delete"],
         read_only = false,
@@ -350,6 +350,9 @@ impl FileProvider {
         open_world = false,
         output_schema = StandardResponse<DeletedPayload>,
     )]
+    // Each argument is one of the tool's MCP parameters; the macro reads the
+    // input schema from this signature, and passes the request as `ctx`.
+    #[allow(clippy::too_many_arguments)]
     async fn delete_note(
         &self,
         #[description(
@@ -373,6 +376,7 @@ impl FileProvider {
             "`rewrite-stale-callout` to strike through the links to it in other notes, as part of the same delete."
         )]
         on_backlinks: Option<String>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         // Safety: confirm_path must match path exactly
         if path != confirm_path {
@@ -383,6 +387,11 @@ impl FileProvider {
         }
 
         let vault_name = self.get_active_vault_name().await?;
+        self.confirm_destructive(
+            ctx,
+            format!("Delete the note `{path}` from the vault `{vault_name}`?"),
+        )
+        .await?;
         let manager = self.get_active_vault_manager().await?;
         let is_git = self.active_vault_is_git().await?;
         let message = self
@@ -464,7 +473,7 @@ impl FileProvider {
 
     /// Move or rename a note
     #[tool(
-        description = "Move or rename a note. Git-backed vaults update inbound links (wikilinks, Markdown links and canvas references) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so. For attachments and other files, use move_file.",
+        description = "Move or rename a note. Git-backed vaults update inbound links (wikilinks, Markdown links and canvas references) atomically by default; set update_backlinks=false for a rename-only operation. A note already at the destination is never replaced unless dest_expected_hash says so, and then a client that supports elicitation asks the user to confirm. For attachments and other files, use move_file.",
         title = "Move Note",
         tags = ["write"],
         read_only = false,
@@ -473,6 +482,9 @@ impl FileProvider {
         open_world = false,
         output_schema = StandardResponse<MovedPayload>,
     )]
+    // Each argument is one of the tool's MCP parameters; the macro reads the
+    // input schema from this signature, and passes the request as `ctx`.
+    #[allow(clippy::too_many_arguments)]
     async fn move_note(
         &self,
         #[description(
@@ -499,9 +511,27 @@ impl FileProvider {
             "Rewrite links to the note in other notes so they follow it. Default true on a Git-backed vault, false on a plain-folder vault."
         )]
         update_backlinks: Option<bool>,
+        ctx: &RequestContext,
     ) -> McpResult<serde_json::Value> {
         let vault_name = self.get_active_vault_name().await?;
         let manager = self.get_active_vault_manager().await?;
+        // Moving onto a note that's there replaces it, which the caller asked
+        // for with dest_expected_hash; the user is asked too.
+        let replaces = dest_expected_hash
+            .as_deref()
+            .is_some_and(|token| token != "absent")
+            && manager
+                .resolve_path(std::path::Path::new(&to))
+                .is_ok_and(|resolved| resolved.exists());
+        if replaces {
+            self.confirm_destructive(
+                ctx,
+                format!(
+                    "Move `{from}` to `{to}` in the vault `{vault_name}`, replacing the note already at `{to}`?"
+                ),
+            )
+            .await?;
+        }
         let is_git = self.active_vault_is_git().await?;
         let message = self
             .resolve_commit_message(commit_message, || format!("move_note {from} -> {to}"))

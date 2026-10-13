@@ -55,9 +55,30 @@ export OBSIDIAN_VAULT_PATH=/path/to/vault
 # Logging level
 export RUST_LOG=info,TurboVault=debug
 
-# OpenTelemetry endpoint (if using OTLP export)
+# Export traces over OTLP (same as --otlp-endpoint); off unless set
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# Service name traces and metrics are reported under (same as --service-name)
+export OTEL_SERVICE_NAME=turbovault
+
+# Serve Prometheus metrics on 127.0.0.1:<port>/metrics (same as --metrics-port)
+export TURBOVAULT_METRICS_PORT=9464
+
+# Don't ask the user before destructive calls (same as --no-confirm-destructive)
+export TURBOVAULT_NO_CONFIRM_DESTRUCTIVE=true
 ```
+
+## Observability
+
+Each tool call is a `tool_call` span carrying the tool's name, the vault it answered from, its outcome (`ok`, `error` for a tool error, `failed` for a protocol error) and its duration in milliseconds. Spans carry no arguments and no note content. With `--otlp-endpoint` they are exported over OTLP, alongside the MCP framework's own request spans.
+
+With `--metrics-port`, Prometheus metrics are served on `http://127.0.0.1:<port>/metrics`, loopback only. Tool calls count toward `mcp_tool_calls_total` (labels `tool` and `status`) and `mcp_tool_duration_seconds` (label `tool`), next to the framework's request and connection metrics. To scrape from another host, put an authenticated proxy in front.
+
+There is no HTTP health endpoint. Check liveness with an MCP `ping` request, or a TCP connect to the HTTP transport's port.
+
+## Confirming destructive calls
+
+`delete_note`, a `move_note` that replaces the note at its destination (`dest_expected_hash` other than `absent`), and `rollback_note` with `force` ask the user to confirm first when the client supports form elicitation. Declining, cancelling or leaving the box unchecked stops the call with nothing changed. A client without elicitation support is never asked and the calls behave as their flags say. Start the server with `--no-confirm-destructive` to never ask.
 
 ## Configuration File
 
