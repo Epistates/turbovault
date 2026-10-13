@@ -3,79 +3,9 @@
 Reference for TurboVault's MCP tools. At runtime, `tools/list` is the
 authoritative catalog, including schemas and behavior annotations.
 
-## Tool Categories
+## Tools
 
-### File Operations (6 tools)
-- `read_note` - Read note content
-- `write_note` - Write/create note
-- `delete_note` - Delete note
-- `move_note` - Move/rename note
-- `copy_note` - Copy note
-- `list_files` - List vault files
-
-### Search & Discovery (5 tools)
-- `search` - Full-text search
-- `advanced_search` - Search with filters
-- `search_by_tags` - Search by tags
-- `find_related` - Find similar notes
-- `recommend_related` - Get recommendations
-
-### Link Analysis (4 tools)
-- `get_backlinks` - Find notes linking to this note
-- `get_forward_links` - Find notes this note links to
-- `find_related_notes` - Find notes within N hops
-- `search_files` - Filename search
-
-### Graph Analysis (7 tools)
-- `quick_health_check` - Fast health metrics
-- `full_health_analysis` - Comprehensive health report
-- `get_broken_links` - Find broken links with suggestions
-- `get_hub_notes` - Find highly connected notes
-- `get_dead_end_notes` - Find notes with no outgoing links
-- `detect_cycles` - Find circular references
-- `get_connected_components` - Find isolated clusters
-
-### Template System (4 tools)
-- `list_templates` - List available templates
-- `get_template` - Get template details
-- `create_from_template` - Create note from template
-- `find_notes_from_template` - Find notes created from template
-
-### Batch Operations (1 tool)
-- `batch_execute` - Execute validated operations sequentially; stops on first failure without rollback
-
-### Export & Reporting (4 tools)
-- `export_health_report` - Export health metrics
-- `export_broken_links` - Export broken links
-- `export_vault_stats` - Export vault statistics
-- `export_analysis_report` - Export comprehensive analysis
-
-### Validation Library (4 operations; not mounted over MCP)
-- `validate_note` - Validate single note
-- `validate_note_with_rules` - Validate with custom rules
-- `validate_vault` - Validate entire vault
-- `validate_vault_quick` - Validate a vault with a strict issue-count limit
-
-### Metadata Queries (2 tools)
-- `query_metadata` - Query frontmatter
-- `get_metadata_value` - Get specific metadata value
-
-### Relationship Analysis (3 tools)
-- `get_link_strength` - Calculate link strength between notes
-- `suggest_links` - Get link suggestions
-- `get_centrality_ranking` - Get importance rankings
-
-### Vault Lifecycle (7 tools)
-- `create_vault` - Create new vault
-- `add_vault` - Add existing vault
-- `list_vaults` - List all vaults
-- `get_active_vault` - Get current vault
-- `set_active_vault` - Switch vault
-- `remove_vault` - Remove vault
-- `get_vault_config` - Inspect a registered vault's configuration
-
-`VaultLifecycleTools::validate_vault` is also available through the Rust library,
-but is not mounted as an MCP tool.
+TurboVault serves 52 MCP tools; [tools.md](tools.md) lists them by category, and `tools/list` at runtime carries each one's schemas and annotations. Every vault-scoped tool takes an optional `vault` argument naming the vault to run against. Coming from 3.x, see [the 4.0 migration guide](../migration/4.0.md).
 
 ## Example Workflows
 
@@ -93,12 +23,12 @@ for result in results[:3]:
 ### Vault Health Analysis
 ```python
 # Quick health check
-health = quick_health_check()
+health = vault_health()
 
 if health.health_score < 70:
     # Detailed analysis
-    broken = get_broken_links()
-    orphans = get_dead_end_notes()
+    broken = graph_report(kind="broken_links")
+    orphans = graph_report(kind="dead_ends")
     # Generate recommendations...
 ```
 

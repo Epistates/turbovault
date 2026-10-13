@@ -93,7 +93,7 @@ tool_visibility:
 
   # Omit these tools from tools/list, but allow direct calls by exact name.
   hidden:
-    - full_health_analysis
+    - vault_health
     - explain_vault
 
   # Omit these tools and reject direct calls.
@@ -105,6 +105,10 @@ tool_visibility:
 ```
 
 The same rules can be supplied with comma-separated CLI/env overrides: `--allowed-tools` / `TURBOVAULT_ALLOWED_TOOLS`, `--hidden-tools` / `TURBOVAULT_HIDDEN_TOOLS`, `--disabled-tools` / `TURBOVAULT_DISABLED_TOOLS`, and `--require-read-only-tools` / `TURBOVAULT_REQUIRE_READ_ONLY_TOOLS`.
+
+By default `tools/list` shows the core tools and leaves out the advanced ones (`tool_visibility::ADVANCED_TOOLS`: audit and rollback, fanout, exports, OKF maintenance, quality and duplicate analysis, SQL, `move_file` and the like), which stay callable by name. `--show-advanced-tools` / `TURBOVAULT_SHOW_ADVANCED_TOOLS`, or `show_advanced_tools: true` under `tool_visibility`, lists them; an `allowed` list lists whatever it names.
+
+Every tool that works inside a vault takes an optional `vault` argument naming the registered vault the call runs against. It defaults to the active vault, and naming one doesn't change the active vault, so concurrent HTTP sessions can each work on their own.
 
 ## Security
 
@@ -121,7 +125,7 @@ security:
     required_scopes: [vault]
 ```
 
-**Vault registration.** `add_vault` and `create_vault` check every path. A filesystem root, the home directory and anything containing it, hidden directories under home (`~/.ssh`, `~/.config`), application data (`~/Library` apart from iCloud and cloud storage folders, `AppData`) and system directories are never accepted. With `allowed_vault_roots` set, only directories inside those roots are. Without it, any other directory is accepted on stdio, and runtime registration is off on network transports. Vaults from `--vault` and the config file's `vaults:` list are the operator's choice and are not restricted; vaults restored from the cache are held to the same rules as a new registration.
+**Vault registration.** `add_vault` checks every path, whether it registers a folder or creates one. A filesystem root, the home directory and anything containing it, hidden directories under home (`~/.ssh`, `~/.config`), application data (`~/Library` apart from iCloud and cloud storage folders, `AppData`) and system directories are never accepted. With `allowed_vault_roots` set, only directories inside those roots are. Without it, any other directory is accepted on stdio, and runtime registration is off on network transports. Vaults from `--vault` and the config file's `vaults:` list are the operator's choice and are not restricted; vaults restored from the cache are held to the same rules as a new registration.
 
 **Network exposure.** The HTTP transport listens beyond loopback only with authentication. WebSocket and TCP have no authentication, so they listen on loopback only. `--allow-unauthenticated-network` lifts both refusals for a deployment that authenticates in front of TurboVault.
 
@@ -149,6 +153,7 @@ mcp-obsidian [OPTIONS]
 | `--hidden-tools <NAMES>` | `TURBOVAULT_HIDDEN_TOOLS` | - | Comma-separated tools hidden from `tools/list` but callable |
 | `--disabled-tools <NAMES>` | `TURBOVAULT_DISABLED_TOOLS` | - | Comma-separated tools hidden and rejected |
 | `--require-read-only-tools` | `TURBOVAULT_REQUIRE_READ_ONLY_TOOLS` | `false` | Hide non-read-only tools |
+| `--show-advanced-tools` | `TURBOVAULT_SHOW_ADVANCED_TOOLS` | `false` | List the advanced tools too (they are callable either way) |
 | `--init` | - | `false` | Initialize vault on startup (scan files, build graph) |
 | `--allowed-vault-roots <DIRS>` | `TURBOVAULT_ALLOWED_VAULT_ROOTS` | - | Comma-separated directories runtime vault registration may point inside |
 | `--auth-mode <MODE>` | `TURBOVAULT_AUTH_MODE` | `none` | HTTP authentication: `none`, `bearer` or `jwt` |

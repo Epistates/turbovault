@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The tool surface is reworked for 4.0: 79 tools become 52, every vault-scoped tool takes an optional `vault`, and `tools/list` shows the core tools by default. [docs/migration/4.0.md](docs/migration/4.0.md) maps every old tool name to its replacement.
+
 ### Added
 
+- **`validate_vault` is a tool.** The 3.3.0 notes said to run it after upgrading, but no MCP tool exposed it. It checks one note or the whole vault for pre-1.9 `tags`, `aliases` and `cssclasses`, frontmatter that doesn't parse, broken links and malformed content, names the note and line of each issue with a suggested fix, filters by `min_severity` and pages.
+- **An optional `vault` argument on every vault-scoped tool**, naming the registered vault the call runs against. It defaults to the active vault, and naming one doesn't change the active vault, so concurrent HTTP sessions and stateless clients don't depend on one global active vault. An unknown name is refused with the names that are registered.
+- **`--show-advanced-tools`** (`TURBOVAULT_SHOW_ADVANCED_TOOLS`, `tool_visibility.show_advanced_tools`) lists the advanced tools that `tools/list` leaves out by default.
 - **Canvases:** `read_canvas` and `write_canvas` read and write Obsidian canvases (JSON Canvas 1.0). Writes are validated against the spec and keep Obsidian's own layout, and fields the spec doesn't define are preserved.
 - **Bases:** `query_base` runs an Obsidian base's filters, formulas, sort, grouping and limit over the vault's notes. A Bases function TurboVault doesn't evaluate is refused by name rather than guessed at.
 - **Tasks:** `query_tasks` finds tasks across the vault by status, due and scheduled dates, tag, folder, priority and text. It reads Tasks plugin emoji and Dataview fields.
@@ -34,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`tools/list` shows the 30 core tools by default.** The 22 advanced ones (audit and rollback, fanout, exports, OKF maintenance, quality and duplicate analysis, SQL, `move_file` and the like) stay callable by name and are listed with `--show-advanced-tools`; an `allowed` list lists whatever it names.
+- **No tool mixes reading and writing**, so every tool's read-only and destructive hints describe all of what it does: `manage_tags` adds or removes, and listing a note's tags is `get_notes_info` with `include_tags`.
+- **Response shapes that changed with the merges:** `list_vaults` returns `{active_vault, vaults, config}`, `graph_report` returns `{kind, items}` (hubs as `{path, connections}`), `compare_notes` adds `link_strength`, and `get_notes_info` returns requested frontmatter values (`null` for a missing key, which used to be an error) and tags.
 - **Dependencies refreshed.** `uuid` 1.28, and every package in the lockfile is at its latest compatible version, among them `hnsw_rs` 0.3.5, which no longer pulls in the unmaintained `bincode` 1.x, so its advisory ignore is gone. Every GitHub Action is at its latest release. The Scorecard action was pinned to a tag object, which Actions can't run, and is now pinned to its commit.
 - **Errors say what kind of failure they are.** `turbovault_core::Error` is `#[non_exhaustive]`, and gains `OperationNotAllowed` (a vault's `allowed_operations` refusing a change) and `IoAt` (an I/O error that keeps its path, which `Error::io_at` now makes for every kind but a missing file). `Error::path()` returns the path any error names. Bad arguments that were reported as configuration errors, so a client was told the server was unavailable, are now validation errors: invalid vault names and templates, a bad write mode, batch refusals, tag operations and rejected SQL. Malformed frontmatter is a parse error, and search index, Git task and backlink lookup failures are internal.
 - **Public types that grow are `#[non_exhaustive]`:** `ServerConfig`, `VaultConfig`, `VaultGitConfig`, `SnapshotRetention`, `TaskItem`, `ValidationIssue`, `AuditEntry`, `AuditStats` and `ChainVerification`, and the enums `ConfigProfile`, `WriteBackend`, `LinkType`, `CalloutType`, `Severity` and `TaskStatus`. Outside their crate, build them from `Default` and set fields, or use `ServerConfig::with_vaults`, `SnapshotRetention::with_max_count` / `with_max_age_days` and the `VaultGitConfig::with_*` builders. `WriteBackend::name` gives a backend's config spelling.
@@ -68,7 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-Everything below was unused, or marked for removal in this major release. A config file that still sets a removed setting loads as before, and the setting is ignored.
+- **28 tools, merged into the 51 that remain**, 52 with the new `validate_vault`. The migration guide has the full mapping. `get_backlinks` and `get_forward_links` are `get_links(direction)`. `get_hub_notes`, `get_dead_end_notes`, `get_isolated_clusters`, `detect_cycles`, `get_broken_links` and `get_centrality_ranking` are `graph_report(kind)`. `quick_health_check` and `full_health_analysis` are `vault_health(depth)`. `advanced_search`, `search_by_frontmatter` and `recommend_related` are `search`, with its filters or `related_to`. `semantic_search` and `find_similar_notes` are `find_similar`. `get_link_strength` is part of `compare_notes`. The quality, grounding, export and OFM guide pairs and families are `note_quality`, `analyze_grounding`, `export(report)` and `get_ofm_guide(guide)`. `diff_note_version` is `diff_notes` with `operation_id`, `get_template` is `list_templates(template_id)`, `create_vault` is `add_vault(create)`, `get_vault_config` and `get_active_vault` are `list_vaults`, the three fanout tools are `fanout(action)`, `audit_stats` is `audit_log(summary)`, and `get_metadata_value` is `get_notes_info(frontmatter_keys)`.
+
+The library items below were unused, or marked for removal in this major release. A config file that still sets a removed setting loads as before, and the setting is ignored.
 
 - **`turbovault-vault`:** `AtomicFileOps`, `FileOp` and `TransactionResult` (`atomic`), and `VaultWatcher`, `WatcherConfig` and `VaultEvent` (`watcher`). Writes go through the write substrate, and the freshness gate notices outside changes. `VaultManager::link_graph()`, which skipped the freshness gate: use `link_graph_flushed()`.
 - **`turbovault-parser`:** the per-element parsers deprecated since 1.2, `parsers::{callouts, embeds, headings, markdown_links, tags, tasks, wikilinks}`, and `parsers::frontmatter_parser` with `extract_frontmatter`. The `parse_*` functions and `Parser` cover them.
@@ -86,6 +96,8 @@ Everything below was unused, or marked for removal in this major release. A conf
 
 ### Fixed
 
+- **A vault created with `add_vault` (`create: true`) is restored after a restart.** `create_vault` never saved the vault to the cache, so it was gone the next time the server started.
+- **`remove_vault` drops everything the server held for the vault.** Its audit log and snapshot store were left behind; each vault's state now lives in one place and goes at once.
 - **Semantic search finds the true nearest chunks in a small vault.** An HNSW search is approximate, and on a graph of a few dozen chunks it missed the nearest one now and then, returning a far worse match in its place. Up to 4,096 chunks the dense index now compares the query with every vector, which is exact and takes about a millisecond; past that it searches the graph as before.
 
 - **Search results report their backlinks.** `backlink_count` was always 0: it looked the note up in the link graph by its vault-relative path, and the graph is keyed by absolute path.

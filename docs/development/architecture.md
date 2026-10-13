@@ -76,7 +76,7 @@ Overview of TurboVault's modular architecture.
 - Data serialization
 
 ### turbovault-tools
-- Reusable implementations behind 79 MCP tools
+- Reusable implementations behind 52 MCP tools
 - Tool implementation
 - Response formatting
 
