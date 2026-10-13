@@ -168,6 +168,7 @@
 
 pub mod analysis_tools;
 pub mod audit_tools;
+pub mod bases;
 pub mod batch_tools;
 pub mod canvas_tools;
 pub mod diff_tools;
