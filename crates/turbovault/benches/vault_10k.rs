@@ -51,11 +51,19 @@ const WORDS: &[&str] = &[
     "reference",
 ];
 
+/// `TV_BENCH_NOTES`, else 10,000 under `cargo bench`. Under `cargo test
+/// --all-targets` (which runs each benchmark once to check it works, without
+/// `--bench`) a small vault keeps the check quick in a debug build.
 fn note_count() -> usize {
+    let default = if std::env::args().any(|arg| arg == "--bench") {
+        10_000
+    } else {
+        200
+    };
     std::env::var("TV_BENCH_NOTES")
         .ok()
         .and_then(|n| n.parse().ok())
-        .unwrap_or(10_000)
+        .unwrap_or(default)
 }
 
 /// A small deterministic generator (xorshift64*), so the vault is the same on
