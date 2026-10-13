@@ -485,8 +485,11 @@ impl BlockParserState {
         }
     }
 
+    /// Emits the open code block, empty or not. Skipping an empty one left
+    /// `in_code` set, so the text after an empty fence went into the next
+    /// code block, and the paragraph between them was lost.
     fn flush_code(&mut self, blocks: &mut Vec<ContentBlock>) {
-        if self.in_code && !self.code_buffer.is_empty() {
+        if self.in_code {
             blocks.push(ContentBlock::Code {
                 language: self.code_language.clone(),
                 content: self.code_buffer.trim_end().to_string(),
@@ -667,6 +670,53 @@ impl BlockParserState {
         }
     }
 
+    /// Writes a table inside a blockquote back into the quote buffer as
+    /// markdown, for the quote's re-parse to rebuild in place, the way fenced
+    /// blocks and lists inside a quote are.
+    ///
+    /// Its text used to go straight into the buffer like any quoted text, so
+    /// the cells came out empty and the quote's text read `qr12` for a table
+    /// of `q`, `r`, `1`, `2`. The end event spans the table, so the current
+    /// line is its first.
+    fn write_quoted_table(&mut self) {
+        if !self.table_headers.is_empty() {
+            self.open_quoted_block(self.current_line);
+            let indent = self.quoted_item_indent();
+            let row = |cells: &[String]| {
+                let cells: Vec<String> = cells.iter().map(|c| c.replace('|', "\\|")).collect();
+                format!("| {} |\n", cells.join(" | "))
+            };
+            let rule: Vec<String> = self
+                .table_alignments
+                .iter()
+                .map(|alignment| {
+                    match alignment {
+                        TableAlignment::Left => ":---",
+                        TableAlignment::Center => ":---:",
+                        TableAlignment::Right => "---:",
+                        TableAlignment::None => "---",
+                    }
+                    .to_string()
+                })
+                .collect();
+            let mut table = row(&self.table_headers);
+            table.push_str(&indent);
+            table.push_str(&format!("| {} |\n", rule.join(" | ")));
+            for cells in &self.table_rows {
+                table.push_str(&indent);
+                table.push_str(&row(cells));
+            }
+            self.blockquote_buffer.push_str(&table);
+        }
+        self.table_headers.clear();
+        self.table_alignments.clear();
+        self.table_rows.clear();
+        self.current_row.clear();
+        self.paragraph_buffer.clear();
+        self.inline_buffer.clear();
+        self.in_table = false;
+    }
+
     fn flush_table(&mut self, blocks: &mut Vec<ContentBlock>) {
         if self.in_table && !self.table_headers.is_empty() {
             blocks.push(ContentBlock::Table {
@@ -771,6 +821,21 @@ impl BlockParserState {
 // Event processing
 // ============================================================================
 
+/// A fenced block's language: the first word of its info string, as
+/// CommonMark describes it. The whole string was kept, so `rust,no_run`
+/// (rustdoc), `python title="x"` (Docusaurus, mdBook) and `{.python}`
+/// (Pandoc) never matched a language and were not highlighted as one.
+fn fence_language(info: &str) -> Option<String> {
+    let word = info
+        .trim()
+        .trim_start_matches('{')
+        .trim_start_matches('.')
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '}')
+        .next()
+        .unwrap_or("");
+    (!word.is_empty()).then(|| word.to_string())
+}
+
 #[allow(clippy::too_many_lines)]
 fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<ContentBlock>) {
     match event {
@@ -807,13 +872,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             state.in_code = true;
             state.code_start_line = state.current_line;
             state.code_language = match kind {
-                CodeBlockKind::Fenced(lang) => {
-                    if lang.is_empty() {
-                        None
-                    } else {
-                        Some(lang.to_string())
-                    }
-                }
+                CodeBlockKind::Fenced(info) => fence_language(&info),
                 CodeBlockKind::Indented => None,
             };
         }
@@ -847,7 +906,6 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.in_code = false;
             } else if let Some(item) = state.item_stack.last_mut()
                 && state.in_code
-                && !state.code_buffer.is_empty()
             {
                 item.blocks.push(ContentBlock::Code {
                     language: state.code_language.clone(),
@@ -1029,7 +1087,11 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 .collect();
         }
         Event::End(TagEnd::Table) => {
-            state.flush_table(blocks);
+            if state.in_blockquote {
+                state.write_quoted_table();
+            } else {
+                state.flush_table(blocks);
+            }
         }
         Event::Start(Tag::TableHead) => {}
         Event::End(TagEnd::TableHead) => {
@@ -1074,7 +1136,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
                 state.heading_inline.push(InlineElement::Code {
                     value: text.to_string(),
                 });
-            } else if state.in_blockquote {
+            } else if state.in_blockquote && !state.in_table {
                 // Re-emit with delimiters so the buffer is re-parseable as inline code
                 state.blockquote_buffer.push('`');
                 state.blockquote_buffer.push_str(&text);
@@ -1101,8 +1163,10 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             // Same as images: inside a quote only the buffer reaches the
             // re-parse, so the destination has to be written back out. A link
             // wrapping an image re-emits the image as its label, which is the
-            // one case where `link_text` is not the whole story.
-            if state.in_blockquote {
+            // one case where `link_text` is not the whole story. A link in a
+            // table cell goes into the cell like any, and the table is
+            // written out whole when it ends.
+            if state.in_blockquote && !state.in_table {
                 let label = if state.image_in_link {
                     format_image(&state.link_text, &state.link_url, None)
                 } else {
@@ -1182,7 +1246,7 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
             // re-parse, so re-emit the whole element rather than the alt alone.
             // A linked image writes nothing here; `TagEnd::Link` emits the
             // wrapper with this image nested inside it.
-            if state.in_blockquote && !state.image_in_link {
+            if state.in_blockquote && !state.in_table && !state.image_in_link {
                 state.blockquote_buffer.push_str(&format_image(
                     &state.link_text,
                     &state.link_url,
@@ -1246,14 +1310,14 @@ fn process_event(event: Event, state: &mut BlockParserState, blocks: &mut Vec<Co
         Event::Text(text) => {
             if state.in_code {
                 state.code_buffer.push_str(&text);
-            } else if state.in_blockquote && (state.in_image || state.in_link) {
+            } else if state.in_blockquote && !state.in_table && (state.in_image || state.in_link) {
                 // An image's alt or a link's label, which is only half of the
                 // element. Held here so the end tag can re-emit the whole
                 // `![alt](src)` / `[text](url)` into the buffer. Appending it
                 // straight to `blockquote_buffer` is what dropped every
                 // destination inside a quote: the re-parse saw bare text.
                 state.link_text.push_str(&text);
-            } else if state.in_blockquote {
+            } else if state.in_blockquote && !state.in_table {
                 state.blockquote_buffer.push_str(&text);
             } else if state.in_heading && (state.in_image || state.in_link) {
                 // An image's alt or a link's label inside a heading. Held for
@@ -2400,5 +2464,83 @@ See [[WikiNote]] for more info."#;
             rows[0][0]
         );
         assert_eq!(rows[0][1], "list files");
+    }
+
+    /// An empty fence was never closed: the paragraph after it went into
+    /// the next code block's text and disappeared as a paragraph.
+    #[test]
+    fn an_empty_fence_closes() {
+        for markdown in [
+            "```\n```\n\ntext\n\n```py\nreal\n```\n",
+            "~~~\n~~~\n\ntext\n\n~~~py\nreal\n~~~\n",
+            "- item\n\n  ```\n  ```\n\ntext\n\n```py\nreal\n```\n",
+        ] {
+            let blocks = parse_blocks(markdown);
+            let codes: Vec<&str> = blocks
+                .iter()
+                .flat_map(|block| match block {
+                    ContentBlock::Code { content, .. } => vec![content.as_str()],
+                    ContentBlock::List { items, .. } => items
+                        .iter()
+                        .flat_map(|item| item.blocks.iter())
+                        .filter_map(|block| match block {
+                            ContentBlock::Code { content, .. } => Some(content.as_str()),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => vec![],
+                })
+                .collect();
+            assert_eq!(codes, ["", "real"], "{markdown:?}: {blocks:?}");
+            assert!(
+                blocks.iter().any(
+                    |b| matches!(b, ContentBlock::Paragraph { content, .. } if content == "text")
+                ),
+                "{markdown:?}: {blocks:?}"
+            );
+        }
+    }
+
+    /// The whole info string was the language, so rustdoc, Docusaurus and
+    /// Pandoc attributes hid it.
+    #[test]
+    fn a_fence_language_is_the_first_word_of_its_info_string() {
+        for (info, language) in [
+            ("rust,no_run", Some("rust")),
+            ("python title=\"x\"", Some("python")),
+            ("{.python .numberLines}", Some("python")),
+            ("  js  ", Some("js")),
+            ("", None),
+        ] {
+            let blocks = parse_blocks(&format!("```{info}\nx\n```\n"));
+            let ContentBlock::Code {
+                language: found, ..
+            } = &blocks[0]
+            else {
+                panic!("{blocks:?}");
+            };
+            assert_eq!(found.as_deref(), language, "{info:?}");
+        }
+    }
+
+    /// Text in a table inside a quote went to the quote's text, so the cells
+    /// were empty and the quote read `qr12`.
+    #[test]
+    fn a_table_in_a_quote_keeps_its_cells() {
+        let blocks = parse_blocks("> | q | r |\n> |:--|--:|\n> | 1 | [two](t.md) |\n");
+        let ContentBlock::Blockquote { blocks: inner, .. } = &blocks[0] else {
+            panic!("{blocks:?}");
+        };
+        let ContentBlock::Table {
+            headers,
+            rows,
+            alignments,
+        } = &inner[0]
+        else {
+            panic!("{inner:?}");
+        };
+        assert_eq!(headers, &["q", "r"]);
+        assert_eq!(rows, &[vec!["1".to_string(), "[two](t.md)".to_string()]]);
+        assert_eq!(alignments, &[TableAlignment::Left, TableAlignment::Right]);
     }
 }

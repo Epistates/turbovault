@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An empty fenced code block no longer swallows the paragraph after it.** A fence with nothing in it was never closed, so the text after it was added to the next code block, and the paragraph between them was lost. This happened at the top level and inside list items.
+- **A code block's language is the first word of its info string**, as CommonMark describes it. The whole string was kept, so rustdoc's `rust,no_run`, Docusaurus and mdBook's `python title="x"` and Pandoc's `{.python}` matched no language.
+- **A table inside a blockquote keeps its cells.** Its text went into the quote's text, so the table came back with empty cells and the quote read `qr12` for a table of `q`, `r`, `1` and `2`. The table is rebuilt inside the quote, alignments and links in cells included.
+
 ## [4.0.0] - 2026-10-13
 
 The tool surface is reworked for 4.0: 79 tools become 52, every vault-scoped tool takes an optional `vault`, and `tools/list` shows the core tools by default. [docs/migration/4.0.md](docs/migration/4.0.md) maps every old tool name to its replacement.
