@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TurboVault can be listed in the official MCP Registry** as `io.github.epistates/turbovault`, from the new `server.json`.
 - **A security policy** with private vulnerability reporting, a contributing guide, a code of conduct, and issue and pull request templates.
 - **CI reports the semver bump the next release needs (and the release workflow enforces it), checks every feature on its own, advisories against a triaged ignore list, 90% coverage and the write-safety burndown**, and runs fuzzing, property tests and 10,000-note benchmarks on a schedule.
+- **The search index persists between runs.** It lives under TurboVault's cache directory (`search/` there, private to the user, never inside the vault), with each note's content hash, so a new process re-indexes only the notes that changed since: 258 ms instead of a 1.5 s rebuild at 50,000 notes. An index written for another version or vault, or damaged, is rebuilt; one another process is writing is left to it, and this process indexes in memory. `TURBOVAULT_SEARCH_INDEX=memory` keeps every index in memory.
+- New in the crates: `VaultManager::cached_notes`, `cached_note` and `notes_validated` (the note cache shared rather than copied), `LinkGraph::degrees`, `backlink_sources`, `backlink_source_count` and `forward_link_targets`, `HealthCounts`, `HealthReport::score` and passes on `HealthAnalyzer` for each issue alone, `SearchEngine::for_vault` and `open`, `SimilarityEngine::apply_changes` and `pair_details`, `DuplicateTools::find_duplicates_with` and `compare_notes_with`, `VaultCache::cache_root`, and `PathValidator::real_root` and `resolve_in_vault_at`.
 
 ### Changed
 
@@ -35,10 +37,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A vault's own settings apply.** `max_file_size`, `allowed_extensions` and `reconcile_external_changes` set on a vault were ignored in favor of the server's. They now replace them for that vault.
 - **A move writes the destination and rewrites links before it removes the source**, and a delete rewrites links before it removes the note, so on a plain-folder vault a failure partway leaves a copy behind rather than none. Without `expected_hash`, a move's source is now held to the content the move read, so an edit landing while the backlinks are read is refused rather than deleted with it.
 - **Running `VaultManager::initialize` again rebuilds the note cache and link graph from the vault as it is.** It used to add to them, so a note deleted since stayed.
+- **Large vaults are much faster.** Measured over MCP on 10,000 and 50,000 notes:
+  - Health checks count and list without running the whole analysis, and suggest fixes for broken links from an index of note names: `quick_health_check` 879 ms to 16 ms and `explain_vault` 2.9 s to 0.18 s at 50,000 notes.
+  - The similarity engine builds from the parsed notes, keeps terms as ids instead of strings, and takes changes in place, so a write no longer makes the next semantic search rebuild it: a cold build 7.4 s to 1.1 s and a third of the memory at 10,000 notes, a write with it built 230 ms to 21 ms, and the semantic search after it 7 s to 3 ms.
+  - `find_duplicates` (20.7 s to 4 ms at 10,000 notes) and `compare_notes` use that engine's fingerprints and vectors; duplicate candidates are still every pair within the SimHash bound, compared in parallel.
+  - Quality scores read the link graph once and score notes in parallel: `vault_quality_report` 12.6 s to 0.2 s at 10,000 notes. `find_stale_notes` scores only notes old enough to be stale.
+  - Startup parses notes in parallel as it reads them and holds half the memory (1.9 GB to 0.9 GB after starting on 50,000 notes), and the note cache is shared with the tools that read it rather than copied to each.
+  - A batch of changed notes, such as a pull, is read with overlapping I/O, parsed in parallel and applied a chunk at a time, and adding a note re-resolves only the broken links that could name it.
+  - Graph analyses run off the async workers and count a note's links without cloning them.
+  - The vector plugin's dense index takes new chunks into its live graph and skips removed ones, instead of rebuilding on the next search after any edit. `turbovault-vector` 0.1.2. Its persistence (a JSON file per note) and embedding under the engine's lock are unchanged for now.
+- **Similarity, `find_duplicates` and `compare_notes` cover notes only**, as search does. `.txt` and `.canvas` files were scored too.
 - **Deprecated:** `VaultManager::link_graph()`, which skips the freshness gate, in favor of `link_graph_flushed()`. `enable_caching`, `cache_ttl` and `template_dirs` on a vault were never read; they're still accepted, with a warning.
 
 ### Fixed
 
+- **Search results report their backlinks.** `backlink_count` was always 0: it looked the note up in the link graph by its vault-relative path, and the graph is keyed by absolute path.
 - **Re-parsing a note no longer leaves stale links in the graph.** An edge the note no longer declared could survive, showing as phantom backlinks, wrong hub and orphan counts, and `delete_note` refusing over a link that no longer existed.
 - **Deleting a note shows its links as broken right away**, or re-points them to another note of the same name. An alias removed from a note's frontmatter stops resolving to it.
 - **A Git-backed vault no longer gets stuck after a failed write.** If a commit landed but writing it out failed (another git process holding `index.lock`, a full disk, the process stopping), every later write was refused with "Git index contains staged changes". The next write, or the next start, now finishes it, leaving alone any file edited by hand in between.
