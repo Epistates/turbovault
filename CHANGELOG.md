@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-12
+
+This release brings TurboVault's reading of notes in line with current Obsidian. The one behavior change: `tags`, `aliases` and `cssclasses` written the pre-1.9 way (a string, or the singular keys) no longer count, as they already don't in Obsidian. `validate_vault` lists every note still written that way.
+
 ### Changed
 
 - **`tags`, `aliases` and `cssclasses` are read as Obsidian 1.9 and later read them: as YAML lists only.** A comma-separated string (`tags: work, personal`) and the singular `tag`, `alias` and `cssclass` no longer count, because Obsidian no longer sees them. TurboVault had been reading a string three different ways, so its tags and alias resolution could differ from Obsidian's. `validate_note` and `validate_vault` now warn about both old forms. `manage_tags` add and remove convert an old-style string to a list when they rewrite it, so its tags are kept.
