@@ -2,7 +2,73 @@
 
 use std::ops::Deref;
 
+use turbovault_tools::NoteInfo;
+
 use super::super::*;
+use super::files::MovedPayload;
+
+// The metadata tools build their results as JSON in `MetadataTools`; these
+// types are the schemas those results are advertised with, and the output
+// schema test holds the two together.
+
+/// What `query_metadata` returns.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct MetadataQueryResult {
+    query: String,
+    /// How many notes matched, across every page.
+    matched: usize,
+    /// This page of the matches.
+    files: Vec<MetadataMatch>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct MetadataMatch {
+    path: String,
+    metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What `get_metadata_value` returns. `value` is `null` when the note has no
+/// such key.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct MetadataValue {
+    file: String,
+    key: String,
+    value: serde_json::Value,
+}
+
+/// What `update_frontmatter` returns.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[allow(dead_code)]
+struct FrontmatterUpdate {
+    path: String,
+    status: String,
+    merge: bool,
+    keys_set: Vec<String>,
+}
+
+/// What `manage_tags` returns: a note's tags for `list`, or the frontmatter
+/// tags left after `add` or `remove`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum ManageTagsResult {
+    Listed {
+        path: String,
+        frontmatter_tags: Vec<String>,
+        inline_tags: Vec<String>,
+        all_tags: Vec<String>,
+    },
+    Changed {
+        path: String,
+        operation: String,
+        tags: Vec<String>,
+        /// `updated`, or `no_frontmatter` for a remove from a note without any.
+        status: String,
+    },
+}
 
 #[derive(Clone)]
 pub(super) struct MetadataProvider(CoreToolHandler);
@@ -34,6 +100,7 @@ impl MetadataProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<MetadataQueryResult>,
     )]
     async fn query_metadata(
         &self,
@@ -72,6 +139,7 @@ impl MetadataProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<MetadataValue>,
     )]
     async fn get_metadata_value(
         &self,
@@ -106,6 +174,7 @@ impl MetadataProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<FrontmatterUpdate>,
     )]
     async fn update_frontmatter(
         &self,
@@ -169,6 +238,7 @@ impl MetadataProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ManageTagsResult>,
     )]
     async fn manage_tags(
         &self,
@@ -246,6 +316,7 @@ impl MetadataProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<Vec<NoteInfo>>,
     )]
     async fn get_notes_info(
         &self,
@@ -259,10 +330,7 @@ impl MetadataProvider {
         let results = tools.get_notes_info(&paths).await.map_err(to_mcp_error)?;
 
         let count = results.len();
-        let result_data =
-            serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?;
-
-        StandardResponse::new(vault_name, "get_notes_info", result_data)
+        StandardResponse::new(vault_name, "get_notes_info", results)
             .with_count(count)
             .with_next_step("read_note")
             .to_json()
@@ -277,6 +345,7 @@ impl MetadataProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<MovedPayload>,
     )]
     async fn move_file(
         &self,
@@ -339,7 +408,12 @@ impl MetadataProvider {
         StandardResponse::new(
             vault_name,
             "move_file",
-            serde_json::json!({"from": from, "to": to, "status": "moved"}),
+            MovedPayload {
+                from,
+                to,
+                status: "moved",
+                link_sources_updated: None,
+            },
         )
         .to_json()
     }

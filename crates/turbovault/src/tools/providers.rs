@@ -112,6 +112,95 @@ use self::templates::TemplateProvider;
 use self::vault::VaultProvider;
 use super::CoreToolHandler;
 
+/// `tool` with its outputSchema trimmed to what a client needs to read the
+/// result. schemars turns every Rust doc comment into a `description` written
+/// for this crate's maintainers and gives every subschema a generated
+/// `title`; the field names already say what each field holds, and the input
+/// schema carries the descriptions an agent needs to call the tool. Dropping
+/// both keeps the catalog an agent loads small. So does dropping the Rust
+/// integer width schemars records as `format` (with its `minimum: 0`) and the
+/// `default` it copies from serde, neither of which says anything about a
+/// result. The dialect is the MCP default, so `$schema` goes too.
+fn tighten_output_schema(mut tool: Tool) -> Tool {
+    if let Some(schema) = tool.output_schema.take() {
+        let mut value = serde_json::to_value(&schema).unwrap_or(serde_json::Value::Null);
+        strip_schema_annotations(&mut value);
+        tool.output_schema = Some(turbomcp_types::ToolOutputSchema::from_value(value));
+    }
+    tool
+}
+
+/// Remove `description`, `title` and `$schema` keywords from `schema` and
+/// every subschema in it. A property that happens to be called `title` or
+/// `description` is a name under `properties`, not a keyword, and stays.
+fn strip_schema_annotations(schema: &mut serde_json::Value) {
+    let serde_json::Value::Object(map) = schema else {
+        return;
+    };
+    for keyword in ["description", "title", "$schema", "default"] {
+        map.remove(keyword);
+    }
+    let rust_width = map
+        .get("format")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|format| {
+            matches!(
+                format,
+                "uint"
+                    | "uint8"
+                    | "uint16"
+                    | "uint32"
+                    | "uint64"
+                    | "int"
+                    | "int8"
+                    | "int16"
+                    | "int32"
+                    | "int64"
+                    | "float"
+                    | "double"
+            )
+        });
+    if rust_width {
+        map.remove("format");
+        if map.get("minimum") == Some(&serde_json::json!(0)) {
+            map.remove("minimum");
+        }
+    }
+    for (keyword, value) in map.iter_mut() {
+        match keyword.as_str() {
+            // Maps from a name to a subschema.
+            "properties" | "$defs" | "definitions" | "patternProperties" => {
+                if let serde_json::Value::Object(named) = value {
+                    named.values_mut().for_each(strip_schema_annotations);
+                }
+            }
+            // Lists of subschemas.
+            "anyOf" | "oneOf" | "allOf" | "prefixItems" => {
+                if let serde_json::Value::Array(schemas) = value {
+                    schemas.iter_mut().for_each(strip_schema_annotations);
+                }
+            }
+            // A single subschema (or, for `items`, possibly a list of them).
+            "items"
+            | "additionalProperties"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames"
+            | "unevaluatedProperties"
+            | "unevaluatedItems" => match value {
+                serde_json::Value::Array(schemas) => {
+                    schemas.iter_mut().for_each(strip_schema_annotations)
+                }
+                other => strip_schema_annotations(other),
+            },
+            _ => {}
+        }
+    }
+}
+
 #[cfg(feature = "plugin-api")]
 #[derive(Clone)]
 struct PluginProviderAdapter {
@@ -503,7 +592,7 @@ impl ObsidianMcpServer {
                             "tool {public_name:?} is owned by multiple providers"
                         ));
                     }
-                    tools.push(tool);
+                    tools.push(tighten_output_schema(tool));
                 }
 
                 for resource in provider.list_resources() {
@@ -1005,7 +1094,14 @@ impl McpHandler for ObsidianMcpServer {
                     "tool {name:?} failed with an internal error: {detail}"
                 )))
             })?;
-            Ok(self.core.polish_error_result(result).await)
+            let result = self.core.polish_error_result(result).await;
+            // A plugin's text block is the plugin's to word; it need not be
+            // a copy of its structured result.
+            #[cfg(feature = "plugin-api")]
+            if self.plugin_owning_name(name).is_some() {
+                return Ok(result);
+            }
+            Ok(CoreToolHandler::compact_json_text(result))
         }
     }
 

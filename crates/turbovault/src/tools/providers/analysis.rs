@@ -2,8 +2,15 @@
 
 use std::ops::Deref;
 
-use super::super::*;
 use turbovault_core::Precondition;
+use turbovault_tools::okf_tools::LogEntryResult;
+use turbovault_tools::{
+    CompareResult, DiffResult, DuplicateGroup, GenerateIndexReport, GroundingAnalysis,
+    OkfValidateReport, QualityScore, SimilarityResult, UngroundedReport, VaultQualityReport,
+    VisualizationResult,
+};
+
+use super::super::*;
 
 #[derive(Clone)]
 pub(super) struct AnalysisProvider(CoreToolHandler);
@@ -22,6 +29,14 @@ impl Deref for AnalysisProvider {
     }
 }
 
+/// Response payload for `visualize`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct VisualizePayload {
+    /// Vault-relative path of the HTML file written.
+    output: String,
+    summary: VisualizationResult,
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl AnalysisProvider {
     // ─── DIFF TOOLS ──────────────────────────────────────────────────
@@ -34,6 +49,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<DiffResult>,
     )]
     async fn diff_notes(
         &self,
@@ -51,14 +67,10 @@ impl AnalysisProvider {
             .diff_notes(&left, &right)
             .await
             .map_err(to_mcp_error)?;
-        StandardResponse::new(
-            &vault_name,
-            "diff_notes",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["read_note", "edit_note", "compare_notes"])
-        .to_json()
+        StandardResponse::new(&vault_name, "diff_notes", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["read_note", "edit_note", "compare_notes"])
+            .to_json()
     }
 
     #[tool(
@@ -69,6 +81,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<DiffResult>,
     )]
     async fn diff_note_version(
         &self,
@@ -134,14 +147,10 @@ impl AnalysisProvider {
             &format!("{} (current)", path),
         );
 
-        StandardResponse::new(
-            &vault_name,
-            "diff_note_version",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["audit_log", "rollback_note", "read_note"])
-        .to_json()
+        StandardResponse::new(&vault_name, "diff_note_version", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["audit_log", "rollback_note", "read_note"])
+            .to_json()
     }
 
     // ─── QUALITY TOOLS ───────────────────────────────────────────────
@@ -154,6 +163,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<QualityScore>,
     )]
     async fn evaluate_note_quality(
         &self,
@@ -166,14 +176,10 @@ impl AnalysisProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = QualityTools::new(manager);
         let result = tools.evaluate_note(&path).await.map_err(to_mcp_error)?;
-        StandardResponse::new(
-            &vault_name,
-            "evaluate_note_quality",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["vault_quality_report", "edit_note", "find_stale_notes"])
-        .to_json()
+        StandardResponse::new(&vault_name, "evaluate_note_quality", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["vault_quality_report", "edit_note", "find_stale_notes"])
+            .to_json()
     }
 
     #[tool(
@@ -184,6 +190,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<VaultQualityReport>,
     )]
     async fn vault_quality_report(
         &self,
@@ -199,15 +206,11 @@ impl AnalysisProvider {
             .vault_quality_report(clamp_count(bottom_n, 10, MAX_REPORT_ITEMS))
             .await
             .map_err(to_mcp_error)?;
-        StandardResponse::new(
-            &vault_name,
-            "vault_quality_report",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_count(result.total_notes)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["evaluate_note_quality", "find_stale_notes"])
-        .to_json()
+        StandardResponse::new(&vault_name, "vault_quality_report", &result)
+            .with_count(result.total_notes)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["evaluate_note_quality", "find_stale_notes"])
+            .to_json()
     }
 
     #[tool(
@@ -218,6 +221,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<GroundingAnalysis>,
     )]
     async fn analyze_note_grounding(
         &self,
@@ -230,14 +234,10 @@ impl AnalysisProvider {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GroundingTools::new(manager);
         let result = tools.analyze_note(&path).await.map_err(to_mcp_error)?;
-        StandardResponse::new(
-            &vault_name,
-            "analyze_note_grounding",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["find_ungrounded_notes", "okf_validate"])
-        .to_json()
+        StandardResponse::new(&vault_name, "analyze_note_grounding", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["find_ungrounded_notes", "okf_validate"])
+            .to_json()
     }
 
     #[tool(
@@ -248,6 +248,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<UngroundedReport>,
     )]
     async fn find_ungrounded_notes(
         &self,
@@ -268,18 +269,14 @@ impl AnalysisProvider {
         let (notes, page) =
             request.slice_leading(std::mem::take(&mut result.notes), result.ungrounded_count);
         result.notes = notes;
-        StandardResponse::new(
-            &vault_name,
-            "find_ungrounded_notes",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_page(page)
-        // This tool's `count` has always been every ungrounded note, not the
-        // page; `meta.pagination.returned` is the page.
-        .with_count(result.ungrounded_count)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["analyze_note_grounding", "read_note"])
-        .to_json()
+        StandardResponse::new(&vault_name, "find_ungrounded_notes", &result)
+            .with_page(page)
+            // This tool's `count` has always been every ungrounded note, not the
+            // page; `meta.pagination.returned` is the page.
+            .with_count(result.ungrounded_count)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["analyze_note_grounding", "read_note"])
+            .to_json()
     }
 
     // ==================== Open Knowledge Format (OKF) ====================
@@ -292,6 +289,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<OkfValidateReport>,
     )]
     async fn okf_validate(
         &self,
@@ -310,16 +308,12 @@ impl AnalysisProvider {
 
         let total = result.total;
         let conformant = result.non_conformant == 0;
-        StandardResponse::new(
-            &vault_name,
-            "okf_validate",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_count(total)
-        .with_success(conformant)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["generate_index", "read_note"])
-        .to_json()
+        StandardResponse::new(&vault_name, "okf_validate", &result)
+            .with_count(total)
+            .with_success(conformant)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["generate_index", "read_note"])
+            .to_json()
     }
 
     #[tool(
@@ -330,6 +324,7 @@ impl AnalysisProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<GenerateIndexReport>,
     )]
     async fn generate_index(
         &self,
@@ -392,15 +387,11 @@ impl AnalysisProvider {
         }
 
         let count = result.indexes.len();
-        StandardResponse::new(
-            &vault_name,
-            "generate_index",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_count(count)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["okf_validate", "explain_vault"])
-        .to_json()
+        StandardResponse::new(&vault_name, "generate_index", &result)
+            .with_count(count)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["okf_validate", "explain_vault"])
+            .to_json()
     }
 
     #[tool(
@@ -411,6 +402,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<LogEntryResult>,
     )]
     async fn append_log_entry(
         &self,
@@ -452,14 +444,10 @@ impl AnalysisProvider {
             .await
             .map_err(to_mcp_error)?;
 
-        StandardResponse::new(
-            &vault_name,
-            "append_log_entry",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["okf_validate", "generate_index"])
-        .to_json()
+        StandardResponse::new(&vault_name, "append_log_entry", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["okf_validate", "generate_index"])
+            .to_json()
     }
 
     #[tool(
@@ -470,6 +458,7 @@ impl AnalysisProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<VisualizePayload>,
     )]
     async fn visualize(
         &self,
@@ -513,7 +502,10 @@ impl AnalysisProvider {
         StandardResponse::new(
             &vault_name,
             "visualize",
-            serde_json::json!({ "output": out_rel, "summary": summary }),
+            VisualizePayload {
+                output: out_rel,
+                summary: summary.clone(),
+            },
         )
         .with_count(summary.nodes)
         .with_duration(start.elapsed().as_millis() as u64)
@@ -529,6 +521,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<QualityScore>>,
     )]
     async fn find_stale_notes(
         &self,
@@ -551,15 +544,11 @@ impl AnalysisProvider {
             .await
             .map_err(to_mcp_error)?;
         let (result, page) = request.slice_ranked(result);
-        StandardResponse::new(
-            &vault_name,
-            "find_stale_notes",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_page(page)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["evaluate_note_quality", "read_note", "edit_note"])
-        .to_json()
+        StandardResponse::new(&vault_name, "find_stale_notes", &result)
+            .with_page(page)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["evaluate_note_quality", "read_note", "edit_note"])
+            .to_json()
     }
 
     // ─── SIMILARITY TOOLS ────────────────────────────────────────────
@@ -572,6 +561,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<SimilarityResult>>,
     )]
     async fn semantic_search(
         &self,
@@ -586,15 +576,11 @@ impl AnalysisProvider {
         let engine = self.get_similarity_engine().await?;
         let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
         let (results, page) = request.slice_ranked(engine.semantic_search(&query, request.fetch()));
-        StandardResponse::new(
-            &vault_name,
-            "semantic_search",
-            serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_page(page)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["read_note", "find_similar_notes", "advanced_search"])
-        .to_json()
+        StandardResponse::new(&vault_name, "semantic_search", &results)
+            .with_page(page)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["read_note", "find_similar_notes", "advanced_search"])
+            .to_json()
     }
 
     #[tool(
@@ -605,6 +591,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<SimilarityResult>>,
     )]
     async fn find_similar_notes(
         &self,
@@ -622,15 +609,11 @@ impl AnalysisProvider {
         let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
         let (results, page) =
             request.slice_ranked(engine.find_similar_notes(&path, request.fetch()));
-        StandardResponse::new(
-            &vault_name,
-            "find_similar_notes",
-            serde_json::to_value(&results).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_page(page)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["read_note", "semantic_search", "get_backlinks"])
-        .to_json()
+        StandardResponse::new(&vault_name, "find_similar_notes", &results)
+            .with_page(page)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["read_note", "semantic_search", "get_backlinks"])
+            .to_json()
     }
 
     // ─── DUPLICATE TOOLS ─────────────────────────────────────────────
@@ -643,6 +626,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<Vec<DuplicateGroup>>,
     )]
     async fn find_duplicates(
         &self,
@@ -666,15 +650,11 @@ impl AnalysisProvider {
             .await
             .map_err(to_mcp_error)?;
         let count = result.len();
-        StandardResponse::new(
-            &vault_name,
-            "find_duplicates",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_count(count)
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["compare_notes", "diff_notes", "read_note"])
-        .to_json()
+        StandardResponse::new(&vault_name, "find_duplicates", &result)
+            .with_count(count)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["compare_notes", "diff_notes", "read_note"])
+            .to_json()
     }
 
     #[tool(
@@ -685,6 +665,7 @@ impl AnalysisProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<CompareResult>,
     )]
     async fn compare_notes(
         &self,
@@ -702,13 +683,9 @@ impl AnalysisProvider {
             .compare_notes(&left, &right)
             .await
             .map_err(to_mcp_error)?;
-        StandardResponse::new(
-            &vault_name,
-            "compare_notes",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_duration(start.elapsed().as_millis() as u64)
-        .with_next_steps(&["diff_notes", "read_note", "find_duplicates"])
-        .to_json()
+        StandardResponse::new(&vault_name, "compare_notes", &result)
+            .with_duration(start.elapsed().as_millis() as u64)
+            .with_next_steps(&["diff_notes", "read_note", "find_duplicates"])
+            .to_json()
     }
 }

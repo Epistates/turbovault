@@ -2,6 +2,8 @@
 
 use std::ops::Deref;
 
+use turbovault_tools::TemplateDefinition;
+
 use super::super::*;
 
 #[derive(Clone)]
@@ -34,6 +36,7 @@ impl TemplateProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<Vec<TemplateDefinition>>,
     )]
     async fn list_templates(&self) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
@@ -42,8 +45,7 @@ impl TemplateProvider {
 
         let count = templates.len();
         let response =
-            StandardResponse::new(vault_name, "list_templates", serde_json::json!(templates))
-                .with_count(count);
+            StandardResponse::new(vault_name, "list_templates", templates).with_count(count);
 
         response.to_json()
     }
@@ -57,6 +59,7 @@ impl TemplateProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<TemplateDefinition>,
     )]
     async fn get_template(
         &self,
@@ -71,12 +74,8 @@ impl TemplateProvider {
             )
         })?;
 
-        let response = StandardResponse::new(
-            vault_name,
-            "get_template",
-            serde_json::to_value(&template).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_next_step("create_from_template");
+        let response = StandardResponse::new(vault_name, "get_template", template)
+            .with_next_step("create_from_template");
 
         response.to_json()
     }
@@ -90,6 +89,7 @@ impl TemplateProvider {
         destructive = true,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<turbovault_tools::templates::CreatedNoteInfo>,
     )]
     async fn create_from_template(
         &self,
@@ -147,13 +147,9 @@ impl TemplateProvider {
             WriteAttribution::host("create_from_template"),
         )
         .await;
-        let response = StandardResponse::new(
-            vault_name,
-            "create_from_template",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_next_step("read_note")
-        .with_next_step("find_notes_from_template");
+        let response = StandardResponse::new(vault_name, "create_from_template", result)
+            .with_next_step("read_note")
+            .with_next_step("find_notes_from_template");
 
         response.to_json()
     }
@@ -167,6 +163,7 @@ impl TemplateProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<Vec<String>>,
     )]
     async fn find_notes_from_template(
         &self,
@@ -180,12 +177,8 @@ impl TemplateProvider {
             .map_err(to_mcp_error)?;
 
         let count = notes.len();
-        let response = StandardResponse::new(
-            vault_name,
-            "find_notes_from_template",
-            serde_json::json!(notes),
-        )
-        .with_count(count);
+        let response =
+            StandardResponse::new(vault_name, "find_notes_from_template", notes).with_count(count);
 
         response.to_json()
     }

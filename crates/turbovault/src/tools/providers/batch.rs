@@ -34,6 +34,7 @@ impl BatchProvider {
         destructive = true,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<turbovault_tools::BatchResult>,
     )]
     async fn batch_execute(
         &self,
@@ -94,17 +95,14 @@ impl BatchProvider {
         } else {
             "sequential_direct"
         };
-        let mut response = StandardResponse::new(
-            vault_name,
-            "batch_execute",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_success(result.success)
-        .with_count(op_count)
-        .with_meta("execution_mode", serde_json::json!(execution_mode))
-        .with_next_step("quick_health_check");
+        let success = result.success;
+        let mut response = StandardResponse::new(vault_name, "batch_execute", result)
+            .with_success(success)
+            .with_count(op_count)
+            .with_meta("execution_mode", serde_json::json!(execution_mode))
+            .with_next_step("quick_health_check");
 
-        if execution_mode == "sequential_direct" && !result.success {
+        if execution_mode == "sequential_direct" && !success {
             response = response.with_warning(
                 "Direct batch execution is sequential: operations completed before the failure were not rolled back. Configure write_backend=git for all-or-nothing batches.",
             );

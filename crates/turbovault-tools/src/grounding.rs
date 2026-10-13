@@ -29,6 +29,7 @@ const MIN_CLAIM_WORDS: usize = 5;
 
 /// Per-note grounding analysis — the material a judge scores.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GroundingAnalysis {
     /// Vault-relative path.
     pub path: String,
@@ -56,6 +57,7 @@ pub struct GroundingAnalysis {
 
 /// A note that asserts claims without citing any source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct UngroundedNote {
     pub path: String,
     pub claim_count: usize,
@@ -63,6 +65,7 @@ pub struct UngroundedNote {
 
 /// Vault-wide ungrounded-note report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct UngroundedReport {
     /// Notes scanned.
     pub total_notes: usize,

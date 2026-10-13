@@ -19,6 +19,7 @@ pub struct DiffTools {
 
 /// Result of comparing two notes
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffResult {
     pub left_path: String,
     pub right_path: String,
@@ -29,6 +30,7 @@ pub struct DiffResult {
 
 /// Summary statistics for a diff
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffSummary {
     pub lines_added: usize,
     pub lines_removed: usize,
@@ -39,6 +41,7 @@ pub struct DiffSummary {
 
 /// A changed line with word-level detail
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InlineChange {
     pub line_number: usize,
     pub old_text: String,
@@ -48,6 +51,7 @@ pub struct InlineChange {
 
 /// A single word-level change within a line
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct WordChange {
     pub operation: String,
     pub text: String,

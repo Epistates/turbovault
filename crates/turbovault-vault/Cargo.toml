@@ -34,6 +34,18 @@ futures = { workspace = true }
 # File editing & diff
 similar = { workspace = true }
 
+schemars = { workspace = true, optional = true }
+
+[features]
+default = []
+# JSON Schemas for the edit results the server returns (see turbovault-core).
+schemars = [
+    "dep:schemars",
+    "turbovault-core/schemars",
+    "turbovault-graph/schemars",
+    "turbovault-audit/schemars",
+]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

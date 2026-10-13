@@ -26,12 +26,63 @@ impl Deref for FileProvider {
 /// [`SliceResult`] is flattened in, so its `skip_serializing_if` attributes
 /// still apply: a line slice carries `returned_lines` and no section fields, a
 /// section slice the reverse. Note the absence of `hash` — see `read_note`.
-#[derive(serde::Serialize)]
-struct PartialReadPayload<'a> {
-    path: &'a str,
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct PartialReadPayload {
+    path: String,
     uri: String,
     #[serde(flatten)]
     slice: SliceResult,
+}
+
+/// Response payload for a whole `read_note`, with the `hash` a later write
+/// passes back as `expected_hash`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct WholeReadPayload {
+    path: String,
+    content: String,
+    hash: String,
+    uri: String,
+}
+
+/// What `read_note` returns: the whole note, or the part asked for.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum ReadNotePayload {
+    Whole(WholeReadPayload),
+    Part(PartialReadPayload),
+}
+
+/// Response payload for `write_note`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct WrittenPayload {
+    path: String,
+    /// Always `written`.
+    status: &'static str,
+    bytes: usize,
+    mode: String,
+}
+
+/// Response payload for `delete_note`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct DeletedPayload {
+    path: String,
+    /// Always `deleted`.
+    status: &'static str,
+    /// Notes whose links to it were struck through.
+    link_sources_updated: Vec<String>,
+}
+
+/// Response payload for `move_note` and `move_file`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub(super) struct MovedPayload {
+    pub(super) from: String,
+    pub(super) to: String,
+    /// Always `moved`.
+    pub(super) status: &'static str,
+    /// Notes whose links were rewritten to follow it. `move_file` leaves
+    /// links alone and omits this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) link_sources_updated: Option<Vec<String>>,
 }
 
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
@@ -47,6 +98,7 @@ impl FileProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ReadNotePayload>,
     )]
     async fn read_note(
         &self,
@@ -102,11 +154,11 @@ impl FileProvider {
             let mut response = StandardResponse::new(
                 &vault_name,
                 "read_note",
-                PartialReadPayload {
-                    path: &path,
+                ReadNotePayload::Part(PartialReadPayload {
+                    path: path.clone(),
                     uri,
                     slice,
-                },
+                }),
             );
             if sections_returned > 0 {
                 response = response.with_count(sections_returned);
@@ -120,7 +172,12 @@ impl FileProvider {
         StandardResponse::new(
             &vault_name,
             "read_note",
-            serde_json::json!({"path": path, "content": content, "hash": hash, "uri": uri}),
+            ReadNotePayload::Whole(WholeReadPayload {
+                path,
+                content,
+                hash,
+                uri,
+            }),
         )
         .with_read_next_steps()
         .to_json()
@@ -135,6 +192,7 @@ impl FileProvider {
         destructive = true,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<WrittenPayload>,
     )]
     async fn write_note(
         &self,
@@ -208,11 +266,15 @@ impl FileProvider {
             WriteAttribution::host("write_note"),
         )
         .await;
-        let mode_str = mode.as_deref().unwrap_or("overwrite");
         StandardResponse::new(
             vault_name,
             "write_note",
-            serde_json::json!({"path": path, "status": "written", "bytes": content.len(), "mode": mode_str}),
+            WrittenPayload {
+                path,
+                status: "written",
+                bytes: content.len(),
+                mode: mode.unwrap_or_else(|| "overwrite".to_string()),
+            },
         )
         .with_write_next_steps()
         .to_json()
@@ -227,6 +289,7 @@ impl FileProvider {
         destructive = true,
         idempotent = false,
         open_world = false,
+        output_schema = StandardResponse<turbovault_vault::EditResult>,
     )]
     async fn edit_note(
         &self,
@@ -271,13 +334,9 @@ impl FileProvider {
             WriteAttribution::host("edit_note"),
         )
         .await;
-        StandardResponse::new(
-            vault_name,
-            "edit_note",
-            serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_next_steps(&["read_note", "write_note"])
-        .to_json()
+        StandardResponse::new(vault_name, "edit_note", result)
+            .with_next_steps(&["read_note", "write_note"])
+            .to_json()
     }
 
     /// Delete a note (confirmation-protected)
@@ -289,6 +348,7 @@ impl FileProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<DeletedPayload>,
     )]
     async fn delete_note(
         &self,
@@ -376,7 +436,11 @@ impl FileProvider {
         StandardResponse::new(
             vault_name,
             "delete_note",
-            serde_json::json!({"path": path, "status": "deleted", "link_sources_updated": updated_sources}),
+            DeletedPayload {
+                path,
+                status: "deleted",
+                link_sources_updated: updated_sources,
+            },
         )
         .with_next_step("quick_health_check")
         .to_json()
@@ -391,6 +455,7 @@ impl FileProvider {
         destructive = true,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<MovedPayload>,
     )]
     async fn move_note(
         &self,
@@ -470,7 +535,12 @@ impl FileProvider {
         let response = StandardResponse::new(
             vault_name,
             "move_note",
-            serde_json::json!({"from": from, "to": to, "status": "moved", "link_sources_updated": updated_sources}),
+            MovedPayload {
+                from,
+                to,
+                status: "moved",
+                link_sources_updated: Some(updated_sources),
+            },
         )
         .with_next_steps(&["get_backlinks", "get_forward_links"]);
         if update_backlinks {

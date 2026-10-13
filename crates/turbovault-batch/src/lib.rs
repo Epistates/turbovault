@@ -374,7 +374,7 @@ impl BatchOperation {
 }
 
 /// Record of a single executed operation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct OperationRecord {
     /// Index in the batch
     pub operation_index: usize,
@@ -389,7 +389,7 @@ pub struct OperationRecord {
 }
 
 /// Result of batch execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BatchResult {
     /// Whether all operations succeeded
     pub success: bool,

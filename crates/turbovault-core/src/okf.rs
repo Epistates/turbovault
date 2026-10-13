@@ -86,6 +86,7 @@ impl Frontmatter {
 ///
 /// Reserved files MUST NOT be used for concept documents (spec §3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ReservedFile {
     /// `index.md` — directory listing for progressive disclosure (§6).
@@ -184,6 +185,7 @@ pub fn normalize_link_target(target: &str) -> Option<Vec<String>> {
 ///
 /// Citations are numbered markdown links listed under a `# Citations` heading.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Citation {
     /// The `[N]` ordinal, when present.
     #[serde(default, skip_serializing_if = "Option::is_none")]

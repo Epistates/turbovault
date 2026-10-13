@@ -28,6 +28,7 @@ use turbovault_vault::VaultManager;
 
 /// OKF metadata and conformance for a single document.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct OkfConceptInfo {
     /// Vault-relative path.
     pub path: String,
@@ -36,28 +37,29 @@ pub struct OkfConceptInfo {
     /// Whether the document is OKF-conformant.
     pub conformant: bool,
     /// Reserved-file kind (`index`/`log`), if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reserved: Option<ReservedFile>,
     /// OKF `type` — the only required field.
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub type_: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
     /// Number of citations under a `# Citations` heading (spec §8).
     pub citation_count: usize,
     /// Conformance issues, if any.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issues: Vec<String>,
 }
 
 /// Vault-wide OKF conformance report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct OkfValidateReport {
     /// Total markdown documents examined.
     pub total: usize,
@@ -72,7 +74,7 @@ pub struct OkfValidateReport {
     /// Count of concepts per `type` value (bundle's type vocabulary).
     pub type_distribution: BTreeMap<String, usize>,
     /// Vault-relative paths of non-conformant documents (quick CI summary).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub non_conformant_paths: Vec<String>,
     /// Per-document detail.
     pub files: Vec<OkfConceptInfo>,
@@ -80,6 +82,7 @@ pub struct OkfValidateReport {
 
 /// One generated/previewed index file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GeneratedIndex {
     /// Vault-relative path of the `index.md`.
     pub path: String,
@@ -91,6 +94,7 @@ pub struct GeneratedIndex {
 
 /// Result of an index-generation run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GenerateIndexReport {
     /// Indexes generated or previewed, one per directory.
     pub indexes: Vec<GeneratedIndex>,
@@ -102,6 +106,7 @@ pub struct GenerateIndexReport {
 
 /// Result of appending an entry to a `log.md` (spec §7).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct LogEntryResult {
     /// Vault-relative path of the `log.md`.
     pub path: String,

@@ -38,14 +38,15 @@ impl WriteMode {
 
 /// Lightweight note metadata (no content read)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NoteInfo {
     pub path: String,
     pub exists: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modified_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub has_frontmatter: Option<bool>,
 }
 
@@ -161,6 +162,7 @@ impl SliceSpec {
 
 /// One heading-delimited section returned by a structural slice.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SectionSlice {
     /// Heading text, without the leading `#` markers.
     pub heading: String,
@@ -174,6 +176,7 @@ pub struct SectionSlice {
 
 /// The outcome of a partial read.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SliceResult {
     /// The selected content. A verbatim substring for a line slice; for a
     /// section slice, the selected sections concatenated in document order
@@ -184,14 +187,14 @@ pub struct SliceResult {
     /// Line count of the complete file.
     pub total_lines: usize,
     /// Returned line span, 1-indexed and inclusive. Line slices only.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub returned_lines: Option<(usize, usize)>,
     /// Sections matching the filter, before `first_sections`/`last_sections`
     /// was applied. Section slices only.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sections_matched: Option<usize>,
     /// The sections actually returned. Section slices only.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sections: Vec<SectionSlice>,
 }
 

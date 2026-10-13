@@ -45,9 +45,21 @@ tantivy = { workspace = true }
 # Optional: SQL query engine for frontmatter queries
 turbovault-sql = { workspace = true, optional = true }
 
+# Optional: JSON Schemas for tool results (outputSchema)
+schemars = { workspace = true, optional = true, features = ["chrono04"] }
+
 [features]
 default = []
 sql = ["dep:turbovault-sql"]
+# JSON Schemas for every result type the tools return, so an MCP server can
+# advertise each tool's outputSchema.
+schemars = [
+    "dep:schemars",
+    "turbovault-core/schemars",
+    "turbovault-graph/schemars",
+    "turbovault-vault/schemars",
+    "turbovault-audit/schemars",
+]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

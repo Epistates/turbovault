@@ -21,6 +21,7 @@ use turbovault_vault::VaultManager;
 
 /// Search result metadata for LLM consumption
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SearchResultInfo {
     /// File path relative to vault root
     pub path: String,

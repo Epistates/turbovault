@@ -19,6 +19,7 @@ use std::path::PathBuf;
 /// The default is `Direct`. The old variant name `legacy` is kept as a serde
 /// alias so existing configs (`write_backend: legacy`) deserialize unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum WriteBackend {
     /// The non-git write path: `VaultManager` mutators write directly to the
@@ -54,6 +55,7 @@ impl std::str::FromStr for WriteBackend {
 /// `turbovault-core` doesn't pick up a git2/libgit2 dependency). The consumer
 /// converts at the substrate boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum GitMergeStrategy {
     /// `git merge --no-ff` — preserves the wip branch's per-transaction
@@ -69,6 +71,7 @@ pub enum GitMergeStrategy {
 /// absent, the substrate falls back to the repo's `user.name`/`user.email`
 /// and then to a built-in TurboVault default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GitAuthor {
     pub name: String,
     pub email: String,
@@ -77,6 +80,7 @@ pub struct GitAuthor {
 /// Per-vault git substrate configuration. Only meaningful when
 /// [`VaultConfig::write_backend`] is `Git`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VaultGitConfig {
     /// Target branch for commits. `None` = use the repo's current HEAD branch.
     #[serde(default)]
@@ -128,6 +132,7 @@ impl Default for VaultGitConfig {
 
 /// Configuration for a single vault
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VaultConfig {
     /// Unique identifier for this vault
     pub name: String,

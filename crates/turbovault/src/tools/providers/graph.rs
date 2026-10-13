@@ -1,8 +1,59 @@
 //! GraphProvider MCP capabilities.
 
+use std::collections::BTreeMap;
 use std::ops::Deref;
 
+use turbovault_tools::{BrokenLinkInfo, HealthInfo};
+
 use super::super::*;
+
+/// Response payload for `explain_vault`.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct ExplainVaultPayload {
+    vault_name: String,
+    quick_facts: QuickFacts,
+    /// Folders and their note counts. Omitted when concise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    structure: Option<VaultStructure>,
+    key_insights: KeyInsights,
+    recommendations: Recommendations,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct QuickFacts {
+    total_files: usize,
+    total_links: usize,
+    orphaned: usize,
+    health_score: u8,
+    is_healthy: bool,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct VaultStructure {
+    /// Folders holding notes, `root` for the vault root.
+    folders: Vec<String>,
+    file_count_by_folder: BTreeMap<String, usize>,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct KeyInsights {
+    hub_notes: Vec<HubConnections>,
+    dead_ends: Vec<String>,
+    average_links_per_file: f64,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct HubConnections {
+    path: String,
+    connections: usize,
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct Recommendations {
+    action_1: String,
+    action_2: String,
+    action_3: String,
+}
 
 #[derive(Clone)]
 pub(super) struct GraphProvider(CoreToolHandler);
@@ -46,6 +97,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<String>>,
     )]
     async fn get_backlinks(
         &self,
@@ -65,10 +117,9 @@ impl GraphProvider {
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (backlinks, page) = request.slice(relative_paths(&manager, backlinks));
 
-        let response =
-            StandardResponse::new(vault_name, "get_backlinks", serde_json::json!(backlinks))
-                .with_next_step("get_forward_links")
-                .with_next_step("get_related_notes");
+        let response = StandardResponse::new(vault_name, "get_backlinks", backlinks)
+            .with_next_step("get_forward_links")
+            .with_next_step("get_related_notes");
 
         let response = if page.total == Some(0) {
             response.with_warning("Note has no incoming links".to_string())
@@ -88,6 +139,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<String>>,
     )]
     async fn get_forward_links(
         &self,
@@ -110,11 +162,10 @@ impl GraphProvider {
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (links, page) = request.slice(relative_paths(&manager, links));
 
-        let response =
-            StandardResponse::new(vault_name, "get_forward_links", serde_json::json!(links))
-                .with_page(page)
-                .with_next_step("get_backlinks")
-                .with_next_step("get_related_notes");
+        let response = StandardResponse::new(vault_name, "get_forward_links", links)
+            .with_page(page)
+            .with_next_step("get_backlinks")
+            .with_next_step("get_related_notes");
 
         response.to_json()
     }
@@ -128,6 +179,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<String>>,
     )]
     async fn get_related_notes(
         &self,
@@ -155,10 +207,9 @@ impl GraphProvider {
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (related, page) = request.slice(relative_paths(&manager, related));
 
-        let response =
-            StandardResponse::new(vault_name, "get_related_notes", serde_json::json!(related))
-                .with_page(page)
-                .with_meta("max_hops", serde_json::json!(max_hops));
+        let response = StandardResponse::new(vault_name, "get_related_notes", related)
+            .with_page(page)
+            .with_meta("max_hops", serde_json::json!(max_hops));
 
         response.to_json()
     }
@@ -174,6 +225,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<(String, usize)>>,
     )]
     async fn get_hub_notes(
         &self,
@@ -196,13 +248,9 @@ impl GraphProvider {
         hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let (hubs, page) = request.slice(hubs);
 
-        let response = StandardResponse::new(
-            vault_name,
-            "get_hub_notes",
-            serde_json::to_value(&hubs).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_page(page)
-        .with_next_step("get_related_notes");
+        let response = StandardResponse::new(vault_name, "get_hub_notes", hubs)
+            .with_page(page)
+            .with_next_step("get_related_notes");
 
         response.to_json()
     }
@@ -216,6 +264,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<String>>,
     )]
     async fn get_dead_end_notes(
         &self,
@@ -231,12 +280,8 @@ impl GraphProvider {
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (dead_ends, page) = request.slice(relative_paths(&manager, dead_ends));
 
-        let response = StandardResponse::new(
-            vault_name,
-            "get_dead_end_notes",
-            serde_json::json!(dead_ends),
-        )
-        .with_page(page);
+        let response =
+            StandardResponse::new(vault_name, "get_dead_end_notes", dead_ends).with_page(page);
 
         response.to_json()
     }
@@ -250,6 +295,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<Vec<String>>>,
     )]
     async fn get_isolated_clusters(
         &self,
@@ -272,12 +318,8 @@ impl GraphProvider {
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (clusters, page) = request.slice(clusters);
 
-        let response = StandardResponse::new(
-            vault_name,
-            "get_isolated_clusters",
-            serde_json::json!(clusters),
-        )
-        .with_page(page);
+        let response =
+            StandardResponse::new(vault_name, "get_isolated_clusters", clusters).with_page(page);
 
         response.to_json()
     }
@@ -293,23 +335,20 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<HealthInfo>,
     )]
     async fn quick_health_check(&self) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let health = tools.quick_health_check().await.map_err(to_mcp_error)?;
 
-        let response = StandardResponse::new(
-            vault_name,
-            "quick_health_check",
-            serde_json::to_value(&health).map_err(|e| McpError::internal(e.to_string()))?,
-        )
-        .with_next_step("full_health_analysis")
-        .with_next_step(if health.is_healthy {
-            "recommend_related"
-        } else {
-            "get_broken_links"
-        });
+        let response = StandardResponse::new(vault_name, "quick_health_check", health.clone())
+            .with_next_step("full_health_analysis")
+            .with_next_step(if health.is_healthy {
+                "recommend_related"
+            } else {
+                "get_broken_links"
+            });
 
         response.to_json()
     }
@@ -323,17 +362,15 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<HealthInfo>,
     )]
     async fn full_health_analysis(&self) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager);
         let health = tools.full_health_analysis().await.map_err(to_mcp_error)?;
 
-        let mut response = StandardResponse::new(
-            vault_name,
-            "full_health_analysis",
-            serde_json::to_value(&health).map_err(|e| McpError::internal(e.to_string()))?,
-        );
+        let mut response =
+            StandardResponse::new(vault_name, "full_health_analysis", health.clone());
 
         // Add metadata about analysis
         response = response.with_meta("analysis_type", serde_json::json!("comprehensive"));
@@ -358,6 +395,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<BrokenLinkInfo>>,
     )]
     async fn get_broken_links(
         &self,
@@ -381,8 +419,7 @@ impl GraphProvider {
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (broken, page) = request.slice(broken);
 
-        let response =
-            StandardResponse::new(vault_name, "get_broken_links", serde_json::json!(broken));
+        let response = StandardResponse::new(vault_name, "get_broken_links", broken);
 
         let response = match page.total {
             Some(total) if total > 0 => response
@@ -403,6 +440,7 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = Paged<Vec<Vec<String>>>,
     )]
     async fn detect_cycles(
         &self,
@@ -432,8 +470,7 @@ impl GraphProvider {
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (cycles, page) = request.slice(cycles);
 
-        let response =
-            StandardResponse::new(vault_name, "detect_cycles", serde_json::json!(cycles));
+        let response = StandardResponse::new(vault_name, "detect_cycles", cycles);
 
         let response = if page.total.is_some_and(|total| total > 0) {
             response
@@ -456,8 +493,16 @@ impl GraphProvider {
         destructive = false,
         idempotent = true,
         open_world = false,
+        output_schema = StandardResponse<ExplainVaultPayload>,
     )]
-    async fn explain_vault(&self) -> McpResult<serde_json::Value> {
+    async fn explain_vault(
+        &self,
+        #[description(
+            "`detailed` (default) or `concise`. Concise leaves out `structure` (every folder and its note count, which grows with the vault) and `meta.alternatives`."
+        )]
+        response_format: Option<ResponseFormat>,
+    ) -> McpResult<serde_json::Value> {
+        let concise = ResponseFormat::is_concise(response_format);
         let (vault_name, manager) = self.get_vault_pair().await?;
         let graph_tools = GraphTools::new(manager.clone());
         let analysis_tools = AnalysisTools::new(manager.clone());
@@ -479,8 +524,7 @@ impl GraphProvider {
             .map_err(to_mcp_error)?;
 
         // Organize files by folder
-        let mut folders: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
+        let mut folders: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for file in &files {
             if turbovault_core::is_note(file) {
                 let file_str = manager.relative_path(file);
@@ -500,56 +544,69 @@ impl GraphProvider {
         }
 
         // Create holistic overview
-        let overview = serde_json::json!({
-            "vault_name": vault_name,
-            "quick_facts": {
-                "total_files": stats.total_files,
-                "total_links": stats.total_links,
-                "orphaned": stats.orphaned_files,
-                "health_score": health.health_score,
-                "is_healthy": health.is_healthy
+        let overview = ExplainVaultPayload {
+            vault_name: vault_name.clone(),
+            quick_facts: QuickFacts {
+                total_files: stats.total_files,
+                total_links: stats.total_links,
+                orphaned: stats.orphaned_files,
+                health_score: health.health_score,
+                is_healthy: health.is_healthy,
             },
-            "structure": {
-                "folders": folders.keys().collect::<Vec<_>>(),
-                "file_count_by_folder": folders.iter()
-                    .map(|(k, v)| (k.clone(), v.len()))
-                    .collect::<std::collections::HashMap<_, _>>(),
-            },
-            "key_insights": {
-                "hub_notes": hubs.iter().take(5).map(|(path, count)| serde_json::json!({
-                    "path": manager.relative_path(std::path::Path::new(path)),
-                    "connections": count
-                })).collect::<Vec<_>>(),
-                "dead_ends": dead_ends.iter().take(5)
+            structure: (!concise).then(|| VaultStructure {
+                folders: folders.keys().cloned().collect(),
+                file_count_by_folder: folders
+                    .iter()
+                    .map(|(folder, files)| (folder.clone(), files.len()))
+                    .collect(),
+            }),
+            key_insights: KeyInsights {
+                hub_notes: hubs
+                    .iter()
+                    .take(5)
+                    .map(|(path, count)| HubConnections {
+                        path: manager.relative_path(std::path::Path::new(path)),
+                        connections: *count,
+                    })
+                    .collect(),
+                dead_ends: dead_ends
+                    .iter()
+                    .take(5)
                     .map(|path| manager.relative_path(std::path::Path::new(path)))
-                    .collect::<Vec<_>>(),
-                "average_links_per_file": stats.average_links_per_file,
+                    .collect(),
+                average_links_per_file: stats.average_links_per_file,
             },
-            "recommendations": {
-                "action_1": if stats.orphaned_files > 0 {
-                    format!("Link {} orphaned notes to main index or other hub notes", stats.orphaned_files)
+            recommendations: Recommendations {
+                action_1: if stats.orphaned_files > 0 {
+                    format!(
+                        "Link {} orphaned notes to main index or other hub notes",
+                        stats.orphaned_files
+                    )
                 } else {
                     "Vault is well-connected".to_string()
                 },
-                "action_2": if health.broken_links_count > 0 {
-                    format!("Fix {} broken links (use get_broken_links for details)", health.broken_links_count)
+                action_2: if health.broken_links_count > 0 {
+                    format!(
+                        "Fix {} broken links (use get_broken_links for details)",
+                        health.broken_links_count
+                    )
                 } else {
                     "No broken links".to_string()
                 },
-                "action_3": if hubs.len() > 3 {
+                action_3: if hubs.len() > 3 {
                     "Create hub pages for your top 3-5 topics".to_string()
                 } else {
                     "Consider creating more cross-linking between topics".to_string()
-                }
-            }
-        });
+                },
+            },
+        };
 
-        let response = StandardResponse::new(vault_name, "explain_vault", overview)
-            .with_meta(
-                "view_type".to_string(),
-                serde_json::json!("holistic_gestalt"),
-            )
-            .with_meta(
+        let mut response = StandardResponse::new(vault_name, "explain_vault", overview).with_meta(
+            "view_type".to_string(),
+            serde_json::json!("holistic_gestalt"),
+        );
+        if !concise {
+            response = response.with_meta(
                 "alternatives".to_string(),
                 serde_json::json!([
                     "search() - Find notes by keyword",
@@ -557,19 +614,20 @@ impl GraphProvider {
                     "full_health_analysis() - Detailed health report",
                     "query_metadata() - Search by frontmatter"
                 ]),
-            )
-            .with_next_steps(&[
-                if stats.orphaned_files > 0 {
-                    "get_dead_end_notes"
-                } else {
-                    "search"
-                },
-                if health.broken_links_count > 0 {
-                    "get_broken_links"
-                } else {
-                    "get_hub_notes"
-                },
-            ]);
+            );
+        }
+        let response = response.with_next_steps(&[
+            if stats.orphaned_files > 0 {
+                "get_dead_end_notes"
+            } else {
+                "search"
+            },
+            if health.broken_links_count > 0 {
+                "get_broken_links"
+            } else {
+                "get_hub_notes"
+            },
+        ]);
 
         response.to_json()
     }
