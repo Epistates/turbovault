@@ -6,21 +6,8 @@ use turbovault_core::{FileMetadata, Frontmatter, Result, SourcePosition, VaultFi
 use crate::ParseOptions;
 use crate::engine::ParseEngine;
 
-// Individual parser modules are still available for backwards compatibility
-// and granular use cases, but the main Parser uses the unified engine.
-pub mod callouts;
 pub mod citations;
-pub mod embeds;
-pub mod frontmatter_parser;
-pub mod headings;
 pub mod link_utils;
-pub mod markdown_links;
-pub mod tags;
-pub mod tasks;
-pub mod wikilinks;
-
-#[allow(deprecated)]
-pub use self::frontmatter_parser::extract_frontmatter;
 
 /// Main parser for OFM files.
 ///

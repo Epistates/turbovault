@@ -135,10 +135,6 @@ pub use models::TaskStatus;
 pub use parsers::Parser;
 pub use standalone::{ParseOptions, ParsedContent};
 
-// Re-export frontmatter extraction (deprecated but kept for backwards compatibility)
-#[allow(deprecated)]
-pub use parsers::frontmatter_parser::extract_frontmatter;
-
 // Block-level parsing (for treemd integration)
 pub use blocks::{MAX_LIST_DEPTH, parse_blocks, parse_blocks_from_line, slugify, to_plain_text};
 
@@ -345,10 +341,9 @@ pub mod prelude {
     pub use crate::{ParseOptions, ParsedContent};
 
     // Individual parsers
-    #[allow(deprecated)]
     pub use crate::{
-        extract_frontmatter, parse_blocks, parse_blocks_from_line, parse_callouts,
-        parse_callouts_full, parse_citations, parse_embeds, parse_headings, parse_markdown_links,
-        parse_tags, parse_tasks, parse_wikilinks, slugify, to_plain_text,
+        parse_blocks, parse_blocks_from_line, parse_callouts, parse_callouts_full,
+        parse_citations, parse_embeds, parse_headings, parse_markdown_links, parse_tags,
+        parse_tasks, parse_wikilinks, slugify, to_plain_text,
     };
 }
