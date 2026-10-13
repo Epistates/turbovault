@@ -1509,19 +1509,21 @@
           "description": "Individual batch operation to execute",
           "oneOf": [
             {
-              "description": "Create a new note with content. Defaults to strict-create: the\nsubstrate adds `expect_absent`, so the loser of a concurrent-create\nrace aborts the entire batch with `ConcurrencyError`\n(turbovault-947 / 6fo §6 reconsideration domino).\n\n`force: Some(true)` disables `expect_absent`, falling back to\nupsert semantics (caller-acknowledged blind create/overwrite —\nequivalent to `WriteNote { expected_hash: None }`).",
+              "description": "Create a note. Fails the batch if a note is already at the path, unless force is true.",
               "properties": {
                 "content": {
+                  "description": "The note's markdown.",
                   "type": "string"
                 },
                 "force": {
-                  "description": "Disable the implicit `expect_absent` precondition. Default\nfalse; pass true to acknowledge a blind create/overwrite.",
+                  "description": "Replace a note already at the path. Default false.",
                   "type": [
                     "boolean",
                     "null"
                   ]
                 },
                 "path": {
+                  "description": "Vault-relative path of the new note, such as `projects/Plan.md`.",
                   "type": "string"
                 },
                 "type": {
@@ -1537,19 +1539,21 @@
               "type": "object"
             },
             {
-              "description": "Write/overwrite a note. `expected_hash` (git blob OID hex on git\nbackend, SHA-256 on direct) carries an `expect_blob` precondition;\nthe whole batch aborts if the target file no longer matches the\nexpected pre-image (turbovault-c0e).",
+              "description": "Write a note's whole content, creating it or replacing it.",
               "properties": {
                 "content": {
+                  "description": "The note's full markdown.",
                   "type": "string"
                 },
                 "expected_hash": {
-                  "description": "Optional optimistic-concurrency precondition checked before any operation in the batch is applied.",
+                  "description": "The note's `hash` from read_note; the batch fails if the note changed since. Omit to write whatever is there.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "path": {
+                  "description": "Vault-relative path of the note, such as `projects/Plan.md`.",
                   "type": "string"
                 },
                 "type": {
@@ -1565,22 +1569,24 @@
               "type": "object"
             },
             {
-              "description": "Delete a note. `expected_hash` guards the delete against a\nconcurrent modification of the target.\n\nturbovault-0g4.7: on the **git backend**, `on_backlinks` controls inbound\nwikilinks (parity with the standalone `delete_note`):\n- `\"refuse\"` (default) — abort the batch if the note has inbound\n  backlinks (prevents silently shipping broken links);\n- `\"rewrite-stale-callout\"` — atomically `~~[[strikethrough]]~~` every\n  linker in the same commit;\n- `\"force\"` — delete and leave inbound links dangling (the pre-0g4.7\n  behavior).\n\nThe direct backend ignores this field and always does a bare delete (no\natomic multi-file primitive).",
+              "description": "Delete a note. By default the batch fails if other notes link to it; on_backlinks changes that.",
               "properties": {
                 "expected_hash": {
-                  "description": "Optional optimistic-concurrency precondition on the deleted file.",
+                  "description": "The note's `hash` from read_note; the batch fails if the note changed since.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "on_backlinks": {
+                  "description": "`refuse` (default) fails the batch if other notes link to it, `rewrite-stale-callout` strikes those links through, `force` leaves them broken.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "path": {
+                  "description": "Vault-relative path of the note to delete.",
                   "type": "string"
                 },
                 "type": {
@@ -1595,26 +1601,28 @@
               "type": "object"
             },
             {
-              "description": "Move/rename a note. `expected_hash` guards the SOURCE against concurrent\nmodification; `dest_expected_hash` guards the DESTINATION. Both are\nsentinel-or-oid strings (`<oid> | \"absent\" | \"exists\" | \"blind\"`), the\nsame shape every other batch op's `expected_hash` uses. `dest_expected_hash`\nomitted = `\"absent\"` (the default clobber guard — refuse if the dest\nexists), preserving the pre-qae.6.4 behavior. (turbovault-qae.6.4)\n\nturbovault-0g4.6: on the **git backend**, `update_backlinks` (default\ntrue) atomically rewrites every inbound wikilink — `[[from]]`,\n`[[from|alias]]`, `[[from#section]]`, `[[from#^block]]`, `![[from]]` and\npath-prefix forms — to the new target in the SAME commit, with per-source\n`expect_blob` preconditions. Set it false for a rename-only move (inbound\nlinks dangle — the pre-0g4.6 behavior). The direct backend ignores this\nfield and is always rename-only (it has no atomic multi-file primitive).",
+              "description": "Move or rename a note, rewriting links to it in other notes in the same batch.",
               "properties": {
                 "dest_expected_hash": {
-                  "description": "Optional optimistic-concurrency precondition on the destination\n(sentinel-or-oid string). Omitted = `\"absent\"` (clobber guard).",
+                  "description": "What must be at the destination. Default `absent`, so an existing note is never replaced; a `hash` replaces that version, `blind` anything.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "expected_hash": {
-                  "description": "Optional optimistic-concurrency precondition on the source file\n(sentinel-or-oid string).",
+                  "description": "The note's `hash` from read_note; the batch fails if it changed since.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "from": {
+                  "description": "Vault-relative path of the note to move.",
                   "type": "string"
                 },
                 "to": {
+                  "description": "Vault-relative path to move it to.",
                   "type": "string"
                 },
                 "type": {
@@ -1622,6 +1630,7 @@
                   "type": "string"
                 },
                 "update_backlinks": {
+                  "description": "Rewrite links to the note in other notes. Default true; false leaves them pointing at the old path.",
                   "type": [
                     "boolean",
                     "null"
@@ -1636,21 +1645,25 @@
               "type": "object"
             },
             {
-              "description": "Update links in a note (find and replace link target).\n`expected_hash` guards the source file from concurrent\nmodification — important when several batch ops update siblings\nof the same renamed page.",
+              "description": "In one note, re-point every link to one target at another.",
               "properties": {
                 "expected_hash": {
+                  "description": "The note's `hash` from read_note; the batch fails if it changed since.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "file": {
+                  "description": "Vault-relative path of the note whose links to change.",
                   "type": "string"
                 },
                 "new_target": {
+                  "description": "The target to put instead, such as `New Note`.",
                   "type": "string"
                 },
                 "old_target": {
+                  "description": "The link target to replace, as written in the links, such as `Old Note`.",
                   "type": "string"
                 },
                 "type": {
@@ -1667,18 +1680,21 @@
               "type": "object"
             },
             {
-              "description": "turbovault-0g4.1: apply SEARCH/REPLACE blocks to an existing note as\npart of the atomic batch commit (the batch equivalent of `edit_note`).\n`edits` uses the same block grammar as the tool; multiple blocks edit\nmultiple locations in the one file. `expected_hash` (git blob OID hex)\ncarries an `expect_blob` precondition — a stale pre-image aborts the\nwhole batch. **Git backend only**; the direct executor refuses it.",
+              "description": "Change parts of a note with SEARCH/REPLACE blocks, as edit_note does.",
               "properties": {
                 "edits": {
+                  "description": "SEARCH/REPLACE blocks in edit_note's format: `<<<<<<< SEARCH`, text to find, `=======`, replacement, `>>>>>>> REPLACE`.",
                   "type": "string"
                 },
                 "expected_hash": {
+                  "description": "The note's `hash` from read_note; the batch fails if it changed since.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "path": {
+                  "description": "Vault-relative path of the note to edit.",
                   "type": "string"
                 },
                 "type": {
@@ -1694,9 +1710,10 @@
               "type": "object"
             },
             {
-              "description": "turbovault-0g4.2: set/merge frontmatter keys on a note as part of the\natomic batch commit (the batch equivalent of `update_frontmatter`).\n`merge` defaults to true (deep-merge into existing frontmatter); false\nreplaces the frontmatter wholesale. `expected_hash` (git blob OID hex)\ncarries an `expect_blob` precondition. **Git backend only**.",
+              "description": "Change a note's frontmatter, as update_frontmatter does.",
               "properties": {
                 "expected_hash": {
+                  "description": "The note's `hash` from read_note; the batch fails if it changed since.",
                   "type": [
                     "string",
                     "null"
@@ -1704,15 +1721,18 @@
                 },
                 "frontmatter": {
                   "additionalProperties": true,
+                  "description": "The keys and values to write, such as `{\"status\": \"done\"}`.",
                   "type": "object"
                 },
                 "merge": {
+                  "description": "True (default) merges these keys into the existing frontmatter; false replaces it.",
                   "type": [
                     "boolean",
                     "null"
                   ]
                 },
                 "path": {
+                  "description": "Vault-relative path of the note.",
                   "type": "string"
                 },
                 "type": {
@@ -1728,21 +1748,25 @@
               "type": "object"
             },
             {
-              "description": "turbovault-0g4.3: add or remove frontmatter tags on a note as part of\nthe atomic batch commit (the batch equivalent of `manage_tags`\nadd/remove). `operation` is `\"add\"` or `\"remove\"`; `\"list\"` is\nread-only and not a batch op (rejected). `expected_hash` carries an\n`expect_blob` precondition. **Git backend only**.",
+              "description": "Add or remove tags in a note's frontmatter `tags` list.",
               "properties": {
                 "expected_hash": {
+                  "description": "The note's `hash` from read_note; the batch fails if it changed since.",
                   "type": [
                     "string",
                     "null"
                   ]
                 },
                 "operation": {
+                  "description": "`add` or `remove`.",
                   "type": "string"
                 },
                 "path": {
+                  "description": "Vault-relative path of the note.",
                   "type": "string"
                 },
                 "tags": {
+                  "description": "Tags without `#`, such as `[\"work\", \"project/alpha\"]`.",
                   "items": {
                     "type": "string"
                   },
@@ -1762,24 +1786,28 @@
               "type": "object"
             },
             {
-              "description": "turbovault-0g4.4: render a template and create a note as part of the\natomic batch commit (the batch equivalent of `create_from_template`).\n`force` (default false) → strict create (`expect_absent`, aborts if the\npath exists); true → blind upsert. **Git backend only**.",
+              "description": "Create a note from a template, as create_from_template does.",
               "properties": {
                 "fields": {
                   "additionalProperties": {
                     "type": "string"
                   },
+                  "description": "The template's field values, such as `{\"title\": \"Weekly sync\"}`.",
                   "type": "object"
                 },
                 "force": {
+                  "description": "Replace a note already at the path. Default false.",
                   "type": [
                     "boolean",
                     "null"
                   ]
                 },
                 "path": {
+                  "description": "Vault-relative path for the new note.",
                   "type": "string"
                 },
                 "template_id": {
+                  "description": "The template's id, as list_templates shows it.",
                   "type": "string"
                 },
                 "type": {

@@ -60,17 +60,49 @@ fn every_parameter_and_tool_is_described() {
         );
 
         let schema = serde_json::to_value(&tool.input_schema).expect("schema");
-        let properties = schema["properties"]
-            .as_object()
-            .cloned()
-            .unwrap_or_default();
-        for (param, property) in properties {
-            let text = property["description"].as_str().unwrap_or_default();
-            assert!(!text.trim().is_empty(), "{name}.{param} has no description");
-            assert!(
-                !text.contains('\u{2014}'),
-                "{name}.{param}'s description has an em dash"
-            );
+        assert_properties_described(name, &schema);
+    }
+}
+
+/// Every property of every object in `schema`, nested ones included (such
+/// as each batch operation's fields), has a description without an em dash.
+/// A serde tag field (`type` with a fixed value) names itself.
+fn assert_properties_described(tool: &str, schema: &serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            if let Some(properties) = object.get("properties").and_then(|p| p.as_object()) {
+                for (param, property) in properties {
+                    let is_tag = param == "type"
+                        && (property.get("const").is_some() || property.get("enum").is_some());
+                    if is_tag {
+                        continue;
+                    }
+                    let text = property["description"].as_str().unwrap_or_default();
+                    assert!(
+                        !text.trim().is_empty(),
+                        "{tool}: {param} has no description"
+                    );
+                    assert!(
+                        !text.contains('\u{2014}'),
+                        "{tool}: {param}'s description has an em dash"
+                    );
+                }
+            }
+            if let Some(text) = object.get("description").and_then(|d| d.as_str()) {
+                assert!(
+                    !text.contains('\u{2014}'),
+                    "{tool}: a schema description has an em dash: {text}"
+                );
+            }
+            for value in object.values() {
+                assert_properties_described(tool, value);
+            }
         }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                assert_properties_described(tool, item);
+            }
+        }
+        _ => {}
     }
 }

@@ -77,11 +77,19 @@ pub enum BatchOperation {
     /// upsert semantics (caller-acknowledged blind create/overwrite —
     /// equivalent to `WriteNote { expected_hash: None }`).
     #[serde(rename = "CreateNote", alias = "CreateFile")]
+    #[schemars(
+        description = "Create a note. Fails the batch if a note is already at the path, unless force is true."
+    )]
     CreateNote {
+        #[schemars(
+            description = "Vault-relative path of the new note, such as `projects/Plan.md`."
+        )]
         path: String,
+        #[schemars(description = "The note's markdown.")]
         content: String,
         /// Disable the implicit `expect_absent` precondition. Default
         /// false; pass true to acknowledge a blind create/overwrite.
+        #[schemars(description = "Replace a note already at the path. Default false.")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
     },
@@ -91,10 +99,16 @@ pub enum BatchOperation {
     /// the whole batch aborts if the target file no longer matches the
     /// expected pre-image (turbovault-c0e).
     #[serde(rename = "WriteNote", alias = "WriteFile")]
+    #[schemars(description = "Write a note's whole content, creating it or replacing it.")]
     WriteNote {
+        #[schemars(description = "Vault-relative path of the note, such as `projects/Plan.md`.")]
         path: String,
+        #[schemars(description = "The note's full markdown.")]
         content: String,
         /// Optional optimistic-concurrency precondition checked before any operation in the batch is applied.
+        #[schemars(
+            description = "The note's `hash` from read_note; the batch fails if the note changed since. Omit to write whatever is there."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
@@ -114,11 +128,21 @@ pub enum BatchOperation {
     /// The direct backend ignores this field and always does a bare delete (no
     /// atomic multi-file primitive).
     #[serde(rename = "DeleteNote", alias = "DeleteFile")]
+    #[schemars(
+        description = "Delete a note. By default the batch fails if other notes link to it; on_backlinks changes that."
+    )]
     DeleteNote {
+        #[schemars(description = "Vault-relative path of the note to delete.")]
         path: String,
         /// Optional optimistic-concurrency precondition on the deleted file.
+        #[schemars(
+            description = "The note's `hash` from read_note; the batch fails if the note changed since."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
+        #[schemars(
+            description = "`refuse` (default) fails the batch if other notes link to it, `rewrite-stale-callout` strikes those links through, `force` leaves them broken."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         on_backlinks: Option<String>,
     },
@@ -138,17 +162,31 @@ pub enum BatchOperation {
     /// links dangle — the pre-0g4.6 behavior). The direct backend ignores this
     /// field and is always rename-only (it has no atomic multi-file primitive).
     #[serde(rename = "MoveNote", alias = "MoveFile")]
+    #[schemars(
+        description = "Move or rename a note, rewriting links to it in other notes in the same batch."
+    )]
     MoveNote {
+        #[schemars(description = "Vault-relative path of the note to move.")]
         from: String,
+        #[schemars(description = "Vault-relative path to move it to.")]
         to: String,
         /// Optional optimistic-concurrency precondition on the source file
         /// (sentinel-or-oid string).
+        #[schemars(
+            description = "The note's `hash` from read_note; the batch fails if it changed since."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
         /// Optional optimistic-concurrency precondition on the destination
         /// (sentinel-or-oid string). Omitted = `"absent"` (clobber guard).
+        #[schemars(
+            description = "What must be at the destination. Default `absent`, so an existing note is never replaced; a `hash` replaces that version, `blind` anything."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dest_expected_hash: Option<String>,
+        #[schemars(
+            description = "Rewrite links to the note in other notes. Default true; false leaves them pointing at the old path."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         update_backlinks: Option<bool>,
     },
@@ -158,10 +196,19 @@ pub enum BatchOperation {
     /// modification — important when several batch ops update siblings
     /// of the same renamed page.
     #[serde(rename = "UpdateLinks")]
+    #[schemars(description = "In one note, re-point every link to one target at another.")]
     UpdateLinks {
+        #[schemars(description = "Vault-relative path of the note whose links to change.")]
         file: String,
+        #[schemars(
+            description = "The link target to replace, as written in the links, such as `Old Note`."
+        )]
         old_target: String,
+        #[schemars(description = "The target to put instead, such as `New Note`.")]
         new_target: String,
+        #[schemars(
+            description = "The note's `hash` from read_note; the batch fails if it changed since."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
@@ -173,9 +220,19 @@ pub enum BatchOperation {
     /// carries an `expect_blob` precondition — a stale pre-image aborts the
     /// whole batch. **Git backend only**; the direct executor refuses it.
     #[serde(rename = "EditNote", alias = "EditFile")]
+    #[schemars(
+        description = "Change parts of a note with SEARCH/REPLACE blocks, as edit_note does."
+    )]
     EditNote {
+        #[schemars(description = "Vault-relative path of the note to edit.")]
         path: String,
+        #[schemars(
+            description = "SEARCH/REPLACE blocks in edit_note's format: `<<<<<<< SEARCH`, text to find, `=======`, replacement, `>>>>>>> REPLACE`."
+        )]
         edits: String,
+        #[schemars(
+            description = "The note's `hash` from read_note; the batch fails if it changed since."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
@@ -186,11 +243,22 @@ pub enum BatchOperation {
     /// replaces the frontmatter wholesale. `expected_hash` (git blob OID hex)
     /// carries an `expect_blob` precondition. **Git backend only**.
     #[serde(rename = "UpdateFrontmatter")]
+    #[schemars(description = "Change a note's frontmatter, as update_frontmatter does.")]
     UpdateFrontmatter {
+        #[schemars(description = "Vault-relative path of the note.")]
         path: String,
+        #[schemars(
+            description = "The keys and values to write, such as `{\"status\": \"done\"}`."
+        )]
         frontmatter: std::collections::HashMap<String, serde_json::Value>,
+        #[schemars(
+            description = "True (default) merges these keys into the existing frontmatter; false replaces it."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         merge: Option<bool>,
+        #[schemars(
+            description = "The note's `hash` from read_note; the batch fails if it changed since."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
@@ -201,10 +269,17 @@ pub enum BatchOperation {
     /// read-only and not a batch op (rejected). `expected_hash` carries an
     /// `expect_blob` precondition. **Git backend only**.
     #[serde(rename = "ManageTags")]
+    #[schemars(description = "Add or remove tags in a note's frontmatter `tags` list.")]
     ManageTags {
+        #[schemars(description = "Vault-relative path of the note.")]
         path: String,
+        #[schemars(description = "`add` or `remove`.")]
         operation: String,
+        #[schemars(description = "Tags without `#`, such as `[\"work\", \"project/alpha\"]`.")]
         tags: Vec<String>,
+        #[schemars(
+            description = "The note's `hash` from read_note; the batch fails if it changed since."
+        )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
     },
@@ -214,10 +289,17 @@ pub enum BatchOperation {
     /// `force` (default false) → strict create (`expect_absent`, aborts if the
     /// path exists); true → blind upsert. **Git backend only**.
     #[serde(rename = "CreateFromTemplate")]
+    #[schemars(description = "Create a note from a template, as create_from_template does.")]
     CreateFromTemplate {
+        #[schemars(description = "The template's id, as list_templates shows it.")]
         template_id: String,
+        #[schemars(description = "Vault-relative path for the new note.")]
         path: String,
+        #[schemars(
+            description = "The template's field values, such as `{\"title\": \"Weekly sync\"}`."
+        )]
         fields: std::collections::HashMap<String, String>,
+        #[schemars(description = "Replace a note already at the path. Default false.")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         force: Option<bool>,
     },
