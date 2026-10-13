@@ -21,8 +21,11 @@ use turbovault_tools::{
 };
 use turbovault_vault::{ChangeListener, CommitOrigin, VaultManager};
 
+mod engine_slots;
 mod providers;
 pub use providers::ObsidianMcpServer;
+
+use engine_slots::EngineSlots;
 
 #[cfg(feature = "plugin-api")]
 mod plugin_host;
@@ -326,9 +329,9 @@ pub(super) struct CoreToolHandler {
     /// Snapshot stores per vault (keyed by vault name)
     snapshot_stores: Arc<RwLock<HashMap<String, Arc<SnapshotStore>>>>,
     /// Similarity engines per vault (keyed by vault name, lazy-initialized)
-    similarity_engines: Arc<RwLock<HashMap<String, Arc<SimilarityEngine>>>>,
+    similarity_engines: Arc<EngineSlots<SimilarityEngine>>,
     /// Search engines per vault (keyed by vault name, lazy-initialized)
-    search_engines: Arc<RwLock<HashMap<String, Arc<SearchEngine>>>>,
+    search_engines: Arc<EngineSlots<SearchEngine>>,
     /// Shared per-vault `CommitLocks` registries for the git substrate
     /// (keyed by vault name, lazy-initialized). `VaultRepo` itself is `!Sync`
     /// (libgit2 raw pointers), so we cache the lock registry — which IS
@@ -395,8 +398,8 @@ impl CoreToolHandler {
             persistent_cache: Arc::new(RwLock::new(None)),
             audit_logs: Arc::new(RwLock::new(HashMap::new())),
             snapshot_stores: Arc::new(RwLock::new(HashMap::new())),
-            similarity_engines: Arc::new(RwLock::new(HashMap::new())),
-            search_engines: Arc::new(RwLock::new(HashMap::new())),
+            similarity_engines: Arc::default(),
+            search_engines: Arc::default(),
             git_locks: Arc::new(RwLock::new(HashMap::new())),
             active_fanouts: Arc::new(RwLock::new(HashMap::new())),
             event_sink: Arc::new(std::sync::OnceLock::new()),
@@ -875,18 +878,24 @@ impl CoreToolHandler {
                 // the link graph cannot then read a search index that is still
                 // catching up. Spawning here would leave exactly that gap.
                 Box::pin(async move {
-                    if !changed.is_empty() {
-                        let cached = { search_engines.read().await.get(&name).cloned() };
-                        if let Some(engine) = cached
-                            && let Err(e) = engine.apply_changes(changed).await
-                        {
-                            log::warn!(
-                                "change-listener: search apply failed for '{name}', evicting: {e}"
-                            );
-                            search_engines.write().await.remove(&name);
-                        }
+                    if changed.is_empty() {
+                        return;
                     }
-                    similarity_engines.write().await.remove(&name);
+                    // A build in progress keeps the report and applies it
+                    // when it publishes, so nothing reported mid-build is lost.
+                    if let Some(engine) = search_engines.report(&name, &changed)
+                        && let Err(e) = engine.apply_changes(changed.clone()).await
+                    {
+                        log::warn!(
+                            "change-listener: search apply failed for '{name}', evicting: {e}"
+                        );
+                        search_engines.remove(&name);
+                    }
+                    // The similarity engine has no incremental update: a built
+                    // one is dropped, and a build in progress is marked stale.
+                    if similarity_engines.report(&name, &changed).is_some() {
+                        similarity_engines.remove(&name);
+                    }
                 })
             });
         manager.set_change_listener(listener);
@@ -939,29 +948,18 @@ impl CoreToolHandler {
         // applies whatever moved to the engine below before this returns.
         manager.ensure_fresh().await;
 
-        // Check cache first (read lock — fast path)
-        {
-            let cache = self.search_engines.read().await;
-            if let Some(engine) = cache.get(vault_name) {
-                return Ok(engine.clone());
-            }
-        }
-
-        // Build new engine (this indexes the entire vault via tantivy)
-        let engine = SearchEngine::new(manager.clone())
+        // One build per vault however many callers arrive at once; the build
+        // indexes the entire vault via tantivy.
+        let (engine, missed) = self
+            .search_engines
+            .get_or_build(vault_name, || SearchEngine::new(manager.clone()))
             .await
             .map_err(|e| McpError::internal(format!("Failed to build search engine: {}", e)))?;
-        let engine = Arc::new(engine);
-
-        // Cache it — double-check to handle concurrent callers
-        {
-            let mut cache = self.search_engines.write().await;
-            if let Some(existing) = cache.get(vault_name) {
-                return Ok(existing.clone());
-            }
-            cache.insert(vault_name.to_string(), engine.clone());
+        // Notes that changed after the build read them.
+        if let Err(e) = engine.apply_changes(missed).await {
+            log::warn!("search engine for '{vault_name}' missed changes, evicting: {e}");
+            self.search_engines.remove(vault_name);
         }
-
         Ok(engine)
     }
 
@@ -973,25 +971,16 @@ impl CoreToolHandler {
         // invalidates this cache entry, and only the sweep can notice.
         manager.ensure_fresh().await;
 
-        // Check cache
-        {
-            let cache = self.similarity_engines.read().await;
-            if let Some(engine) = cache.get(&vault_name) {
-                return Ok(engine.clone());
-            }
-        }
-
-        // Build new engine
-        let engine = SimilarityEngine::new(manager)
+        let (engine, missed) = self
+            .similarity_engines
+            .get_or_build(&vault_name, || SimilarityEngine::new(manager))
             .await
             .map_err(|e| McpError::internal(format!("Failed to build similarity engine: {}", e)))?;
-        let engine = Arc::new(engine);
-
-        {
-            let mut cache = self.similarity_engines.write().await;
-            cache.insert(vault_name, engine.clone());
+        // It has no incremental update, so an engine that missed a change
+        // answers this call and is not kept.
+        if !missed.is_empty() {
+            self.similarity_engines.remove(&vault_name);
         }
-
         Ok(engine)
     }
 
@@ -1244,8 +1233,8 @@ impl CoreToolHandler {
             .remove_vault(name)
             .await
             .map_err(to_mcp_error)?;
-        self.search_engines.write().await.remove(name);
-        self.similarity_engines.write().await.remove(name);
+        self.search_engines.remove(name);
+        self.similarity_engines.remove(name);
         self.vault_managers.write().await.remove(name);
         self.git_locks.write().await.remove(name);
 

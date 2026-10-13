@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
-use tantivy::{Index, ReloadPolicy, TantivyDocument, doc};
+use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 use tracing::instrument;
 use turbovault_core::prelude::*;
 use turbovault_parser::to_plain_text;
@@ -117,6 +117,9 @@ impl SearchQuery {
 pub struct SearchEngine {
     pub manager: Arc<VaultManager>,
     index: Index,
+    /// Tantivy allows one writer per index, so the engine keeps the one it
+    /// built with and every change report goes through it in turn.
+    writer: tokio::sync::Mutex<IndexWriter>,
     // Pre-resolved field handles — avoids runtime schema lookup and unwrap on every search
     field_path: Field,
     field_title: Field,
@@ -159,93 +162,103 @@ impl SearchEngine {
         // Create in-memory index
         let index = Index::create_in_ram(schema.clone());
 
-        // Index all files
-        let mut index_writer = index
+        let index_writer = index
             .writer(50_000_000)
             .map_err(|e| Error::config_error(format!("Failed to create index writer: {}", e)))?;
 
-        let files = manager.scan_vault().await?;
-
-        for file_path in files {
-            // Convert PathBuf to string to check extension (case-insensitive)
-            let path_str = file_path.to_string_lossy();
-            let path_lower = path_str.to_lowercase();
-            if !path_lower.ends_with(".md") {
-                continue;
-            }
-
-            match manager.parse_file(&file_path).await {
-                Ok(vault_file) => {
-                    // turbovault-2ag: index docs by VAULT-RELATIVE path so the
-                    // field_path key matches `apply_changes` (which uses the
-                    // git-diff relative path). Keying the initial build by the
-                    // absolute path made `apply_changes`'s relative `delete_term`
-                    // miss, leaving a stale duplicate doc on every edit.
-                    let path_str = manager.relative_path(&file_path);
-
-                    // Get title
-                    let title = vault_file
-                        .frontmatter
-                        .as_ref()
-                        .and_then(|fm| fm.data.get("title"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| {
-                            file_path
-                                .file_stem()
-                                .unwrap_or_default()
-                                .to_str()
-                                .unwrap_or("")
-                        })
-                        .to_string();
-
-                    // Get tags
-                    let tags_str = vault_file
-                        .frontmatter
-                        .as_ref()
-                        .map(|fm| fm.tags().join(" "))
-                        .unwrap_or_default();
-
-                    // Extract plain text for indexing (excludes markdown syntax, URLs, etc.)
-                    let plain_content = to_plain_text(&vault_file.content);
-
-                    // Add document to index with plain text content (use stored field handles)
-                    let _ = index_writer.add_document(doc!(
-                        field_path => path_str.clone(),
-                        field_title => title,
-                        field_content => plain_content,
-                        field_tags => tags_str,
-                    ));
-                }
-                Err(_e) => {
-                    // Silently skip files that fail to parse
-                }
-            }
-        }
-
-        index_writer
-            .commit()
-            .map_err(|e| Error::config_error(format!("Failed to commit index: {}", e)))?;
-
-        Ok(Self {
+        let engine = Self {
             manager,
             index,
+            writer: tokio::sync::Mutex::new(index_writer),
             field_path,
             field_title,
             field_content,
             field_tags,
-        })
+        };
+
+        // Index all files
+        let files = engine.manager.scan_vault().await?;
+        {
+            let mut writer = engine.writer.lock().await;
+            for file_path in files {
+                // turbovault-2ag: index docs by VAULT-RELATIVE path so the
+                // field_path key matches `apply_changes` (which uses the
+                // git-diff relative path). Keying the initial build by the
+                // absolute path made `apply_changes`'s relative `delete_term`
+                // miss, leaving a stale duplicate doc on every edit.
+                let rel_path = engine.manager.relative_path(&file_path);
+                if let Some(document) = engine.document_for(&rel_path).await {
+                    writer
+                        .add_document(document)
+                        .map_err(|e| Error::config_error(format!("Failed to index: {e}")))?;
+                }
+            }
+            writer
+                .commit()
+                .map_err(|e| Error::config_error(format!("Failed to commit index: {}", e)))?;
+        }
+
+        Ok(engine)
+    }
+
+    /// The document for the note at `rel_path` as it is on disk now, or
+    /// `None` when there is no note there to index: it isn't markdown, it
+    /// is gone, or it could not be read or parsed (logged, so one bad file
+    /// costs only its own entry).
+    async fn document_for(&self, rel_path: &str) -> Option<TantivyDocument> {
+        // tlx.7: markdown only, the same for a cold build as for a change
+        // report, or a path indexed by one vanishes on the other.
+        if !rel_path.to_lowercase().ends_with(".md") {
+            return None;
+        }
+        let vault_file = match self
+            .manager
+            .parse_file(std::path::Path::new(rel_path))
+            .await
+        {
+            Ok(vault_file) => vault_file,
+            Err(e) => {
+                log::debug!("search index skips {rel_path}: {e}");
+                return None;
+            }
+        };
+        let title = vault_file
+            .frontmatter
+            .as_ref()
+            .and_then(|fm| fm.data.get("title"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| {
+                std::path::Path::new(rel_path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+            })
+            .to_string();
+        let tags = vault_file
+            .frontmatter
+            .as_ref()
+            .map(|fm| fm.tags().join(" "))
+            .unwrap_or_default();
+        // Plain text, so markdown syntax and URLs are not indexed as words.
+        Some(doc!(
+            self.field_path => rel_path.to_string(),
+            self.field_title => title,
+            self.field_content => to_plain_text(&vault_file.content),
+            self.field_tags => tags,
+        ))
     }
 
     /// GWS.14c — apply an incremental change set to the tantivy index.
-    /// Each `(path, present_in_commit)` is processed in order:
-    /// - `present=true`  → delete the existing doc for this path (no-op if
-    ///   absent), re-parse the working-tree bytes, add the new doc.
-    /// - `present=false` → delete the doc for this path.
-    /// All changes commit in one writer changeset.
     ///
-    /// Reads from the working tree (working-tree == HEAD invariant during
-    /// the substrate's commit lock). Parse errors are logged + skipped per
-    /// path — one malformed file does not brick the whole drain pass.
+    /// Each reported path is re-indexed as it is on disk now: its old doc is
+    /// deleted (a no-op if it had none) and, if a note is there to read, the
+    /// new one added. The `present` half of a report is not trusted over the
+    /// disk, which makes a report idempotent and order-independent: one held
+    /// back while a cold build ran can be applied after a newer one without
+    /// undoing it. Unreadable files are logged and skipped per path, so one
+    /// malformed file does not brick the whole drain pass. All changes commit
+    /// in one writer changeset, and concurrent calls take turns on the
+    /// engine's single writer.
     ///
     /// Replaces the pre-GWS.14c pattern where the server evicted the
     /// cached engine on flush and the next query paid cold-rebuild cost.
@@ -258,64 +271,14 @@ impl SearchEngine {
         if changes.is_empty() {
             return Ok(());
         }
-        let mut writer = self
-            .index
-            .writer(50_000_000)
-            .map_err(|e| Error::config_error(format!("apply_changes: writer create: {}", e)))?;
-        for (rel_path, present) in changes {
-            // delete is a no-op if the path isn't currently in the index.
+        let mut writer = self.writer.lock().await;
+        for (rel_path, _present) in changes {
             let term = tantivy::Term::from_field_text(self.field_path, &rel_path);
             writer.delete_term(term);
-
-            if present {
-                // tlx.7: mirror SearchEngine::new's markdown-only filter. The
-                // initial build indexes only `.md`; without this guard a
-                // committed non-markdown path that `parse_file` accepts would
-                // be searchable incrementally but vanish on the next cold
-                // rebuild — a divergent index. The unconditional delete_term
-                // above still runs, so a path that flips type is removed.
-                if !rel_path.to_lowercase().ends_with(".md") {
-                    continue;
-                }
-                match self
-                    .manager
-                    .parse_file(std::path::Path::new(&rel_path))
-                    .await
-                {
-                    Ok(vault_file) => {
-                        let title = vault_file
-                            .frontmatter
-                            .as_ref()
-                            .and_then(|fm| fm.data.get("title"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| {
-                                std::path::Path::new(&rel_path)
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("")
-                            })
-                            .to_string();
-                        let tags_str = vault_file
-                            .frontmatter
-                            .as_ref()
-                            .map(|fm| fm.tags().join(" "))
-                            .unwrap_or_default();
-                        let plain_content = to_plain_text(&vault_file.content);
-                        let _ = writer.add_document(doc!(
-                            self.field_path => rel_path.clone(),
-                            self.field_title => title,
-                            self.field_content => plain_content,
-                            self.field_tags => tags_str,
-                        ));
-                    }
-                    Err(e) => {
-                        log::debug!(
-                            "search apply_changes skip {} (parse failed: {})",
-                            rel_path,
-                            e
-                        );
-                    }
-                }
+            if let Some(document) = self.document_for(&rel_path).await {
+                writer.add_document(document).map_err(|e| {
+                    Error::config_error(format!("apply_changes: index {rel_path}: {e}"))
+                })?;
             }
         }
         writer
@@ -759,6 +722,71 @@ mod tests {
             0,
             "old doc replaced, not duplicated"
         );
+    }
+
+    async fn engine_over(files: &[(&str, &str)]) -> (tempfile::TempDir, SearchEngine) {
+        use turbovault_core::config::{ServerConfig, VaultConfig};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (path, content) in files {
+            std::fs::write(tmp.path().join(path), content).unwrap();
+        }
+        let mut cfg = ServerConfig::new();
+        cfg.vaults
+            .push(VaultConfig::builder("v", tmp.path()).build().unwrap());
+        let manager = Arc::new(VaultManager::new(cfg).unwrap());
+        let engine = SearchEngine::new(manager).await.unwrap();
+        (tmp, engine)
+    }
+
+    /// Tantivy allows one writer per index. Two change reports applied at
+    /// once (a write and the freshness sweep) must both land, not fail on
+    /// the writer lock and cost the server its engine.
+    #[tokio::test]
+    async fn concurrent_apply_changes_both_land() {
+        let (tmp, engine) = engine_over(&[("a.md", "# A\n"), ("b.md", "# B\n")]).await;
+        std::fs::write(tmp.path().join("a.md"), "# A\n\ndeltaword\n").unwrap();
+        std::fs::write(tmp.path().join("b.md"), "# B\n\nepsilonword\n").unwrap();
+
+        let (a, b) = tokio::join!(
+            engine.apply_changes(vec![("a.md".to_string(), true)]),
+            engine.apply_changes(vec![("b.md".to_string(), true)]),
+        );
+        a.unwrap();
+        b.unwrap();
+
+        assert_eq!(engine.search("deltaword").await.unwrap().len(), 1);
+        assert_eq!(engine.search("epsilonword").await.unwrap().len(), 1);
+    }
+
+    /// A change report is applied as what is on disk now, so two reports for
+    /// one path give the same index whichever lands last. A report kept while
+    /// a cold build ran can be applied after a newer one without undoing it.
+    #[tokio::test]
+    async fn apply_changes_follows_the_disk_not_the_report() {
+        let (tmp, engine) = engine_over(&[("a.md", "# A\n\nzetaword\n")]).await;
+
+        // Deleted, then created again before the older report was applied.
+        engine
+            .apply_changes(vec![("a.md".to_string(), true)])
+            .await
+            .unwrap();
+        engine
+            .apply_changes(vec![("a.md".to_string(), false)])
+            .await
+            .unwrap();
+        assert_eq!(
+            engine.search("zetaword").await.unwrap().len(),
+            1,
+            "a.md is on disk, so a stale deletion report must not drop it"
+        );
+
+        std::fs::remove_file(tmp.path().join("a.md")).unwrap();
+        engine
+            .apply_changes(vec![("a.md".to_string(), true)])
+            .await
+            .unwrap();
+        assert_eq!(engine.search("zetaword").await.unwrap().len(), 0);
     }
 
     /// tlx.7: apply_changes must mirror SearchEngine::new's markdown-only
