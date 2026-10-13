@@ -44,6 +44,8 @@ htmlcov/
 # one is missing from a fresh clone, and `include_str!` turns that into a build
 # failure rather than a skipped test.
 !crates/*/tests/fixtures/*.md
+# Fuzz seeds are inputs too, for the same reason.
+!fuzz/seeds/**/*.md
 !/LICENSE*
 !LICENSE
 

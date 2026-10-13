@@ -33,3 +33,63 @@ jobs:
 
       - name: Run the ignored timing tests in release mode
         run: cargo test --release --locked -p turbovault-parser --test test_nesting_bounds -- --ignored
+
+  # Each fuzz target for five minutes, the corpus carried between runs in the
+  # Actions cache so coverage keeps growing night over night. A crash uploads
+  # the input that caused it; reproduce with `cargo +nightly fuzz run <target>
+  # <file>` (see fuzz/README.md).
+  fuzz:
+    name: Fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: parse_blocks
+            seeds: markdown
+          - target: parse_note
+            seeds: markdown
+          - target: rewrite_links
+            seeds: markdown
+          - target: frontmatter
+            seeds: frontmatter
+          - target: edit_blocks
+            seeds: edit_blocks
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # nightly
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: fuzz
+          workspaces: fuzz
+
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-fuzz@0.13.2
+
+      - name: Restore corpus
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      - name: Fuzz for five minutes
+        run: |
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          cargo +nightly fuzz run -O "${{ matrix.target }}" \
+            "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.seeds }}" \
+            -- -max_total_time=300 -max_len=65536 -rss_limit_mb=4096
+
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30
