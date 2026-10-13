@@ -69,6 +69,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 
 # Data structures & algorithms
 petgraph = "0.8"             # 2.1M+ downloads, ecosystem standard for graphs
+rayon = "1.12"               # Parallel parsing and indexing (already in the tree via tantivy)
 
 # File I/O & Watching (upgraded from watchfiles to notify directly)
 notify = "8"                 # 2025 current, v8.x active maintenance

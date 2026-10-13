@@ -2,6 +2,7 @@
 
 use crate::reindex::CommitOrigin;
 use futures::StreamExt;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -251,6 +252,20 @@ const RECONCILE_DUTY_DIVISOR: u32 = 20;
 /// latency on a slow or network disk, few enough to stay well inside the open
 /// file limit.
 const INITIAL_READ_CONCURRENCY: usize = 64;
+
+/// How many notes `sync_index` applies per hold of the graph and the cache,
+/// so a reader waits on a slice of a large batch, never all of it.
+const SYNC_CHUNK: usize = 512;
+
+/// What `sync_index` does to the index for one changed note.
+enum IndexUpdate {
+    /// Parse result to put in the graph and the cache.
+    Upsert(VaultFile, Option<Observed>),
+    /// Gone, or out of the scan's reach: drop it.
+    Remove,
+    /// Leave the index as it is.
+    Skip,
+}
 
 /// The reconcile schedule.
 #[derive(Debug)]
@@ -1938,15 +1953,6 @@ impl VaultManager {
         cache.insert(path, CacheEntry { file, observed });
     }
 
-    /// Whether a scan would find `path` (see [`ScanSpec::admits`]).
-    async fn in_scope(&self, path: &Path) -> bool {
-        let spec = Arc::clone(&self.scan_spec);
-        let path = path.to_path_buf();
-        tokio::task::spawn_blocking(move || spec.admits(&path))
-            .await
-            .unwrap_or(false)
-    }
-
     /// [`parse_note`] with this manager's parser.
     fn parse_read(&self, path: &Path, read: &NoteRead) -> Result<VaultFile> {
         parse_note(&self.parser, path, read)
@@ -1965,78 +1971,142 @@ impl VaultManager {
     /// already-established `write_file` behavior. No existing caller relies
     /// on a non-markdown file appearing in the cache after a move.)
     async fn sync_index(&self, changed: &[(String, bool)]) {
-        for (rel_path, present) in changed {
-            let full_path = self.vault_path.join(rel_path);
-            if !is_note(&full_path) {
-                continue;
-            }
+        let notes: Vec<(PathBuf, bool)> = changed
+            .iter()
+            .map(|(rel_path, present)| (self.vault_path.join(rel_path), *present))
+            .filter(|(full_path, _)| is_note(full_path))
+            .collect();
+        if notes.is_empty() {
+            return;
+        }
 
-            let in_scope = self.in_scope(&full_path).await;
-            if *present && in_scope {
-                match read_note_with_fingerprint(&full_path, None).await {
-                    Ok(read) => match self.parse_read(&full_path, &read) {
-                        Ok(vault_file) => {
-                            let observed = read.observed;
-                            {
-                                let mut graph = self.link_graph.write().await;
-                                if let Err(e) = graph.add_file(&vault_file) {
-                                    log::warn!(
-                                        "Graph add_file failed for {}: {}",
-                                        full_path.display(),
-                                        e
-                                    );
-                                }
-                                if let Err(e) = graph.update_links(&vault_file) {
-                                    log::warn!(
-                                        "Graph update_links failed for {}: {}",
-                                        full_path.display(),
-                                        e
-                                    );
-                                }
+        // Where each note stands on disk, read with overlapping I/O: a pull
+        // or a sync that changes thousands of notes would otherwise wait on
+        // each read in turn. `buffered` keeps them in the order reported.
+        let spec = Arc::clone(&self.scan_spec);
+        let observed: Vec<(PathBuf, bool, Option<std::io::Result<NoteRead>>)> =
+            futures::stream::iter(notes)
+                .map(|(full_path, present)| {
+                    let spec = Arc::clone(&spec);
+                    async move {
+                        let path = full_path.clone();
+                        let in_scope = tokio::task::spawn_blocking(move || spec.admits(&path))
+                            .await
+                            .unwrap_or(false);
+                        let read = if present && in_scope {
+                            Some(read_note_with_fingerprint(&full_path, None).await)
+                        } else {
+                            None
+                        };
+                        (full_path, in_scope, read)
+                    }
+                })
+                .buffered(INITIAL_READ_CONCURRENCY)
+                .collect()
+                .await;
+
+        // Parsing is CPU work; it runs on the blocking pool, notes in
+        // parallel, and comes back in the same order.
+        let parser = Parser::new(self.vault_path.clone());
+        let updates = tokio::task::spawn_blocking(move || {
+            observed
+                .into_par_iter()
+                .map(|(full_path, in_scope, read)| {
+                    let update = match read {
+                        Some(Ok(read)) => match parse_note(&parser, &full_path, &read) {
+                            Ok(vault_file) => IndexUpdate::Upsert(vault_file, read.observed),
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to parse {} after apply (graph not updated): {}",
+                                    full_path.display(),
+                                    e
+                                );
+                                IndexUpdate::Skip
                             }
-                            self.insert_cache_entry(full_path, vault_file, observed)
-                                .await;
+                        },
+                        Some(Err(e)) => {
+                            log::warn!(
+                                "Failed to re-read {} after apply: {}",
+                                full_path.display(),
+                                e
+                            );
+                            IndexUpdate::Skip
                         }
-                        Err(e) => log::warn!(
-                            "Failed to parse {} after apply (graph not updated): {}",
-                            full_path.display(),
-                            e
-                        ),
-                    },
-                    Err(e) => log::warn!(
-                        "Failed to re-read {} after apply: {}",
-                        full_path.display(),
-                        e
-                    ),
+                        // Re-check disk state before evicting: `sync_index`
+                        // runs after `substrate.apply()` has already released
+                        // its write-lock, so a concurrent blind write that
+                        // recreated this path can land between this apply's
+                        // completion and this eviction. If the path exists
+                        // again, this "removed" notification is stale — skip it
+                        // and let the write that recreated the path reconcile
+                        // the cache via its own present=true branch, instead of
+                        // clobbering a legitimately present file.
+                        // ponytail: narrows the race (check-then-evict is still
+                        // not atomic with the recreating write) rather than
+                        // closing it outright; a full fix serializes sync_index
+                        // with apply() per path, add if this ever proves
+                        // observable in practice.
+                        //
+                        // A note that is there but out of the scan's reach
+                        // (too large, or behind a symlinked folder) is evicted
+                        // however it was reported, so the cache never holds
+                        // what a sweep can't find.
+                        None if in_scope => IndexUpdate::Skip,
+                        None => IndexUpdate::Remove,
+                    };
+                    (full_path, update)
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+
+        // Applied in the order reported, a chunk per hold of the graph and of
+        // the cache, so readers wait on a bounded slice of a large batch.
+        let mut updates = updates.into_iter();
+        loop {
+            let chunk: Vec<(PathBuf, IndexUpdate)> = updates.by_ref().take(SYNC_CHUNK).collect();
+            if chunk.is_empty() {
+                break;
+            }
+            {
+                let mut graph = self.link_graph.write().await;
+                for (full_path, update) in &chunk {
+                    match update {
+                        IndexUpdate::Upsert(vault_file, _) => {
+                            if let Err(e) = graph.add_file(vault_file) {
+                                log::warn!(
+                                    "Graph add_file failed for {}: {}",
+                                    full_path.display(),
+                                    e
+                                );
+                            }
+                            if let Err(e) = graph.update_links(vault_file) {
+                                log::warn!(
+                                    "Graph update_links failed for {}: {}",
+                                    full_path.display(),
+                                    e
+                                );
+                            }
+                        }
+                        IndexUpdate::Remove => {
+                            let _ = graph.remove_file(full_path);
+                        }
+                        IndexUpdate::Skip => {}
+                    }
                 }
-            } else {
-                // Re-check disk state before evicting: `sync_index` runs
-                // after `substrate.apply()` has already released its
-                // write-lock, so a concurrent blind write that recreated
-                // this path can land between this apply's completion and
-                // this eviction. If the path exists again, this "removed"
-                // notification is stale — skip it and let the write that
-                // recreated the path reconcile the cache via its own
-                // present=true branch, instead of clobbering a legitimately
-                // present file.
-                // ponytail: narrows the race (check-then-evict is still not
-                // atomic with the recreating write) rather than closing it
-                // outright; a full fix serializes sync_index with apply()
-                // per path, add if this ever proves observable in practice.
-                //
-                // A note that is there but out of the scan's reach (too
-                // large, or behind a symlinked folder) is evicted however it
-                // was reported, so the cache never holds what a sweep can't
-                // find.
-                if in_scope {
-                    continue;
+            }
+            let mut cache = self.file_cache.write().await;
+            for (full_path, update) in chunk {
+                match update {
+                    IndexUpdate::Upsert(file, observed) => {
+                        cache.insert(full_path, CacheEntry { file, observed });
+                    }
+                    IndexUpdate::Remove => {
+                        cache.remove(&full_path);
+                    }
+                    IndexUpdate::Skip => {}
                 }
-                {
-                    let mut graph = self.link_graph.write().await;
-                    let _ = graph.remove_file(&full_path);
-                }
-                let mut cache = self.file_cache.write().await;
-                cache.remove(&full_path);
             }
         }
     }

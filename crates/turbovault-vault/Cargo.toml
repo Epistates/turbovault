@@ -30,6 +30,7 @@ serde_json = { workspace = true }
 log = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
+rayon = { workspace = true }
 
 # File editing & diff
 similar = { workspace = true }

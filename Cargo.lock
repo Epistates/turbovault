@@ -5931,6 +5931,7 @@ dependencies = [
  "log",
  "notify",
  "proptest",
+ "rayon",
  "schemars 1.2.2",
  "serde",
  "serde_json",
