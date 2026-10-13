@@ -508,10 +508,13 @@ mod tests {
             VaultLifecycleTools::expand_path(Path::new("/turbovault-no-such-dir/$HOME/${PATH}"))
                 .expect("expansion");
 
-        assert_eq!(
-            expanded,
-            Path::new("/turbovault-no-such-dir/$HOME/${PATH}"),
-            "environment variables must not be expanded in tool input"
+        // On Windows a path without a drive is not absolute, so it is
+        // resolved against the current directory; the variables still stay
+        // as written.
+        assert!(
+            expanded.ends_with(Path::new("turbovault-no-such-dir/$HOME/${PATH}")),
+            "environment variables must not be expanded in tool input: {}",
+            expanded.display()
         );
     }
 
