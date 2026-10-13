@@ -266,7 +266,7 @@ const SYNC_CHUNK: usize = 512;
 /// What `sync_index` does to the index for one changed note.
 enum IndexUpdate {
     /// Parse result to put in the graph and the cache.
-    Upsert(VaultFile, Option<Observed>),
+    Upsert(Arc<VaultFile>, Option<Observed>),
     /// Gone, or out of the scan's reach: drop it.
     Remove,
     /// Leave the index as it is.
@@ -2065,7 +2065,9 @@ impl VaultManager {
                 .map(|(full_path, in_scope, read)| {
                     let update = match read {
                         Some(Ok(read)) => match parse_note(&parser, &full_path, &read) {
-                            Ok(vault_file) => IndexUpdate::Upsert(vault_file, read.observed),
+                            Ok(vault_file) => {
+                                IndexUpdate::Upsert(Arc::new(vault_file), read.observed)
+                            }
                             Err(e) => {
                                 log::warn!(
                                     "Failed to parse {} after apply (graph not updated): {}",
@@ -2151,7 +2153,6 @@ impl VaultManager {
             for (full_path, update) in chunk {
                 match update {
                     IndexUpdate::Upsert(file, observed) => {
-                        let file = Arc::new(file);
                         cache.insert(full_path, CacheEntry { file, observed });
                     }
                     IndexUpdate::Remove => {

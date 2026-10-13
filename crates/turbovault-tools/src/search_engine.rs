@@ -599,7 +599,7 @@ fn open_index_dir(dir: &std::path::Path, marker: &IndexMarker) -> Result<Index> 
     let io = |e: std::io::Error| Error::io_at(dir.display().to_string(), e);
     let tantivy = |e: tantivy::TantivyError| Error::config_error(format!("search index: {e}"));
     create_private_dir(dir).map_err(io)?;
-    let directory = CacheDirectory::open(dir).map_err(|e| tantivy(e.into()))?;
+    let directory = CacheDirectory::open(dir).map_err(tantivy)?;
 
     // Another process writing this index owns it; leave it alone and let
     // the caller index in memory instead.

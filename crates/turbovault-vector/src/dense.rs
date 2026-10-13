@@ -218,10 +218,12 @@ mod tests {
             let found = index.search(&unit_vector(8, axis), 2).unwrap();
             let expected = fresh.search(&unit_vector(8, axis), 2).unwrap();
             assert!(found.iter().all(|r| r.0 != 2), "removed chunk returned");
-            // Axes with an exact match have one right answer; the rest tie.
-            if expected[0].1 > 0.5 {
-                assert_eq!(found[0].0, expected[0].0, "nearest to axis {axis}");
-            }
+            // Ties (several exact matches, or none) can fall either way, so
+            // what must agree is how near the nearest is.
+            assert!(
+                (found[0].1 - expected[0].1).abs() < 1e-5,
+                "nearest to axis {axis}: {found:?} vs {expected:?}"
+            );
         }
     }
 
