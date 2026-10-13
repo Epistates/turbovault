@@ -1,0 +1,35 @@
+name: Scheduled
+
+# Checks too slow or too noisy for every pull request: they run nightly and on
+# demand, and a failure here opens no PR but shows on the Actions tab.
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  # Tests marked `#[ignore = "timing; ..."]` assert that adversarial input
+  # parses in linear time. They need an optimized build to mean anything, and
+  # a shared runner's timing is too noisy to gate a pull request on.
+  timing:
+    name: Timing tests (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: timing
+
+      - name: Run the ignored timing tests in release mode
+        run: cargo test --release --locked -p turbovault-parser --test test_nesting_bounds -- --ignored

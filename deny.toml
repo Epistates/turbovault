@@ -1,8 +1,8 @@
 # cargo-deny configuration for TurboVault.
 #
-# CI runs `cargo deny check licenses bans sources`. Advisories are covered by
-# the existing `cargo audit` job in ci.yml, so the [advisories] section here
-# is left at its defaults rather than duplicating that gate.
+# CI runs `cargo deny check` (advisories, licenses, bans, sources). Advisories
+# are also checked by `cargo audit --deny warnings` against .cargo/audit.toml;
+# the two ignore lists below and there must name the same advisories.
 #
 # Docs: https://embarkstudios.github.io/cargo-deny/
 
@@ -10,7 +10,36 @@
 all-features = true
 
 [advisories]
-ignore = []
+# Report unmaintained and unsound crates anywhere in the graph, not only the
+# ones a workspace crate names directly: the transitive ones ship in the
+# release binaries all the same.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+# Each entry is a crate only an upstream release can remove, with the reason it
+# does not affect TurboVault today. Keep in step with .cargo/audit.toml. Drop an
+# entry as soon as the named upstream ships without the crate; cargo-deny warns
+# about an ignore that no longer matches anything.
+ignore = [
+    # lru 0.16.4 via tantivy 0.26.2 (search, every build). The use-after-free
+    # needs a key whose Drop panics; tantivy's only LruCache is the doc store's
+    # LruCache<usize, Block>, and a usize key has no Drop. Fixed in lru 0.18.2,
+    # which tantivy has not adopted yet.
+    { id = "RUSTSEC-2026-0253", reason = "lru via tantivy; needs a panicking key Drop, and tantivy's only cache is keyed by usize; waiting on a tantivy release on lru >= 0.18.2" },
+    # im 15.1.0, sized-chunks 0.6.5 and bitmaps 2.1.0 via gluesql-core 0.20.0
+    # (the `sql` feature, which the release binaries enable). gluesql 0.20.0 is
+    # its latest release.
+    { id = "RUSTSEC-2023-0126", reason = "im OrdSet aliasing; gluesql-core 0.20.0 uses only im::HashSet, never OrdSet, so the code path is not reachable" },
+    { id = "RUSTSEC-2026-0248", reason = "im unmaintained, via gluesql-core 0.20.0 (latest gluesql)" },
+    { id = "RUSTSEC-2026-0251", reason = "sized-chunks unmaintained, via im via gluesql-core" },
+    { id = "RUSTSEC-2026-0255", reason = "sized-chunks double free needs an element whose Drop panics; gluesql stores its own Value types in im::HashSet, whose Drop cannot panic" },
+    { id = "RUSTSEC-2026-0247", reason = "bitmaps unmaintained, via im and sized-chunks via gluesql-core" },
+    # The vector plugin's stack (default-off, independently versioned).
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x unmaintained, via hnsw_rs 0.3.4 in turbovault-vector (default-off plugin)" },
+    { id = "RUSTSEC-2025-0057", reason = "fxhash unmaintained, via bm25 2.3.2 in turbovault-vector (default-off plugin)" },
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix unmaintained, via indicatif via tokenizers via model2vec-rs in turbovault-vector (default-off plugin)" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (build-time proc macro), via tokenizers via model2vec-rs in turbovault-vector (default-off plugin)" },
+]
 
 [licenses]
 allow = [
