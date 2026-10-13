@@ -444,6 +444,19 @@ impl LinkGraph {
         sources.len()
     }
 
+    /// The notes `path` links to, each once: the paths [`Self::forward_links`]
+    /// would return, without cloning their links.
+    pub fn forward_link_targets(&self, path: &PathBuf) -> Vec<&PathBuf> {
+        let Some(&source_idx) = self.path_index.get(path) else {
+            return Vec::new();
+        };
+        let mut targets: Vec<NodeIndex> =
+            self.graph.edges(source_idx).map(|e| e.target()).collect();
+        targets.sort_unstable();
+        targets.dedup();
+        targets.into_iter().map(|idx| &self.graph[idx]).collect()
+    }
+
     /// Get all forward links from a file (files this file links to)
     pub fn forward_links(&self, path: &PathBuf) -> Result<Vec<(PathBuf, Vec<Link>)>> {
         if let Some(&source_idx) = self.path_index.get(path) {

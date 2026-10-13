@@ -6,9 +6,10 @@
 //! - **Completeness**: Word count, link density, metadata richness
 //! - **Staleness**: Modification recency, freshness relative to linked notes
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbovault_core::prelude::*;
@@ -126,55 +127,115 @@ impl QualityTools {
 
     /// Evaluate quality of a single note
     pub async fn evaluate_note(&self, path: &str) -> Result<QualityScore> {
-        let vault_file = self.manager.parse_file(&PathBuf::from(path)).await?;
-        Ok(self.evaluate_with_file(&vault_file, path).await)
+        let vault_file = Arc::new(self.manager.parse_file(&PathBuf::from(path)).await?);
+        let notes = [vault_file];
+        let facts = self.link_facts(&notes).await;
+        let facts = facts.get(&notes[0].path).copied().unwrap_or_default();
+        Ok(score_note(&notes[0], path, facts, current_timestamp()))
     }
 
-    /// Score an already-parsed note. `rel_path` is the vault-relative path used
-    /// both for graph lookups (backlinks / forward links) and in the result, so
-    /// callers that already hold a parsed `VaultFile` (e.g. vault-wide scans)
-    /// avoid re-reading and re-parsing it.
-    async fn evaluate_with_file(&self, vault_file: &VaultFile, rel_path: &str) -> QualityScore {
-        let file_path = PathBuf::from(rel_path);
-        let plain_content = to_plain_text(&vault_file.content);
-
-        let readability = compute_readability(&plain_content);
-        let structure = compute_structure(vault_file);
-        let completeness = compute_completeness(vault_file, &self.manager, &file_path).await;
-        let staleness = compute_staleness(vault_file, &self.manager, &file_path).await;
-
-        let overall = weighted_score(
-            readability.score,
-            structure.score,
-            completeness.score,
-            staleness.score,
-        );
-
-        let recommendations =
-            generate_recommendations(&readability, &structure, &completeness, &staleness);
-
-        QualityScore {
-            path: rel_path.to_string(),
-            overall_score: overall,
-            readability,
-            structure,
-            completeness,
-            staleness,
-            recommendations,
-        }
+    /// What scoring each of `notes` needs from the rest of the vault: read
+    /// under one short hold of the link graph, with linked notes' times
+    /// from the note cache rather than each one parsed again from disk.
+    async fn link_facts(&self, notes: &[Arc<VaultFile>]) -> HashMap<PathBuf, LinkFacts> {
+        let modified: HashMap<PathBuf, f64> = self
+            .manager
+            .cached_notes()
+            .await
+            .iter()
+            .map(|file| (file.path.clone(), file.metadata.modified_at))
+            .collect();
+        let graph = self.manager.link_graph_flushed().await;
+        let graph = graph.read().await;
+        notes
+            .iter()
+            .map(|file| {
+                let newer_links = graph
+                    .forward_link_targets(&file.path)
+                    .iter()
+                    .filter(|target| {
+                        modified
+                            .get(**target)
+                            .is_some_and(|&linked| linked > file.metadata.modified_at)
+                    })
+                    .count();
+                let facts = LinkFacts {
+                    has_incoming: graph.backlink_source_count(&file.path) > 0,
+                    newer_links,
+                };
+                (file.path.clone(), facts)
+            })
+            .collect()
     }
 
+    /// Score every one of `notes`, in parallel off the async workers.
+    /// `now` is the time staleness is measured from.
+    async fn score_notes(&self, notes: Vec<Arc<VaultFile>>, now: f64) -> Result<Vec<QualityScore>> {
+        let facts = self.link_facts(&notes).await;
+        let notes: Vec<(String, Arc<VaultFile>)> = notes
+            .into_iter()
+            .map(|file| (self.manager.relative_path(&file.path), file))
+            .collect();
+        tokio::task::spawn_blocking(move || {
+            notes
+                .par_iter()
+                .map(|(rel_path, file)| {
+                    let facts = facts.get(&file.path).copied().unwrap_or_default();
+                    score_note(file, rel_path, facts, now)
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| Error::other(format!("quality scoring task failed: {e}")))
+    }
+}
+
+/// A note's links as the rest of the vault sees them.
+#[derive(Debug, Clone, Copy, Default)]
+struct LinkFacts {
+    /// Some other note links to it.
+    has_incoming: bool,
+    /// How many of the notes it links to were modified after it.
+    newer_links: usize,
+}
+
+/// Score an already-parsed note. `rel_path` is the vault-relative path the
+/// result reports; `facts` carries what the link graph says about it.
+fn score_note(vault_file: &VaultFile, rel_path: &str, facts: LinkFacts, now: f64) -> QualityScore {
+    let plain_content = to_plain_text(&vault_file.content);
+
+    let readability = compute_readability(&plain_content);
+    let structure = compute_structure(vault_file);
+    let completeness = compute_completeness(vault_file, facts.has_incoming);
+    let staleness = compute_staleness(vault_file, facts.newer_links, now);
+
+    let overall = weighted_score(
+        readability.score,
+        structure.score,
+        completeness.score,
+        staleness.score,
+    );
+
+    let recommendations =
+        generate_recommendations(&readability, &structure, &completeness, &staleness);
+
+    QualityScore {
+        path: rel_path.to_string(),
+        overall_score: overall,
+        readability,
+        structure,
+        completeness,
+        staleness,
+        recommendations,
+    }
+}
+
+impl QualityTools {
     /// Generate vault-wide quality report
     pub async fn vault_quality_report(&self, bottom_n: usize) -> Result<VaultQualityReport> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
         let files = self.manager.notes_validated().await;
-
-        let mut scores: Vec<QualityScore> = Vec::with_capacity(files.len());
-
-        for vault_file in &files {
-            let rel_path = self.manager.relative_path(&vault_file.path);
-            scores.push(self.evaluate_with_file(vault_file, &rel_path).await);
-        }
+        let mut scores = self.score_notes(files, current_timestamp()).await?;
 
         let total_notes = scores.len();
         if total_notes == 0 {
@@ -291,16 +352,17 @@ impl QualityTools {
         limit: usize,
     ) -> Result<Vec<QualityScore>> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
-        let files = self.manager.notes_validated().await;
-        let mut stale: Vec<QualityScore> = Vec::new();
-
-        for vault_file in &files {
-            let rel_path = self.manager.relative_path(&vault_file.path);
-            let score = self.evaluate_with_file(vault_file, &rel_path).await;
-            if score.staleness.days_since_modified >= threshold_days {
-                stale.push(score);
-            }
-        }
+        // Whether a note is stale depends only on when it was modified, so
+        // only the stale ones are scored.
+        let now = current_timestamp();
+        let files: Vec<Arc<VaultFile>> = self
+            .manager
+            .notes_validated()
+            .await
+            .into_iter()
+            .filter(|file| days_since(file.metadata.modified_at, now) >= threshold_days)
+            .collect();
+        let mut stale = self.score_notes(files, now).await?;
 
         // Sort by staleness (most stale first), then by path so equal ages
         // come back in the same order every call.
@@ -504,11 +566,7 @@ fn check_heading_hierarchy(headings: &[turbovault_core::Heading]) -> bool {
     true
 }
 
-async fn compute_completeness(
-    vault_file: &VaultFile,
-    manager: &VaultManager,
-    file_path: &Path,
-) -> CompletenessScore {
+fn compute_completeness(vault_file: &VaultFile, has_incoming_links: bool) -> CompletenessScore {
     let word_count = vault_file.content.split_whitespace().count();
     let link_count = vault_file.links.len();
     let link_density = if word_count > 0 {
@@ -525,12 +583,6 @@ async fn compute_completeness(
         .map(|fm| fm.data.len())
         .unwrap_or(0);
     let has_outgoing_links = link_count > 0;
-
-    let has_incoming_links = manager
-        .get_backlinks(file_path)
-        .await
-        .map(|bl| !bl.is_empty())
-        .unwrap_or(false);
 
     let mut score = 0u8;
 
@@ -583,31 +635,20 @@ async fn compute_completeness(
     }
 }
 
-async fn compute_staleness(
+/// Whole days from `then` to `now` (seconds since the epoch), never negative.
+fn days_since(then: f64, now: f64) -> u64 {
+    ((now - then) / 86400.0).max(0.0) as u64
+}
+
+/// `linked_notes_newer` is how many of the notes this one links to were
+/// modified after it.
+fn compute_staleness(
     vault_file: &VaultFile,
-    manager: &VaultManager,
-    file_path: &Path,
+    linked_notes_newer: usize,
+    now: f64,
 ) -> StalenessScore {
-    let now = current_timestamp();
-    let secs_per_day = 86400.0;
-
-    let modified_at = vault_file.metadata.modified_at;
-    let created_at = vault_file.metadata.created_at;
-
-    let days_since_modified = ((now - modified_at) / secs_per_day).max(0.0) as u64;
-    let days_since_created = ((now - created_at) / secs_per_day).max(0.0) as u64;
-
-    // Count linked notes that are newer
-    let mut linked_notes_newer = 0usize;
-    if let Ok(forward) = manager.get_forward_links(file_path).await {
-        for linked_path in &forward {
-            if let Ok(linked_file) = manager.parse_file(linked_path).await
-                && linked_file.metadata.modified_at > modified_at
-            {
-                linked_notes_newer += 1;
-            }
-        }
-    }
+    let days_since_modified = days_since(vault_file.metadata.modified_at, now);
+    let days_since_created = days_since(vault_file.metadata.created_at, now);
 
     // Score: freshly modified = 100, older = lower
     let score: u8 = if days_since_modified == 0 {
@@ -735,6 +776,65 @@ mod tests {
         let paths: Vec<&str> = stale.iter().map(|score| score.path.as_str()).collect();
         assert_eq!(paths, ["old.md"]);
         assert_eq!(stale[0].staleness.days_since_modified, 100);
+    }
+
+    /// The link facts gathered in one pass for the whole vault are the ones
+    /// scoring used to ask the manager for note by note: backlinks, forward
+    /// links, and each linked note parsed again for its modification time.
+    #[tokio::test]
+    async fn link_facts_match_asking_note_by_note() {
+        use turbovault_core::config::{ServerConfig, VaultConfig};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let notes = [
+            ("hub.md", "[[a]] [[b]] [[c]] [[a]]", 50),
+            ("a.md", "[[hub]]", 10),
+            ("b.md", "[[c]] [[missing]]", 80),
+            ("c.md", "no links", 5),
+            ("lonely.md", "nothing", 1),
+        ];
+        for (path, body, days_old) in notes {
+            let full = tmp.path().join(path);
+            std::fs::write(&full, format!("# {path}\n\n{body}\n")).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&full)
+                .unwrap()
+                .set_modified(SystemTime::now() - std::time::Duration::from_secs(days_old * 86_400))
+                .unwrap();
+        }
+        let mut config = ServerConfig::new();
+        config
+            .vaults
+            .push(VaultConfig::builder("v", tmp.path()).build().unwrap());
+        let manager = Arc::new(VaultManager::new(config).unwrap());
+        manager.initialize().await.unwrap();
+
+        let tools = QualityTools::new(Arc::clone(&manager));
+        let cached = manager.notes_validated().await;
+        let facts = tools.link_facts(&cached).await;
+        for file in &cached {
+            let rel = PathBuf::from(manager.relative_path(&file.path));
+            let has_incoming = !manager.get_backlinks(&rel).await.unwrap().is_empty();
+            let mut newer = 0;
+            for linked in manager.get_forward_links(&rel).await.unwrap() {
+                if manager
+                    .parse_file(&linked)
+                    .await
+                    .unwrap()
+                    .metadata
+                    .modified_at
+                    > file.metadata.modified_at
+                {
+                    newer += 1;
+                }
+            }
+            let found = facts[&file.path];
+            assert_eq!(found.has_incoming, has_incoming, "{}", rel.display());
+            assert_eq!(found.newer_links, newer, "{}", rel.display());
+        }
+        // a and c are newer than the hub; b is older.
+        assert_eq!(facts[&tmp.path().join("hub.md")].newer_links, 2);
     }
 
     #[test]
