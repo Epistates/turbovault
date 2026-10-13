@@ -21,15 +21,19 @@ impl Deref for GraphProvider {
     }
 }
 
-/// `paths` (graph node paths) as vault-relative paths.
+/// `paths` (graph node paths) as vault-relative paths, sorted. The graph
+/// hands back sets in no fixed order, and a list is only safe to page
+/// through if every call orders it the same way.
 fn relative_paths(manager: &VaultManager, paths: Vec<String>) -> Vec<String> {
-    paths
+    let mut paths: Vec<String> = paths
         .iter()
         .map(|path| manager.relative_path(Path::new(path)))
-        .collect()
+        .collect();
+    paths.sort();
+    paths
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl GraphProvider {
     // ==================== Search & Links ====================
 
@@ -182,13 +186,14 @@ impl GraphProvider {
         let request = PageRequest::new(offset, top_n, 10, MAX_REPORT_ITEMS);
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager.clone());
-        let hubs = tools
+        let mut hubs = tools
             .get_hub_notes(usize::MAX)
             .await
             .map_err(to_mcp_error)?
             .into_iter()
             .map(|(path, count)| (manager.relative_path(Path::new(&path)), count))
             .collect::<Vec<_>>();
+        hubs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let (hubs, page) = request.slice(hubs);
 
         let response = StandardResponse::new(
@@ -256,13 +261,14 @@ impl GraphProvider {
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager.clone());
-        let clusters = tools
+        let mut clusters = tools
             .get_isolated_clusters()
             .await
             .map_err(to_mcp_error)?
             .into_iter()
             .map(|cluster| relative_paths(&manager, cluster))
             .collect::<Vec<_>>();
+        clusters.sort();
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (clusters, page) = request.slice(clusters);
 
@@ -369,6 +375,9 @@ impl GraphProvider {
         for link in &mut broken {
             link.source_file = manager.relative_path(Path::new(&link.source_file));
         }
+        broken.sort_by(|a, b| {
+            (&a.source_file, a.line, &a.target).cmp(&(&b.source_file, b.line, &b.target))
+        });
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (broken, page) = request.slice(broken);
 
@@ -405,13 +414,21 @@ impl GraphProvider {
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = GraphTools::new(manager.clone());
-        let cycles = tools
+        // A cycle's paths stay in link order; only the list of cycles is
+        // sorted, so pages are stable.
+        let mut cycles = tools
             .detect_cycles()
             .await
             .map_err(to_mcp_error)?
             .into_iter()
-            .map(|cycle| relative_paths(&manager, cycle))
+            .map(|cycle| {
+                cycle
+                    .iter()
+                    .map(|path| manager.relative_path(Path::new(path)))
+                    .collect::<Vec<_>>()
+            })
             .collect::<Vec<_>>();
+        cycles.sort();
         let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
         let (cycles, page) = request.slice(cycles);
 

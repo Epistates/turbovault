@@ -22,7 +22,7 @@ impl Deref for AnalysisProvider {
     }
 }
 
-#[turbomcp::server(name = "obsidian-vault", version = "2.0.0")]
+#[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl AnalysisProvider {
     // ─── DIFF TOOLS ──────────────────────────────────────────────────
 
@@ -636,7 +636,7 @@ impl AnalysisProvider {
     // ─── DUPLICATE TOOLS ─────────────────────────────────────────────
 
     #[tool(
-        description = "Scan the whole vault for pairs of notes with nearly the same content, most similar first, each with its similarity score. Slow on a large vault; compare_notes checks one pair.",
+        description = "Scan the whole vault for pairs of notes with nearly the same content, each with its similarity score, most similar first. Slow on a large vault; compare_notes checks one pair.",
         title = "Find Duplicates",
         tags = ["read", "search", "semantic"],
         read_only = true,
@@ -650,27 +650,28 @@ impl AnalysisProvider {
             "Lowest similarity, from 0.0 to 1.0, for a pair to count as duplicates. Default 0.8."
         )]
         threshold: Option<f64>,
-        #[description("Most pairs to return. Default 20, maximum 500.")] limit: Option<usize>,
         #[description(
-            "How many of the most similar pairs to skip, for the next page. Default 0, at most 1000."
+            "Stop after finding this many pairs. Default 20, maximum 500. The scan ends early, so it can't be paged; raise the limit to see more."
         )]
-        offset: Option<usize>,
+        limit: Option<usize>,
     ) -> McpResult<serde_json::Value> {
         let start = std::time::Instant::now();
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = DuplicateTools::new(manager);
-        let request = PageRequest::ranked(offset, limit, 20, MAX_REPORT_ITEMS);
         let result = tools
-            .find_duplicates(threshold.unwrap_or(0.8), request.fetch())
+            .find_duplicates(
+                threshold.unwrap_or(0.8),
+                clamp_count(limit, 20, MAX_REPORT_ITEMS),
+            )
             .await
             .map_err(to_mcp_error)?;
-        let (result, page) = request.slice_ranked(result);
+        let count = result.len();
         StandardResponse::new(
             &vault_name,
             "find_duplicates",
             serde_json::to_value(&result).map_err(|e| McpError::internal(e.to_string()))?,
         )
-        .with_page(page)
+        .with_count(count)
         .with_duration(start.elapsed().as_millis() as u64)
         .with_next_steps(&["compare_notes", "diff_notes", "read_note"])
         .to_json()

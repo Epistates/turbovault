@@ -270,8 +270,13 @@ impl SimilarityEngine {
             }
         }
 
-        // Sort by similarity descending
-        results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by similarity descending, then by path, so equal scores come
+        // back in the same order every call and pages don't overlap.
+        results.sort_by(|a, b| {
+            b.0.partial_cmp(&a.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.2.path.cmp(&b.2.path))
+        });
         results.truncate(limit);
 
         results

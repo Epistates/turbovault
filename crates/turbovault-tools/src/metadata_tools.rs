@@ -154,6 +154,9 @@ impl MetadataTools {
                 }));
             }
         }
+        // The cache has no order of its own; sorting by path makes the
+        // result, and any page of it, the same on every call.
+        matches.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
 
         Ok(json!({
             "query": pattern,
