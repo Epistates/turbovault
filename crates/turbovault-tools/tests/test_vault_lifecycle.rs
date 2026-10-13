@@ -64,7 +64,10 @@ async fn every_template_creates_and_registers_its_expected_structure() {
         .get_vault_config("research")
         .await
         .expect("research config");
-    assert_eq!(research.path, root.path().join("research"));
+    assert_eq!(
+        research.path,
+        root.path().join("research").canonicalize().unwrap()
+    );
     tools.set_active_vault("team").await.expect("activate team");
     assert_eq!(tools.get_active_vault().await.expect("active team"), "team");
 
