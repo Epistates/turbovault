@@ -35,7 +35,7 @@ vaults:
     git:
       branch: main              # default: the repository's current branch
       merge_strategy: merge-commit   # merge-commit (default) or fast-forward
-      include_ignored: false
+      include_ignored: false    # refuse writes to paths .gitignore matches (default true)
       require_commit_message: false
       # author:
       #   name: TurboVault

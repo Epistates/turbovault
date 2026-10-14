@@ -1,217 +1,88 @@
-# Deployment Guide
+# Deployment
 
-Deploy TurboVault in production environments with proper security and monitoring.
+## Choosing a transport
 
-## Docker Deployment
+| Transport | Use it for | Notes |
+|---|---|---|
+| `stdio` (default) | A local client that starts the server: Claude Desktop, Claude Code, IDEs | No network exposure. See [Claude Desktop and Claude Code](claude-desktop.md) |
+| `http` | Remote clients and shared team servers | Streamable HTTP at `/mcp`. Needs `--auth-mode` to listen beyond loopback |
+| `unix` | Local services on the same machine | Socket in a private (0700) directory by default |
+| `websocket`, `tcp` | Local integrations | Loopback only: TurboMCP has no authentication for them |
 
-### docker-compose.yml
+Network transports need the binary built with them (`http`, `websocket`, `tcp`, `unix`; the prebuilt binaries and the Docker image have all of them).
 
-```yaml
-version: '3.8'
-
-services:
-  mcp-obsidian:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: TurboVault:latest
-    container_name: mcp-obsidian
-    user: obsidian
-    volumes:
-      # Mount your vault (read-write)
-      - /path/to/your/vault:/var/obsidian-vault
-    environment:
-      - RUST_LOG=info
-      - OBSIDIAN_VAULT_PATH=/var/obsidian-vault
-    healthcheck:
-      test: ["CMD", "/usr/local/bin/mcp-obsidian", "--help"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    restart: unless-stopped
-    stdin_open: true
-    tty: true
-```
-
-### Commands
+## A shared HTTP server
 
 ```bash
-# Build and start
-make docker-build
-make docker-up
-
-# View logs
-make docker-logs
-
-# Stop
-make docker-down
+turbovault --config /etc/turbovault/config.yaml \
+  --transport http --host 0.0.0.0 --port 3000 \
+  --auth-mode jwt \
+  --auth-issuer https://auth.example.com \
+  --auth-jwks-uri https://auth.example.com/.well-known/jwks.json \
+  --auth-resource https://vault.example.com/mcp \
+  --auth-required-scopes vault
 ```
 
-## systemd Service (Linux)
+- Clients send `Authorization: Bearer <token>`; the server publishes protected resource metadata at `/.well-known/oauth-protected-resource` so OAuth-capable clients can find the authorization server.
+- Each client is rate limited (600 requests a minute by default beyond loopback). Behind a reverse proxy, pass `--trusted-proxies` so clients are told apart by their forwarded address, and terminate TLS at the proxy.
+- Runtime vault registration is off on a network transport unless `--allowed-vault-roots` is set. Prefer listing the vaults in the config file.
+- Each request can name its vault with the `vault` argument, so sessions don't interfere through the active vault.
 
-### Service File: `/etc/systemd/system/mcp-obsidian.service`
+## systemd
 
 ```ini
+# /etc/systemd/system/turbovault.service
 [Unit]
-Description=MCP Obsidian Server
-After=network.target
+Description=TurboVault MCP server
+After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
-User=youruser
-Group=yourgroup
-WorkingDirectory=/home/youruser/TurboVault
-ExecStart=/usr/local/bin/mcp-obsidian \
-  --vault /home/youruser/Documents/ObsidianVault \
-  --profile production \
-  --init
+User=turbovault
+ExecStart=/usr/local/bin/turbovault \
+  --config /etc/turbovault/config.yaml \
+  --profile production --init \
+  --transport http --host 127.0.0.1 --port 3000
 Restart=on-failure
-RestartSec=10s
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=mcp-obsidian
+RestartSec=5s
+Environment=RUST_LOG=info
 
-# Security hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/youruser/Documents/ObsidianVault
-
-# Environment
-Environment="RUST_LOG=info,TurboVault=debug"
+ReadWritePaths=/srv/vaults /var/cache/turbovault
+Environment=XDG_CACHE_HOME=/var/cache/turbovault
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-### Setup
+This binds to loopback for a reverse proxy on the same host; to listen on a public interface, add the `--auth-mode` flags. The cache directory holds the persisted vault registry and search indexes, so it must be writable.
 
 ```bash
-# 1. Copy binary to system path
-sudo cp target/release/mcp-obsidian /usr/local/bin/
-sudo chmod 755 /usr/local/bin/mcp-obsidian
-
-# 2. Create service file (as shown above)
-sudo nano /etc/systemd/system/mcp-obsidian.service
-
-# 3. Reload systemd
 sudo systemctl daemon-reload
-
-# 4. Enable and start service
-sudo systemctl enable mcp-obsidian
-sudo systemctl start mcp-obsidian
-
-# 5. Check status
-sudo systemctl status mcp-obsidian
-
-# 6. View logs
-sudo journalctl -u mcp-obsidian -f
+sudo systemctl enable --now turbovault
+journalctl -u turbovault -f
 ```
 
-## Security Considerations
+## Kubernetes
 
-### Readonly Access
+- Run the image as a Deployment with the vault on a PersistentVolume mounted at `/var/obsidian-vault`, and the cache (`XDG_CACHE_HOME`) on a volume too if search indexes should survive restarts.
+- Pass `--transport http --host 0.0.0.0` with `--auth-mode`; the server won't start beyond loopback without it.
+- Use a `tcpSocket` liveness probe on the port; there's no HTTP health endpoint.
+- One replica per vault: two processes writing one vault serialize through file locks, but each keeps its own index.
 
-For untrusted environments or public demos:
+## Read-only deployments
 
-```bash
-# Use readonly profile
-mcp-obsidian \
-  --vault /path/to/vault \
-  --profile readonly \
-  --init
-```
+`--profile read-only` hides and refuses every mutating tool. To make only some vaults read-only, set `allowed_operations: read` on them in the config file.
 
-**What's Disabled:**
-- All write operations (`write_note`, `delete_note`, `move_note`)
-- Batch operations that modify files
-- Template creation
+## Monitoring
 
-**What Works:**
-- All read operations (`read_note`, `list_files`)
-- Search and discovery (`search`, `search`)
-- Link graph analysis (`get_links`, `graph_report`)
-- Health checks and exports (`export`)
+- **Logs**: stderr, JSON on stdio, `--output-format` elsewhere. `RUST_LOG` overrides the profile's level.
+- **Traces**: `--otlp-endpoint http://collector:4317` exports a `tool_call` span per call (tool, vault, outcome, duration; never arguments or note content).
+- **Metrics**: `--metrics-port 9464` serves Prometheus metrics on `127.0.0.1:9464/metrics`, including `mcp_tool_calls_total` and `mcp_tool_duration_seconds`.
 
-### Security Features
+## Backups
 
-- **Path Traversal Protection**: All paths validated against vault root
-- **Input Validation**: Type-safe deserialization, no code execution
-- **File Size Limits**: Prevents DoS via large files (default 10MB)
-- **Audit Trail**: Every write is recorded under `.turbovault/` (and as a commit on a Git-backed vault), in every profile
-- **No Shell Commands**: Pure Rust, no external command execution
-- **Principle of Least Privilege**: Docker runs as non-root user
-
-## Monitoring and Observability
-
-### Logging
-
-```bash
-# Environment variable controls logging
-export RUST_LOG=info                # Info and above (production)
-export RUST_LOG=debug               # All debug logs (development)
-export RUST_LOG=warn                # Warnings and errors only
-export RUST_LOG=TurboVault=debug   # Debug for TurboVault only
-```
-
-### Metrics
-
-Built-in metrics include:
-- Request count by tool
-- Request duration (p50, p95, p99)
-- Error rate by tool and error type
-- Vault size (files, links, orphans)
-- Cache hit/miss ratio
-
-### Distributed Tracing
-
-Set up tracing with Jaeger:
-
-```bash
-# Run Jaeger (Docker)
-docker run -d \
-  -p 16686:16686 \
-  -p 4317:4317 \
-  jaegertracing/all-in-one:latest
-
-# Configure server (or pass --otlp-endpoint)
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-turbovault --vault /path/to/vault --profile production
-
-# View traces: Open http://localhost:16686
-```
-
-## Performance Optimization
-
-### Memory Usage
-
-- **Base**: ~50MB for server infrastructure
-- **Search Index**: ~1MB per 1000 notes
-- **Link Graph**: ~500KB per 1000 notes
-- **File Cache**: Configurable, TTL-based eviction
-
-**Total for 10,000 note vault**: ~80MB
-
-### Latency Characteristics
-
-| Operation | Latency | Notes |
-|-----------|---------|-------|
-| File Read | <10ms | Direct filesystem access |
-| File Write | <20ms | Atomic write via temp file |
-| Simple Search | <50ms | In-memory Tantivy index |
-| Advanced Search | <100ms | With filters and ranking |
-| Graph Analysis | <200ms | Full vault traversal |
-| Health Check | <300ms | Comprehensive metrics |
-
-## Backup and Recovery
-
-TurboVault doesn't manage backups. Use your preferred backup tool:
-
-- **Git**: Version control for your vault
-- **rsync**: Incremental backups
-- **Cloud storage**: Automated sync (Dropbox, Google Drive, etc.)
-
-The server only reads/writes markdown files, so any backup tool that works with files will work with TurboVault.
+TurboVault writes ordinary files. A Git-backed vault (`write_backend: git`) keeps every change as a commit; otherwise the audit trail under `.turbovault/` holds a snapshot of each note before each change, and `rollback_note` restores one. Neither replaces a backup of the vault itself.
