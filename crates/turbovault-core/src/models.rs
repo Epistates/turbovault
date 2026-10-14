@@ -19,9 +19,13 @@ use crate::task_parser::ParsedTaskMetadata;
 /// Position in source text (line, column, byte offset)
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct SourcePosition {
+    /// 1-based line number (0 in [`SourcePosition::start`]).
     pub line: usize,
+    /// 1-based column, in bytes from the line start.
     pub column: usize,
+    /// Byte offset from the start of the content.
     pub offset: usize,
+    /// Length in bytes of the element.
     pub length: usize,
 }
 
@@ -170,12 +174,20 @@ pub enum LinkType {
 /// A link in vault content
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct Link {
+    /// What form the link takes.
     pub type_: LinkType,
+    /// The note the link is in.
     pub source_file: PathBuf,
+    /// The target as written, with Markdown escapes decoded: `Note`,
+    /// `folder/Note#Heading`, `My Note.md`.
     pub target: String,
+    /// The alias or link text, if the link has one.
     pub display_text: Option<String>,
+    /// Where the whole link sits in the source.
     pub position: SourcePosition,
+    /// The note the target resolves to, once resolved.
     pub resolved_target: Option<PathBuf>,
+    /// False once resolution finds no note for the target.
     pub is_valid: bool,
 }
 
@@ -202,18 +214,25 @@ impl Link {
 /// A heading in vault content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Heading {
+    /// The heading's text as it renders, without the `#` markers.
     pub text: String,
-    pub level: u8, // 1-6
+    /// Heading level, 1 to 6.
+    pub level: u8,
+    /// Where the heading sits in the source.
     pub position: SourcePosition,
+    /// The slug a `[[Note#Heading]]` link uses, if the heading has text.
     pub anchor: Option<String>,
 }
 
 /// A tag in vault content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tag {
+    /// The tag without its `#`, such as `project/alpha`.
     pub name: String,
+    /// Where the tag sits in the source.
     pub position: SourcePosition,
-    pub is_nested: bool, // #parent/child
+    /// Whether the tag has a `/` level, like `#parent/child`.
+    pub is_nested: bool,
 }
 
 /// A task item in vault content
@@ -222,18 +241,27 @@ pub struct Tag {
 pub struct TaskItem {
     /// Task description with trailing Obsidian Tasks metadata removed.
     pub content: String,
+    /// Whether the checkbox is checked (`x` or `X`).
     pub is_completed: bool,
     /// The character in the task's checkbox: ` ` to do, `x` done, `/` in
     /// progress, `-` cancelled, or a custom status a theme or plugin uses.
     #[serde(default = "TaskItem::unchecked")]
     pub status: char,
+    /// Where the task's line sits in the source.
     pub position: SourcePosition,
+    /// Created date (`➕`).
     pub created_date: Option<NaiveDate>,
+    /// Scheduled date (`⏳`).
     pub scheduled_date: Option<NaiveDate>,
+    /// Start date (`🛫`).
     pub start_date: Option<NaiveDate>,
+    /// Due date (`📅`).
     pub due_date: Option<NaiveDate>,
+    /// Done date (`✅`).
     pub done_date: Option<NaiveDate>,
+    /// Cancelled date (`❌`).
     pub cancelled_date: Option<NaiveDate>,
+    /// Priority from its emoji; `Normal` when there's none.
     #[serde(default)]
     pub priority: TaskPriority,
     /// Recurrence rule text, for example `every weekday`.
@@ -302,19 +330,27 @@ impl TaskItem {
     }
 }
 
+/// A task's priority, as the Obsidian Tasks plugin writes it with an emoji.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum TaskPriority {
+    /// `⏬`
     Lowest,
+    /// `🔽`
     Low,
+    /// No priority emoji.
     #[default]
     Normal,
+    /// `🔼`
     Medium,
+    /// `⏫`
     High,
+    /// `🔺`
     Highest,
 }
 
 impl TaskPriority {
+    /// The emoji that marks this priority; empty for `Normal`.
     pub fn emoji(&self) -> &'static str {
         match self {
             TaskPriority::Lowest => "⏬",
@@ -326,6 +362,7 @@ impl TaskPriority {
         }
     }
 
+    /// The priority a priority emoji marks; the empty string is `Normal`.
     pub fn from_emoji(s: &str) -> Option<Self> {
         Some(match s {
             "⏬" => TaskPriority::Lowest,
@@ -338,10 +375,12 @@ impl TaskPriority {
         })
     }
 
+    /// [`TaskPriority::from_emoji`] for a single character.
     pub fn from_char(c: char) -> Option<Self> {
         Self::from_emoji(c.encode_utf8(&mut [0; 4]))
     }
 
+    /// Whether `s` is a priority emoji (or empty, for `Normal`).
     pub fn is_valid_emoji(s: &str) -> bool {
         Self::from_emoji(s).is_some()
     }
@@ -361,16 +400,23 @@ impl fmt::Display for TaskPriority {
     }
 }
 
+/// Collects a task's parts while the parser walks its list item, then
+/// builds the [`TaskItem`].
 #[derive(Debug, Clone, Default)]
 pub struct TaskBuilder {
+    /// The task's text, metadata included; parsed when built.
     pub content: String,
+    /// Whether the checkbox is checked.
     pub is_completed: bool,
     /// The checkbox character, when the parser read it.
     pub status: Option<char>,
+    /// Where the task's line sits in the source.
     pub position: SourcePosition,
 }
 
 impl TaskBuilder {
+    /// Parse the collected text into a [`TaskItem`] and reset the builder
+    /// for the next task.
     pub fn build(&mut self) -> TaskItem {
         let parsed: ParsedTaskMetadata = crate::task_parser::parse_task_content(&self.content);
         let mut task_item = TaskItem::from_parsed_metadata(
@@ -394,38 +440,60 @@ fn parse_date_opt(value: Option<&str>) -> Option<NaiveDate> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum CalloutType {
+    /// `[!note]`, and any type TurboVault doesn't know.
     Note,
+    /// `[!tip]`
     Tip,
+    /// `[!info]`
     Info,
+    /// `[!todo]`
     Todo,
+    /// `[!important]`
     Important,
+    /// `[!success]`
     Success,
+    /// `[!question]`
     Question,
+    /// `[!warning]`
     Warning,
+    /// `[!failure]`, also `fail` and `missing`.
     Failure,
+    /// `[!danger]`, also `error`.
     Danger,
+    /// `[!bug]`
     Bug,
+    /// `[!example]`
     Example,
+    /// `[!quote]`, also `cite`.
     Quote,
 }
 
 /// A callout block in vault content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Callout {
+    /// The callout's type, from `[!type]`.
     pub type_: CalloutType,
+    /// The text after `[!type]` on the first line, if any.
     pub title: Option<String>,
+    /// The callout's body, without the `>` markers.
     pub content: String,
+    /// Where the callout sits in the source.
     pub position: SourcePosition,
+    /// Whether it has a `+` or `-` fold marker.
     pub is_foldable: bool,
 }
 
 /// A block in vault content (Obsidian block reference with ^id)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
+    /// The block's text.
     pub content: String,
+    /// The `^id` a `[[Note#^id]]` link uses, without the `^`.
     pub block_id: Option<String>,
+    /// Where the block sits in the source.
     pub position: SourcePosition,
-    pub type_: String, // paragraph, heading, list_item, etc.
+    /// The kind of block: `paragraph`, `heading`, `list_item` and so on.
+    pub type_: String,
 }
 
 // ============================================================================
@@ -441,48 +509,74 @@ pub struct Block {
 pub enum ContentBlock {
     /// A heading (# H1, ## H2, etc.)
     Heading {
+        /// Heading level, 1 to 6.
         level: usize,
+        /// The heading's markdown, without the `#` markers.
         content: String,
+        /// Its inline elements, parsed.
         inline: Vec<InlineElement>,
+        /// The slug a link to the heading uses, if it has text.
         anchor: Option<String>,
     },
     /// A paragraph of text
     Paragraph {
+        /// The paragraph's markdown.
         content: String,
+        /// Its inline elements, parsed.
         inline: Vec<InlineElement>,
     },
     /// A fenced or indented code block
     Code {
+        /// The fence's language, if it names one.
         language: Option<String>,
+        /// The code, without the fences.
         content: String,
+        /// Line the block starts on.
         start_line: usize,
+        /// Line the block ends on.
         end_line: usize,
     },
     /// An ordered or unordered list
-    List { ordered: bool, items: Vec<ListItem> },
+    List {
+        /// Whether it's numbered.
+        ordered: bool,
+        /// Its items, in order.
+        items: Vec<ListItem>,
+    },
     /// A blockquote (> text)
     Blockquote {
+        /// The quote's markdown, without the `>` markers.
         content: String,
+        /// The blocks inside the quote.
         blocks: Vec<ContentBlock>,
     },
     /// A table with headers and rows
     Table {
+        /// The header cells.
         headers: Vec<String>,
+        /// Each column's alignment.
         alignments: Vec<TableAlignment>,
+        /// The body rows, each a list of cells.
         rows: Vec<Vec<String>>,
     },
     /// An image (standalone, not inline)
     Image {
+        /// The image's alt text.
         alt: String,
+        /// Its source path or URL.
         src: String,
+        /// Its title, if it has one.
         title: Option<String>,
     },
     /// A horizontal rule (---, ***, ___)
     HorizontalRule,
     /// HTML `<details><summary>` block
     Details {
+        /// The `<summary>` text.
         summary: String,
+        /// The markdown inside the block.
         content: String,
+        /// The blocks inside it, parsed.
         blocks: Vec<ContentBlock>,
     },
 }
@@ -565,17 +659,32 @@ impl ContentBlock {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum InlineElement {
     /// Plain text
-    Text { value: String },
+    Text {
+        /// The text.
+        value: String,
+    },
     /// Bold text (**text** or __text__)
-    Strong { value: String },
+    Strong {
+        /// The text inside the markers.
+        value: String,
+    },
     /// Italic text (*text* or _text_)
-    Emphasis { value: String },
+    Emphasis {
+        /// The text inside the markers.
+        value: String,
+    },
     /// Inline code (`code`)
-    Code { value: String },
+    Code {
+        /// The code inside the backticks.
+        value: String,
+    },
     /// A link such as `[text](url)`
     Link {
+        /// The link's text.
         text: String,
+        /// Its destination as written.
         url: String,
+        /// Its title, if it has one.
         title: Option<String>,
         /// Relative line offset within parent block (for nested list items)
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -583,15 +692,21 @@ pub enum InlineElement {
     },
     /// An inline image ![alt](src)
     Image {
+        /// The image's alt text.
         alt: String,
+        /// Its source path or URL.
         src: String,
+        /// Its title, if it has one.
         title: Option<String>,
         /// Relative line offset within parent block (for nested list items)
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line_offset: Option<usize>,
     },
     /// Strikethrough text (~~text~~)
-    Strikethrough { value: String },
+    Strikethrough {
+        /// The text inside the markers.
+        value: String,
+    },
 }
 
 impl InlineElement {
@@ -684,16 +799,22 @@ impl ListItem {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum TableAlignment {
+    /// `:---`
     Left,
+    /// `:---:`
     Center,
+    /// `---:`
     Right,
+    /// `---`, no alignment given.
     None,
 }
 
 /// YAML frontmatter
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Frontmatter {
+    /// The properties, keyed by name, with YAML values as JSON.
     pub data: HashMap<String, serde_json::Value>,
+    /// Where the frontmatter block sits in the source.
     pub position: SourcePosition,
 }
 
@@ -740,36 +861,56 @@ pub fn property_tags(value: Option<&serde_json::Value>) -> Vec<String> {
 /// File metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
+    /// The file's path.
     pub path: PathBuf,
+    /// Size in bytes.
     pub size: u64,
+    /// When the file was created, in seconds since the Unix epoch; its
+    /// modification time where the filesystem keeps no creation time, and
+    /// 0.0 when unknown.
     pub created_at: f64,
+    /// When the file was last modified, in seconds since the Unix epoch;
+    /// 0.0 when unknown.
     pub modified_at: f64,
     /// [`crate::compute_hash`] of the content: the same hash `read_note`
     /// reports and a Direct write's `expected_hash` is checked against.
     pub checksum: String,
+    /// Whether the file is an attachment rather than a note.
     pub is_attachment: bool,
 }
 
 /// A complete vault file with parsed content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultFile {
+    /// The file's path.
     pub path: PathBuf,
+    /// Its full text.
     pub content: String,
+    /// Size, times and content hash.
     pub metadata: FileMetadata,
 
-    // Parsed elements
+    /// The YAML frontmatter, if there is any.
     pub frontmatter: Option<Frontmatter>,
+    /// Headings, in document order.
     pub headings: Vec<Heading>,
+    /// Outgoing links: wikilinks, embeds and Markdown links.
     pub links: Vec<Link>,
+    /// Links from other notes to this one, when the caller filled them in.
     pub backlinks: HashSet<Link>,
+    /// Blocks with a `^id`.
     pub blocks: Vec<Block>,
+    /// Inline `#tags` in the body.
     pub tags: Vec<Tag>,
+    /// Callout blocks.
     pub callouts: Vec<Callout>,
+    /// Task list items.
     pub tasks: Vec<TaskItem>,
 
-    // Cache status
+    /// Whether the parsed fields above are filled in.
     pub is_parsed: bool,
+    /// Why parsing failed, if it did.
     pub parse_error: Option<String>,
+    /// When it was last parsed, in seconds since the Unix epoch.
     pub last_parsed: Option<f64>,
 }
 

@@ -23,11 +23,24 @@ use crate::precondition::Precondition;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     /// Add a new file or overwrite an existing one with `content`.
-    Upsert { path: String, content: Vec<u8> },
+    Upsert {
+        /// Vault-relative path of the file.
+        path: String,
+        /// Its new bytes.
+        content: Vec<u8>,
+    },
     /// Remove a file.
-    Remove { path: String },
+    Remove {
+        /// Vault-relative path of the file.
+        path: String,
+    },
     /// Move `from` to `to`. Content is read from `from` at apply time.
-    Rename { from: String, to: String },
+    Rename {
+        /// Vault-relative path the file is at now.
+        from: String,
+        /// Vault-relative path to move it to.
+        to: String,
+    },
 }
 
 impl Change {
@@ -58,8 +71,12 @@ impl Change {
 /// M2, replaced by this.
 #[derive(Debug, Clone, Default)]
 pub struct ChangePlan {
+    /// The commit message on a Git-backed vault.
     pub message: String,
+    /// The changes, applied in order.
     pub changes: Vec<Change>,
+    /// What each named path must hold before anything is applied; any one
+    /// failing refuses the whole plan.
     pub preconditions: Vec<(String, Precondition)>,
     /// Opaque, caller-defined metadata recorded on the audit entries this plan
     /// produces. **Turbovault does not interpret it.**

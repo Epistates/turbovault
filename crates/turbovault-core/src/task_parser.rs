@@ -46,20 +46,35 @@ const PRIORITY_LOWEST_EMOJI: &str = "⏬";
 /// Parsed content and trailing metadata for an Obsidian task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedTaskMetadata {
+    /// The task text with the trailing metadata removed.
     pub description: String,
+    /// Due date as written (`📅` or `[due:: ]`).
     pub due: Option<String>,
+    /// Scheduled date as written (`⏳` or `[scheduled:: ]`).
     pub scheduled: Option<String>,
+    /// Start date as written (`🛫` or `[start:: ]`).
     pub start: Option<String>,
+    /// Done date as written (`✅` or `[completion:: ]`).
     pub done: Option<String>,
+    /// Cancelled date as written (`❌` or `[cancelled:: ]`).
     pub cancelled: Option<String>,
+    /// Created date as written (`➕` or `[created:: ]`).
     pub created: Option<String>,
+    /// The priority emoji, if there is one.
     pub priority: Option<char>,
+    /// Recurrence rule text (`🔁`), such as `every weekday`.
     pub recurrence: Option<String>,
+    /// On-completion action (`🏁`), such as `delete`.
     pub on_completion: Option<String>,
+    /// The task's dependency id (`🆔`).
     pub id: Option<String>,
+    /// Ids of the tasks this one waits on (`⛔`).
     pub depends_on: Vec<String>,
+    /// Inline tags without the `#`.
     pub tags: Vec<String>,
+    /// Block reference without the `^`.
     pub block_ref: Option<String>,
+    /// Dataview inline fields, including custom fields.
     pub metadata: HashMap<String, String>,
 }
 
@@ -70,18 +85,31 @@ pub struct Task {
     pub status: char,
     /// Human-readable description with trailing metadata removed.
     pub description: String,
+    /// Due date as written (`📅` or `[due:: ]`).
     pub due: Option<String>,
+    /// Scheduled date as written (`⏳` or `[scheduled:: ]`).
     pub scheduled: Option<String>,
+    /// Start date as written (`🛫` or `[start:: ]`).
     pub start: Option<String>,
+    /// Done date as written (`✅` or `[completion:: ]`).
     pub done: Option<String>,
+    /// Cancelled date as written (`❌` or `[cancelled:: ]`).
     pub cancelled: Option<String>,
+    /// Created date as written (`➕` or `[created:: ]`).
     pub created: Option<String>,
+    /// The priority emoji, if there is one.
     pub priority: Option<char>,
+    /// Recurrence rule text (`🔁`), such as `every weekday`.
     pub recurrence: Option<String>,
+    /// On-completion action (`🏁`), such as `delete`.
     pub on_completion: Option<String>,
+    /// The task's dependency id (`🆔`).
     pub id: Option<String>,
+    /// Ids of the tasks this one waits on (`⛔`).
     pub depends_on: Vec<String>,
+    /// Inline tags without the `#`.
     pub tags: Vec<String>,
+    /// Block reference without the `^`.
     pub block_ref: Option<String>,
     /// Dataview inline fields, including custom fields.
     pub metadata: HashMap<String, String>,
