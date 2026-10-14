@@ -14,6 +14,7 @@ pub struct AuditTools {
 }
 
 impl AuditTools {
+    /// Audit tools over a vault's audit log and the snapshots its entries refer to.
     pub fn new(audit_log: Arc<AuditLog>, snapshot_store: Arc<SnapshotStore>) -> Self {
         Self {
             audit_log,

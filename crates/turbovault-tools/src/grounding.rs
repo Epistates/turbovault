@@ -59,7 +59,9 @@ pub struct GroundingAnalysis {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct UngroundedNote {
+    /// Vault-relative path of the note.
     pub path: String,
+    /// How many claims it makes.
     pub claim_count: usize,
 }
 
@@ -81,6 +83,7 @@ pub struct GroundingTools {
 }
 
 impl GroundingTools {
+    /// Grounding tools over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }

@@ -7,6 +7,8 @@
 //! - **SnapshotStore**: Content-addressed storage for note snapshots (SHA-256 dedup)
 //! - **RollbackEngine**: Point-in-time rollback with dry-run preview
 
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod log;
 pub mod rollback;
 pub mod snapshot;

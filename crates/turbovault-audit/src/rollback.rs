@@ -13,16 +13,28 @@ use crate::snapshot::SnapshotStore;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct RollbackPreview {
+    /// The audit entry the rollback would undo.
     pub operation_id: String,
+    /// Vault-relative path of the note it would change.
     pub path: String,
+    /// What the entry recorded doing.
     pub operation: OperationType,
+    /// Whether the note exists now.
     pub current_exists: bool,
+    /// The note's content hash now, if it exists.
     pub current_hash: Option<String>,
+    /// The content hash the note would have after the rollback, if known.
     pub rollback_to_hash: Option<String>,
+    /// The rollback would recreate a note that's gone.
     pub would_create: bool,
+    /// The rollback would delete the note (undoing a create).
     pub would_delete: bool,
+    /// The rollback would replace the note's current content.
     pub would_modify: bool,
+    /// Unified diff from the current content to the restored content, when
+    /// the rollback would modify the note.
     pub diff_preview: Option<String>,
+    /// Why the rollback can't go ahead as is, or what it would overwrite.
     pub warnings: Vec<String>,
 }
 
@@ -30,10 +42,16 @@ pub struct RollbackPreview {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct RollbackResult {
+    /// The audit entry that was undone.
     pub operation_id: String,
+    /// Vault-relative path of the note that changed.
     pub path: String,
+    /// Whether the rollback was applied.
     pub success: bool,
+    /// What the rollback did, in words.
     pub action_taken: String,
+    /// The audit entry recording the rollback, which can itself be rolled
+    /// back.
     pub audit_entry_id: String,
 }
 
@@ -44,6 +62,8 @@ pub struct RollbackEngine {
 }
 
 impl RollbackEngine {
+    /// An engine that reads entries from `audit_log` and content from
+    /// `snapshot_store`.
     pub fn new(audit_log: Arc<AuditLog>, snapshot_store: Arc<SnapshotStore>) -> Self {
         Self {
             audit_log,

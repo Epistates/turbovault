@@ -8,7 +8,17 @@ use turbovault_core::Result;
 use turbovault_core::error::Error;
 use uuid::Uuid;
 
-/// Type of operation tracked in the audit log
+/// Type of operation tracked in the audit log:
+///
+/// - `Create`: a note was created where none was.
+/// - `Update`: a note's content was replaced or edited.
+/// - `Delete`: a note was deleted.
+/// - `Move`: a note was moved or renamed; the entry's `new_path` is where it
+///   went.
+/// - `Rollback`: an earlier operation was undone.
+// The variants are described here: a doc comment on each would turn the
+// enum's JSON Schema from a plain `enum` into a longer `oneOf`.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -37,20 +47,30 @@ impl std::fmt::Display for OperationType {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct AuditEntry {
+    /// Unique id of the entry, a UUID; rollback refers to entries by it.
     pub id: String,
+    /// When the operation happened, RFC 3339 in UTC.
     pub timestamp: String,
+    /// What was done.
     pub operation: OperationType,
+    /// Vault-relative path of the note the operation was on.
     pub path: String,
+    /// Where a moved note went.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_path: Option<String>,
+    /// Content hash of the note before the operation, if it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_hash: Option<String>,
+    /// Content hash of the note after the operation, if it still exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_hash: Option<String>,
+    /// Snapshot holding the content before the operation, for rollback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_snapshot_id: Option<String>,
+    /// Snapshot holding the content after the operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_snapshot_id: Option<String>,
+    /// Anything else the operation recorded, as a JSON object.
     #[serde(default)]
     pub metadata: serde_json::Value,
     /// Who and what the operation was done for, when known. Recorded from
@@ -123,23 +143,27 @@ impl AuditEntry {
         }
     }
 
+    /// Record where a moved note went.
     pub fn with_new_path(mut self, path: impl Into<String>) -> Self {
         self.new_path = Some(path.into());
         self
     }
 
+    /// Record the note's content hash and snapshot before the operation.
     pub fn with_before(mut self, hash: impl Into<String>, snapshot_id: impl Into<String>) -> Self {
         self.before_hash = Some(hash.into());
         self.before_snapshot_id = Some(snapshot_id.into());
         self
     }
 
+    /// Record the note's content hash and snapshot after the operation.
     pub fn with_after(mut self, hash: impl Into<String>, snapshot_id: impl Into<String>) -> Self {
         self.after_hash = Some(hash.into());
         self.after_snapshot_id = Some(snapshot_id.into());
         self
     }
 
+    /// Replace the entry's metadata object.
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = metadata;
         self
@@ -149,14 +173,20 @@ impl AuditEntry {
 /// Filter for querying audit entries
 #[derive(Debug, Clone, Default)]
 pub struct AuditFilter {
+    /// Keep entries whose path contains this text.
     pub path: Option<String>,
+    /// Keep entries of this operation type.
     pub operation: Option<OperationType>,
+    /// Keep entries at or after this time.
     pub since: Option<chrono::DateTime<Utc>>,
+    /// Keep entries at or before this time.
     pub until: Option<chrono::DateTime<Utc>>,
+    /// Most entries to return, newest first. Zero returns none.
     pub limit: usize,
 }
 
 impl AuditFilter {
+    /// A filter that keeps everything, up to 50 entries.
     pub fn new() -> Self {
         Self {
             limit: 50,
@@ -164,21 +194,25 @@ impl AuditFilter {
         }
     }
 
+    /// Keep entries whose path contains `path`.
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
     }
 
+    /// Keep entries of one operation type.
     pub fn with_operation(mut self, op: OperationType) -> Self {
         self.operation = Some(op);
         self
     }
 
+    /// Keep entries at or after `since`.
     pub fn with_since(mut self, since: chrono::DateTime<Utc>) -> Self {
         self.since = Some(since);
         self
     }
 
+    /// Return at most `limit` entries.
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit;
         self
@@ -190,10 +224,15 @@ impl AuditFilter {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct AuditStats {
+    /// Entries in the log.
     pub total_operations: usize,
+    /// Entries per operation type, keyed by its upper-case name (`CREATE`).
     pub operations_by_type: HashMap<String, usize>,
+    /// Bytes the snapshot store takes on disk.
     pub total_snapshot_size_bytes: u64,
+    /// Timestamp of the first entry, if any.
     pub oldest_entry: Option<String>,
+    /// Timestamp of the last entry, if any.
     pub newest_entry: Option<String>,
     /// Whether the log's hash chain is intact.
     pub chain: ChainVerification,

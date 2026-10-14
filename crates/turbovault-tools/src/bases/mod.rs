@@ -17,16 +17,16 @@
 //! note they resolve to, nested tags, duration arithmetic on dates, lambdas
 //! in `filter`/`map`/`reduce`) have no faithful SQL form. A function or
 //! method it doesn't evaluate is refused up front, by name, never guessed
-//! at. What it evaluates is listed in [`expr::FUNCTIONS`] and
-//! [`expr::METHODS`]; `summaries`, `groupOrder` and the HTML, image, icon,
+//! at. What it evaluates is listed in `expr::FUNCTIONS` and
+//! `expr::METHODS`; `summaries`, `groupOrder` and the HTML, image, icon,
 //! `random`, `relative` and regular-expression functions are not.
 //!
 //! Rows are the vault's notes (Markdown). Obsidian also lists attachments
 //! in a base; those aren't indexed here, so a base meant to list them
 //! returns no rows for them.
 
-pub mod eval;
-pub mod expr;
+mod eval;
+mod expr;
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
@@ -45,8 +45,8 @@ use self::expr::Expr;
 
 /// A filter: one expression, or every, any or none of several.
 #[derive(Debug, Clone)]
-pub enum Filter {
-    Expr(String, Expr),
+pub(crate) enum Filter {
+    Expr(Expr),
     And(Vec<Filter>),
     Or(Vec<Filter>),
     Not(Vec<Filter>),
@@ -54,37 +54,37 @@ pub enum Filter {
 
 /// A property to sort or group by, and its direction.
 #[derive(Debug, Clone)]
-pub struct SortKey {
-    pub property: String,
-    pub expr: Expr,
-    pub descending: bool,
+pub(crate) struct SortKey {
+    pub(crate) property: String,
+    pub(crate) expr: Expr,
+    pub(crate) descending: bool,
 }
 
 /// One view of a base.
 #[derive(Debug, Clone)]
-pub struct View {
-    pub kind: String,
-    pub name: Option<String>,
-    pub limit: Option<usize>,
-    pub filters: Option<Filter>,
+pub(crate) struct View {
+    pub(crate) kind: String,
+    pub(crate) name: Option<String>,
+    pub(crate) limit: Option<usize>,
+    pub(crate) filters: Option<Filter>,
     /// The columns, as property ids, with their parsed expressions.
-    pub order: Vec<(String, Expr)>,
-    pub sort: Vec<SortKey>,
-    pub group_by: Option<SortKey>,
+    pub(crate) order: Vec<(String, Expr)>,
+    pub(crate) sort: Vec<SortKey>,
+    pub(crate) group_by: Option<SortKey>,
 }
 
 /// A parsed `.base` file.
 #[derive(Debug, Clone, Default)]
-pub struct Base {
-    pub filters: Option<Filter>,
-    pub formulas: Vec<(String, Expr)>,
+pub(crate) struct Base {
+    pub(crate) filters: Option<Filter>,
+    pub(crate) formulas: Vec<(String, Expr)>,
     /// Display names, by property id.
-    pub display_names: BTreeMap<String, String>,
-    pub views: Vec<View>,
+    pub(crate) display_names: BTreeMap<String, String>,
+    pub(crate) views: Vec<View>,
 }
 
 /// Parse a `.base` file, refusing anything it can't evaluate faithfully.
-pub fn parse_base(yaml: &str) -> Result<Base> {
+pub(crate) fn parse_base(yaml: &str) -> Result<Base> {
     let document: Json = if yaml.trim().is_empty() {
         Json::Object(Default::default())
     } else {
@@ -163,7 +163,7 @@ fn parse_filter(value: &Json, at: &str) -> std::result::Result<Filter, String> {
     match value {
         Json::String(_) | Json::Number(_) | Json::Bool(_) => {
             let source = json_text(value).unwrap_or_default();
-            Ok(Filter::Expr(source.clone(), compile(&source)?))
+            Ok(Filter::Expr(compile(&source)?))
         }
         Json::Object(map) => {
             let (key, list) = match map.iter().next() {
@@ -282,6 +282,7 @@ pub struct BaseColumn {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BaseRow {
+    /// Vault-relative path of the note.
     pub path: String,
     /// The view's columns, by property id.
     pub values: serde_json::Map<String, Json>,
@@ -294,6 +295,7 @@ pub struct BaseRow {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BaseResult {
+    /// Vault-relative path of the `.base` file.
     pub base: String,
     /// The view's name, if it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -302,7 +304,9 @@ pub struct BaseResult {
     pub view_type: String,
     /// Every view's name, for asking for another.
     pub views: Vec<String>,
+    /// The view's columns, in order.
     pub columns: Vec<BaseColumn>,
+    /// The matching notes, sorted and cut to the view's limit.
     pub rows: Vec<BaseRow>,
     /// The property the rows are grouped by, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -529,7 +533,7 @@ pub async fn query_base(
 
 fn matches(row: &mut Row<'_, '_>, filter: &Filter) -> std::result::Result<bool, String> {
     Ok(match filter {
-        Filter::Expr(_, expr) => truthy(&row.eval(expr)?),
+        Filter::Expr(expr) => truthy(&row.eval(expr)?),
         Filter::And(items) => {
             for item in items {
                 if !matches(row, item)? {

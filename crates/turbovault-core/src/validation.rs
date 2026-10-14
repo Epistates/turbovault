@@ -94,9 +94,13 @@ pub struct ValidationReport {
 /// Summary of validation results
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ValidationSummary {
+    /// Issues of `Info` severity.
     pub info_count: usize,
+    /// Issues of `Warning` severity.
     pub warning_count: usize,
+    /// Issues of `Error` severity.
     pub error_count: usize,
+    /// Issues of `Critical` severity.
     pub critical_count: usize,
 }
 

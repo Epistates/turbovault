@@ -196,11 +196,12 @@ pub struct Args {
     #[arg(long, value_delimiter = ',', env = "TURBOVAULT_DISABLED_TOOLS")]
     disabled_tools: Vec<String>,
 
-    /// Comma-separated tags — all tools carrying any of these tags are disabled.
+    /// Comma-separated tags: every tool carrying any of these tags is disabled.
     #[arg(long, value_delimiter = ',', env = "TURBOVAULT_DISABLED_TAGS")]
     disabled_tags: Vec<String>,
 
-    /// Comma-separated tags — hidden from tools/list but callable by name.
+    /// Comma-separated tags: tools carrying them are hidden from tools/list
+    /// but still callable by name.
     /// NOTE: no-op until turbomcp hide_tags() is available; a warning is logged at startup.
     #[arg(long, value_delimiter = ',', env = "TURBOVAULT_HIDDEN_TAGS")]
     hidden_tags: Vec<String>,

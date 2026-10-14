@@ -12,39 +12,20 @@ use turbovault_core::prelude::*;
 use turbovault_graph::LinkGraph;
 use turbovault_vault::VaultManager;
 
-/// Result of link strength calculation
-#[derive(Debug, Clone)]
-pub struct LinkStrengthResult {
-    pub source: String,
-    pub target: String,
-    pub strength: f64,
-    pub direct_links: usize,
-    pub backlinks: usize,
-    pub shared_references: usize,
-}
-
 /// Suggested link with reasoning
 #[derive(Debug, Clone)]
 pub struct LinkSuggestion {
+    /// The note to link to, vault-relative.
     pub target: String,
+    /// How strongly it's suggested, 0.0 to 1.0.
     pub strength: f64,
+    /// Why it's suggested.
     pub reasons: Vec<String>,
-}
-
-/// Centrality rank for a file
-#[derive(Debug, Clone)]
-pub struct CentralityRank {
-    pub rank: usize,
-    pub file: String,
-    pub score: f64,
-    pub betweenness: f64,
-    pub closeness: f64,
-    pub eigenvector: f64,
-    pub interpretation: String,
 }
 
 /// Relationship analysis tools
 pub struct RelationshipTools {
+    /// The vault whose link graph is analyzed.
     pub manager: Arc<VaultManager>,
 }
 

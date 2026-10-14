@@ -158,6 +158,8 @@
 //!
 //! See [`turbovault_core::error`] for error types.
 
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod analysis_tools;
 pub mod audit_tools;
 pub mod bases;

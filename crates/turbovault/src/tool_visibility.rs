@@ -1,3 +1,7 @@
+//! Which tools a client sees and may call: the `tool_visibility` config
+//! section, its CLI and environment overrides, and the TurboMCP visibility
+//! layer they build.
+
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -63,12 +67,19 @@ pub const ADVANCED_TOOLS: &[&str] = &[
 /// CLI/env overrides merged with file-based tool visibility settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolVisibilityOverrides {
+    /// If non-empty, only these exact tool names are listed and callable.
     pub allowed: Vec<String>,
+    /// Exact tool names left out of `tools/list` but still callable by name.
     pub hidden: Vec<String>,
+    /// Exact tool names left out of `tools/list` and refused when called.
     pub disabled: Vec<String>,
+    /// Disable every tool carrying any of these tags.
     pub disabled_tags: Vec<String>,
+    /// Hide tools with these tags; not yet supported by TurboMCP, so only warned about.
     pub hidden_tags: Vec<String>,
+    /// Hide every tool that isn't annotated read-only.
     pub require_read_only: bool,
+    /// List the advanced tools too.
     pub show_advanced_tools: bool,
 }
 
@@ -84,7 +95,9 @@ pub struct ToolVisibilityOverrides {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct TurboVaultConfigFile {
+    /// The `tool_visibility:` section.
     pub tool_visibility: ToolVisibilitySettings,
+    /// The `vaults:` section: vaults to register at startup.
     pub vaults: Vec<VaultConfig>,
 }
 
@@ -185,6 +198,7 @@ impl ToolVisibilitySettings {
         config
     }
 
+    /// Whether an allow, hide, disable, tag or read-only rule is set; `show_advanced_tools` doesn't count.
     pub fn has_rules(&self) -> bool {
         !self.allowed.is_empty()
             || !self.hidden.is_empty()

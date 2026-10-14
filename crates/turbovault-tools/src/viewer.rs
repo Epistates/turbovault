@@ -78,6 +78,7 @@ pub struct ViewerTools {
 }
 
 impl ViewerTools {
+    /// Viewer tools over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }

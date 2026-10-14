@@ -84,7 +84,9 @@ pub enum GitMergeStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct GitAuthor {
+    /// Author and committer name.
     pub name: String,
+    /// Author and committer email.
     pub email: String,
 }
 
@@ -421,9 +423,15 @@ pub struct ServerConfig {
     /// spelling still deserializes.
     #[serde(alias = "watch_for_changes")]
     pub reconcile_external_changes: bool,
+    /// Largest file, in bytes, that's read, written or indexed. Default 10 MB.
     pub max_file_size: u64,
+    /// File extensions, with the dot, that scans pick up: by default `.md`,
+    /// `.txt`, `.canvas` and `.base`.
     pub allowed_extensions: HashSet<String>,
+    /// Folder and file names that are never read or written, at any depth:
+    /// by default `.obsidian`, `.git`, `node_modules` and `.DS_Store`.
     pub excluded_paths: HashSet<String>,
+    /// Log level: `trace`, `debug`, `info`, `warn` or `error`.
     pub log_level: String,
 
     /// How long the audit trail keeps the note snapshots that rollback

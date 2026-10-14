@@ -62,6 +62,8 @@
 //! assert!(write.conflicts_with(&delete));
 //! ```
 
+#![warn(missing_docs, unreachable_pub)]
+
 use serde::{Deserialize, Serialize};
 
 /// Individual batch operation to execute
@@ -81,10 +83,12 @@ pub enum BatchOperation {
         description = "Create a note. Fails the batch if a note is already at the path, unless force is true."
     )]
     CreateNote {
+        /// Vault-relative path of the new note, such as `projects/Plan.md`.
         #[schemars(
             description = "Vault-relative path of the new note, such as `projects/Plan.md`."
         )]
         path: String,
+        /// The note's markdown.
         #[schemars(description = "The note's markdown.")]
         content: String,
         /// Disable the implicit `expect_absent` precondition. Default
@@ -101,8 +105,10 @@ pub enum BatchOperation {
     #[serde(rename = "WriteNote", alias = "WriteFile")]
     #[schemars(description = "Write a note's whole content, creating it or replacing it.")]
     WriteNote {
+        /// Vault-relative path of the note, such as `projects/Plan.md`.
         #[schemars(description = "Vault-relative path of the note, such as `projects/Plan.md`.")]
         path: String,
+        /// The note's full markdown.
         #[schemars(description = "The note's full markdown.")]
         content: String,
         /// Optional optimistic-concurrency precondition checked before any operation in the batch is applied.
@@ -132,6 +138,7 @@ pub enum BatchOperation {
         description = "Delete a note. By default the batch fails if other notes link to it; on_backlinks changes that."
     )]
     DeleteNote {
+        /// Vault-relative path of the note to delete.
         #[schemars(description = "Vault-relative path of the note to delete.")]
         path: String,
         /// Optional optimistic-concurrency precondition on the deleted file.
@@ -140,6 +147,7 @@ pub enum BatchOperation {
         )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_hash: Option<String>,
+        /// `refuse` (default) fails the batch if other notes link to it, `rewrite-stale-callout` strikes those links through, `force` leaves them broken.
         #[schemars(
             description = "`refuse` (default) fails the batch if other notes link to it, `rewrite-stale-callout` strikes those links through, `force` leaves them broken."
         )]
@@ -166,8 +174,10 @@ pub enum BatchOperation {
         description = "Move or rename a note, rewriting links to it in other notes in the same batch."
     )]
     MoveNote {
+        /// Vault-relative path of the note to move.
         #[schemars(description = "Vault-relative path of the note to move.")]
         from: String,
+        /// Vault-relative path to move it to.
         #[schemars(description = "Vault-relative path to move it to.")]
         to: String,
         /// Optional optimistic-concurrency precondition on the source file
@@ -184,6 +194,7 @@ pub enum BatchOperation {
         )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dest_expected_hash: Option<String>,
+        /// Rewrite links to the note in other notes. Default true; false leaves them pointing at the old path.
         #[schemars(
             description = "Rewrite links to the note in other notes. Default true; false leaves them pointing at the old path."
         )]
@@ -198,14 +209,18 @@ pub enum BatchOperation {
     #[serde(rename = "UpdateLinks")]
     #[schemars(description = "In one note, re-point every link to one target at another.")]
     UpdateLinks {
+        /// Vault-relative path of the note whose links to change.
         #[schemars(description = "Vault-relative path of the note whose links to change.")]
         file: String,
+        /// The link target to replace, as written in the links, such as `Old Note`.
         #[schemars(
             description = "The link target to replace, as written in the links, such as `Old Note`."
         )]
         old_target: String,
+        /// The target to put instead, such as `New Note`.
         #[schemars(description = "The target to put instead, such as `New Note`.")]
         new_target: String,
+        /// The note's `hash` from read_note; the batch fails if it changed since.
         #[schemars(
             description = "The note's `hash` from read_note; the batch fails if it changed since."
         )]
@@ -224,12 +239,15 @@ pub enum BatchOperation {
         description = "Change parts of a note with SEARCH/REPLACE blocks, as edit_note does."
     )]
     EditNote {
+        /// Vault-relative path of the note to edit.
         #[schemars(description = "Vault-relative path of the note to edit.")]
         path: String,
+        /// SEARCH/REPLACE blocks in edit_note's format: `<<<<<<< SEARCH`, text to find, `=======`, replacement, `>>>>>>> REPLACE`.
         #[schemars(
             description = "SEARCH/REPLACE blocks in edit_note's format: `<<<<<<< SEARCH`, text to find, `=======`, replacement, `>>>>>>> REPLACE`."
         )]
         edits: String,
+        /// The note's `hash` from read_note; the batch fails if it changed since.
         #[schemars(
             description = "The note's `hash` from read_note; the batch fails if it changed since."
         )]
@@ -245,17 +263,21 @@ pub enum BatchOperation {
     #[serde(rename = "UpdateFrontmatter")]
     #[schemars(description = "Change a note's frontmatter, as update_frontmatter does.")]
     UpdateFrontmatter {
+        /// Vault-relative path of the note.
         #[schemars(description = "Vault-relative path of the note.")]
         path: String,
+        /// The keys and values to write, such as `{"status": "done"}`.
         #[schemars(
             description = "The keys and values to write, such as `{\"status\": \"done\"}`."
         )]
         frontmatter: std::collections::HashMap<String, serde_json::Value>,
+        /// True (default) merges these keys into the existing frontmatter; false replaces it.
         #[schemars(
             description = "True (default) merges these keys into the existing frontmatter; false replaces it."
         )]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         merge: Option<bool>,
+        /// The note's `hash` from read_note; the batch fails if it changed since.
         #[schemars(
             description = "The note's `hash` from read_note; the batch fails if it changed since."
         )]
@@ -271,12 +293,16 @@ pub enum BatchOperation {
     #[serde(rename = "ManageTags")]
     #[schemars(description = "Add or remove tags in a note's frontmatter `tags` list.")]
     ManageTags {
+        /// Vault-relative path of the note.
         #[schemars(description = "Vault-relative path of the note.")]
         path: String,
+        /// `add` or `remove`.
         #[schemars(description = "`add` or `remove`.")]
         operation: String,
+        /// Tags without `#`, such as `["work", "project/alpha"]`.
         #[schemars(description = "Tags without `#`, such as `[\"work\", \"project/alpha\"]`.")]
         tags: Vec<String>,
+        /// The note's `hash` from read_note; the batch fails if it changed since.
         #[schemars(
             description = "The note's `hash` from read_note; the batch fails if it changed since."
         )]
@@ -291,14 +317,18 @@ pub enum BatchOperation {
     #[serde(rename = "CreateFromTemplate")]
     #[schemars(description = "Create a note from a template, as create_from_template does.")]
     CreateFromTemplate {
+        /// The template's id, as list_templates shows it.
         #[schemars(description = "The template's id, as list_templates shows it.")]
         template_id: String,
+        /// Vault-relative path for the new note.
         #[schemars(description = "Vault-relative path for the new note.")]
         path: String,
+        /// The template's field values, such as `{"title": "Weekly sync"}`.
         #[schemars(
             description = "The template's field values, such as `{\"title\": \"Weekly sync\"}`."
         )]
         fields: std::collections::HashMap<String, String>,
+        /// Replace a note already at the path. Default false.
         #[schemars(description = "Replace a note already at the path. Default false.")]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         force: Option<bool>,

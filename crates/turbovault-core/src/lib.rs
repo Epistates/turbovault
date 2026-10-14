@@ -73,6 +73,8 @@
 //! - [`Severity`] - Validation issue severity levels
 //! - [`models`] - Rich data models with position tracking
 
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod atomic_write;
 pub mod cache;
 pub mod change_plan;

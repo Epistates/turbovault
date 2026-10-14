@@ -37,10 +37,15 @@ use crate::search_engine::is_stopword;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SimilarityResult {
+    /// Vault-relative path of the similar note.
     pub path: String,
+    /// Its title.
     pub title: String,
+    /// Cosine similarity of the two notes' TF-IDF vectors, 0.0 to 1.0.
     pub score: f64,
+    /// Terms the two notes share.
     pub shared_terms: Vec<String>,
+    /// The first line of its plain text, up to 200 characters.
     pub preview: String,
 }
 

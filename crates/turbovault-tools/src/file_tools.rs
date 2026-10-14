@@ -40,13 +40,18 @@ impl WriteMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NoteInfo {
+    /// Vault-relative path.
     pub path: String,
+    /// Whether a file is there.
     pub exists: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Size in bytes, when it exists.
     pub size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// When it was last modified, RFC 3339 in UTC, when it exists.
     pub modified_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Whether it starts with YAML frontmatter, when it exists.
     pub has_frontmatter: Option<bool>,
 }
 
@@ -358,6 +363,7 @@ fn slice_sections(
 /// File tools context
 #[derive(Clone)]
 pub struct FileTools {
+    /// The vault files are read from and written to.
     pub manager: Arc<VaultManager>,
 }
 

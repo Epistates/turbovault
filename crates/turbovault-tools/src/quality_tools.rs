@@ -19,6 +19,7 @@ use turbovault_vault::VaultManager;
 /// Quality evaluation tools
 #[derive(Clone)]
 pub struct QualityTools {
+    /// The vault the tools evaluate.
     pub manager: Arc<VaultManager>,
 }
 
@@ -26,57 +27,95 @@ pub struct QualityTools {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct QualityScore {
+    /// Vault-relative path of the note.
     pub path: String,
+    /// Weighted score, 0 to 100: readability 20%, structure 30%,
+    /// completeness 30%, staleness 20%.
     pub overall_score: u8,
+    /// How easy the text is to read.
     pub readability: ReadabilityScore,
+    /// How well the note is organized.
     pub structure: StructureScore,
+    /// How much content, metadata and linking it has.
     pub completeness: CompletenessScore,
+    /// How recently it changed.
     pub staleness: StalenessScore,
+    /// What would raise the score.
     pub recommendations: Vec<String>,
 }
 
+/// How easy a note's text is to read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ReadabilityScore {
+    /// Readability score, 0 to 100.
     pub score: u8,
+    /// Flesch-Kincaid grade level of the plain text.
     pub flesch_kincaid_grade: f64,
+    /// Words per sentence.
     pub avg_sentence_length: f64,
+    /// Bytes per word.
     pub avg_word_length: f64,
+    /// Distinct words over total words, 0.0 to 1.0.
     pub vocabulary_diversity: f64,
 }
 
+/// How well a note is organized.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StructureScore {
+    /// Structure score, 0 to 100.
     pub score: u8,
+    /// Whether it has an H1 heading.
     pub has_title: bool,
+    /// Number of headings.
     pub heading_count: usize,
+    /// Whether it has YAML frontmatter.
     pub has_frontmatter: bool,
+    /// Number of inline tags.
     pub tag_count: usize,
+    /// Whether it links to anything.
     pub has_links: bool,
+    /// Number of outgoing links.
     pub link_count: usize,
+    /// Whether headings start at H1 and never skip a level.
     pub heading_hierarchy_valid: bool,
 }
 
+/// How much content, metadata and linking a note has.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CompletenessScore {
+    /// Completeness score, 0 to 100.
     pub score: u8,
+    /// Words of plain text.
     pub word_count: usize,
+    /// Outgoing links per 100 words.
     pub link_density: f64,
+    /// Whether it has inline tags.
     pub has_tags: bool,
+    /// Whether it has YAML frontmatter.
     pub has_frontmatter: bool,
+    /// Number of frontmatter properties.
     pub frontmatter_keys: usize,
+    /// Whether it links to other notes.
     pub has_outgoing_links: bool,
+    /// Whether other notes link to it.
     pub has_incoming_links: bool,
 }
 
+/// How recently a note changed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct StalenessScore {
+    /// Freshness score, 0 to 100: 100 if modified today, falling with age,
+    /// less 2 for each linked note that changed more recently (up to 20).
     pub score: u8,
+    /// Whole days since the note was modified.
     pub days_since_modified: u64,
+    /// Whole days since it was created.
     pub days_since_created: u64,
+    /// Linked notes modified more recently than this one.
     pub linked_notes_newer: usize,
 }
 
@@ -84,20 +123,29 @@ pub struct StalenessScore {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ScoreDistribution {
-    pub poor: usize,      // 0-20
-    pub below_avg: usize, // 21-40
-    pub average: usize,   // 41-60
-    pub good: usize,      // 61-80
-    pub excellent: usize, // 81-100
+    /// Notes scoring 0 to 20.
+    pub poor: usize,
+    /// Notes scoring 21 to 40.
+    pub below_avg: usize,
+    /// Notes scoring 41 to 60.
+    pub average: usize,
+    /// Notes scoring 61 to 80.
+    pub good: usize,
+    /// Notes scoring 81 to 100.
+    pub excellent: usize,
 }
 
 /// Dimension averages across the vault
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DimensionAverages {
+    /// Mean readability score.
     pub readability: f64,
+    /// Mean structure score.
     pub structure: f64,
+    /// Mean completeness score.
     pub completeness: f64,
+    /// Mean staleness score.
     pub staleness: f64,
 }
 
@@ -105,12 +153,19 @@ pub struct DimensionAverages {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct VaultQualityReport {
+    /// Notes evaluated.
     pub total_notes: usize,
+    /// Mean overall score.
     pub average_score: f64,
+    /// How many notes fall in each score band.
     pub score_distribution: ScoreDistribution,
+    /// The lowest-scoring notes, worst first.
     pub lowest_quality: Vec<QualityScore>,
+    /// The highest-scoring notes, best first.
     pub highest_quality: Vec<QualityScore>,
+    /// Mean score per dimension.
     pub dimension_averages: DimensionAverages,
+    /// What would raise the vault's scores.
     pub recommendations: Vec<String>,
 }
 
@@ -121,6 +176,7 @@ const COMPLETENESS_WEIGHT: f64 = 0.30;
 const STALENESS_WEIGHT: f64 = 0.20;
 
 impl QualityTools {
+    /// Quality tools over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }

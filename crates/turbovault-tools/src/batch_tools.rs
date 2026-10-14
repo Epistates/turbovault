@@ -12,6 +12,7 @@ use turbovault_vault::{EditEngine, VaultManager};
 /// Batch operation tools
 #[derive(Clone)]
 pub struct BatchTools {
+    /// The vault batches run against.
     pub manager: Arc<VaultManager>,
 }
 

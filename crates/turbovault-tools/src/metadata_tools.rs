@@ -15,11 +15,17 @@ use turbovault_vault::VaultManager;
 /// Metadata query filter
 #[derive(Debug, Clone)]
 pub enum QueryFilter {
+    /// The property equals the value.
     Equals(String, Value),
+    /// The property is a number greater than this.
     GreaterThan(String, f64),
+    /// The property is a number less than this.
     LessThan(String, f64),
+    /// The property's text contains this.
     Contains(String, String),
+    /// Every filter holds.
     And(Vec<QueryFilter>),
+    /// Any filter holds.
     Or(Vec<QueryFilter>),
 }
 
@@ -124,6 +130,7 @@ fn strip_quotes(s: &str) -> Option<&str> {
 
 /// Metadata tools for querying and extracting file metadata
 pub struct MetadataTools {
+    /// The vault whose frontmatter is queried.
     pub manager: Arc<VaultManager>,
 }
 

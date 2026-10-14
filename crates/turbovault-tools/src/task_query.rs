@@ -34,6 +34,7 @@ pub enum TaskState {
 }
 
 impl TaskState {
+    /// The state `task`'s checkbox character stands for.
     pub fn of(task: &TaskItem) -> Self {
         match task.status {
             ' ' => Self::Todo,
@@ -45,7 +46,11 @@ impl TaskState {
     }
 }
 
-/// A Tasks plugin priority, lowest to highest.
+/// A Tasks plugin priority, lowest to highest: `Lowest` (⏬), `Low` (🔽),
+/// `Normal` (no emoji), `Medium` (🔼), `High` (⏫), `Highest` (🔺).
+// The variants are described here: a doc comment on each would turn the
+// enum's JSON Schema from a plain `enum` into a longer `oneOf`.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -75,16 +80,22 @@ impl From<TaskPriority> for Priority {
 /// `None` places no condition.
 #[derive(Debug, Clone, Default)]
 pub struct TaskQuery {
+    /// Tasks in any of these states.
     pub status: Vec<TaskState>,
+    /// Tasks due on or before this date.
     pub due_before: Option<NaiveDate>,
+    /// Tasks due on or after this date.
     pub due_after: Option<NaiveDate>,
+    /// Tasks scheduled on or before this date.
     pub scheduled_before: Option<NaiveDate>,
+    /// Tasks scheduled on or after this date.
     pub scheduled_after: Option<NaiveDate>,
     /// A tag the task carries (`#work`, or `work`, which also matches
     /// `#work/client`).
     pub tag: Option<String>,
     /// A note's path, or a folder whose notes (at any depth) to search.
     pub path: Option<String>,
+    /// Tasks with any of these priorities.
     pub priority: Vec<Priority>,
     /// Text the task's description contains, ignoring case.
     pub text: Option<String>,
@@ -98,28 +109,39 @@ pub struct TaskMatch {
     pub path: String,
     /// Its line in the note, from 1.
     pub line: usize,
+    /// Its state, from the checkbox.
     pub status: TaskState,
     /// The checkbox character itself.
     pub status_char: String,
     /// The description, without its Tasks metadata.
     pub text: String,
+    /// Its priority.
     pub priority: Priority,
+    /// Due date, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
+    /// Scheduled date, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled: Option<String>,
+    /// Start date, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start: Option<String>,
+    /// Done date, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done: Option<String>,
+    /// Cancelled date, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancelled: Option<String>,
+    /// Created date, `YYYY-MM-DD`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
+    /// Inline tags, without the `#`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Recurrence rule, such as `every week`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recurrence: Option<String>,
+    /// Block reference, without the `^`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_ref: Option<String>,
 }

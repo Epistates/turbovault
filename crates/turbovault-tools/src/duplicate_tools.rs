@@ -30,6 +30,7 @@ use crate::similarity_engine::{NoteSummary, SimilarityEngine};
 /// Duplicate detection tools
 #[derive(Clone)]
 pub struct DuplicateTools {
+    /// The vault searched for duplicates.
     pub manager: Arc<VaultManager>,
 }
 
@@ -37,7 +38,9 @@ pub struct DuplicateTools {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DuplicateGroup {
+    /// How alike the pair is, 0.0 to 1.0, to four decimal places.
     pub similarity: f64,
+    /// The notes that are alike.
     pub notes: Vec<DuplicateNote>,
 }
 
@@ -45,9 +48,13 @@ pub struct DuplicateGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DuplicateNote {
+    /// Vault-relative path.
     pub path: String,
+    /// The note's title.
     pub title: String,
+    /// Words of plain text.
     pub word_count: usize,
+    /// When it was last modified, RFC 3339 in UTC, or `unknown`.
     pub modified_at: String,
 }
 
@@ -55,15 +62,22 @@ pub struct DuplicateNote {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CompareResult {
+    /// One note, vault-relative.
     pub left_path: String,
+    /// The other note, vault-relative.
     pub right_path: String,
+    /// How alike they are, 0.0 to 1.0, to four decimal places.
     pub similarity_score: f64,
+    /// Terms the two notes share.
     pub shared_terms: Vec<String>,
+    /// Line-level diff counts.
     pub diff_summary: DiffSummary,
+    /// What to do about the pair, in words.
     pub recommendation: String,
 }
 
 impl DuplicateTools {
+    /// Duplicate tools over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }

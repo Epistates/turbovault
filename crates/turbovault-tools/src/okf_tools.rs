@@ -43,12 +43,16 @@ pub struct OkfConceptInfo {
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub type_: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The document's `title`, if set.
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Its `description`, if set.
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Its `resource`, the thing it describes, if set.
     pub resource: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Its `timestamp`, if set.
     pub timestamp: Option<String>,
     /// Number of citations under a `# Citations` heading (spec §8).
     pub citation_count: usize,
@@ -124,6 +128,7 @@ pub struct OkfTools {
 }
 
 impl OkfTools {
+    /// OKF tools over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }
