@@ -11,6 +11,7 @@ use turbovault_vault::VaultManager;
 
 /// Export tools for vault analysis and reporting
 pub struct ExportTools {
+    /// The vault reports are made from.
     pub manager: Arc<VaultManager>,
 }
 

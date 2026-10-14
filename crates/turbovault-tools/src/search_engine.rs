@@ -127,6 +127,7 @@ impl SearchQuery {
 
 /// Search engine for vault discovery (powered by tantivy)
 pub struct SearchEngine {
+    /// The vault the index covers.
     pub manager: Arc<VaultManager>,
     index: Index,
     /// One reader for the engine's life, reloaded after every commit, rather

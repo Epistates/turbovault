@@ -15,36 +15,55 @@ use turbovault_vault::VaultManager;
 /// Result of link strength calculation
 #[derive(Debug, Clone)]
 pub struct LinkStrengthResult {
+    /// One note, vault-relative.
     pub source: String,
+    /// The other note, vault-relative.
     pub target: String,
+    /// Connection strength, 0.0 to 1.0.
     pub strength: f64,
+    /// 1 if `source` links to `target`, else 0.
     pub direct_links: usize,
+    /// 1 if `target` links back to `source`, else 0.
     pub backlinks: usize,
+    /// Other notes that link to both.
     pub shared_references: usize,
 }
 
 /// Suggested link with reasoning
 #[derive(Debug, Clone)]
 pub struct LinkSuggestion {
+    /// The note to link to, vault-relative.
     pub target: String,
+    /// How strongly it's suggested, 0.0 to 1.0.
     pub strength: f64,
+    /// Why it's suggested.
     pub reasons: Vec<String>,
 }
 
 /// Centrality rank for a file
 #[derive(Debug, Clone)]
 pub struct CentralityRank {
+    /// Position in the ranking, from 1.
     pub rank: usize,
+    /// The note, vault-relative.
     pub file: String,
+    /// Weighted combination of the three measures below.
     pub score: f64,
+    /// Links in and out, scaled to 0.0 to 1.0 (a degree count, not true
+    /// betweenness).
     pub betweenness: f64,
+    /// Outgoing links over all notes (a degree ratio, not true closeness).
     pub closeness: f64,
+    /// Incoming links over all notes (a degree ratio, not true eigenvector
+    /// centrality).
     pub eigenvector: f64,
+    /// The score in words.
     pub interpretation: String,
 }
 
 /// Relationship analysis tools
 pub struct RelationshipTools {
+    /// The vault whose link graph is analyzed.
     pub manager: Arc<VaultManager>,
 }
 

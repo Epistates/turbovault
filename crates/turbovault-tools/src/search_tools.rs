@@ -7,6 +7,7 @@ use turbovault_vault::VaultManager;
 
 /// Search tools context
 pub struct SearchTools {
+    /// The vault searched.
     pub manager: Arc<VaultManager>,
 }
 

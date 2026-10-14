@@ -13,14 +13,25 @@ use std::sync::Arc;
 use turbovault_core::Precondition;
 use turbovault_vault::VaultManager;
 
-/// Field types for template parameters
+/// Field types for template parameters:
+///
+/// - `Text`: a short line of text.
+/// - `LongText`: free text that may span lines.
+/// - `Date`: a date, `YYYY-MM-DD`.
+/// - `Select(options)`: one of the listed options.
+/// - `MultiSelect(options)`: comma-separated values, each one of the options.
+/// - `Number`: a number.
+/// - `Boolean`: `true`, `false`, `yes`, `no`, `1` or `0`.
+// The variants are described here: a doc comment on each would change the
+// enum's JSON Schema, splitting the unit variants out of their shared `enum`.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TemplateFieldType {
     Text,
     LongText,
     Date,
-    Select(Vec<String>), // options
+    Select(Vec<String>),
     MultiSelect(Vec<String>),
     Number,
     Boolean,
@@ -30,11 +41,17 @@ pub enum TemplateFieldType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct TemplateField {
+    /// The field's name, as its `{name}` placeholder spells it.
     pub name: String,
+    /// What to put in it.
     pub description: String,
+    /// What kind of value it takes.
     pub field_type: TemplateFieldType,
+    /// Whether a note can't be created without it.
     pub required: bool,
+    /// The value used when none is given.
     pub default_value: Option<String>,
+    /// A sample value.
     pub example: Option<String>,
 }
 
@@ -151,36 +168,43 @@ pub struct TemplateBuilder {
 }
 
 impl TemplateBuilder {
+    /// Set when and how to use the template.
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = desc.into();
         self
     }
 
+    /// Set the category; `uncategorized` if never set.
     pub fn category(mut self, cat: impl Into<String>) -> Self {
         self.category = cat.into();
         self
     }
 
+    /// Add a frontmatter property; its value may hold `{field}` placeholders.
     pub fn add_frontmatter(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.frontmatter_template.insert(key.into(), value.into());
         self
     }
 
+    /// Add a field the caller fills in.
     pub fn add_field(mut self, field: TemplateField) -> Self {
         self.fields.push(field);
         self
     }
 
+    /// Set the note body, with `{field}` placeholders.
     pub fn content_template(mut self, template: impl Into<String>) -> Self {
         self.content_template = template.into();
         self
     }
 
+    /// Set a sample of a note made from the template.
     pub fn example_output(mut self, example: impl Into<String>) -> Self {
         self.example_output = example.into();
         self
     }
 
+    /// Finish the template.
     pub fn build(self) -> TemplateDefinition {
         TemplateDefinition {
             id: self.id,
@@ -199,14 +223,19 @@ impl TemplateBuilder {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CreatedNoteInfo {
+    /// Vault-relative path of the new note.
     pub path: String,
+    /// Its `title` field value, empty if the template has none.
     pub title: String,
+    /// The template it was made from.
     pub template_id: String,
+    /// The first three lines of its content.
     pub content_preview: String,
 }
 
 /// Template engine for vault
 pub struct TemplateEngine {
+    /// The vault notes are created in.
     pub manager: Arc<VaultManager>,
     templates: HashMap<String, TemplateDefinition>,
 }

@@ -12,7 +12,7 @@ use std::fmt;
 
 /// A parsed expression.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
+pub(crate) enum Expr {
     Number(f64),
     Str(String),
     Bool(bool),
@@ -33,13 +33,13 @@ pub enum Expr {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnaryOp {
+pub(crate) enum UnaryOp {
     Not,
     Neg,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOp {
+pub(crate) enum BinaryOp {
     Or,
     And,
     Eq,
@@ -76,12 +76,12 @@ impl fmt::Display for BinaryOp {
 }
 
 /// Global functions TurboVault evaluates.
-pub const FUNCTIONS: &[&str] = &[
+pub(crate) const FUNCTIONS: &[&str] = &[
     "if", "now", "today", "date", "duration", "list", "number", "min", "max", "link", "file",
 ];
 
 /// Methods TurboVault evaluates, on whichever types have them.
-pub const METHODS: &[&str] = &[
+pub(crate) const METHODS: &[&str] = &[
     // any
     "isTruthy",
     "isType",
@@ -146,7 +146,7 @@ const UNSUPPORTED: &[&str] = &[
 ];
 
 /// Parse `source` into an expression.
-pub fn parse(source: &str) -> Result<Expr, String> {
+pub(crate) fn parse(source: &str) -> Result<Expr, String> {
     let tokens = lex(source)?;
     let mut parser = Parser { tokens, pos: 0 };
     let expr = parser.or()?;
@@ -158,7 +158,7 @@ pub fn parse(source: &str) -> Result<Expr, String> {
 
 /// Refuse an expression that calls a function or method TurboVault doesn't
 /// evaluate, naming it.
-pub fn check(expr: &Expr, source: &str) -> Result<(), String> {
+pub(crate) fn check(expr: &Expr, source: &str) -> Result<(), String> {
     let mut problem = None;
     walk(expr, &mut |node| {
         if problem.is_some() {

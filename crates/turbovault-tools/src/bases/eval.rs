@@ -11,7 +11,7 @@ use super::expr::{BinaryOp, Expr, UnaryOp};
 
 /// A value an expression produces.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Value {
+pub(crate) enum Value {
     Null,
     Bool(bool),
     Number(f64),
@@ -31,56 +31,56 @@ pub enum Value {
 
 /// A span of time: whole months (which vary in length) and milliseconds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Duration {
-    pub months: i64,
-    pub millis: i64,
+pub(crate) struct Duration {
+    pub(crate) months: i64,
+    pub(crate) millis: i64,
 }
 
 /// What an expression can know about one file.
 #[derive(Debug, Clone)]
-pub struct FileInfo {
+pub(crate) struct FileInfo {
     /// Vault-relative path.
-    pub path: String,
-    pub full_path: PathBuf,
-    pub size: u64,
-    pub ctime: Option<NaiveDateTime>,
-    pub mtime: Option<NaiveDateTime>,
-    pub properties: serde_json::Map<String, serde_json::Value>,
+    pub(crate) path: String,
+    pub(crate) full_path: PathBuf,
+    pub(crate) size: u64,
+    pub(crate) ctime: Option<NaiveDateTime>,
+    pub(crate) mtime: Option<NaiveDateTime>,
+    pub(crate) properties: serde_json::Map<String, serde_json::Value>,
     /// Every tag, with its `#`.
-    pub tags: Vec<String>,
+    pub(crate) tags: Vec<String>,
     /// Outgoing links, as written: target and display text.
-    pub links: Vec<(String, Option<String>)>,
-    pub embeds: Vec<(String, Option<String>)>,
+    pub(crate) links: Vec<(String, Option<String>)>,
+    pub(crate) embeds: Vec<(String, Option<String>)>,
 }
 
 impl FileInfo {
-    pub fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         self.path.rsplit('/').next().unwrap_or(&self.path)
     }
 
-    pub fn basename(&self) -> &str {
+    pub(crate) fn basename(&self) -> &str {
         let name = self.name();
         name.rsplit_once('.').map_or(name, |(stem, _)| stem)
     }
 
-    pub fn ext(&self) -> &str {
+    pub(crate) fn ext(&self) -> &str {
         self.name().rsplit_once('.').map_or("", |(_, ext)| ext)
     }
 
     /// The folder holding the file, `/` for the vault root, as Obsidian
     /// names it.
-    pub fn folder(&self) -> &str {
+    pub(crate) fn folder(&self) -> &str {
         self.path.rsplit_once('/').map_or("/", |(folder, _)| folder)
     }
 }
 
 /// Everything a query shares across its rows.
-pub struct Env<'a> {
+pub(crate) struct Env<'a> {
     /// The notes, then the base file itself as the last entry.
-    pub files: Vec<FileInfo>,
-    pub graph: &'a LinkGraph,
-    pub now: NaiveDateTime,
-    pub formulas: HashMap<String, Expr>,
+    pub(crate) files: Vec<FileInfo>,
+    pub(crate) graph: &'a LinkGraph,
+    pub(crate) now: NaiveDateTime,
+    pub(crate) formulas: HashMap<String, Expr>,
 }
 
 impl Env<'_> {
@@ -106,7 +106,7 @@ impl Env<'_> {
 
 /// One row's evaluation: the note, lambda variables, and the formulas
 /// already computed for it.
-pub struct Row<'e, 'a> {
+pub(crate) struct Row<'e, 'a> {
     env: &'e Env<'a>,
     row: usize,
     vars: Vec<(String, Value)>,
@@ -117,7 +117,7 @@ pub struct Row<'e, 'a> {
 type EvalResult = Result<Value, String>;
 
 impl<'e, 'a> Row<'e, 'a> {
-    pub fn new(env: &'e Env<'a>, row: usize) -> Self {
+    pub(crate) fn new(env: &'e Env<'a>, row: usize) -> Self {
         Self {
             env,
             row,
@@ -131,7 +131,7 @@ impl<'e, 'a> Row<'e, 'a> {
         &self.env.files[self.row]
     }
 
-    pub fn eval(&mut self, expr: &Expr) -> EvalResult {
+    pub(crate) fn eval(&mut self, expr: &Expr) -> EvalResult {
         match expr {
             Expr::Number(n) => Ok(Value::Number(*n)),
             Expr::Str(s) => Ok(Value::Str(s.clone())),
@@ -664,7 +664,7 @@ impl<'e, 'a> Row<'e, 'a> {
 
     /// Whether two values are equal, the way Bases compares them: links and
     /// files by the note they resolve to, dates with date strings.
-    pub fn equals(&self, a: &Value, b: &Value) -> bool {
+    pub(crate) fn equals(&self, a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Link { .. } | Value::File(_), _) | (_, Value::Link { .. } | Value::File(_)) => {
                 self.same_file(a, b)
@@ -691,7 +691,7 @@ impl<'e, 'a> Row<'e, 'a> {
     }
 
     /// Order for sorting: by value, empty values last.
-    pub fn sort_order(&self, a: &Value, b: &Value) -> Ordering {
+    pub(crate) fn sort_order(&self, a: &Value, b: &Value) -> Ordering {
         match (a, b) {
             (Value::Null, Value::Null) => Ordering::Equal,
             (Value::Null, _) => Ordering::Greater,
@@ -766,7 +766,7 @@ fn shift(at: NaiveDateTime, months: i64, millis: i64) -> Result<NaiveDateTime, S
 /// `1 day`, `2w`, `1M`, `-3 hours`, `1 year 2 months`: whole numbers of
 /// years (`y`), months (`M`), weeks (`w`), days (`d`), hours (`h`), minutes
 /// (`m`) and seconds (`s`), with or without spaces and long names.
-pub fn parse_duration(text: &str) -> Option<Duration> {
+pub(crate) fn parse_duration(text: &str) -> Option<Duration> {
     let mut duration = Duration::default();
     let mut rest = text.trim();
     if rest.is_empty() {
@@ -805,7 +805,7 @@ pub fn parse_duration(text: &str) -> Option<Duration> {
 }
 
 /// A date or date-time string, as properties and `date()` hold them.
-pub fn parse_date(text: &str) -> Option<NaiveDateTime> {
+pub(crate) fn parse_date(text: &str) -> Option<NaiveDateTime> {
     let text = text.trim();
     if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
         return Some(date.and_time(chrono::NaiveTime::MIN));
@@ -853,7 +853,7 @@ fn type_rank(value: &Value) -> u8 {
 }
 
 /// The type name `isType()` compares against.
-pub fn type_name(value: &Value) -> &'static str {
+pub(crate) fn type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
@@ -870,7 +870,7 @@ pub fn type_name(value: &Value) -> &'static str {
 
 /// Whether a value counts as true: not null, false, 0, empty text or an
 /// empty list.
-pub fn truthy(value: &Value) -> bool {
+pub(crate) fn truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(b) => *b,
@@ -883,7 +883,7 @@ pub fn truthy(value: &Value) -> bool {
 }
 
 /// A value as text, the way it would print.
-pub fn to_text(value: &Value) -> String {
+pub(crate) fn to_text(value: &Value) -> String {
     match value {
         Value::Null => String::new(),
         Value::Bool(b) => b.to_string(),
@@ -925,7 +925,7 @@ fn date_text(at: NaiveDateTime) -> String {
 }
 
 /// A value as JSON for a result row.
-pub fn to_json(value: &Value, env: &Env<'_>) -> serde_json::Value {
+pub(crate) fn to_json(value: &Value, env: &Env<'_>) -> serde_json::Value {
     use serde_json::Value as J;
     match value {
         Value::Null => J::Null,
@@ -949,7 +949,7 @@ pub fn to_json(value: &Value, env: &Env<'_>) -> serde_json::Value {
 }
 
 /// A property value as JSON holds it, with `[[links]]` read as links.
-pub fn from_json(value: &serde_json::Value) -> Value {
+pub(crate) fn from_json(value: &serde_json::Value) -> Value {
     match value {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(*b),

@@ -14,6 +14,7 @@ use turbovault_vault::VaultManager;
 /// Diff tools for comparing notes
 #[derive(Clone)]
 pub struct DiffTools {
+    /// The vault the notes are read from.
     pub manager: Arc<VaultManager>,
 }
 
@@ -21,10 +22,15 @@ pub struct DiffTools {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffResult {
+    /// The note diffed from.
     pub left_path: String,
+    /// The note diffed to.
     pub right_path: String,
+    /// The line diff in unified format.
     pub unified_diff: String,
+    /// Line counts and similarity.
     pub summary: DiffSummary,
+    /// Lines that changed, with word-level detail.
     pub inline_changes: Vec<InlineChange>,
 }
 
@@ -32,10 +38,15 @@ pub struct DiffResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffSummary {
+    /// Lines only on the right, not counting changed lines.
     pub lines_added: usize,
+    /// Lines only on the left, not counting changed lines.
     pub lines_removed: usize,
+    /// Lines replaced by another line.
     pub lines_changed: usize,
+    /// Lines the same on both sides.
     pub lines_unchanged: usize,
+    /// Line-level similarity, 0.0 (nothing shared) to 1.0 (identical).
     pub similarity_ratio: f64,
 }
 
@@ -43,9 +54,13 @@ pub struct DiffSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InlineChange {
+    /// Line number in the left note.
     pub line_number: usize,
+    /// The line as it was.
     pub old_text: String,
+    /// The line as it is.
     pub new_text: String,
+    /// The line split into equal, inserted and deleted words.
     pub changed_words: Vec<WordChange>,
 }
 
@@ -53,11 +68,14 @@ pub struct InlineChange {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct WordChange {
+    /// `insert`, `delete` or `equal`.
     pub operation: String,
+    /// The words it applies to.
     pub text: String,
 }
 
 impl DiffTools {
+    /// Diff tools over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }

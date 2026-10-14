@@ -11,16 +11,22 @@ use turbovault_vault::VaultManager;
 
 /// Validation tools context
 pub struct ValidationTools {
+    /// The vault whose notes are validated.
     pub manager: Arc<VaultManager>,
 }
 
 /// Simplified validation issue for JSON serialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationIssueInfo {
+    /// `info`, `warning`, `error` or `critical`.
     pub severity: String,
+    /// The kind of check that raised it.
     pub category: String,
+    /// What's wrong.
     pub message: String,
+    /// The line it's on, when known.
     pub line: Option<usize>,
+    /// How to fix it, when there's a suggestion.
     pub suggestion: Option<String>,
     /// Vault-relative path of the note the issue is in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,12 +36,19 @@ pub struct ValidationIssueInfo {
 /// Simplified validation report for JSON serialization
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationReportInfo {
+    /// False if any issue is an error or critical.
     pub passed: bool,
+    /// Issues found.
     pub total_issues: usize,
+    /// Issues of `info` severity.
     pub info_count: usize,
+    /// Issues of `warning` severity.
     pub warning_count: usize,
+    /// Issues of `error` severity.
     pub error_count: usize,
+    /// Issues of `critical` severity.
     pub critical_count: usize,
+    /// Every issue found.
     pub issues: Vec<ValidationIssueInfo>,
 }
 

@@ -12,6 +12,7 @@ use turbovault_vault::VaultManager;
 
 /// Graph tools context
 pub struct GraphTools {
+    /// The vault whose link graph is analyzed.
     pub manager: Arc<VaultManager>,
 }
 
@@ -19,9 +20,13 @@ pub struct GraphTools {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct BrokenLinkInfo {
+    /// The note the link is in.
     pub source_file: String,
+    /// The target as written, which matches no note.
     pub target: String,
+    /// The link's line in that note.
     pub line: usize,
+    /// Notes the link may have meant.
     pub suggestions: Vec<String>,
 }
 
@@ -29,13 +34,21 @@ pub struct BrokenLinkInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct HealthInfo {
+    /// Notes in the vault.
     pub total_notes: usize,
+    /// Links between notes.
     pub total_links: usize,
+    /// Links whose target doesn't exist.
     pub broken_links_count: usize,
+    /// Notes with no links in or out.
     pub orphaned_notes_count: usize,
+    /// Notes that link nowhere.
     pub dead_end_notes_count: usize,
+    /// Notes with many connections.
     pub hub_notes_count: usize,
+    /// Overall health, 0 to 100.
     pub health_score: u8,
+    /// Whether the score is 80 or more.
     pub is_healthy: bool,
 }
 

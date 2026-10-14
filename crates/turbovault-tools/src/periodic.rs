@@ -32,7 +32,11 @@ use turbovault_vault::VaultManager;
 
 use crate::moment_format::{format, start_of_locale_week, uses_iso_weeks};
 
-/// A kind of periodic note.
+/// A kind of periodic note: `Daily`, `Weekly`, `Monthly`, `Quarterly` or
+/// `Yearly`.
+// The variants are described here: a doc comment on each would turn the
+// enum's JSON Schema from a plain `enum` into a longer `oneOf`.
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
@@ -71,7 +75,10 @@ impl Period {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PeriodSettings {
+    /// Vault-relative folder the notes go in; empty for the vault root.
     pub folder: String,
+    /// The moment.js format that names a note from its date, such as
+    /// `YYYY-MM-DD`.
     pub format: String,
     /// The template note, vault-relative with its extension, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,14 +91,17 @@ pub struct PeriodSettings {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PeriodicNote {
+    /// Which kind of periodic note it is.
     pub period: Period,
     /// The first day of the period, `YYYY-MM-DD`.
     pub date: String,
     /// Where the note is, or would be, vault-relative.
     pub path: String,
+    /// Whether the note exists now.
     pub exists: bool,
     /// Whether this call created it.
     pub created: bool,
+    /// The settings that placed and named it.
     pub settings: PeriodSettings,
     /// The note's markdown, when it exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
