@@ -729,7 +729,7 @@ pub(super) struct CoreToolHandler {
     search_engines: Arc<EngineSlots<SearchEngine>>,
     /// GWS.13 active fanouts, keyed by **base vault name**
     /// (the original vault, NOT the auto-registered fanout vault). At most
-    /// one active fanout per base vault — `fanout` (action `begin`) errors loudly
+    /// one active fanout per base vault: `fanout` (action `begin`) errors loudly
     /// on a second concurrent attempt.
     active_fanouts: Arc<RwLock<HashMap<String, ActiveFanoutRecord>>>,
     /// Where observed vault changes are reported.
