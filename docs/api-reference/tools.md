@@ -78,109 +78,30 @@ Coming from 3.x, [the 4.0 migration guide](../migration/4.0.md) maps every old t
 - `rollback_note` *(advanced)*: Undo a change by operation id (audited, itself undoable)
 - `export` *(advanced)*: A `health`, `broken_links`, `stats` or `analysis` report as JSON or CSV
 
-## Real-World Workflows
+## Workflows
 
-## Initialize Without a Vault
+**Start without a vault.** With no vault registered, `get_vault_context` says so; `add_vault {name: "personal", path: "~/Documents/Vault"}` registers and indexes one, and it's remembered for the next session.
 
-```python
-# Server starts with NO vault required
-response = client.call("get_vault_context")
-# Returns: "No vault registered. Call add_vault() to get started."
+**Several vaults.** Register each with `add_vault` (or list them in the config file), then either `set_active_vault` or pass `vault` on each call: `search {query: "Q4 goals", vault: "work"}`.
 
-response = client.call("add_vault", {
-    "name": "personal",
-    "path": "~/Documents/Obsidian"
-})
-# Auto-initializes: scans files, builds link graph, indexes for search
-```
+**Maintenance.** `vault_health` for the score and counts, `graph_report {kind: "broken_links"}` and `{kind: "dead_ends"}` for the notes behind them, `validate_vault` for notes Obsidian would trip on, then fix with `edit_note`, `move_note` or one `batch_execute` (a single commit on a Git-backed vault), and check `vault_health` again.
 
-## Multi-Vault Workflow
+**Discovery.** `graph_report {kind: "hubs"}` for the notes everything links to, `search` for keywords, `find_similar {path: "AI/ML.md"}` for notes about the same thing, `get_related_notes {path: "AI/ML.md", max_hops: 2}` to follow the links, and `suggest_links` for links a note is missing.
 
-```python
-# Add multiple vaults
-client.call("add_vault", {"name": "work", "path": "/work/notes"})
-client.call("add_vault", {"name": "personal", "path": "~/notes"})
+**Daily notes and tasks.** `get_periodic_note {period: "daily", create: true}` opens today's note where the vault's settings put it; `query_tasks {status: ["todo"], due_before: "2026-11-01"}` lists what's due.
 
-# Switch context instantly
-client.call("set_active_vault", {"name": "work"})
-search_results = client.call("search", {"query": "Q4 goals"})
+## Performance
 
-client.call("set_active_vault", {"name": "personal"})
-recommendations = client.call("recommend_related", {"path": "AI/ML.md"})
-```
+Measured with a release build over MCP stdio:
 
-## Vault Maintenance & Repair
+| Operation | 10k notes | 50k notes |
+|---|---|---|
+| `read_note` | 0.5 ms | 0.9 ms |
+| `search` (warm) | 3.5-8 ms | 3.5 ms |
+| `get_links` on a hub | 4 ms | 10 ms |
+| `vault_health` | 1 ms | 16 ms |
+| `explain_vault` | 30 ms | 179 ms |
+| `write_note` | 14-31 ms | |
+| `find_duplicates` | 4 ms | 88 ms |
 
-```python
-# Quick diagnostic
-health = client.call("quick_health_check")
-if health["data"]["score"] < 60:
-    # Deep analysis if needed
-    full_analysis = client.call("full_health_analysis")
-
-# Find and fix issues
-broken = client.call("get_broken_links")
-# Process broken links...
-
-# Atomic bulk repair
-client.call("batch_execute", {
-    "operations": [
-        {"type": "DeleteNote", "path": "old/deprecated.md"},
-        {"type": "MoveNote", "from": "old/notes.md", "to": "new/notes.md"},
-        # ... more operations
-    ]
-})
-
-# Verify improvement
-client.call("explain_vault")  # Holistic view
-```
-
-## Content Discovery
-
-```python
-# Find what matters
-hubs = client.call("get_hub_notes")  # Top concepts
-orphans = client.call("get_dead_end_notes")  # Incomplete topics
-
-# Deep search
-results = client.call("search", {"query": "machine learning"})
-
-# Explore relationships
-related = client.call("get_related_notes", {
-    "path": "AI/ML.md",
-    "max_hops": 3
-})
-
-# Get suggestions
-suggestions = client.call("suggest_links", {"path": "AI/ML.md"})
-```
-
-## Performance Profile
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| `read_note` | <10ms | Instant with caching |
-| `get_backlinks`, `get_forward_links` | <50ms | Graph lookup |
-| `write_note` | <50ms | Includes graph update |
-| `search` (10k notes) | <100ms | Tantivy BM25 |
-| `quick_health_check` | <100ms | Heuristic score |
-| `full_health_analysis` | 1–5s | Exhaustive, use sparingly |
-| `explain_vault` | 1–5s | Aggregates 5+ analyses |
-| Vault initialization | 100ms–5s | Depends on vault size |
-
-**Key insight**: Fast operations (<100ms) for common tasks, slower operations (1–5s) for exhaustive analysis. Claude uses smart fallbacks.
-
-## Configuration Profiles
-
-`--profile` sets the log level (`RUST_LOG` overrides it) and the settings every vault starts from. An unknown name stops startup rather than falling back.
-
-| Profile | Log level | Also |
-|---------|-----------|------|
-| `development` (default) | debug | |
-| `production` | info | |
-| `readonly` (or `read-only`) | warn | Every tool not annotated read-only is hidden and refused, the same gate as `--require-read-only-tools` |
-| `high-performance` | warn | |
-| `minimal` | error | Doesn't reconcile with edits made outside TurboVault |
-| `multi-vault`, `collaboration` | info | |
-
-See the [Quick Start](../getting-started/quick-start.md) for usage examples.
+The search index persists across restarts, so a new process re-indexes only notes that changed (258 ms at 50k notes).

@@ -76,8 +76,28 @@ Recognized structured types: note, tip, info, todo, important, success, question
 id: unique-id
 title: Note Title
 tags: [tag1, tag2]
+source: "[Paper](papers/paper.md)"
 ---
 ```
+
+`tags`, `aliases` and `cssclasses` are read the way Obsidian 1.9 and later read them: as YAML lists only. A comma-separated string or the singular `tag`, `alias` and `cssclass` don't count; `validate_vault` reports notes still written that way. Wikilinks and Markdown links inside properties are links, as in Obsidian 1.11.
+
+### Markdown links
+
+```markdown
+[text](Note.md)
+[text](folder/My%20Note.md#Heading)
+[text](<My Note.md> "Title")
+[text][ref]   [ref][]   [ref]
+
+[ref]: Note.md
+```
+
+Destinations are percent-decoded, so `My%20Note.md` is the note `My Note.md`. Reference links take their destination from the definition. Inside a table, Obsidian writes a wikilink alias as `[[Note\|Shown]]`; the escaped pipe is read as the alias separator. Moving a note rewrites every form in the way it was written, including relative paths, reference definitions and canvas file cards.
+
+### Canvases and Bases
+
+`.canvas` files are read and written as JSON Canvas 1.0 (`read_canvas`, `write_canvas`); a canvas's file cards and the links in its text cards count as backlinks of the notes they show. `.base` files are evaluated by `query_base`: filters, formulas, sort, `groupBy` and limit over the vault's notes. Functions TurboVault doesn't evaluate are refused by name.
 
 ## Advanced Features
 
@@ -129,5 +149,5 @@ fn main() {
 
 ## See Also
 
-- [OFM System Prompt](../../resources/obsidian_flavored_markdown_system_prompt.md)
+- The `get_ofm_guide` tool and the `obsidian://syntax/quick-ref` and `obsidian://syntax/complete-guide` resources, which serve TurboVault's own guide
 - [Main Documentation](../README.md)

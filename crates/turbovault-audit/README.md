@@ -14,13 +14,20 @@ through the same surface that produced it.
 ## What it provides
 
 - **`AuditLog`** appends an `AuditEntry` per changed path: the operation type,
-  the path, a timestamp, and an open `metadata` field the writer can use to say
-  who it was. Query it with `AuditFilter`, or summarise with `AuditStats`.
+  the path, a timestamp, content hashes, an optional `context` (the tool,
+  request, client, user and session that made the change) and an open `metadata`
+  field. Each entry stores the hash of the one before it, appends are fsynced
+  under a file lock, and `verify` checks the chain. Query it with
+  `AuditFilter`, or summarise with `AuditStats`.
 - **`SnapshotStore`** keeps the pre-change bytes for a path, content-addressed,
-  so a rollback has something to restore.
-- **`RollbackEngine`** turns an entry back into a write. `RollbackPreview`
-  answers what a rollback would do without doing it, which matters because a
-  rollback is itself a vault mutation and gets audited like one.
+  so a rollback has something to restore. Retention by count or age is
+  optional (`SnapshotRetention` in turbovault-core); the default keeps
+  everything.
+- **`RollbackEngine`** turns an entry back into a write. `plan` refuses when
+  the note changed since the operation, unless forced, so a rollback never
+  silently discards a later edit; the result records the content it replaced,
+  so a rollback can itself be rolled back. `RollbackPreview` answers what a
+  rollback would do without doing it.
 
 ## Provenance is advisory
 

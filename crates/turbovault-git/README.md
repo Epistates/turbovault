@@ -17,6 +17,12 @@ Blobs are written, assembled into an isolated index, turned into a tree, then a
 commit, and the branch ref is moved by compare-and-swap. Only after the ref
 moves is the working tree materialized to match.
 
+A write touches only the index entries it changes, so it costs the same however
+large the vault is, and it refuses to overwrite a file with uncommitted changes.
+If writing out a commit fails after the ref moved (another git process holding
+`index.lock`, a full disk), a resync marker records what's left, and the next
+write, or `VaultRepo::recover_interrupted_write` at startup, finishes it.
+
 The CAS on the ref is the part that matters. Two writers racing the same vault
 both build their commits, and the loser's ref update fails rather than
 overwriting. The caller re-reads and retries against what actually landed, so

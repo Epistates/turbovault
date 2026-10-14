@@ -1,40 +1,37 @@
-# Claude Desktop Integration
+# Claude Desktop and Claude Code
 
-Step-by-step guide to integrate TurboVault with Claude Desktop.
+Both run TurboVault as a local process over stdio, which needs no network setup and no authentication.
 
-## Installation
+## Claude Code
 
-1. Install TurboVault:
 ```bash
-cargo install turbovault
+claude mcp add turbovault -- turbovault --vault ~/Documents/Vault
 ```
 
-2. Find the binary:
+Add `--scope user` to make it available in every project. Arguments after `--` go to TurboVault, so any flag from the [configuration guide](../configuration/index.md) works, for example `--config ~/.turbovault/config.yaml`.
+
+## Claude Desktop
+
+Find the binary's full path (Claude Desktop doesn't use your shell's `PATH`):
+
 ```bash
-which turbovault
-# /Users/you/.cargo/bin/turbovault
+which turbovault          # e.g. /Users/you/.cargo/bin/turbovault
 ```
 
-## Configuration
-
-### macOS/Linux
-
-Edit `~/.config/claude/claude_desktop_config.json`:
+Edit `claude_desktop_config.json`, in `~/Library/Application Support/Claude/` on macOS or `%APPDATA%\Claude\` on Windows:
 
 ```json
 {
   "mcpServers": {
     "turbovault": {
       "command": "/Users/you/.cargo/bin/turbovault",
-      "args": ["--vault", "/path/to/your/vault", "--profile", "production"]
+      "args": ["--vault", "/Users/you/Documents/Vault", "--profile", "production"]
     }
   }
 }
 ```
 
-### Windows
-
-Edit `%APPDATA%\Claude\claude_desktop_config.json`:
+On Windows:
 
 ```json
 {
@@ -47,31 +44,20 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
 }
 ```
 
-## Restart & Verify
+Quit and reopen Claude Desktop. TurboVault's tools appear under the tools menu.
 
-1. Restart Claude Desktop completely
-2. In Claude, ask: "What tools do you have available?"
-3. You should see TurboVault tools listed
+To work with several vaults, drop `--vault` and pass `--config` instead, or let the agent register vaults with `add_vault`. Claude Desktop starts a new process per conversation; registered vaults are remembered between them. See [Multiple vaults](../configuration/multi-vault.md).
 
-## Usage
+## What to expect
 
-Try commands like:
-- "Read my note about project alpha"
-- "Search for notes with the tag #work"
-- "Show me the health of my vault"
-- "Create a new note with today's date"
+- The agent sees the 30 core tools. Add `--show-advanced-tools` to the arguments to list the other 22; they're callable by name either way.
+- Deleting a note, a move that replaces a note, and a forced rollback ask you to confirm when the client supports elicitation.
+- Notes are also available as resources (`obsidian://note/{vault}/{path}`), and the server offers five prompts, such as `triage_vault` and `review_period`.
 
 ## Troubleshooting
 
-**Tools not showing up?**
-- Verify config file syntax (JSON must be valid)
-- Restart Claude completely
-- Check file paths are correct
+- **No tools**: check the JSON is valid and the `command` path exists; run it in a terminal with `--version`.
+- **"Vault path does not exist"**: check the path; TurboVault expands `~` and `$VAR` in `--vault` itself.
+- **Logs**: Claude Desktop keeps each server's stderr in its MCP log (`~/Library/Logs/Claude/mcp-server-turbovault.log` on macOS).
 
-**Permission denied?**
-- Ensure vault directory is readable
-- Check executable permissions: `chmod +x $(which turbovault)`
-
-**Connection errors?**
-- Check the vault path exists
-- Verify turbovault binary works: `turbovault --help`
+More in [Troubleshooting](../troubleshooting/index.md).

@@ -16,7 +16,7 @@ a new, still-settling engine, and its API may change between minor versions.
 ## Stack
 
 Issue [#29](https://github.com/Epistates/turbovault/issues/29) asked for an
-opt-in upgrade over the existing TF-IDF `semantic_search` tool, off by
+opt-in upgrade over the existing TF-IDF similarity search (the `find_similar` tool), off by
 default, with a Tier 1 backend that is pure Rust and CPU-only so it never
 pulls a heavier dependency (ONNX, a GPU runtime) into a build that does not
 ask for it.
@@ -33,13 +33,14 @@ ask for it.
   `minishlab/potion-base-8M` or `minishlab/potion-retrieval-32M` (256-dim).
 - **Dense index: [`hnsw_rs`](https://github.com/jean-pierreBoth/hnswlib-rs)**,
   a pure-Rust HNSW implementation. Its public API has no point-removal method
-  (confirmed against 0.3.4; this is a real gap relative to `usearch`, which
-  the prototype this crate started from used instead, and which does support
-  removal via tombstoning). [`DenseIndex`] works around that by keeping the
-  actual vectors in a map as the source of truth and treating the HNSW graph
-  as a disposable cache, rebuilt from that map whenever a search is served
-  after an upsert or removal. See `src/dense.rs` for the reasoning on why
-  that is an acceptable trade for a vault-sized corpus.
+  (confirmed against 0.3.5). [`DenseIndex`] works around that by keeping the
+  actual vectors in a map as the source of truth: a new chunk is inserted into
+  the live graph, a removed one stays as a tombstone that searches skip, and
+  the graph is rebuilt (in parallel) only when a vector under an existing id
+  changes or tombstones pass a quarter of it. Up to 4,096 vectors there is no
+  graph at all and searches compare every vector, since an approximate search
+  on a small graph misses the true nearest often enough to matter. See
+  `src/dense.rs`.
 - **Lexical index: [`bm25`](https://github.com/Michael-JB/bm25)**, a small,
   pure-Rust, in-memory BM25 scorer with native incremental `upsert`/`remove`.
   TurboVault already has a full-text engine (Tantivy, behind the host's own

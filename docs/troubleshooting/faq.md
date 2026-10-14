@@ -1,64 +1,31 @@
-# Frequently Asked Questions
+# FAQ
 
-Common questions about TurboVault.
+**Do I need Obsidian installed?**
+No. A vault is a folder of Markdown files; TurboVault works on the folder directly. Obsidian can stay open on it at the same time, and TurboVault picks up its edits.
 
-## Installation
+**Will it change my notes without asking?**
+Only through write tools, and every write that replaces a note is held to the hash from the agent's last read, so it can't overwrite an edit you made since. Deleting a note, a move that replaces one and a forced rollback ask you to confirm when your client supports it. For no writes at all, run with `--profile read-only`, or set `allowed_operations: read` on a vault.
 
-**Q: Why doesn't `cargo install turbovault` work?**
-A: Ensure Rust 1.90.0+ is installed. Run `rustup update` and try again.
+**Can I undo a change?**
+Yes. Every change is in the audit trail (`audit_log`), and `rollback_note` restores the note as it was before. On a Git-backed vault every change is also a commit.
 
-**Q: Can I use an older version of Rust?**
-A: No, TurboVault requires Rust 1.90.0 or later.
+**Does it work with Obsidian Sync, iCloud, Dropbox or Syncthing?**
+Yes. TurboVault writes ordinary files, and it notices edits arriving through a sync client the same way it notices edits made in Obsidian.
 
-## Usage
+**How do I use several vaults?**
+List them in `~/.turbovault/config.yaml`, or let the agent register them with `add_vault`. Each call can name its vault with the `vault` argument. See [Multiple vaults](../configuration/multi-vault.md).
 
-**Q: How do I switch between vaults?**
-A: Configure multiple vaults in `~/.turbovault/config.yaml` and ask Claude to switch.
+**How big a vault can it handle?**
+It's measured at 10,000, 50,000 and 100,000 notes; at 50,000, startup takes about 2.5 s and most reads a few milliseconds.
 
-**Q: Can TurboVault modify my vault?**
-A: Yes, it can read, write, create, and delete notes. Set `read_only: true` in config for read-only access.
+**Can I use it without Claude?**
+Yes, with any MCP client, over stdio or (with authentication) HTTP. The crates can also be used directly from Rust.
 
-**Q: Is my vault backed up?**
-A: TurboVault doesn't backup files. Use Obsidian's built-in sync or Git for backups.
+**Does it support plugins?**
+Compiled-in ones. The `vector_search` plugin ships in the prebuilt binaries and is enabled with `--plugins vector_search`. See [Plugins](../development/plugins.md).
 
-## Performance
+**I upgraded from 3.x and a tool is gone.**
+4.0 merged 79 tools into 52. [The migration guide](../migration/4.0.md) maps every old tool to its replacement.
 
-**Q: Why is the first search slow?**
-A: First search indexes all notes. Subsequent searches are cached and fast.
-
-**Q: Can it handle large vaults (10,000+ notes)?**
-A: Yes, but indexing takes longer. Start with a subset if testing.
-
-## Features
-
-**Q: What Markdown syntax is supported?**
-A: Obsidian Flavored Markdown (OFM) including wikilinks, callouts, tasks, etc. See [OFM Guide](../api-reference/ofm.md).
-
-**Q: Can I use TurboVault without Claude?**
-A: TurboVault is an MCP server, designed for Claude Desktop. Direct CLI support is planned.
-
-## Troubleshooting
-
-**Q: MCP tools aren't showing in Claude?**
-A: Restart Claude Desktop completely after updating config.
-
-**Q: Permission denied errors?**
-A: Ensure vault directory is readable and turbovault has access.
-
-**Q: "Connection refused" error?**
-A: Claude Desktop may not have restarted. Try closing and reopening it.
-
-## Development
-
-**Q: Can I contribute to TurboVault?**
-A: Yes! See [Development Guide](../development/index.md).
-
-**Q: Where can I report bugs?**
-A: GitHub Issues: https://github.com/epistates/turbovault/issues
-
-**Q: Is there a roadmap?**
-A: Check GitHub Discussions for planned features.
-
-## Support
-
-Still have questions? Open an issue on GitHub!
+**Where do I report a bug?**
+<https://github.com/epistates/turbovault/issues>. Security problems go through [private reporting](../../SECURITY.md).

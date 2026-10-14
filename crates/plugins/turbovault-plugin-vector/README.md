@@ -74,10 +74,13 @@ and `vector_search_reindex` load the model on first use.
   built and evicted as the active vault changes) is a larger follow-up, not
   implemented here. This matches the scope ForrestThump's prototype set for
   itself ("single active vault; default config").
-- **The dense index rebuilds from scratch on every stale search**, because
-  `hnsw_rs` has no point-removal API. See `turbovault-vector`'s README and
-  `src/dense.rs` for why that is an acceptable trade for a vault-sized
-  corpus, and where it would stop being one.
+- **The dense index works around `hnsw_rs` having no point-removal API**:
+  edits go into the live graph and removals become skipped tombstones, with a
+  rebuild only when too many pile up; small indexes are searched exactly. See
+  `turbovault-vector`'s README and `src/dense.rs`.
+- **Persistence is one JSON file per note**, and embedding happens under the
+  engine's lock. A binary snapshot is a planned format change for a later
+  release.
 
 ## Credit
 

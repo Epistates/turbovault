@@ -65,16 +65,16 @@ let tags = session.query("SELECT tag, COUNT(*) as cnt FROM tags GROUP BY tag").a
 
 ## Supported SQL
 
-GlueSQL supports a practical subset of SQL:
+Only `SELECT` (and `SHOW COLUMNS`) statements run: the tables are a read-only view of the vault, so anything else is refused before it runs. Each query runs on a blocking thread for at most `QUERY_TIMEOUT` (10 seconds), and each result keeps its first `MAX_RESULT_ROWS` (1000) rows, reporting `truncated` and `total_rows` when cut. GlueSQL can't cancel a query, so one that times out finishes in the background.
 
-- `SELECT`, `WHERE`, `ORDER BY`, `LIMIT`
+Within `SELECT`, GlueSQL supports a practical subset of SQL:
+
+- `WHERE`, `ORDER BY`, `LIMIT`
 - `JOIN` (INNER, LEFT, RIGHT, FULL, CROSS)
 - `GROUP BY`, `HAVING`
 - Aggregates: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `STDEV`, `VARIANCE`
 - Subqueries
 - `CAST` for type coercion (e.g., `CAST('2024-01-01' AS DATE)`)
-- `CREATE FUNCTION` for user-defined helpers
-- `CREATE INDEX` for repeated queries
 - String functions: `CONCAT`, `UPPER`, `LOWER`, `SUBSTRING`
 - Date functions: `FORMAT`, date arithmetic
 
