@@ -39,10 +39,10 @@ The operation and result types behind [TurboVault](https://github.com/epistates/
 use turbovault_batch::BatchOperation;
 
 fn main() -> serde_json::Result<()> {
-    let batch: Vec<BatchOperation> = serde_json::from_str(r#"[
+    let batch: Vec<BatchOperation> = serde_json::from_str(r##"[
         {"type": "CreateNote", "path": "notes/one.md", "content": "# One"},
         {"type": "MoveNote", "from": "inbox/two.md", "to": "notes/two.md"}
-    ]"#)?;
+    ]"##)?;
 
     assert!(!batch[0].conflicts_with(&batch[1]));
     Ok(())
