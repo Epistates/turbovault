@@ -32,6 +32,7 @@ htmlcov/
 # Exclude markdown files EXCEPT for documentation and README files
 *.md
 !README.md
+!/CLAUDE.md
 !docs/**/*.md
 !CHANGELOG.md
 !CONTRIBUTORS.md
