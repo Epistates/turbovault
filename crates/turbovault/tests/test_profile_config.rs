@@ -14,10 +14,8 @@ async fn vault_managers_start_from_the_server_config() {
     let temp = tempfile::TempDir::new().expect("temp vault");
     std::fs::write(temp.path().join("big.md"), "x".repeat(64)).expect("seed note");
 
-    let config = ServerConfig {
-        max_file_size: 16,
-        ..ServerConfig::default()
-    };
+    let mut config = ServerConfig::default();
+    config.max_file_size = 16;
     let server = ObsidianMcpServer::with_config(config).expect("server");
     let vault = VaultConfig::builder("profiled", temp.path())
         .build()

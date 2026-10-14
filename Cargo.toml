@@ -49,7 +49,6 @@ print_stdout = "warn"
 
 [workspace.dependencies]
 tokio = { version = "1.53", features = ["io-util", "macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
-tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 async-trait = "0.1"
 
@@ -71,10 +70,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 petgraph = "0.8"             # 2.1M+ downloads, ecosystem standard for graphs
 rayon = "1.12"               # Parallel parsing and indexing (already in the tree via tantivy)
 
-# File I/O & Watching (upgraded from watchfiles to notify directly)
-notify = "8"                 # 2025 current, v8.x active maintenance
-walkdir = "2"
-
 # Parsing utilities
 regex = "1"
 winnow = "1.0.4"
@@ -86,10 +81,8 @@ anyhow = "1.0"
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.28", features = ["v4", "serde"] }
-dashmap = "6.2"
 
-# Configuration
-config = "0.15"
+# Command line
 clap = { version = "4.6", features = ["derive", "env"] }
 
 # Testing utilities
@@ -97,8 +90,6 @@ tempfile = "3"
 criterion = "0.8"
 proptest = { version = "1.12", default-features = false, features = ["std"] }
 
-# Logging
-log = "0.4"
 
 # MCP server framework
 turbomcp = { version = "3.6.0", default-features = false }

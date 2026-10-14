@@ -96,8 +96,8 @@ vaults:
     # Default: all (if not specified)
     allowed_operations: all
 
-    # enable_caching, cache_ttl and template_dirs are deprecated: TurboVault
-    # never read them. They're still accepted, with a warning.
+    # enable_caching, cache_ttl and template_dirs were removed in 4.0: TurboVault
+    # never read them. An old config that sets them still loads.
 
   # ------------------------------------------------------------------------------
   # Multi-Vault Setup (Power Users)

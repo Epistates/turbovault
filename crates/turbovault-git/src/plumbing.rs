@@ -18,9 +18,17 @@ use tracing::instrument;
 #[derive(Debug, Clone)]
 pub enum TreeChange {
     /// Add a new file or overwrite an existing one with `content`.
-    Upsert { path: String, content: Vec<u8> },
+    Upsert {
+        /// The file's path in the tree.
+        path: String,
+        /// Its new content.
+        content: Vec<u8>,
+    },
     /// Remove a file from the tree.
-    Remove { path: String },
+    Remove {
+        /// The file's path in the tree.
+        path: String,
+    },
 }
 
 impl TreeChange {

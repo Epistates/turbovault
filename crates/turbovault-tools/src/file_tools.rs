@@ -28,7 +28,7 @@ impl WriteMode {
             None | Some("overwrite") => Ok(Self::Overwrite),
             Some("append") => Ok(Self::Append),
             Some("prepend") => Ok(Self::Prepend),
-            Some(other) => Err(Error::config_error(format!(
+            Some(other) => Err(Error::validation_error(format!(
                 "Invalid write mode '{}'. Must be 'overwrite', 'append', or 'prepend'",
                 other
             ))),

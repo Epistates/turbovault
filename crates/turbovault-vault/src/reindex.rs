@@ -179,7 +179,7 @@ impl ReindexQueue {
                     // every commit still queued behind it. Log, advance the
                     // cursor, keep draining — exactly like the apply_commit_diff
                     // error path below.
-                    log::warn!(
+                    tracing::warn!(
                         "reindex: skipping commit {} after first-parent lookup error: {}",
                         commit,
                         e
@@ -194,7 +194,7 @@ impl ReindexQueue {
                         .into_iter()
                         .map(|(path, present)| (path, present, pending.origin)),
                 ),
-                Err(e) => log::warn!("reindex: skipping commit {} after error: {}", commit, e),
+                Err(e) => tracing::warn!("reindex: skipping commit {} after error: {}", commit, e),
             }
             self.advance_cursor(commit);
         }
@@ -218,9 +218,8 @@ impl ReindexQueue {
 ///
 /// **Does NOT detect uncommitted working-tree edits.** A direct Obsidian
 /// edit (or a CC `Edit` outside MCP) changes bytes on disk without
-/// advancing HEAD; the polling listener can't see it. Architecture §8.4
-/// limitation; a working-tree inotify listener (resurrecting the dormant
-/// `crate::watcher::VaultWatcher`) is the documented Phase 2.
+/// advancing HEAD; the polling listener can't see it. The freshness gate
+/// (`VaultManager::ensure_fresh`) is what picks those up.
 ///
 /// Initial HEAD is snapshotted at startup, so the listener won't re-push
 /// commits that landed before it started. A commit advanced by THIS
@@ -305,7 +304,7 @@ pub async fn apply_commit_diff(
 ) -> Result<Vec<(String, bool)>> {
     let changes = repo
         .diff_path_statuses(parent, commit)
-        .map_err(|e| Error::config_error(format!("git diff failed: {}", e)))?;
+        .map_err(|e| Error::other(format!("git diff failed: {}", e)))?;
 
     let vault_root = manager.vault_path().clone();
     let graph_handle = manager.graph_handle();
@@ -322,17 +321,17 @@ pub async fn apply_commit_diff(
                     // remove_file is a no-op if the path is unknown — safe.
                     let _ = graph.remove_file(&full_path);
                     if let Err(e) = graph.add_file(&vault_file) {
-                        log::warn!("reindex add_file({}) failed: {}", rel_path, e);
+                        tracing::warn!("reindex add_file({}) failed: {}", rel_path, e);
                     }
                     if let Err(e) = graph.update_links(&vault_file) {
-                        log::warn!("reindex update_links({}) failed: {}", rel_path, e);
+                        tracing::warn!("reindex update_links({}) failed: {}", rel_path, e);
                     }
                 }
                 Err(e) => {
                     // Likely "file missing" because a LATER queued commit
                     // already deleted it. That commit's drain will do the
                     // graph remove. Log + skip.
-                    log::debug!("reindex skipping {} (parse failed: {})", rel_path, e);
+                    tracing::debug!("reindex skipping {} (parse failed: {})", rel_path, e);
                 }
             }
         } else {

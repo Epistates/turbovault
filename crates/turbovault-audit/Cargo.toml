@@ -22,7 +22,7 @@ chrono = { workspace = true, features = ["serde"] }
 uuid = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true }
-log = { workspace = true }
+tracing = { workspace = true }
 similar = { workspace = true }
 schemars = { workspace = true, optional = true, features = ["chrono04"] }
 

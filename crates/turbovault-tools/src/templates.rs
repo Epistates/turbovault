@@ -368,7 +368,7 @@ impl TemplateEngine {
         field_values: HashMap<String, String>,
         precondition: Precondition,
         message: &str,
-    ) -> crate::Result<CreatedNoteInfo> {
+    ) -> turbovault_core::Result<CreatedNoteInfo> {
         let (full_content, info) = self
             .compute_from_template(template_id, file_path, field_values)
             .await?;
@@ -389,18 +389,21 @@ impl TemplateEngine {
         template_id: &str,
         file_path: &str,
         field_values: HashMap<String, String>,
-    ) -> crate::Result<(String, CreatedNoteInfo)> {
+    ) -> turbovault_core::Result<(String, CreatedNoteInfo)> {
         let template = self.get_template(template_id).ok_or_else(|| {
-            crate::Error::not_found(format!("Template {} not found", template_id))
+            turbovault_core::Error::not_found(format!("Template {} not found", template_id))
         })?;
 
         for field in template.required_fields() {
             let value = field_values.get(&field.name).ok_or_else(|| {
-                crate::Error::validation_error(format!("Missing required field: {}", field.name))
+                turbovault_core::Error::validation_error(format!(
+                    "Missing required field: {}",
+                    field.name
+                ))
             })?;
             template
                 .validate_field(&field.name, value)
-                .map_err(crate::Error::validation_error)?;
+                .map_err(turbovault_core::Error::validation_error)?;
         }
 
         // Sorted, so the same fields always write the same note.
@@ -419,7 +422,7 @@ impl TemplateEngine {
         // Serialized, never formatted by hand: a value holding a newline or
         // `: ` is quoted as a string rather than becoming more keys.
         let frontmatter_yaml = yaml_serde::to_string(&frontmatter).map_err(|error| {
-            crate::Error::other(format!("cannot write the note's frontmatter: {error}"))
+            turbovault_core::Error::other(format!("cannot write the note's frontmatter: {error}"))
         })?;
         let full_content = format!("---\n{frontmatter_yaml}---\n{content}");
 
@@ -433,7 +436,10 @@ impl TemplateEngine {
     }
 
     /// Find notes created from specific template
-    pub async fn find_notes_from_template(&self, template_id: &str) -> crate::Result<Vec<String>> {
+    pub async fn find_notes_from_template(
+        &self,
+        template_id: &str,
+    ) -> turbovault_core::Result<Vec<String>> {
         let files = self.manager.scan_vault().await?;
         let mut results = Vec::new();
 

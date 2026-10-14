@@ -23,8 +23,10 @@ use serde_json::{Map, Number, Value};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Canvas {
+    /// The canvas's nodes, in drawing order.
     #[serde(default)]
     pub nodes: Vec<CanvasNode>,
+    /// The connections between nodes.
     #[serde(default)]
     pub edges: Vec<CanvasEdge>,
     /// Top-level fields beyond `nodes` and `edges`, kept as written.
@@ -37,20 +39,27 @@ pub struct Canvas {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CanvasNode {
+    /// Unique among the canvas's nodes and edges.
     pub id: String,
     /// `text`, `file`, `link` or `group`.
     #[serde(rename = "type")]
     pub kind: String,
+    /// A text node's markdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A file node's vault path, with its extension.
     pub file: Option<String>,
+    /// A file node's heading or block within the file, starting with `#`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subpath: Option<String>,
+    /// A link node's URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// A group node's label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// A group node's background image path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<String>,
     #[serde(
@@ -58,11 +67,18 @@ pub struct CanvasNode {
         rename = "backgroundStyle",
         skip_serializing_if = "Option::is_none"
     )]
+    /// How a group's background image is laid out: `cover`, `ratio` or
+    /// `repeat`.
     pub background_style: Option<String>,
+    /// Left edge, in canvas pixels.
     pub x: Number,
+    /// Top edge, in canvas pixels.
     pub y: Number,
+    /// Width, in canvas pixels.
     pub width: Number,
+    /// Height, in canvas pixels.
     pub height: Number,
+    /// A preset color `1` to `6`, or a hex color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// Fields the spec doesn't define, kept as written.
@@ -74,21 +90,30 @@ pub struct CanvasNode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct CanvasEdge {
+    /// Unique among the canvas's nodes and edges.
     pub id: String,
+    /// The id of the node the edge starts at.
     #[serde(rename = "fromNode")]
     pub from_node: String,
+    /// The side it leaves from: `top`, `right`, `bottom` or `left`.
     #[serde(default, rename = "fromSide", skip_serializing_if = "Option::is_none")]
     pub from_side: Option<String>,
+    /// The start's shape: `none` or `arrow`.
     #[serde(default, rename = "fromEnd", skip_serializing_if = "Option::is_none")]
     pub from_end: Option<String>,
+    /// The id of the node the edge ends at.
     #[serde(rename = "toNode")]
     pub to_node: String,
+    /// The side it arrives at: `top`, `right`, `bottom` or `left`.
     #[serde(default, rename = "toSide", skip_serializing_if = "Option::is_none")]
     pub to_side: Option<String>,
+    /// The end's shape: `none` or `arrow`.
     #[serde(default, rename = "toEnd", skip_serializing_if = "Option::is_none")]
     pub to_end: Option<String>,
+    /// A preset color `1` to `6`, or a hex color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Text shown on the edge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     /// Fields the spec doesn't define, kept as written.
@@ -102,13 +127,18 @@ pub struct CanvasEdge {
 pub enum CanvasReference {
     /// A file node: `file` is a vault path, with its extension.
     File {
+        /// The file node's id.
         node_id: String,
+        /// The vault path it shows.
         path: String,
+        /// The heading or block within the file, if any.
         subpath: Option<String>,
     },
     /// A wikilink, embed or Markdown link inside a text node.
     Text {
+        /// The text node's id.
         node_id: String,
+        /// The link, with its span in the node's text.
         link: turbovault_core::Link,
     },
 }

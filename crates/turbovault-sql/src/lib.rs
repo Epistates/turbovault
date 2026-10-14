@@ -27,6 +27,8 @@
 //! WHERE t.tag = 'work' AND l.is_valid = FALSE;
 //! ```
 
+#![warn(missing_docs, unreachable_pub)]
+
 mod convert;
 mod engine;
 

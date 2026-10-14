@@ -38,12 +38,16 @@ pub struct FrontmatterSqlEngine {
 /// queries to avoid rebuilding the in-memory tables each time.
 pub struct SqlSession {
     glue: Glue<MemoryStorage>,
+    /// Rows in the `files` table.
     pub file_count: usize,
+    /// Rows in the `tags` table.
     pub tag_count: usize,
+    /// Rows in the `links` table.
     pub link_count: usize,
 }
 
 impl FrontmatterSqlEngine {
+    /// An engine over `manager`'s vault.
     pub fn new(manager: Arc<VaultManager>) -> Self {
         Self { manager }
     }
@@ -97,7 +101,7 @@ impl FrontmatterSqlEngine {
                         params![rel_path.as_str(), tag.as_str()],
                     );
                     if let Err(e) = inserted {
-                        log::warn!("Tag insert error for {rel_path}: {e}");
+                        tracing::warn!("Tag insert error for {rel_path}: {e}");
                     } else {
                         tag_count += 1;
                     }
@@ -105,14 +109,14 @@ impl FrontmatterSqlEngine {
             }
 
             let json_str = serde_json::to_string(&Value::Object(row))
-                .map_err(|e| Error::config_error(format!("JSON serialization error: {e}")))?;
+                .map_err(|e| Error::other(format!("JSON serialization error: {e}")))?;
             let inserted = exec_with(
                 &mut glue,
                 "INSERT INTO files VALUES ($1)",
                 params![json_str],
             );
             if let Err(e) = inserted {
-                log::warn!("Skipping {rel_path}: insert error: {e}");
+                tracing::warn!("Skipping {rel_path}: insert error: {e}");
             }
         }
 
@@ -300,9 +304,11 @@ struct SchemaInfo {
 fn run_select(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>> {
     let plans = glue
         .plan(sql)
-        .map_err(|e| Error::config_error(format!("SQL error: {e}")))?;
+        .map_err(|e| Error::validation_error(format!("SQL error: {e}")))?;
     if plans.is_empty() {
-        return Err(Error::config_error("SQL error: no statement".to_string()));
+        return Err(Error::validation_error(
+            "SQL error: no statement".to_string(),
+        ));
     }
     if !plans.iter().all(|plan| {
         matches!(
@@ -310,7 +316,7 @@ fn run_select(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>>
             StatementPlan::Query(_) | StatementPlan::ShowColumns { .. }
         )
     }) {
-        return Err(Error::config_error(
+        return Err(Error::validation_error(
             "query_frontmatter_sql only runs SELECT statements: the tables are a read-only \
              view of the vault"
                 .to_string(),
@@ -320,7 +326,7 @@ fn run_select(glue: &mut Glue<MemoryStorage>, sql: &str) -> Result<Vec<Payload>>
         .iter()
         .map(|plan| {
             glue.execute_stmt(plan)
-                .map_err(|e| Error::config_error(format!("SQL error: {e}")))
+                .map_err(|e| Error::validation_error(format!("SQL error: {e}")))
         })
         .collect()
 }
@@ -365,7 +371,7 @@ fn exec_with(
     params: Vec<ParamLiteral>,
 ) -> Result<Vec<Payload>> {
     glue.execute_with_params(sql, params)
-        .map_err(|e| Error::config_error(format!("SQL error: {e}")))
+        .map_err(|e| Error::validation_error(format!("SQL error: {e}")))
 }
 
 #[cfg(test)]

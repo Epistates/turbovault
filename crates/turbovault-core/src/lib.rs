@@ -17,10 +17,9 @@
 //! - [`error`] - Comprehensive error types and Result aliases
 //! - [`config`] - Server and vault configuration structures
 //! - [`validation`] - Content validation framework
-//! - [`metrics`] - Performance monitoring and statistics
 //! - [`multi_vault`] - Multi-vault management support
 //! - [`profiles`] - Configuration profiles for different environments
-//! - [`utils`] - Utility functions and builders
+//! - [`utils`] - Hashing and path helpers
 //!
 //! ## Usage Examples
 //!
@@ -80,13 +79,11 @@ pub mod change_plan;
 pub mod config;
 pub mod error;
 pub mod events;
-pub mod metrics;
 pub mod models;
 pub mod multi_vault;
 pub mod okf;
 pub mod precondition;
 pub mod profiles;
-pub mod resilience;
 pub mod task_parser;
 pub mod utils;
 pub mod validation;
@@ -95,19 +92,16 @@ pub mod vault_roots;
 pub use atomic_write::{is_temp_file_name, write_atomic};
 pub use change_plan::{Change, ChangePlan};
 pub use config::*;
-pub use error::{Error, ErrorCategory, OperationNotAllowed, Result};
+pub use error::{Error, ErrorCategory, Result};
 pub use events::{VaultChange, VaultEventSink, WriteAttribution};
-#[allow(deprecated)]
-pub use metrics::{Counter, Histogram, HistogramStats, HistogramTimer, MetricsContext};
 pub use models::*;
 pub use multi_vault::{MultiVaultManager, VaultInfo};
 pub use okf::{Citation, ConceptConformance, ReservedFile, check_concept, concept_id};
 pub use precondition::Precondition;
 pub use profiles::ConfigProfile;
-#[allow(deprecated)]
 pub use utils::{
-    CSVBuilder, PathValidator, ResolvedPath, TransactionBuilder, bytes_to_lower_hex, compute_hash,
-    compute_hash_bytes, is_note, path_to_slash, to_json_string,
+    PathValidator, ResolvedPath, bytes_to_lower_hex, compute_hash, compute_hash_bytes, is_note,
+    path_to_slash, to_json_string,
 };
 pub use validation::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Severity,
@@ -120,8 +114,6 @@ pub mod prelude {
     pub use crate::config::{ServerConfig, VaultConfig};
     pub use crate::error::{Error, Result};
     pub use crate::events::{VaultChange, VaultEventSink, WriteAttribution};
-    #[allow(deprecated)]
-    pub use crate::metrics::{Counter, Histogram, MetricsContext};
     pub use crate::models::{
         Block, Callout, CalloutType, ContentBlock, FileMetadata, Frontmatter, Heading,
         InlineElement, LineIndex, Link, LinkType, ListItem, SourcePosition, TableAlignment, Tag,

@@ -31,8 +31,7 @@ include = [
 # Minimal default: STDIO transport (Claude Desktop standard)
 default = []
 
-# Individual transports - add what you need
-stdio = []                                    # Always included, no external deps
+# Individual transports - add what you need (STDIO is always built in)
 http = ["turbomcp/http", "turbomcp/auth"]    # Add HTTP server support, with bearer/JWT authorization
 websocket = ["turbomcp/websocket"]           # Add WebSocket support (~200 KB)
 tcp = ["turbomcp/tcp"]                       # Add TCP server support (~100 KB)
@@ -98,7 +97,6 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true, optional = true }
 futures = { workspace = true }
-log = { workspace = true }
 percent-encoding = { workspace = true }
 strsim = { workspace = true }
 tracing = { workspace = true }

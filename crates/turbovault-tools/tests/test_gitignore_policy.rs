@@ -48,10 +48,7 @@ fn make_manager(tmp: &TempDir, include_ignored: bool) -> Arc<VaultManager> {
     cfg.vaults.push(
         VaultConfig::builder("lri", tmp.path())
             .write_backend(WriteBackend::Git)
-            .git(VaultGitConfig {
-                include_ignored,
-                ..Default::default()
-            })
+            .git(VaultGitConfig::default().with_include_ignored(include_ignored))
             .build()
             .unwrap(),
     );

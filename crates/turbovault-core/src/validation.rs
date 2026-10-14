@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 /// Severity level for validation issues
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum Severity {
     /// Informational message (not a problem)
     Info,
@@ -30,6 +31,7 @@ impl Severity {
 
 /// A validation issue found in content
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ValidationIssue {
     /// Severity of the issue
     pub severity: Severity,

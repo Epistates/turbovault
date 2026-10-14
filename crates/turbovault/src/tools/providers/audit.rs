@@ -182,7 +182,7 @@ impl AuditProvider {
         // Synchronize disk, parsed cache, and graph after either a restore or delete rollback.
         let restored_path = std::path::PathBuf::from(&result.path);
         if let Err(error) = manager.refresh_file_state(&restored_path).await {
-            log::warn!(
+            tracing::warn!(
                 "Failed to refresh manager state after rollback of {}: {}",
                 result.path,
                 error

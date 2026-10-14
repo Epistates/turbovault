@@ -152,7 +152,7 @@ impl ExcludedRanges {
 
 /// Intermediate parse result used by the engine.
 #[derive(Debug, Clone, Default)]
-pub struct ParseResult {
+pub(crate) struct ParseResult {
     pub frontmatter: Option<Frontmatter>,
     pub frontmatter_end_offset: usize, // Offset where body starts (end of frontmatter)
     pub headings: Vec<Heading>,
@@ -167,7 +167,7 @@ pub struct ParseResult {
 impl ParseResult {
     /// Get all links combined.
     #[allow(dead_code)]
-    pub fn all_links(&self) -> impl Iterator<Item = &Link> {
+    pub(crate) fn all_links(&self) -> impl Iterator<Item = &Link> {
         self.wikilinks
             .iter()
             .chain(self.embeds.iter())
@@ -196,7 +196,7 @@ pub struct ReferenceDefinition {
 /// The reference definitions in `content` that reference links can use, in
 /// document order: the first for each label (CommonMark ignores a later one
 /// with the same label), and none inside code or frontmatter.
-pub fn reference_definitions(content: &str) -> Vec<ReferenceDefinition> {
+pub(crate) fn reference_definitions(content: &str) -> Vec<ReferenceDefinition> {
     let parser = Parser::new_ext(content, markdown_options());
     let mut definitions: Vec<ReferenceDefinition> = parser
         .reference_definitions()
@@ -269,7 +269,7 @@ fn markdown_options() -> Options {
 /// Uses a two-phase approach:
 /// 1. pulldown-cmark pass: Extract CommonMark elements + code block ranges
 /// 2. Regex pass: Extract OFM-specific elements, skipping excluded ranges
-pub struct ParseEngine<'a> {
+pub(crate) struct ParseEngine<'a> {
     content: &'a str,
     index: LineIndex,
     source_file: Option<&'a Path>,
@@ -277,7 +277,7 @@ pub struct ParseEngine<'a> {
 
 impl<'a> ParseEngine<'a> {
     /// Create a new parse engine for the given content.
-    pub fn new(content: &'a str) -> Self {
+    pub(crate) fn new(content: &'a str) -> Self {
         Self {
             content,
             index: LineIndex::new(content),
@@ -286,7 +286,7 @@ impl<'a> ParseEngine<'a> {
     }
 
     /// Create engine with source file context (for vault-aware parsing).
-    pub fn with_source_file(content: &'a str, source_file: &'a Path) -> Self {
+    pub(crate) fn with_source_file(content: &'a str, source_file: &'a Path) -> Self {
         Self {
             content,
             index: LineIndex::new(content),
@@ -295,7 +295,7 @@ impl<'a> ParseEngine<'a> {
     }
 
     /// Parse content with the given options.
-    pub fn parse(&self, options: &ParseOptions) -> ParseResult {
+    pub(crate) fn parse(&self, options: &ParseOptions) -> ParseResult {
         let mut result = ParseResult::default();
 
         // Phase 1: pulldown-cmark pass

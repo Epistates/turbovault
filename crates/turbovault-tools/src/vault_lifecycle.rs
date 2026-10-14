@@ -17,7 +17,7 @@ use turbovault_git::VaultRepo;
 /// the filesystem and never commits, so the working tree silently drifts from
 /// HEAD. Returns `None` otherwise.
 ///
-/// A pure function returning the message rather than an in-place `log::warn!`
+/// A pure function returning the message rather than an in-place `tracing::warn!`
 /// on purpose: every registration site stays a one-liner, and the predicate is
 /// testable without a global logger fixture. It only *warns* — the
 /// registration still succeeds and nothing about the write path changes.
@@ -91,26 +91,26 @@ impl VaultLifecycleTools {
     ) -> Result<VaultInfo> {
         // Validation: name format
         if name.is_empty() {
-            return Err(Error::config_error(
+            return Err(Error::validation_error(
                 "Vault name cannot be empty".to_string(),
             ));
         }
 
         if name.contains(' ') {
-            return Err(Error::config_error(
+            return Err(Error::validation_error(
                 "Vault name cannot contain spaces".to_string(),
             ));
         }
 
         if name.len() > 64 {
-            return Err(Error::config_error(
+            return Err(Error::validation_error(
                 "Vault name too long (max 64 chars)".to_string(),
             ));
         }
 
         // Check if already registered
         if self.multi_manager.vault_exists(name).await {
-            return Err(Error::config_error(format!(
+            return Err(Error::validation_error(format!(
                 "Vault '{}' already registered",
                 name
             )));
@@ -119,7 +119,7 @@ impl VaultLifecycleTools {
         if let Some(template) = template
             && !matches!(template, "default" | "research" | "team")
         {
-            return Err(Error::config_error(format!(
+            return Err(Error::validation_error(format!(
                 "Unknown template: {} (supported: default, research, team)",
                 template
             )));
@@ -137,9 +137,7 @@ impl VaultLifecycleTools {
         if !expanded_path.exists() {
             tokio::fs::create_dir_all(&expanded_path)
                 .await
-                .map_err(|e| {
-                    Error::config_error(format!("Failed to create vault directory: {}", e))
-                })?;
+                .map_err(|e| Error::io_at(&expanded_path, e))?;
         }
 
         if !expanded_path.is_dir() {
@@ -159,9 +157,7 @@ impl VaultLifecycleTools {
         let obsidian_dir = expanded_path.join(".obsidian");
         tokio::fs::create_dir_all(&obsidian_dir)
             .await
-            .map_err(|e| {
-                Error::config_error(format!("Failed to create .obsidian directory: {}", e))
-            })?;
+            .map_err(|e| Error::io_at(".obsidian", e))?;
 
         // Initialize template structure if specified
         if let Some(tmpl) = template {
@@ -200,14 +196,14 @@ impl VaultLifecycleTools {
     ) -> Result<VaultInfo> {
         // Validation: name format
         if name.is_empty() || name.contains(' ') {
-            return Err(Error::config_error(
+            return Err(Error::validation_error(
                 "Invalid vault name (cannot be empty or contain spaces)".to_string(),
             ));
         }
 
         // Check if already registered
         if self.multi_manager.vault_exists(name).await {
-            return Err(Error::config_error(format!(
+            return Err(Error::validation_error(format!(
                 "Vault '{}' already registered",
                 name
             )));
@@ -281,7 +277,7 @@ impl VaultLifecycleTools {
         // for, with no signal at all — so refuse, and name both values so the
         // caller can see which of the two to change.
         if write_backend == WriteBackend::Direct && backend_opts.is_some() {
-            return Err(Error::config_error(
+            return Err(Error::validation_error(
                 "backend_opts was supplied with write_backend=direct, which has no backend \
                  options: pass write_backend=git to use them, or omit backend_opts"
                     .to_string(),
@@ -295,7 +291,7 @@ impl VaultLifecycleTools {
         // turbovault-74p: this is the funnel both registration entry points
         // pass through, so the footgun check belongs here rather than in each.
         if let Some(warning) = direct_over_git_repo_warning(&config) {
-            log::warn!("{warning}");
+            tracing::warn!("{warning}");
         }
         Ok(config)
     }
@@ -423,9 +419,7 @@ impl VaultLifecycleTools {
         for dir in &dirs {
             tokio::fs::create_dir_all(path.join(dir))
                 .await
-                .map_err(|e| {
-                    Error::config_error(format!("Failed to create {} directory: {}", dir, e))
-                })?;
+                .map_err(|e| Error::io_at(*dir, e))?;
         }
 
         // Create README.md
@@ -437,7 +431,7 @@ impl VaultLifecycleTools {
 
         tokio::fs::write(path.join("README.md"), readme_content)
             .await
-            .map_err(|e| Error::config_error(format!("Failed to create README.md: {}", e)))?;
+            .map_err(|e| Error::io_at("README.md", e))?;
 
         Ok(())
     }
@@ -451,12 +445,7 @@ impl VaultLifecycleTools {
                 for dir in &dirs {
                     tokio::fs::create_dir_all(path.join(dir))
                         .await
-                        .map_err(|e| {
-                            Error::config_error(format!(
-                                "Failed to create {} directory: {}",
-                                dir, e
-                            ))
-                        })?;
+                        .map_err(|e| Error::io_at(*dir, e))?;
                 }
                 Ok(())
             }
@@ -466,16 +455,11 @@ impl VaultLifecycleTools {
                 for dir in &dirs {
                     tokio::fs::create_dir_all(path.join(dir))
                         .await
-                        .map_err(|e| {
-                            Error::config_error(format!(
-                                "Failed to create {} directory: {}",
-                                dir, e
-                            ))
-                        })?;
+                        .map_err(|e| Error::io_at(*dir, e))?;
                 }
                 Ok(())
             }
-            _ => Err(Error::config_error(format!(
+            _ => Err(Error::validation_error(format!(
                 "Unknown template: {} (supported: default, research, team)",
                 template
             ))),

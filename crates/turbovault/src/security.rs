@@ -187,7 +187,7 @@ impl SecuritySettings {
         }
         if self.allow_unauthenticated_network {
             if self.auth.mode == AuthMode::None {
-                log::warn!(
+                tracing::warn!(
                     "Listening on {host} over {transport} WITHOUT AUTHENTICATION because \
                      allow_unauthenticated_network is set: anyone who can reach this port can \
                      read and write every registered vault"
@@ -321,7 +321,7 @@ pub fn warn_if_socket_dir_is_shared(socket: &Path) {
     if let Ok(metadata) = std::fs::metadata(dir)
         && metadata.permissions().mode() & 0o077 != 0
     {
-        log::warn!(
+        tracing::warn!(
             "The socket directory {} is accessible to other users, who may be able to \
              connect to this server and use every registered vault. Put the socket in a \
              private (0700) directory",
@@ -478,19 +478,19 @@ pub fn http_server_config(
             ..turbomcp_server::OriginValidationConfig::default()
         });
     if let Some((requests, window)) = security.effective_rate_limit(host) {
-        log::info!("Rate limit: {requests} requests per {window:?} per client");
+        tracing::info!("Rate limit: {requests} requests per {window:?} per client");
         builder = builder.rate_limit(turbomcp_server::RateLimitConfig::new(requests, window));
     }
     match authorization {
         Some(authorization) => {
-            log::info!(
+            tracing::info!(
                 "HTTP authorization required ({:?}) for resource {}",
                 security.auth.mode,
                 authorization.resource()
             );
             builder = builder.authorization(authorization);
         }
-        None => log::warn!(
+        None => tracing::warn!(
             "HTTP transport is unauthenticated: any local process can use every registered \
              vault. Set --auth-mode to require a token"
         ),

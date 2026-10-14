@@ -2,7 +2,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use turbovault_core::config::WriteBackend;
 use turbovault_core::error::{Error, ErrorCategory};
 use turbovault_core::events::{VaultChange, WriteAttribution};
 use turbovault_plugin_api::{
@@ -82,11 +81,7 @@ impl VaultHost for PluginVaultHost {
             .get_active_vault_config()
             .await
             .map_err(map_core_error)?;
-        let write_backend = match config.write_backend {
-            WriteBackend::Direct => "direct",
-            WriteBackend::Git => "git",
-        };
-        Ok(VaultDescriptor::new(name, write_backend))
+        Ok(VaultDescriptor::new(name, config.write_backend.name()))
     }
 
     async fn list_notes(&self, vault: &str) -> PluginResult<Vec<String>> {

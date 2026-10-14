@@ -70,11 +70,14 @@ impl ApplyOutcome {
 /// Dispatches a [`ChangePlan`] to whichever backend a vault is configured
 /// for (design §6.3's `WriteSubstrate` enum).
 pub enum WriteSubstrate {
+    /// Writes files directly: temp file and atomic rename.
     Direct(DirectSubstrate),
+    /// Commits each plan to Git, then writes it out.
     Git(GitSubstrate),
 }
 
 impl WriteSubstrate {
+    /// Apply `plan` with the configured backend.
     pub async fn apply(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         match self {
             WriteSubstrate::Direct(direct) => direct.apply(plan).await,
@@ -169,6 +172,7 @@ pub struct DirectSubstrate {
 }
 
 impl DirectSubstrate {
+    /// A direct substrate writing into `vault_path`.
     pub fn new(vault_path: PathBuf) -> Self {
         Self {
             vault_path,
@@ -208,6 +212,9 @@ impl DirectSubstrate {
         .map_err(Error::io)
     }
 
+    /// Apply `plan`: its preconditions are all checked before anything is
+    /// written, then its changes land in order. A failure partway leaves the
+    /// earlier changes in place and says which change failed.
     pub async fn apply(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         let _guard = self.write_lock.lock().await;
         // The in-process lock orders this process's writes; the file lock
@@ -466,7 +473,7 @@ impl DirectSubstrate {
                 Ok(snap_id) => {
                     entry = entry.with_before(SnapshotStore::compute_hash(before), snap_id);
                 }
-                Err(e) => log::warn!("Failed to store before-snapshot: {}", e),
+                Err(e) => tracing::warn!("Failed to store before-snapshot: {}", e),
             }
         }
         if let Some(after) = after.and_then(|a| std::str::from_utf8(a).ok()) {
@@ -474,12 +481,12 @@ impl DirectSubstrate {
                 Ok(snap_id) => {
                     entry = entry.with_after(SnapshotStore::compute_hash(after), snap_id);
                 }
-                Err(e) => log::warn!("Failed to store after-snapshot: {}", e),
+                Err(e) => tracing::warn!("Failed to store after-snapshot: {}", e),
             }
         }
 
         if let Err(e) = audit_log.record(&entry).await {
-            log::warn!("Failed to record audit entry: {}", e);
+            tracing::warn!("Failed to record audit entry: {}", e);
         }
     }
 }
@@ -553,6 +560,7 @@ impl GitSubstrate {
         }
     }
 
+    /// Apply `plan` as one commit: all of it lands or none of it does.
     pub async fn apply(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
         let plan_owned = plan.clone();
         let include_ignored = self.include_ignored;
@@ -568,7 +576,7 @@ impl GitSubstrate {
                     run_plan(&repo, &plan_owned, include_ignored)
                 })
                 .await
-                .map_err(|e| Error::config_error(format!("git changeset task failed: {}", e)))?
+                .map_err(|e| Error::other(format!("git changeset task failed: {}", e)))?
             }
             None => {
                 let vault_path = self.vault_path.clone();
@@ -583,7 +591,7 @@ impl GitSubstrate {
                     run_plan(&repo, &plan_owned, include_ignored)
                 })
                 .await
-                .map_err(|e| Error::config_error(format!("git changeset task failed: {}", e)))?
+                .map_err(|e| Error::other(format!("git changeset task failed: {}", e)))?
             }
         };
 
@@ -595,7 +603,7 @@ impl GitSubstrate {
             && let Some(flush) = &self.flush_on_collision
             && let Err(flush_err) = flush().await
         {
-            log::warn!(
+            tracing::warn!(
                 "GWS.14b CAS-collision flush failed (returning original error): {}",
                 flush_err
             );
@@ -651,7 +659,7 @@ fn git_err_to_core(e: turbovault_git::Error) -> Error {
         turbovault_git::Error::Core(turbovault_core::Error::ConcurrencyError { reason }) => {
             Error::ConcurrencyError { reason }
         }
-        other => Error::config_error(format!("git substrate error: {}", other)),
+        other => Error::other(format!("git substrate error: {}", other)),
     }
 }
 

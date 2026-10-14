@@ -4,7 +4,7 @@ use gluesql::prelude::{Payload, Value as GlueValue};
 use serde_json::{Value, json};
 
 /// Convert a GlueSQL `Payload` to a JSON value for MCP responses
-pub fn payload_to_json(payload: Payload) -> Value {
+pub(crate) fn payload_to_json(payload: Payload) -> Value {
     match payload {
         Payload::Select { labels, rows } => {
             let results: Vec<Value> = rows
@@ -50,7 +50,7 @@ pub fn payload_to_json(payload: Payload) -> Value {
 }
 
 /// Convert a GlueSQL `Value` to a serde_json `Value`
-pub fn glue_to_json(val: GlueValue) -> Value {
+pub(crate) fn glue_to_json(val: GlueValue) -> Value {
     match val {
         GlueValue::Bool(b) => json!(b),
         GlueValue::I8(n) => json!(n),
@@ -80,7 +80,7 @@ pub fn glue_to_json(val: GlueValue) -> Value {
 }
 
 /// Determine the JSON type name for schema inspection
-pub fn json_type_name(value: &Value) -> &'static str {
+pub(crate) fn json_type_name(value: &Value) -> &'static str {
     match value {
         Value::String(_) => "string",
         Value::Number(_) => "number",

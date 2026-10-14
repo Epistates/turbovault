@@ -208,7 +208,7 @@ impl MetadataTools {
 
         let existing_fm: serde_json::Map<String, Value> = if let Some(yaml_str) = &existing_yaml {
             turbovault_parser::parse_frontmatter_yaml(yaml_str).map_err(|e| {
-                Error::config_error(format!("Failed to parse existing frontmatter YAML: {}", e))
+                Error::parse_error(format!("Failed to parse existing frontmatter YAML: {}", e))
             })?
         } else {
             serde_json::Map::new()
@@ -280,7 +280,7 @@ impl MetadataTools {
                 let fm_tags: Vec<String> = if let Some(yaml) = &yaml_str {
                     let fm: serde_json::Map<String, Value> =
                         turbovault_parser::parse_frontmatter_yaml(yaml).map_err(|e| {
-                            Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
+                            Error::parse_error(format!("Failed to parse frontmatter YAML: {}", e))
                         })?;
                     property_tags(fm.get("tags"))
                 } else {
@@ -313,13 +313,13 @@ impl MetadataTools {
             }
             "add" => {
                 let tags_to_add = tags.ok_or_else(|| {
-                    Error::config_error("Tags array required for 'add' operation".to_string())
+                    Error::validation_error("Tags array required for 'add' operation".to_string())
                 })?;
 
                 let (yaml_str, body) = split_frontmatter(&content);
                 let mut fm: serde_json::Map<String, Value> = if let Some(yaml) = &yaml_str {
                     turbovault_parser::parse_frontmatter_yaml(yaml).map_err(|e| {
-                        Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
+                        Error::parse_error(format!("Failed to parse frontmatter YAML: {}", e))
                     })?
                 } else {
                     serde_json::Map::new()
@@ -357,13 +357,15 @@ impl MetadataTools {
             }
             "remove" => {
                 let tags_to_remove = tags.ok_or_else(|| {
-                    Error::config_error("Tags array required for 'remove' operation".to_string())
+                    Error::validation_error(
+                        "Tags array required for 'remove' operation".to_string(),
+                    )
                 })?;
 
                 let (yaml_str, body) = split_frontmatter(&content);
                 let mut fm: serde_json::Map<String, Value> = if let Some(yaml) = &yaml_str {
                     turbovault_parser::parse_frontmatter_yaml(yaml).map_err(|e| {
-                        Error::config_error(format!("Failed to parse frontmatter YAML: {}", e))
+                        Error::parse_error(format!("Failed to parse frontmatter YAML: {}", e))
                     })?
                 } else {
                     return Ok((
@@ -404,7 +406,7 @@ impl MetadataTools {
                     }),
                 ))
             }
-            other => Err(Error::config_error(format!(
+            other => Err(Error::validation_error(format!(
                 "Invalid tag operation '{}'. Must be 'add', 'remove', or 'list'",
                 other
             ))),

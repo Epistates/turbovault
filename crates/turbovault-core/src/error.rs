@@ -4,66 +4,116 @@
 //! This ensures composable error handling across crates.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error as ThisError;
 
 /// The core error type for all Obsidian operations.
 #[derive(ThisError, Debug)]
+#[non_exhaustive]
 pub enum Error {
-    /// File system error
+    /// File system error with no path to name.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    /// File system error on a known path. [`Error::io_at`] makes one for
+    /// every kind but a missing file, which is [`Error::FileNotFound`].
+    #[error("I/O error on {path}: {source}")]
+    IoAt {
+        /// The path the operation was on.
+        path: PathBuf,
+        /// What went wrong.
+        source: io::Error,
+    },
+
     /// File not found
     #[error("File not found: {path}")]
-    FileNotFound { path: PathBuf },
+    FileNotFound {
+        /// The path that doesn't exist.
+        path: PathBuf,
+    },
 
     /// Invalid file path (outside vault, too long, etc.)
     #[error("Invalid file path: {reason}")]
-    InvalidPath { reason: String },
+    InvalidPath {
+        /// Why the path is refused.
+        reason: String,
+    },
 
     /// Path traversal attempt detected
     #[error("Path traversal detected: {path}")]
-    PathTraversalAttempt { path: PathBuf },
+    PathTraversalAttempt {
+        /// The path that would leave the vault.
+        path: PathBuf,
+    },
 
     /// Path lies inside the vault but in a directory the note APIs may not
     /// touch (TurboVault's own state, `.git`, `.obsidian`, ...).
     #[error(
         "Protected path: {path} lies under '{component}', which the note APIs may not read or write"
     )]
-    ProtectedPath { path: PathBuf, component: String },
+    ProtectedPath {
+        /// The path asked for.
+        path: PathBuf,
+        /// The protected directory it lies under.
+        component: String,
+    },
 
     /// File too large for processing
     #[error("File too large ({size} bytes, max {max} bytes): {path}")]
-    FileTooLarge { path: PathBuf, size: u64, max: u64 },
+    FileTooLarge {
+        /// The file.
+        path: PathBuf,
+        /// Its size in bytes.
+        size: u64,
+        /// The limit in bytes.
+        max: u64,
+    },
 
-    /// Parse error
+    /// Content that doesn't parse, such as malformed frontmatter.
     #[error("Parse error: {reason}")]
-    ParseError { reason: String },
+    ParseError {
+        /// What failed to parse, and why.
+        reason: String,
+    },
 
-    /// Invalid configuration
+    /// The server or a vault is not set up to do what was asked.
     #[error("Configuration error: {reason}")]
-    ConfigError { reason: String },
+    ConfigError {
+        /// What is misconfigured.
+        reason: String,
+    },
 
-    /// Validation error
+    /// A request whose arguments are invalid.
     #[error("Validation error: {reason}")]
-    ValidationError { reason: String },
+    ValidationError {
+        /// What is wrong with them.
+        reason: String,
+    },
 
-    /// Concurrent access conflict
+    /// The target changed since the caller last saw it.
     #[error("Concurrent access conflict: {reason}")]
-    ConcurrencyError { reason: String },
+    ConcurrencyError {
+        /// What changed.
+        reason: String,
+    },
 
     /// Not found in graph
     #[error("Not found in graph: {key}")]
-    NotFound { key: String },
+    NotFound {
+        /// What was looked up.
+        key: String,
+    },
 
-    /// Generic unclassified error
+    /// A change the vault's `allowed_operations` setting doesn't permit.
+    #[error("{reason}")]
+    OperationNotAllowed {
+        /// Which operation, on which vault.
+        reason: String,
+    },
+
+    /// A failure inside the server that fits no other variant.
     #[error("Error: {0}")]
     Other(String),
-
-    /// Wrapped error from other crates
-    #[error("Wrapped error: {0}")]
-    Wrapped(Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Convenient Result type alias
@@ -102,7 +152,9 @@ impl Error {
             }
             // A protected path is a policy refusal, not a malformed request:
             // the path is well formed and may well exist.
-            Error::ProtectedPath { .. } => ErrorCategory::PermissionDenied,
+            Error::ProtectedPath { .. } | Error::OperationNotAllowed { .. } => {
+                ErrorCategory::PermissionDenied
+            }
             Error::InvalidPath { .. }
             | Error::PathTraversalAttempt { .. }
             | Error::FileTooLarge { .. }
@@ -110,38 +162,22 @@ impl Error {
             | Error::ValidationError { .. } => ErrorCategory::InvalidInput,
             Error::ConcurrencyError { .. } => ErrorCategory::Conflict,
             Error::ConfigError { .. } => ErrorCategory::Unavailable,
-            Error::Wrapped(inner) if inner.is::<OperationNotAllowed>() => {
-                ErrorCategory::PermissionDenied
-            }
-            Error::Io(_) | Error::Other(_) | Error::Wrapped(_) => ErrorCategory::Internal,
+            Error::Io(_) | Error::IoAt { .. } | Error::Other(_) => ErrorCategory::Internal,
         }
     }
 
-    /// The refusal this error carries if a vault's `allowed_operations`
-    /// refused the change, as [`Error::operation_not_allowed`] made it.
-    pub fn as_operation_not_allowed(&self) -> Option<&OperationNotAllowed> {
+    /// The path this error is about, if it names one.
+    pub fn path(&self) -> Option<&Path> {
         match self {
-            Error::Wrapped(inner) => inner.downcast_ref::<OperationNotAllowed>(),
+            Error::FileNotFound { path }
+            | Error::PathTraversalAttempt { path }
+            | Error::ProtectedPath { path, .. }
+            | Error::FileTooLarge { path, .. }
+            | Error::IoAt { path, .. } => Some(path),
             _ => None,
         }
     }
 
-    /// A change the vault's `allowed_operations` doesn't permit. Its
-    /// [`category`](Self::category) is [`ErrorCategory::PermissionDenied`].
-    pub fn operation_not_allowed(reason: impl Into<String>) -> Self {
-        Error::Wrapped(Box::new(OperationNotAllowed(reason.into())))
-    }
-}
-
-/// A change refused by the vault's `allowed_operations` setting. It travels
-/// in [`Error::Wrapped`], which keeps the [`Error`] enum unchanged; use
-/// [`Error::operation_not_allowed`] to make one and
-/// [`Error::as_operation_not_allowed`] to recognize it.
-#[derive(Debug, ThisError)]
-#[error("{0}")]
-pub struct OperationNotAllowed(pub String);
-
-impl Error {
     /// Create an IO error
     pub fn io(err: io::Error) -> Self {
         Error::Io(err)
@@ -154,16 +190,19 @@ impl Error {
     /// `io::Error`'s `Display` text for `ErrorKind::NotFound` is the OS's own
     /// message ("No such file or directory (os error 2)" on Unix, "The
     /// system cannot find the file specified. (os error 2)" on Windows).
-    /// That's fine for a log, not for for a client that has to recognize "missing
-    /// file" from the text. Every other `ErrorKind` still wraps as
-    /// [`Error::io`]. `path` should already be vault-relative and
+    /// That's fine for a log, not for a client that has to recognize "missing
+    /// file" from the text. Every other `ErrorKind` becomes [`Error::IoAt`],
+    /// which keeps the path. `path` should already be vault-relative and
     /// `/`-separated (see [`crate::path_to_slash`]) so the message matches
     /// every other path this server returns.
     pub fn io_at(path: impl Into<PathBuf>, err: io::Error) -> Self {
         if err.kind() == io::ErrorKind::NotFound {
             Error::file_not_found(path)
         } else {
-            Error::Io(err)
+            Error::IoAt {
+                path: path.into(),
+                source: err,
+            }
         }
     }
 
@@ -208,14 +247,17 @@ impl Error {
         }
     }
 
-    /// Create a configuration error
+    /// Create a configuration error: the server or a vault is not set up to
+    /// do what was asked. For bad request arguments use
+    /// [`Error::validation_error`]; for failures inside the server,
+    /// [`Error::other`].
     pub fn config_error(reason: impl Into<String>) -> Self {
         Error::ConfigError {
             reason: reason.into(),
         }
     }
 
-    /// Create a validation error
+    /// Create a validation error: the request's arguments are invalid.
     pub fn validation_error(reason: impl Into<String>) -> Self {
         Error::ValidationError {
             reason: reason.into(),
@@ -232,6 +274,14 @@ impl Error {
     /// Create a not found error
     pub fn not_found(key: impl Into<String>) -> Self {
         Error::NotFound { key: key.into() }
+    }
+
+    /// A change the vault's `allowed_operations` doesn't permit. Its
+    /// [`category`](Self::category) is [`ErrorCategory::PermissionDenied`].
+    pub fn operation_not_allowed(reason: impl Into<String>) -> Self {
+        Error::OperationNotAllowed {
+            reason: reason.into(),
+        }
     }
 
     /// Create a generic error
@@ -266,12 +316,15 @@ mod tests {
     }
 
     #[test]
-    fn io_at_leaves_other_error_kinds_as_io() {
+    fn io_at_keeps_the_path_for_other_error_kinds() {
         let io_err = io::Error::new(io::ErrorKind::PermissionDenied, "denied");
         let err = Error::io_at("notes/locked.md", io_err);
 
-        assert!(matches!(err, Error::Io(_)));
-        assert!(err.to_string().contains("denied"));
+        assert!(matches!(err, Error::IoAt { .. }));
+        assert_eq!(err.path(), Some(Path::new("notes/locked.md")));
+        let message = err.to_string();
+        assert!(message.contains("denied") && message.contains("notes/locked.md"));
+        assert_eq!(err.category(), ErrorCategory::Internal);
     }
 
     #[test]
@@ -279,13 +332,7 @@ mod tests {
         let err = Error::operation_not_allowed("vault 'notes' does not allow write");
 
         assert_eq!(err.category(), ErrorCategory::PermissionDenied);
-        assert_eq!(
-            err.as_operation_not_allowed().map(ToString::to_string),
-            Some("vault 'notes' does not allow write".to_string())
-        );
-        // Any other wrapped error is still a fault in the server.
-        let other = Error::Wrapped(Box::new(io::Error::other("boom")));
-        assert_eq!(other.category(), ErrorCategory::Internal);
-        assert!(other.as_operation_not_allowed().is_none());
+        assert!(matches!(err, Error::OperationNotAllowed { .. }));
+        assert_eq!(err.to_string(), "vault 'notes' does not allow write");
     }
 }

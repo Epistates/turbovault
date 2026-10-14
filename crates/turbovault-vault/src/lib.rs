@@ -1,13 +1,14 @@
 //! # Vault Manager
 //!
-//! Vault operations, file watching, and atomic operations.
+//! Vault operations: reading, writing and editing notes, keeping the derived
+//! state (note cache and link graph) fresh, and dispatching writes to the
+//! configured backend.
 //!
-//! This crate provides the core vault management functionality including:
+//! This crate provides:
 //! - File reading and writing with error handling
-//! - Real-time file system watching
-//! - Atomic operations with transaction support
-//! - Edit engine for advanced file modifications
-//! - Diff-based updates with fuzzy matching
+//! - The freshness gate, which notices changes made outside TurboVault
+//! - Write dispatch to a Direct or Git backend ([`substrate::WriteSubstrate`])
+//! - Edit engine for SEARCH/REPLACE edits with fuzzy matching
 //!
 //! ## Quick Start
 //!
@@ -39,28 +40,10 @@
 //! - List files
 //! - Traverse directory structure
 //!
-//! ### File Watching
+//! ### Write substrate
 //!
-//! [`watcher::VaultWatcher`] monitors the vault for changes:
-//! - File creates, modifies, deletes
-//! - Directory changes
-//! - Debounced events
-//! - Configurable filtering
-//!
-//! Example:
-//! ```
-//! use turbovault_vault::WatcherConfig;
-//!
-//! let _config = WatcherConfig::default();
-//! // Watcher runs in background, emit events via channel
-//! ```
-//!
-//! ### Atomic Operations
-//!
-//! [`atomic::AtomicFileOps`] ensures data integrity:
-//! - Atomic writes (write-to-temp then rename)
-//! - Transaction support
-//! - Rollback on failure
+//! [`substrate::WriteSubstrate`] applies every change plan, either directly
+//! (temp file and atomic rename) or as one Git commit.
 //!
 //! ### Edit Engine
 //!
@@ -92,33 +75,26 @@
 //! - Permission errors
 //! - Invalid paths
 //! - Encoding errors
-//! - Atomicity violations
 
-pub mod atomic;
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod edit;
 pub mod manager;
 pub mod reindex;
 pub mod substrate;
-pub mod watcher;
 
-#[allow(deprecated)]
-pub use atomic::{AtomicFileOps, FileOp, TransactionResult};
 pub use edit::{EditEngine, EditResult, SearchReplaceBlock, compute_hash};
 pub use manager::{ChangeListener, ScannedNote, VaultManager};
 pub use reindex::{
     CommitOrigin, PendingCommit, ReindexQueue, apply_commit_diff, watch_ref_changes,
 };
 pub use substrate::{ApplyOutcome, DirectSubstrate, GitSubstrate, WriteSubstrate};
-pub use turbovault_core::prelude::*;
-#[allow(deprecated)]
-pub use watcher::{VaultEvent, VaultWatcher, WatcherConfig};
 
+/// The vault types and core's prelude, for a glob import.
 pub mod prelude {
-    pub use crate::atomic::*;
     pub use crate::edit::*;
     pub use crate::manager::*;
     pub use crate::reindex::*;
     pub use crate::substrate::*;
-    pub use crate::watcher::*;
     pub use turbovault_core::prelude::*;
 }

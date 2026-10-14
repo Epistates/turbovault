@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = true
-description = "Vault management, file operations, and watching"
+description = "Vault management, file operations, and change tracking"
 readme = "README.md"
 keywords.workspace = true
 categories.workspace = true
@@ -24,10 +24,8 @@ turbovault-audit = { workspace = true }
 turbovault-git = { workspace = true }
 
 tokio = { workspace = true }
-notify = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-log = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
 rayon = { workspace = true }

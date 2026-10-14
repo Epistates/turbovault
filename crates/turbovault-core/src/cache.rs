@@ -131,7 +131,7 @@ impl VaultCache {
                     // Found a project marker - use this directory as project root
                     let canonical = current.canonicalize().unwrap_or_else(|_| current.clone());
                     let project_id = Self::hash_path(&canonical);
-                    log::debug!(
+                    tracing::debug!(
                         "Detected project root: {} (hash: {})",
                         canonical.display(),
                         project_id
@@ -148,7 +148,7 @@ impl VaultCache {
                     .canonicalize()
                     .unwrap_or_else(|_| start_path.to_path_buf());
                 let project_id = Self::hash_path(&canonical);
-                log::debug!(
+                tracing::debug!(
                     "No project marker found, using start path: {} (hash: {})",
                     canonical.display(),
                     project_id
@@ -226,7 +226,7 @@ impl VaultCache {
             }
         })
         .await?;
-        log::debug!(
+        tracing::debug!(
             "Saved {} vaults to project cache {} (active: {})",
             count,
             self.project_id,
@@ -279,10 +279,10 @@ impl VaultCache {
             change(&mut registry);
 
             let vaults_yaml = yaml_serde::to_string(&registry)
-                .map_err(|e| Error::config_error(format!("Failed to serialize vaults: {}", e)))?;
+                .map_err(|e| Error::other(format!("Failed to serialize vaults: {}", e)))?;
             crate::write_atomic(&vaults_file, vaults_yaml.as_bytes()).map_err(Error::io)?;
             let metadata_json = serde_json::to_string_pretty(&metadata)
-                .map_err(|e| Error::config_error(format!("Failed to serialize metadata: {}", e)))?;
+                .map_err(|e| Error::other(format!("Failed to serialize metadata: {}", e)))?;
             crate::write_atomic(&metadata_file, metadata_json.as_bytes()).map_err(Error::io)
         })
         .await
@@ -302,7 +302,7 @@ impl VaultCache {
                      next to it",
                 )
             })?;
-        log::debug!("Loaded vaults from project cache {}", self.project_id);
+        tracing::debug!("Loaded vaults from project cache {}", self.project_id);
         Ok(vaults)
     }
 
@@ -342,7 +342,7 @@ impl VaultCache {
                 .map_err(Error::io)?;
         }
 
-        log::info!("Cache cleared for project {}", self.project_id);
+        tracing::info!("Cache cleared for project {}", self.project_id);
         Ok(())
     }
 
@@ -396,13 +396,13 @@ fn read_registry(path: &Path) -> Result<Option<Vec<VaultConfig>>> {
                 .unwrap_or(0);
             let backup = path.with_extension(format!("yaml.corrupt-{stamp}"));
             match std::fs::rename(path, &backup) {
-                Ok(()) => log::error!(
+                Ok(()) => tracing::error!(
                     "The vault registry {} could not be read ({reason}); kept it as {} \
                      and started a new one",
                     path.display(),
                     backup.display()
                 ),
-                Err(error) => log::error!(
+                Err(error) => tracing::error!(
                     "The vault registry {} could not be read ({reason}), nor kept aside: {error}",
                     path.display()
                 ),
@@ -445,9 +445,6 @@ mod tests {
             max_file_size: None,
             allowed_extensions: None,
             excluded_paths: None,
-            enable_caching: None,
-            cache_ttl: None,
-            template_dirs: None,
             allowed_operations: None,
             write_backend: crate::WriteBackend::default(),
             git: None,

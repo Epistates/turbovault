@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Dependencies refreshed.** `uuid` 1.28, and every package in the lockfile is at its latest compatible version, among them `hnsw_rs` 0.3.5, which no longer pulls in the unmaintained `bincode` 1.x, so its advisory ignore is gone. Every GitHub Action is at its latest release. The Scorecard action was pinned to a tag object, which Actions can't run, and is now pinned to its commit.
+- **Errors say what kind of failure they are.** `turbovault_core::Error` is `#[non_exhaustive]`, and gains `OperationNotAllowed` (a vault's `allowed_operations` refusing a change) and `IoAt` (an I/O error that keeps its path, which `Error::io_at` now makes for every kind but a missing file). `Error::path()` returns the path any error names. Bad arguments that were reported as configuration errors, so a client was told the server was unavailable, are now validation errors: invalid vault names and templates, a bad write mode, batch refusals, tag operations and rejected SQL. Malformed frontmatter is a parse error, and search index, Git task and backlink lookup failures are internal.
+- **Public types that grow are `#[non_exhaustive]`:** `ServerConfig`, `VaultConfig`, `VaultGitConfig`, `SnapshotRetention`, `TaskItem`, `ValidationIssue`, `AuditEntry`, `AuditStats` and `ChainVerification`, and the enums `ConfigProfile`, `WriteBackend`, `LinkType`, `CalloutType`, `Severity` and `TaskStatus`. Outside their crate, build them from `Default` and set fields, or use `ServerConfig::with_vaults`, `SnapshotRetention::with_max_count` / `with_max_age_days` and the `VaultGitConfig::with_*` builders. `WriteBackend::name` gives a backend's config spelling.
+- **No more glob re-exports.** `turbovault-graph`, `turbovault-vault` and `turbovault-tools` no longer re-export all of `turbovault_core::prelude` from their roots, and `turbovault` no longer re-exports all of `turbovault-tools`. Import core types from `turbovault_core`; each crate's `prelude` module still gathers them.
+- **Profiles set only what they change.** Each profile sets its log level, and `minimal` turns off reconciling external changes; the rest of what they used to set was never read.
+- **Logging is `tracing` throughout**, at the same levels with the same messages, so log lines sit inside the spans the tool dispatcher opens.
+- **`turbovault-graph`, `-vault`, `-git`, `-sql`, `-vector` and `-parser` document every public item**, and warn on undocumented or unreachable public items. `VaultManager`'s implementation is split into modules by concern, with no change to its API.
 - **Canvases count as links to the notes they show.** `get_backlinks` lists them, `delete_note` counts them before refusing, and moving a note re-points their file cards and text links in the same change.
 - **A task keeps its checkbox character,** so in-progress `[/]` and cancelled `[-]` tasks are distinguishable from open ones. `TaskItem` gains a `status` field.
 - **Every tool tells an agent how to call it.** Every parameter, including each `batch_execute` operation's fields, has a description of what it takes, its default and its limits, and every tool has a title and complete read-only, destructive, idempotent and open-world hints. Tool descriptions say when to use a tool rather than its neighbor.
@@ -59,7 +65,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Graph analyses run off the async workers and count a note's links without cloning them.
   - The vector plugin's dense index takes new chunks into its live graph and skips removed ones, instead of rebuilding on the next search after any edit. `turbovault-vector` 0.1.2. Its persistence (a JSON file per note) and embedding under the engine's lock are unchanged for now.
 - **Similarity, `find_duplicates` and `compare_notes` cover notes only**, as search does. `.txt` and `.canvas` files were scored too.
-- **Deprecated:** `VaultManager::link_graph()`, which skips the freshness gate, in favor of `link_graph_flushed()`. `enable_caching`, `cache_ttl` and `template_dirs` on a vault were never read; they're still accepted, with a warning.
+
+### Removed
+
+Everything below was unused, or marked for removal in this major release. A config file that still sets a removed setting loads as before, and the setting is ignored.
+
+- **`turbovault-vault`:** `AtomicFileOps`, `FileOp` and `TransactionResult` (`atomic`), and `VaultWatcher`, `WatcherConfig` and `VaultEvent` (`watcher`). Writes go through the write substrate, and the freshness gate notices outside changes. `VaultManager::link_graph()`, which skipped the freshness gate: use `link_graph_flushed()`.
+- **`turbovault-parser`:** the per-element parsers deprecated since 1.2, `parsers::{callouts, embeds, headings, markdown_links, tags, tasks, wikilinks}`, and `parsers::frontmatter_parser` with `extract_frontmatter`. The `parse_*` functions and `Parser` cover them.
+- **`turbovault-core`:**
+  - `metrics` (`Counter`, `Histogram`, `HistogramStats`, `HistogramTimer`, `MetricsContext`)
+  - `resilience` (`RetryConfig`, `CircuitState`, `CircuitBreaker`, `FallbackStrategy`, `SimpleFallback`)
+  - `CSVBuilder` and `TransactionBuilder`
+  - `PathValidator::validate_path_exists` and `validate_multiple`, which skip the protected-directory policy; use `VaultManager::resolve_path`
+  - `Error::Wrapped`, `Error::as_operation_not_allowed` and the `OperationNotAllowed` struct
+  - the `ServerConfig` settings TurboVault never read: `enable_caching`, `cache_ttl`, `template_dirs`, `default_template_variables`, `editor_backup_enabled`, `editor_atomic_writes`, `max_backup_files`, `max_edit_history`, `backup_retention_days`, `link_graph_enabled`, `link_suggestions_enabled`, `max_link_suggestions`, `link_similarity_threshold`, `full_text_search_enabled`, `index_rebuild_interval`, `multi_vault_enabled`, `metrics_enabled` and `debug_mode`
+  - `VaultConfig`'s `enable_caching`, `cache_ttl` and `template_dirs`
+- **`turbovault-tools`:** `response_utils`, `ResponseFormatter` (`OutputFormat` stays), `SearchEngine::search_by_tags`, and `AnalysisTools::{list_orphaned_notes, detect_cycles, get_link_density, get_connectivity_metrics}`, which duplicated `GraphTools`.
+- **`turbovault`:** the `stdio` feature, which enabled nothing; STDIO is always built in.
+- **Dependencies:** `notify`, `tokio-util`, `walkdir`, `dashmap`, `config`, `log` and `parking_lot`.
 
 ### Fixed
 

@@ -97,13 +97,15 @@
 //! - Cycle detection: O(n + m)
 //! - Health analysis: O(n + m)
 
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod graph;
 pub mod health;
 
 pub use graph::{GraphStats, LinkGraph};
 pub use health::{AnalysisConfig, BrokenLink, HealthAnalyzer, HealthCounts, HealthReport};
-pub use turbovault_core::prelude::*;
 
+/// The graph types, for a glob import.
 pub mod prelude {
     pub use crate::graph::{GraphStats, LinkGraph};
     pub use crate::health::{

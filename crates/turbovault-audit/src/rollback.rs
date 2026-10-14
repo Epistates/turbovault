@@ -289,7 +289,7 @@ impl RollbackEngine {
         {
             match self.snapshot_store.store(before).await {
                 Ok(id) => entry = entry.with_before(SnapshotStore::compute_hash(before), id),
-                Err(e) => log::warn!("Failed to store the content a rollback replaced: {}", e),
+                Err(e) => tracing::warn!("Failed to store the content a rollback replaced: {}", e),
             }
         }
         if let (Some(content), Some(id)) = (&plan.restore, &plan.restore_snapshot_id) {
@@ -299,7 +299,7 @@ impl RollbackEngine {
         let id = entry.id.clone();
         // Fire-and-forget audit recording
         if let Err(e) = self.audit_log.record(&entry).await {
-            log::warn!("Failed to record rollback audit entry: {}", e);
+            tracing::warn!("Failed to record rollback audit entry: {}", e);
         }
         id
     }

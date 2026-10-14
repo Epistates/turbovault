@@ -307,15 +307,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     let _observability_guard = telemetry.build().init()?;
     if let Some(endpoint) = &args.otlp_endpoint {
-        log::info!("Exporting traces over OTLP to {endpoint}");
+        tracing::info!("Exporting traces over OTLP to {endpoint}");
     }
     if let Some(port) = args.metrics_port {
-        log::info!("Serving Prometheus metrics on http://127.0.0.1:{port}/metrics");
+        tracing::info!("Serving Prometheus metrics on http://127.0.0.1:{port}/metrics");
     }
 
-    log::info!("Turbo Vault MCP Server v{}", env!("CARGO_PKG_VERSION"));
-    log::info!("Profile: {}", args.profile);
-    log::info!(
+    tracing::info!("Turbo Vault MCP Server v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Profile: {}", args.profile);
+    tracing::info!(
         "Transport: {} | Log format: {:?}",
         args.transport,
         output_format
@@ -338,11 +338,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("Failed to create MCP server: {}", e))?
     };
 
-    log::info!("MCP Server created (vault-agnostic mode)");
+    tracing::info!("MCP Server created (vault-agnostic mode)");
     match root_policy.roots() {
-        Some(roots) => log::info!("Runtime vault registration is limited to {roots:?}"),
+        Some(roots) => tracing::info!("Runtime vault registration is limited to {roots:?}"),
         None if root_policy.allows_registration() => {}
-        None => log::info!(
+        None => tracing::info!(
             "Runtime vault registration is off on the {} transport; set \
              --allowed-vault-roots to allow it",
             args.transport
@@ -353,7 +353,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize persistent cache in the server
     if let Err(e) = server.init_cache().await {
-        log::warn!(
+        tracing::warn!(
             "Failed to initialize server cache: {}. Cache persistence will be unavailable.",
             e
         );
@@ -362,7 +362,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // CACHE RECOVERY: Load previously registered vaults for this project
     match VaultCache::init().await {
         Ok(cache) => {
-            log::info!(
+            tracing::info!(
                 "Project cache initialized: {} | Cache dir: {}",
                 cache.project_id(),
                 cache.project_cache_dir().display()
@@ -370,12 +370,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
             // Load cached vaults
             let cached_vaults = cache.load_vaults().await.unwrap_or_else(|e| {
-                log::warn!("Failed to load cached vaults: {}", e);
+                tracing::warn!("Failed to load cached vaults: {}", e);
                 vec![]
             });
 
             if !cached_vaults.is_empty() {
-                log::info!(
+                tracing::info!(
                     "Recovering {} cached vaults for project {}",
                     cached_vaults.len(),
                     cache.project_id()
@@ -388,7 +388,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     // Vaults from --vault and the config file are registered
                     // again below whatever happens here.
                     if let Err(reason) = restorable(&vault_config, &root_policy) {
-                        log::warn!(
+                        tracing::warn!(
                             "Not restoring cached vault '{}': {reason}",
                             vault_config.name
                         );
@@ -397,18 +397,18 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     // turbovault-74p: a cached Direct vault over a git repo is
                     // the same bypass, restored — warn on every recovery too.
                     if let Some(warning) = direct_over_git_repo_warning(&vault_config) {
-                        log::warn!("{warning}");
+                        tracing::warn!("{warning}");
                     }
                     match server.multi_vault().add_vault(vault_config.clone()).await {
                         Ok(_) => {
-                            log::info!(
+                            tracing::info!(
                                 "Restored vault from cache: '{}' -> {}",
                                 vault_config.name,
                                 vault_config.path.display()
                             );
                         }
                         Err(e) => {
-                            log::warn!(
+                            tracing::warn!(
                                 "Failed to restore vault '{}': {}. Skipping.",
                                 vault_config.name,
                                 e
@@ -419,7 +419,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
                 // Restore active vault
                 let metadata = cache.load_metadata().await.unwrap_or_else(|e| {
-                    log::warn!("Failed to load cache metadata: {}", e);
+                    tracing::warn!("Failed to load cache metadata: {}", e);
                     turbovault_core::cache::CacheMetadata {
                         active_vault: String::new(),
                         last_updated: 0,
@@ -436,13 +436,13 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                         .await
                     {
                         Ok(_) => {
-                            log::info!(
+                            tracing::info!(
                                 "Restored active vault from cache: '{}'",
                                 metadata.active_vault
                             );
                         }
                         Err(e) => {
-                            log::warn!(
+                            tracing::warn!(
                                 "Failed to restore active vault '{}': {}",
                                 metadata.active_vault,
                                 e
@@ -451,11 +451,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else {
-                log::info!("No cached vaults found for this project");
+                tracing::info!("No cached vaults found for this project");
             }
         }
         Err(e) => {
-            log::warn!(
+            tracing::warn!(
                 "Failed to initialize cache: {}. Continuing without cache recovery.",
                 e
             );
@@ -475,15 +475,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .map(serde_json::from_str::<VaultGitConfig>)
             .transpose()
             .map_err(|error| format!("Invalid --vault-backend-opts JSON: {error}"))?;
-        log::info!("Adding vault from CLI argument: {:?}", vault_path);
+        tracing::info!("Adding vault from CLI argument: {:?}", vault_path);
         register_default_vault(&server, &vault_path, write_backend, backend_opts).await?;
     } else {
-        log::info!("No vault path provided. Use add_vault MCP tool to register a vault.");
-        log::info!("Available tools: add_vault, list_vaults, set_active_vault");
+        tracing::info!("No vault path provided. Use add_vault MCP tool to register a vault.");
+        tracing::info!("Available tools: add_vault, list_vaults, set_active_vault");
     }
 
     if args.init {
-        log::info!("Scanning registered vaults and building derived indexes...");
+        tracing::info!("Scanning registered vaults and building derived indexes...");
         server.initialize_registered_vaults().await?;
     }
     server.log_orphan_fanouts_warnings().await;
@@ -502,9 +502,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Start server with multi-version protocol support.
     // Accepts both MCP 2025-06-18 and 2025-11-25 clients.
-    log::info!("Starting TurboVault Server (multi-version MCP protocol)");
+    tracing::info!("Starting TurboVault Server (multi-version MCP protocol)");
     if tool_visibility.has_rules() {
-        log::info!(
+        tracing::info!(
             "Tool visibility configured: allowed={} hidden={} disabled={} \
              disabled_tags={} hidden_tags={} require_read_only={}",
             tool_visibility.allowed.len(),
@@ -520,7 +520,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     match args.transport.as_str() {
         "stdio" => {
-            log::info!("Running in STDIO mode for MCP protocol");
+            tracing::info!("Running in STDIO mode for MCP protocol");
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
@@ -530,8 +530,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "http")]
         "http" => {
             let addr = format!("{}:{}", args.host, args.port);
-            log::info!("Running HTTP server on {}", addr);
-            log::info!("Output format: {:?}", output_format);
+            tracing::info!("Running HTTP server on {}", addr);
+            tracing::info!("Output format: {:?}", output_format);
             let config = crate::security::http_server_config(&security, &args.host, args.port)?;
             server
                 .builder()
@@ -543,8 +543,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "websocket")]
         "websocket" => {
             let addr = format!("{}:{}", args.host, args.port);
-            log::info!("Running WebSocket server on {}", addr);
-            log::info!("Output format: {:?}", output_format);
+            tracing::info!("Running WebSocket server on {}", addr);
+            tracing::info!("Output format: {:?}", output_format);
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
@@ -555,8 +555,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "tcp")]
         "tcp" => {
             let addr = format!("{}:{}", args.host, args.port);
-            log::info!("Running TCP server on {}", addr);
-            log::info!("Output format: {:?}", output_format);
+            tracing::info!("Running TCP server on {}", addr);
+            tracing::info!("Output format: {:?}", output_format);
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
@@ -573,8 +573,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .into_owned(),
             };
             crate::security::warn_if_socket_dir_is_shared(std::path::Path::new(&socket_path));
-            log::info!("Running Unix socket server on {}", socket_path);
-            log::info!("Output format: {:?}", output_format);
+            tracing::info!("Running Unix socket server on {}", socket_path);
+            tracing::info!("Output format: {:?}", output_format);
             server
                 .builder()
                 .with_protocol(ProtocolConfig::multi_version())
@@ -630,7 +630,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 fn spawn_shutdown_signal_handler(server: ObsidianMcpServer) {
     tokio::spawn(async move {
         wait_for_termination_signal().await;
-        log::info!("Termination signal received; running graceful shutdown");
+        tracing::info!("Termination signal received; running graceful shutdown");
         server.shutdown().await;
         std::process::exit(0);
     });
@@ -645,7 +645,7 @@ async fn wait_for_termination_signal() {
     let mut terminate = match signal(SignalKind::terminate()) {
         Ok(stream) => stream,
         Err(error) => {
-            log::warn!("Could not install SIGTERM handler: {error}");
+            tracing::warn!("Could not install SIGTERM handler: {error}");
             let _ = tokio::signal::ctrl_c().await;
             return;
         }
@@ -688,7 +688,7 @@ async fn register_configured_vaults(
             if paths_refer_to_same_vault(&existing.path, &vault.path) {
                 continue;
             }
-            log::info!(
+            tracing::info!(
                 "Configured vault '{}' overrides cached path {}",
                 vault.name,
                 existing.path.display()
@@ -708,9 +708,9 @@ async fn register_configured_vaults(
         // turbovault-74p: the inverse mismatch — direct over a git repo — is a
         // silent bypass rather than an error, so it warns and registers.
         if let Some(warning) = direct_over_git_repo_warning(&vault) {
-            log::warn!("{warning}");
+            tracing::warn!("{warning}");
         }
-        log::info!(
+        tracing::info!(
             "Registering configured vault '{}' ({:?}) with write_backend={:?}",
             vault.name,
             vault.path,
@@ -900,13 +900,13 @@ async fn register_default_vault(
     if server.multi_vault().vault_exists("default").await {
         return match server.multi_vault().get_vault_config("default").await {
             Ok(existing_config) if paths_refer_to_same_vault(&existing_config.path, vault_path) => {
-                log::info!(
+                tracing::info!(
                     "Vault 'default' already registered from cache with same path. Skipping CLI vault addition."
                 );
                 Ok(DefaultVaultRegistration::AlreadyRegistered)
             }
             Ok(existing_config) => {
-                log::warn!(
+                tracing::warn!(
                     "Vault 'default' already exists with different path. Cached: {:?}, CLI: {:?}. Using cached vault.",
                     existing_config.path,
                     vault_path
@@ -916,7 +916,7 @@ async fn register_default_vault(
                 })
             }
             Err(error) => {
-                log::warn!(
+                tracing::warn!(
                     "Could not verify existing vault config: {}. Skipping CLI vault addition.",
                     error
                 );
@@ -937,7 +937,7 @@ async fn register_default_vault(
         .add_vault(vault_config)
         .await
         .map_err(|error| format!("Failed to add vault: {error}"))?;
-    log::info!("Vault registered: default -> {:?}", vault_path);
+    tracing::info!("Vault registered: default -> {:?}", vault_path);
 
     Ok(DefaultVaultRegistration::Added)
 }
