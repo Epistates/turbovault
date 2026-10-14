@@ -161,6 +161,8 @@
 //! - No I/O operations within exporters
 //! - Suitable for batch processing large datasets
 
+#![warn(missing_docs, unreachable_pub)]
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use turbovault_core::prelude::*;
@@ -178,36 +180,58 @@ pub enum ExportFormat {
 /// Health report for export
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthReport {
+    /// When the report was made, RFC 3339 in UTC.
     pub timestamp: String,
+    /// The vault the report describes.
     pub vault_name: String,
+    /// Overall health, 0 to 100.
     pub health_score: u8,
+    /// Notes in the vault.
     pub total_notes: usize,
+    /// Links between notes.
     pub total_links: usize,
+    /// Links whose target doesn't exist.
     pub broken_links: usize,
+    /// Notes with no links in or out.
     pub orphaned_notes: usize,
+    /// Fraction of notes that aren't orphaned, 0.0 to 1.0.
     pub connectivity_rate: f64,
+    /// Links as a fraction of every possible link between two notes.
     pub link_density: f64,
+    /// The score in words: `Healthy` (80 and up), `Fair`, `Needs Attention`
+    /// or `Critical` (below 40).
     pub status: String,
+    /// Suggested next steps.
     pub recommendations: Vec<String>,
 }
 
 /// Broken link record for export
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokenLinkRecord {
+    /// Vault-relative path of the note the link is in.
     pub source_file: String,
+    /// The target as written, which matches no note.
     pub target: String,
+    /// Line of the link in that note.
     pub line: usize,
+    /// Notes the link may have meant.
     pub suggestions: Vec<String>,
 }
 
 /// Vault statistics for export
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultStatsRecord {
+    /// When the record was made, RFC 3339 in UTC.
     pub timestamp: String,
+    /// The vault the record describes.
     pub vault_name: String,
+    /// Notes in the vault.
     pub total_files: usize,
+    /// Links between notes.
     pub total_links: usize,
+    /// Notes with no links in or out.
     pub orphaned_files: usize,
+    /// Links per note.
     pub average_links_per_file: f64,
     /// Total word count across all notes (plain text, excludes markdown syntax)
     #[serde(default)]
@@ -223,11 +247,17 @@ pub struct VaultStatsRecord {
 /// Full analysis report combining multiple metrics
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisReport {
+    /// When the report was made, RFC 3339 in UTC.
     pub timestamp: String,
+    /// The vault the report describes.
     pub vault_name: String,
+    /// The vault's health figures.
     pub health: HealthReport,
+    /// Links whose target doesn't exist.
     pub broken_links_count: usize,
+    /// Notes with no links in or out.
     pub orphaned_notes_count: usize,
+    /// Suggested next steps.
     pub recommendations: Vec<String>,
 }
 
