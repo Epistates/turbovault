@@ -8,117 +8,48 @@
 
 - MCP Registry name: `mcp-name: io.github.epistates/turbovault`
 
-**The ultimate Rust SDK and high-performance MCP server for Obsidian-flavored Markdown (.ofm) and standard .md vaults.**
+TurboVault is an MCP server that gives AI agents safe, fast access to Obsidian vaults, and a set of Rust crates for working with Obsidian Flavored Markdown. It's a single binary with no runtime dependencies.
 
-TurboVault is a dual-purpose toolkit designed for both developers and users. It provides a robust, modular **Rust SDK** for building applications that consume markdown directories, and a **full-featured MCP server** that works out of the box with Claude and other AI agents.
+- **Writes you can trust.** Every change goes through one write path: atomic renames with hash preconditions on a plain folder, or one Git commit per write (or per batch) on a Git-backed vault. Moving a note rewrites the wikilinks, Markdown links, reference links and canvas cards that point at it in the same change.
+- **An index that can't miss an edit.** Before serving search, graph or similarity results, TurboVault compares the vault against what it last indexed and applies what changed, so edits from Obsidian, a sync client or `git pull` are always seen, even on network and cloud-synced vaults where file watchers report nothing.
+- **Knowledge-aware tools.** Full-text search, link graph analysis, similarity, health scoring, Obsidian Bases, canvases, tasks and periodic notes, plus SQL over frontmatter.
+- **Built for agents.** Every tool has parameter descriptions, annotations, a typed output schema, paged results and errors that say what to do next. Notes are MCP resources you can subscribe to, and destructive calls ask the user first when the client supports it.
+- **Safe by default.** Vault registration is confined, protected folders (`.obsidian`, `.git`) are unreachable, and network transports require authentication.
 
----
+## Install
 
-## Two Ways to Use TurboVault
-
-### 1. As a Rust SDK (For Developers)
-Build your own applications, search engines, or custom MCP servers using our modular crates. TurboVault handles the heavy lifting of parsing `.md` and `.ofm` files, building knowledge graphs, and managing multi-vault environments.
-
-- **Modular Architecture**: Use only what you need (Parser, Graph, Search, etc.).
-- **High Performance**: Sub-100ms operations for most tasks.
-- **Extensible**: Easily build your own specialized MCP servers on top of our core logic.
-- **SOTA Standards**: Fully supports Obsidian-flavored Markdown (wikilinks, embeds, callouts).
-
-### 2. As a Ready-to-Use MCP Server (For Users)
-Transform your Obsidian vault into an intelligent knowledge system immediately. Connect TurboVault to Claude Desktop or any MCP-compatible client to gain **52 specialized tools** for your notes.
-
-- **Zero Coding Required**: Install the binary and point it at your vault.
-- **52 Specialized Tools**: Searching, link analysis, atomic Git-backed writes, SQL frontmatter queries, health checks, and more.
-- **Multi-Vault Support**: Switch between personal and work notes seamlessly at runtime.
-
----
-
-## Core Crates (The SDK)
-
-TurboVault is a modular system composed of specialized crates. You can depend on individual components to build your own tools:
-
-| Crate | Purpose | Docs |
-|-------|---------|------|
-| **[turbovault-core](crates/turbovault-core)** | Core models, MultiVault management & types | [![Docs.rs](https://docs.rs/turbovault-core/badge.svg)](https://docs.rs/turbovault-core) |
-| **[turbovault-parser](crates/turbovault-parser)** | High-speed .md & .ofm parser | [![Docs.rs](https://docs.rs/turbovault-parser/badge.svg)](https://docs.rs/turbovault-parser) |
-| **[turbovault-graph](crates/turbovault-graph)** | Link graph analysis & relationship discovery | [![Docs.rs](https://docs.rs/turbovault-graph/badge.svg)](https://docs.rs/turbovault-graph) |
-| **[turbovault-vault](crates/turbovault-vault)** | Vault management, file I/O & atomic writes | [![Docs.rs](https://docs.rs/turbovault-vault/badge.svg)](https://docs.rs/turbovault-vault) |
-| **[turbovault-tools](crates/turbovault-tools)** | Tool implementations behind the MCP server | [![Docs.rs](https://docs.rs/turbovault-tools/badge.svg)](https://docs.rs/turbovault-tools) |
-| **[turbovault-plugin-api](crates/turbovault-plugin-api)** | Stable facade, provider contract & bounded hooks for compiled-in plugins | [![Docs.rs](https://docs.rs/turbovault-plugin-api/badge.svg)](https://docs.rs/turbovault-plugin-api) |
-| **[turbovault-sql](crates/turbovault-sql)** | SQL frontmatter queries (GlueSQL) | [![Docs.rs](https://docs.rs/turbovault-sql/badge.svg)](https://docs.rs/turbovault-sql) |
-| **[turbovault-batch](crates/turbovault-batch)** | Validated fail-fast operation batches | [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch) |
-| **[turbovault-export](crates/turbovault-export)** | Export & reporting (JSON/CSV/MD) | [![Docs.rs](https://docs.rs/turbovault-export/badge.svg)](https://docs.rs/turbovault-export) |
-| **[turbovault](crates/turbovault)** | Main MCP server binary / SDK orchestrator | [![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault) |
-
-## Why TurboVault?
-
-Unlike basic note readers, TurboVault understands your vault's **knowledge structure**:
-
-- **Full-text search** across all notes with BM25 ranking
-- **Link graph analysis** to discover relationships, hubs, orphans, and cycles
-- **Vault intelligence** with health scoring and automated recommendations
-- **Validated operation batches** for fewer round trips and fail-fast execution
-- **Multi-vault support** with instant context switching
-- **Runtime vault addition** — no vault required at startup, add them as needed
-
-### Powered by TurboMCP
-
-TurboVault is built on **[TurboMCP](https://github.com/epistates/turbomcp)**, a Rust framework for building production-grade MCP servers. TurboMCP provides:
-
-- **Type-safe tool definitions** — Macro-driven MCP tool implementation
-- **Standardized request/response handling** — Consistent envelope format
-- **Transport abstraction** — HTTP, WebSocket, TCP, Unix sockets (configurable features)
-- **Middleware support** — Logging, metrics, error handling
-- **Zero-copy streaming** — Efficient large payload handling
-
-This means TurboVault gets battle-tested reliability and extensibility out of the box. Want to add custom tools? TurboMCP's ergonomic macros make it straightforward.
-
-## Quick Start
-
-### Installation
-
-**Prebuilt binaries**
-
-Each [GitHub release](https://github.com/Epistates/turbovault/releases) has binaries for Linux, macOS and Windows built with every feature: all transports, SQL frontmatter queries, and the vector search plugin. Vector search stays off until you enable it with `--plugins vector_search` (or `TURBOVAULT_PLUGINS=vector_search`) and point it at a local model.
-
-**From crates.io**
+**Prebuilt binaries.** Each [GitHub release](https://github.com/Epistates/turbovault/releases) has archives for Linux (x86_64 and aarch64, glibc and musl), macOS (Intel and Apple silicon) and Windows (x86_64), built with every feature. Each archive has a `.sha256` file and a signed build provenance attestation:
 
 ```bash
-# Minimal install (7.0 MB, STDIO only - perfect for Claude Desktop)
-cargo install turbovault
-
-# With HTTP server (~8.2 MB)
-cargo install turbovault --features http
-
-# With all cross-platform transports (~8.8 MB)
-# Includes: STDIO, HTTP, WebSocket, TCP (Unix sockets only on Unix/macOS/Linux)
-cargo install turbovault --features full
-
-# With SQL frontmatter queries (adds GlueSQL-powered query_frontmatter_sql tool)
-cargo install turbovault --features sql
-
-# Everything the prebuilt binaries have (add `unix` on Unix)
-cargo install turbovault --features release
-
-# Binary installed to: ~/.cargo/bin/turbovault
+gh attestation verify turbovault-x86_64-unknown-linux-gnu.tar.gz --repo Epistates/turbovault
 ```
 
-**From source:**
+**From crates.io:**
 
 ```bash
-git clone https://github.com/epistates/turbovault.git
-cd turbovault
-just release
-# Binary: ./target/release/turbovault
+cargo install turbovault                       # stdio only, all you need for Claude Desktop and Claude Code
+cargo install turbovault --features release    # what the prebuilt binaries have
 ```
 
-### Option 1: Static Vault (Recommended for Single Vault)
+Other features: `http`, `websocket`, `tcp`, `full` (all cross-platform transports), `unix`, `sql` (SQL over frontmatter) and `vector-search` (the vector search plugin).
+
+**Docker:** `ghcr.io/epistates/turbovault:<version>` (amd64 and arm64). Mount the vault at `/var/obsidian-vault`:
 
 ```bash
-turbovault --vault /path/to/your/vault --profile production
+docker run -i --rm -v "$HOME/Documents/Vault:/var/obsidian-vault" ghcr.io/epistates/turbovault:4.0.0
 ```
 
-Then add to `~/.config/claude/claude_desktop_config.json`:
+**MCP Registry:** listed as `io.github.epistates/turbovault`, with cargo and OCI packages.
+
+## Quick start
+
+**Claude Code:**
+
+```bash
+claude mcp add turbovault -- turbovault --vault ~/Documents/Vault
+```
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -131,104 +62,13 @@ Then add to `~/.config/claude/claude_desktop_config.json`:
 }
 ```
 
-### Option 2: Runtime Vault Addition (Recommended for Multiple Vaults)
+Leave out `--vault` to start with no vault and let the agent register one with `add_vault`. Runtime-registered vaults are remembered across restarts. For several vaults, a Git backend or per-vault settings, use a config file: see [`config.example.yaml`](config.example.yaml) and the [configuration guide](docs/configuration/index.md).
 
-Start the server without a vault:
+A good first call is `get_vault_context`: it returns the registered vaults, the active vault's counts and health, and the tools grouped by task.
 
-```bash
-turbovault --profile production
-```
+## Tools
 
-Then add vaults dynamically:
-
-```json
-{
-  "mcpServers": {
-    "turbovault": {
-      "command": "/path/to/turbovault",
-      "args": ["--profile", "production"]
-    }
-  }
-}
-```
-
-Once connected to Claude:
-
-```
-You: "Add my vault at ~/Documents/Notes"
-Claude: [Calls add_vault("personal", "~/Documents/Notes")]
-
-You: "Search for machine learning notes"
-Claude: [Uses search() across the indexed vault]
-
-You: "What are my most important notes?"
-Claude: [Uses get_hub_notes() to find key concepts]
-```
-
-### Atomic Git-Backed Writes
-
-For vaults already managed by Git, enable the transactional backend in the
-TurboVault YAML config:
-
-```yaml
-vaults:
-  - name: personal
-    path: ~/Documents/Notes
-    is_default: true
-    write_backend: git
-    git:
-      include_ignored: false
-      require_commit_message: false
-```
-
-Start with `turbovault --config ~/.turbovault/config.yaml`. Every mutation is
-then a Git commit. Multi-operation batches build one isolated tree and advance
-the branch with compare-and-swap, so a stale path aborts the entire batch and
-concurrent TurboVault processes cannot interleave commit/materialization. The
-backend also refuses to overwrite dirty or untracked touched paths and refuses
-to reset an index containing staged changes.
-
-## What Can Claude Do?
-
-### Search & Discovery
-```
-You: "Find all notes about async Rust and show how they connect"
-Claude: search() -> recommend_related() -> get_related_notes() -> explain relationships
-```
-
-### Vault Intelligence
-```
-You: "What's the health of my vault? Any issues I should fix?"
-Claude: vault_health() -> graph_report(kind=broken_links) -> generate fixes
-```
-
-### Knowledge Graph Navigation
-```
-You: "What are my most important notes? Which ones are isolated?"
-Claude: graph_report(kind=hubs) -> graph_report(kind=isolated_clusters) -> suggest connections
-```
-
-### Structured Note Creation
-```
-You: "Create a project note for the TurboVault launch with status tracking"
-Claude: list_templates() -> create_from_template() -> write auto-formatted note
-```
-
-### Batch Content Operations
-```
-You: "Move my 'MLOps' note to 'AI/Operations' and identify links to update"
-Claude: get_links() -> move_note() (rewrites the links it finds) -> read_note() to check
-```
-
-### Link Suggestions
-```
-You: "Based on my vault, what notes should I link this to?"
-Claude: suggest_links() -> compare_notes() -> recommend cross-references
-```
-
-## 52 MCP Tools Organized by Category
-
-`tools/list` shows the core tools by default. The ones marked *(advanced)* are callable by name all the same, and listed with `--show-advanced-tools` (see [Tool visibility](#tool-visibility)). Every tool that works inside a vault takes an optional `vault` argument naming the registered vault to run against; without it, the active vault. Coming from 3.x, [docs/migration/4.0.md](docs/migration/4.0.md) maps every old tool name to its replacement.
+`tools/list` shows the core tools by default. The ones marked *(advanced)* are callable by name all the same, and listed with `--show-advanced-tools` (see the [configuration guide](docs/configuration/index.md#tool-visibility)). Every tool that works inside a vault takes an optional `vault` argument naming the registered vault to run against; without it, the active vault. Coming from 3.x, [docs/migration/4.0.md](docs/migration/4.0.md) maps every old tool name to its replacement.
 
 ### Notes (9)
 - `get_vault_context`: Start here: vault status, health, the markdown dialect and the tools by task
@@ -302,359 +142,98 @@ Claude: suggest_links() -> compare_notes() -> recommend cross-references
 - `rollback_note` *(advanced)*: Undo a change by operation id (audited, itself undoable)
 - `export` *(advanced)*: A `health`, `broken_links`, `stats` or `analysis` report as JSON or CSV
 
-## Real-World Workflows
+## Resources, prompts and confirmation
 
-### Initialize Without a Vault
+- **Notes as resources.** Every note is `obsidian://note/{vault}/{path}`: listed, read as markdown, and subscribable. Subscribers hear when a note changes, whether TurboVault or another editor changed it.
+- **Prompts.** `triage_vault`, `repair_broken_links`, `review_period`, `summarize_note` and `ground_draft`, with completion for their arguments.
+- **Progress and cancellation.** Slow tools report progress, and a cancelled call stops before it writes anything.
+- **Confirmation.** `delete_note`, a `move_note` that replaces a note and a forced `rollback_note` ask the user to confirm when the client supports elicitation. `--no-confirm-destructive` turns this off.
 
-```python
-# Server starts with NO vault required
-response = client.call("get_vault_context")
-# Returns: "No vault registered. Call add_vault() to get started."
+## Writes and Git
 
-response = client.call("add_vault", {
-    "name": "personal",
-    "path": "~/Documents/Obsidian"
-})
-# Auto-initializes: scans files, builds link graph, indexes for search
-```
+On the default (direct) backend, each write is a temp file and an atomic rename, held to the note's `expected_hash` so an edit made since the last read is never lost. A batch applies in order and reports exactly what landed if it stops partway.
 
-### Multi-Vault Workflow
+On a Git-backed vault (`write_backend: git`), every write is one commit and every batch is one all-or-nothing commit, with compare-and-swap on the branch so concurrent processes can't interleave. TurboVault refuses to overwrite files with uncommitted changes, and if writing out a commit is interrupted, the next write or the next start finishes it. `fanout` gives an agent a private worktree for long or parallel work, merged back or thrown away as a unit.
 
-```python
-# Add multiple vaults
-client.call("add_vault", {"name": "work", "path": "/work/notes"})
-client.call("add_vault", {"name": "personal", "path": "~/notes"})
-
-# Switch context instantly
-client.call("set_active_vault", {"name": "work"})
-search_results = client.call("search", {"query": "Q4 goals"})
-
-client.call("set_active_vault", {"name": "personal"})
-recommendations = client.call("recommend_related", {"path": "AI/ML.md"})
-```
-
-### Vault Maintenance & Repair
-
-```python
-# Quick diagnostic
-health = client.call("quick_health_check")
-if health["data"]["score"] < 60:
-    # Deep analysis if needed
-    full_analysis = client.call("full_health_analysis")
-
-# Find and fix issues
-broken = client.call("get_broken_links")
-# Process broken links...
-
-# Atomic bulk repair
-client.call("batch_execute", {
-    "operations": [
-        {"type": "DeleteNote", "path": "old/deprecated.md"},
-        {"type": "MoveNote", "from": "old/notes.md", "to": "new/notes.md"},
-        # ... more operations
-    ]
-})
-
-# Verify improvement
-client.call("explain_vault")  # Holistic view
-```
-
-### Content Discovery
-
-```python
-# Find what matters
-hubs = client.call("get_hub_notes")  # Top concepts
-orphans = client.call("get_dead_end_notes")  # Incomplete topics
-
-# Deep search
-results = client.call("search", {"query": "machine learning"})
-
-# Explore relationships
-related = client.call("get_related_notes", {
-    "path": "AI/ML.md",
-    "max_hops": 3
-})
-
-# Get suggestions
-suggestions = client.call("suggest_links", {"path": "AI/ML.md"})
-```
-
-## Performance Profile
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| `read_note` | <10ms | Instant with caching |
-| `get_backlinks`, `get_forward_links` | <50ms | Graph lookup |
-| `write_note` | <50ms | Includes graph update |
-| `search` (10k notes) | <100ms | Tantivy BM25 |
-| `quick_health_check` | <100ms | Heuristic score |
-| `full_health_analysis` | 1–5s | Exhaustive, use sparingly |
-| `explain_vault` | 1–5s | Aggregates 5+ analyses |
-| Vault initialization | 100ms–5s | Depends on vault size |
-
-**Key insight**: Fast operations (<100ms) for common tasks, slower operations (1–5s) for exhaustive analysis. Claude uses smart fallbacks.
-
-## Configuration Profiles
-
-`--profile` sets the log level (`RUST_LOG` overrides it) and the settings every vault starts from. An unknown name stops startup rather than falling back.
-
-| Profile | Log level | Also |
-|---------|-----------|------|
-| `development` (default) | debug | |
-| `production` | info | |
-| `readonly` (or `read-only`) | warn | Every tool not annotated read-only is hidden and refused, the same gate as `--require-read-only-tools` |
-| `high-performance` | warn | |
-| `minimal` | error | Doesn't reconcile with edits made outside TurboVault |
-| `multi-vault`, `collaboration` | info | |
-
-## Tool Visibility
-
-By default `tools/list` shows the 30 core tools and leaves out the advanced ones (marked *(advanced)* above), which stay callable by exact name. `--show-advanced-tools` (or `TURBOVAULT_SHOW_ADVANCED_TOOLS=1`, or `show_advanced_tools: true` below) lists all 52.
-
-TurboVault applies further TurboMCP visibility rules from `~/.turbovault/config.yaml` or `--config`:
-
-```yaml
-tool_visibility:
-  show_advanced_tools: false
-  hidden:
-    - explain_vault
-  disabled:
-    - delete_note
-```
-
-Use `hidden` for tools that should stay callable by exact name, `disabled` for tools that should fail closed, and `allowed` when you want an explicit allowlist (which lists whatever it names, advanced or not). Equivalent env/CLI overrides are available via `TURBOVAULT_HIDDEN_TOOLS`, `TURBOVAULT_DISABLED_TOOLS`, `TURBOVAULT_ALLOWED_TOOLS`, and `--hidden-tools`, `--disabled-tools`, `--allowed-tools`.
-
-## SDK and Server Implementation
-
-TurboVault is designed for two primary audiences: developers building on top of the **Rust SDK** and users looking for a **standalone MCP server**.
-
-### As a Standalone MCP Server
-
-The quickest way to get started is using the pre-built binary. It's fully self-contained and optimized for performance:
-- **Link-time optimization** (LTO) for maximum speed
-- **Configurable transports** (STDIO, HTTP, WebSocket, TCP)
-- **Zero external dependencies** (just point it at your vault)
-
-```bash
-# Build the optimized binary
-cargo build --release --features full
-
-# Run it
-./target/release/turbovault --vault /path/to/vault --profile production
-```
-
-### As a Rust SDK (Library)
-
-The core of TurboVault is a collection of modular crates. Use them to build your own search engines, knowledge management tools, or even **your own specialized MCP servers**.
-
-```rust
-// Use in your own Rust projects
-use turbovault_core::MultiVaultManager;
-use turbovault_vault::VaultManager;
-use turbovault_tools::SearchEngine;
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // 1. Initialize the MultiVault manager
-    let manager = MultiVaultManager::new();
-    
-    // 2. Add and initialize a vault (scans files, builds graph)
-    manager.add_vault("notes", "/home/user/notes").await?;
-    
-    // 3. Perform high-level operations
-    let vault = manager.get_vault("notes")?;
-    let results = vault.search("machine learning")?;
-    
-    // 4. Use these components to build your own custom MCP server
-    // or integrate into existing Rust applications.
-    Ok(())
-}
-```
-
-Each crate is published to crates.io, so you can depend on individual components or the full stack.
-
-## Architecture
-
-Built as a modular Rust workspace:
-
-```
-turbovault-core        — Core types, MultiVaultManager, configuration
-turbovault-parser      — OFM (Obsidian Flavored Markdown) parsing
-turbovault-graph       — Link graph analysis with petgraph
-turbovault-vault       — Vault operations, file I/O, atomic writes
-turbovault-batch       — Validated sequential batch operations
-turbovault-export      — JSON/CSV/Markdown export
-turbovault-sql         — SQL frontmatter queries (GlueSQL, feature-gated)
-turbovault-tools:      tool implementations behind the MCP server
-turbovault-plugin-api  — Curated plugin facade, provider contract, event hooks
-turbovault (binary)    — CLI and MCP server entry point
-```
-
-All crates are published to [crates.io](https://crates.io/crates/turbovault-core) for public use.
-
-## Obsidian Flavored Markdown (OFM) Support
-
-TurboVault fully understands Obsidian's syntax:
-
-- **Wikilinks**: `[[note]]`, `[[note|alias]]`, `[[note#section]]`, `[[note#^block]]`
-- **Embeds**: `![[image.png]]`, `![[note]]`, `![[note#section]]`
-- **Tags**: `#tag`, `#parent/child/tag`
-- **Tasks**: `- [ ] Task`, `- [x] Done`
-- **Callouts**: `> [!type] Title`
-- **Frontmatter**: YAML metadata with automatic parsing
-- **Headings**: Hierarchical structure extraction
+Every change is recorded in a hash-chained audit trail under `.turbovault/` (or as Git history), and `rollback_note` undoes one, refusing to discard a later edit unless forced.
 
 ## Security
 
-- **Path traversal protection** — No access outside vault boundaries
-- **Type-safe deserialization** — Rust's type system prevents injection
-- **Atomic writes** — Temp file → atomic rename (never corrupts on failure)
-- **Hash-based conflict detection** — `edit_note` detects concurrent modifications
-- **File size limits** — Default 10MB per file (configurable), enforced on reads and writes
-- **Protected directories** — `.obsidian/`, `.git/`, `node_modules/`, and TurboVault's own `.turbovault/` state are unreachable through the note APIs on both write backends
-- **No shell execution** — Zero command injection risk
-- **Audit trail**: Every write is recorded under `.turbovault/` (and as a commit on a Git-backed vault), in every profile
-- **Read-only mode**: `--profile readonly` or `--require-read-only-tools` hides and refuses every mutating tool
-- **Vault registration is confined**: `add_vault` and `create_vault` never accept the home directory, its hidden and application-data directories, or system directories, and `--allowed-vault-roots` limits them to chosen directories. On network transports they're off unless roots are set
-- **Network authentication**: the HTTP transport takes bearer tokens or OAuth JWTs (`--auth-mode`), with per-client rate limiting, and won't listen beyond loopback without authentication. See [Security in the configuration guide](docs/configuration/index.md#security)
-- **Bounded queries**: result counts are clamped at every tool, and `query_frontmatter_sql` runs only `SELECT`, for at most 10 seconds and 1000 rows
+- **Vault registration is confined.** `add_vault` never accepts a filesystem root, the home directory, hidden or application-data directories under it, or system directories. `--allowed-vault-roots` limits it to chosen directories; on network transports it's off unless roots are set.
+- **Protected folders.** `.obsidian`, `.git`, `node_modules` and TurboVault's own `.turbovault` are unreachable through the note tools on both backends. A vault can protect more folders, never fewer.
+- **Network transports.** HTTP takes bearer tokens or OAuth JWTs (`--auth-mode`), with per-client rate limiting, and won't listen beyond loopback without authentication. WebSocket and TCP stay on loopback. The Unix socket lives in a private directory.
+- **Read-only.** `--profile read-only` refuses every mutating tool; `allowed_operations: read` makes one vault read-only.
+- **Bounds.** Files over 10 MiB (configurable) aren't read, written or scanned; every result count is capped; `query_frontmatter_sql` runs only `SELECT`, for at most 10 seconds and 1000 rows.
+- No shell execution anywhere.
 
-## System Requirements
+Report vulnerabilities through [GitHub private vulnerability reporting](SECURITY.md).
 
-- **Rust**: 1.90.0 or later
-- **OS**: Linux, macOS, Windows
-- **Memory**: 100MB base + ~80MB per 10k notes
-- **Disk**: Negligible (index is in-memory)
+## Observability
 
-## Building from Source
+Logs go to stderr as JSON on stdio (`RUST_LOG` overrides the profile's level). `--otlp-endpoint` exports traces over OTLP, `--metrics-port` serves Prometheus metrics on 127.0.0.1, and every tool call is a span with the tool, vault, outcome and duration, never its arguments or note content.
+
+## Performance
+
+Measured on synthetic vaults with a release build over MCP stdio:
+
+| | 10k notes | 50k notes |
+|---|---|---|
+| Startup | 0.5 s | 2.5 s |
+| Memory after startup | 213 MB | 0.93 GB |
+| `read_note` | 0.5 ms | 0.9 ms |
+| `search` (warm) | 3.5-8 ms | 3.5 ms |
+| Search after a restart | 61 ms | 258 ms |
+| `vault_health` | 1 ms | 16 ms |
+| `explain_vault` | 30 ms | 179 ms |
+| `write_note` | 14-31 ms | |
+
+The search index persists in TurboVault's cache directory, so a restart re-indexes only notes that changed.
+
+## Obsidian Flavored Markdown
+
+Wikilinks (`[[note]]`, `[[note|alias]]`, `[[note#heading]]`, `[[note#^block]]`, and the table-escaped `\|`), embeds, Markdown links (inline, reference-style and percent-encoded), tags (`#tag`, `#parent/child`), tasks (including Tasks plugin emoji and Dataview fields), callouts, YAML frontmatter as Obsidian 1.9 reads it, properties with links, headings, JSON Canvas 1.0 and Bases.
+
+## Use the crates
+
+| Crate | Purpose |
+|---|---|
+| [`turbovault-core`](crates/turbovault-core) | Models, configuration, errors, multi-vault management |
+| [`turbovault-parser`](crates/turbovault-parser) | Obsidian Flavored Markdown and JSON Canvas parsing |
+| [`turbovault-graph`](crates/turbovault-graph) | Link graph, health and centrality |
+| [`turbovault-vault`](crates/turbovault-vault) | `VaultManager`: the note cache, the freshness gate and the write path |
+| [`turbovault-git`](crates/turbovault-git) | The Git write substrate |
+| [`turbovault-audit`](crates/turbovault-audit) | Audit trail, snapshots, rollback |
+| [`turbovault-batch`](crates/turbovault-batch) | Batch operation types and validation |
+| [`turbovault-export`](crates/turbovault-export) | JSON and CSV reports |
+| [`turbovault-sql`](crates/turbovault-sql) | SQL over frontmatter (GlueSQL) |
+| [`turbovault-tools`](crates/turbovault-tools) | The logic behind the MCP tools |
+| [`turbovault-plugin-api`](crates/turbovault-plugin-api) | The contract for compiled-in plugins |
+| [`turbovault-vector`](crates/turbovault-vector) | Hybrid dense and BM25 search |
+| [`turbovault`](crates/turbovault) | The MCP server |
+
+## Build from source
 
 ```bash
 git clone https://github.com/epistates/turbovault.git
 cd turbovault
-
-# Development build
-cargo build
-
-# Production build (optimized)
-cargo build --release
-
-# Run tests
-cargo test --all
+cargo build --release          # ./target/release/turbovault
+cargo test --workspace --all-features
 ```
 
-Or use `just` (see the `justfile`):
+Rust 1.90 builds the crates; the test suite needs 1.93.1 or later. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [development guide](docs/development/index.md).
 
-```bash
-just build       # Debug build
-just release     # Production build
-just test        # Run tests (fmt check, lint, full suite)
-just clean       # Clean build artifacts
-```
+## Migrating from 3.x
 
-## Documentation
-
-[Docs](./docs/README.md)
-
-## Examples
-
-### Example 1: Search-Driven Organization
-
-```
-You: "What topics do I have the most notes on?"
-Claude:
-  1. get_hub_notes() -> [AI, Project Management, Rust, Python]
-  2. For each hub:
-     - get_related_notes() -> related topics
-     - get_backlinks() -> importance/connectivity
-  3. Report: "Your core topics are AI (23 notes) and Rust (18 notes)"
-```
-
-### Example 2: Vault Health Improvement
-
-```
-You: "My vault feels disorganized. Help me improve it."
-Claude:
-  1. quick_health_check() -> Health: 42/100
-  2. full_health_analysis() -> Issues: 12 broken links, 8 orphaned notes
-  3. get_broken_links() -> List of specific broken links
-  4. suggest_links() -> AI-powered link recommendations
-  5. Apply fixes individually, or use batch_execute() after reviewing its fail-fast semantics
-  6. explain_vault() -> New health: 78/100
-```
-
-### Example 3: Template-Based Content Creation
-
-```
-You: "Create project notes for Q4 initiatives"
-Claude:
-  1. list_templates() -> "project", "task", "meeting"
-  2. create_from_template("project", {
-       "title": "Q4 Planning",
-       "status": "In Progress",
-       "deadline": "2024-12-31"
-     })
-  3. Creates structured note with auto-formatting
-  4. Returns path for follow-up edits
-```
-
-## Benchmarks
-
-M1 MacBook Pro, 10k notes, production build:
-
-- **File read**: <10ms
-- **File write**: <20ms
-- **Simple search**: <50ms
-- **Graph analysis**: <200ms
-- **Vault initialization**: ~500ms
-- **Memory usage**: ~80MB
-- **External-change reconciliation**: ~19ms per pass, at most once per 500ms
-
-## Keeping up with edits you did not make
-
-A vault is a shared directory. Obsidian is usually open on it, and an editor, a
-`git pull`, or a sync client may touch it while TurboVault is running. Search,
-the link graph, similarity, and vault stats are all derived from the notes, so
-none of that would reach them on its own.
-
-Before serving any of those, TurboVault compares a `(size, mtime)` scan against
-what it last recorded and applies whatever moved. Comparing state cannot miss a
-change the way filesystem notifications can, which matters most on exactly the
-setups where notifications are weakest: network shares, and iCloud, Dropbox, or
-Syncthing vaults, none of which report a peer's edits at all.
-
-The pass is debounced, so a burst of tool calls costs one scan and an idle
-server costs nothing. Worst-case staleness is the interval, at least 500ms and
-scaled up only on a vault large enough to need it. Set
-`reconcile_external_changes: false` to turn it off for a vault nothing else
-writes.
-
-## Roadmap
-
-- [ ] Cross-vault link resolution
-- [ ] Encrypted vault support
-- [ ] Collaborative locking
-- [ ] WebSocket transport (beyond MCP stdio)
-
-## Contributing
-
-Contributions welcome! Please ensure:
-
-- All tests pass: `cargo test --all`
-- Code formats: `cargo fmt --all`
-- No clippy warnings: `cargo clippy --all -- -D warnings`
+4.0 consolidates 79 tools into 52, adds the per-call `vault` argument and hides the advanced tools from `tools/list` by default. [docs/migration/4.0.md](docs/migration/4.0.md) maps every old tool and parameter to its replacement, and the [changelog](CHANGELOG.md) lists every library API change.
 
 ## License
 
-MIT License - See [LICENSE](LICENSE) for details
+MIT. See [LICENSE](LICENSE).
 
 ## Links
 
-- **Repository**: https://github.com/epistates/turbovault
-- **Issues**: https://github.com/epistates/turbovault/issues
-- **MCP Protocol**: https://modelcontextprotocol.io
-- **Obsidian**: https://obsidian.md
-- **Related**: [TurboMCP](https://github.com/epistates/turbomcp)
-
----
-
-**Get started now**: `./target/release/turbovault --profile production`
+- [Documentation](docs/README.md)
+- [Changelog](CHANGELOG.md)
+- [Issues](https://github.com/epistates/turbovault/issues)
+- [TurboMCP](https://github.com/epistates/turbomcp), the framework TurboVault is built on
+- [Model Context Protocol](https://modelcontextprotocol.io)
