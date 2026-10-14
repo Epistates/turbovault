@@ -38,8 +38,10 @@ def main():
     if os.path.exists(command[0]):
         command[0] = os.path.abspath(command[0])
 
-    version = subprocess.run(command + ["--version"], capture_output=True, text=True,
-                             timeout=TIMEOUT)
+    # The server writes UTF-8. Without an explicit encoding Python decodes with
+    # the locale's, which is cp1252 on Windows and fails on tool descriptions.
+    version = subprocess.run(command + ["--version"], capture_output=True,
+                             encoding="utf-8", timeout=TIMEOUT)
     if version.returncode != 0:
         fail(f"--version exited {version.returncode}: {version.stderr.strip()}")
     print(version.stdout.strip())
@@ -59,8 +61,8 @@ def main():
 
     # An empty working directory, so the server's per-project state starts clean.
     with tempfile.TemporaryDirectory() as cwd:
-        session = subprocess.run(command, input=stdin, capture_output=True, text=True,
-                                 timeout=TIMEOUT, cwd=cwd)
+        session = subprocess.run(command, input=stdin, capture_output=True,
+                                 encoding="utf-8", timeout=TIMEOUT, cwd=cwd)
 
     responses = {}
     for line in session.stdout.splitlines():
