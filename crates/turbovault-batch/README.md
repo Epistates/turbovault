@@ -4,78 +4,51 @@
 [![Docs.rs](https://docs.rs/turbovault-batch/badge.svg)](https://docs.rs/turbovault-batch)
 [![License](https://img.shields.io/crates/l/turbovault-batch.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
 
-Validated, fail-fast batches of Obsidian vault file operations.
+The operation and result types behind [TurboVault](https://github.com/epistates/turbovault)'s `batch_execute` tool, and the checks that keep one batch from conflicting with itself. This crate executes nothing: `turbovault-tools` (`BatchTools`) turns a batch into one `ChangePlan` and applies it through `VaultManager`.
 
-The crate groups several `VaultManager` operations behind one request. It
-validates the batch for overlapping paths, executes operations sequentially,
-stops at the first failure, and returns a detailed `BatchResult`.
+## Operations
 
-## Important execution semantics
+`BatchOperation` is tagged by `type`:
 
-A batch is **not** an all-or-nothing transaction. Each individual file write
-uses TurboVault's atomic replacement path, but operations completed before a
-later failure remain applied. Callers must inspect:
+| Operation | Fields |
+|---|---|
+| `CreateNote` | `path`, `content`, `force` |
+| `WriteNote` | `path`, `content`, `expected_hash` |
+| `EditNote` | `path`, `edits` (SEARCH/REPLACE blocks), `expected_hash` |
+| `DeleteNote` | `path`, `expected_hash`, `on_backlinks` |
+| `MoveNote` | `from`, `to`, `expected_hash`, `dest_expected_hash`, `update_backlinks` |
+| `UpdateLinks` | `file`, `old_target`, `new_target`, `expected_hash` |
+| `UpdateFrontmatter` | `path`, `frontmatter`, `merge`, `expected_hash` |
+| `ManageTags` | `path`, `operation`, `tags`, `expected_hash` |
+| `CreateFromTemplate` | `template_id`, `path`, `fields`, `force` |
 
-- `success` — whether every operation completed;
-- `executed` and `failed_at` — how far execution progressed;
-- `changes` — successful operations already applied;
-- `records` and `errors` — per-operation results and the failure reason.
+`expected_hash` holds an operation to the note's content when the batch was planned, so a note changed in the meantime fails the batch instead of being overwritten.
 
-If an all-or-nothing workflow is required, do not rely on `BatchExecutor` as a
-transaction boundary. Use external version control or wait for a transactional
-write backend.
+## Validation
 
-## Supported operations
+`affected_files` names the paths an operation touches and `conflicts_with` tells whether two operations touch the same one, so a batch that, say, writes and deletes the same note is refused before anything runs.
 
-- `CreateNote { path, content }`
-- `WriteNote { path, content }`
-- `DeleteNote { path }`
-- `MoveNote { from, to }`
-- `UpdateLinks { file, old_target, new_target }`
+## What a batch guarantees
 
-`MoveNote` moves the file and refreshes TurboVault's graph/cache state. It does
-not rewrite wikilinks in other notes. `UpdateLinks` only changes the explicitly
-named file.
+- On a Git-backed vault the whole batch is one commit: every operation lands, or none does.
+- On a direct vault operations apply in order. If one fails, the ones before it stay applied, and `BatchResult` reports exactly how far it got (`executed`, `failed_at`, the per-operation `records`).
 
 ## Example
 
-```no_run
-use std::sync::Arc;
-use turbovault_batch::{BatchExecutor, BatchOperation};
-use turbovault_core::ServerConfig;
-use turbovault_vault::VaultManager;
+```rust
+use turbovault_batch::BatchOperation;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let manager = Arc::new(VaultManager::new(ServerConfig::default())?);
-    let executor = BatchExecutor::from_manager(manager);
+fn main() -> serde_json::Result<()> {
+    let batch: Vec<BatchOperation> = serde_json::from_str(r#"[
+        {"type": "CreateNote", "path": "notes/one.md", "content": "# One"},
+        {"type": "MoveNote", "from": "inbox/two.md", "to": "notes/two.md"}
+    ]"#)?;
 
-    let result = executor
-        .execute(vec![
-            BatchOperation::CreateNote {
-                path: "notes/one.md".into(),
-                content: "# One".into(),
-            },
-            BatchOperation::CreateNote {
-                path: "notes/two.md".into(),
-                content: "# Two".into(),
-            },
-        ])
-        .await?;
-
-    if !result.success {
-        eprintln!(
-            "batch stopped at {:?}; prior changes: {:?}",
-            result.failed_at, result.changes
-        );
-    }
-
+    assert!(!batch[0].conflicts_with(&batch[1]));
     Ok(())
 }
 ```
 
-## Validation
+## License
 
-Empty batches are rejected. Operations whose affected paths overlap are also
-rejected before execution. Validation prevents conflicts inside a single
-batch, but it is not cross-process locking or optimistic concurrency control.
+MIT
