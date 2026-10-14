@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-10-14
+
+Parser fixes only. Every crate moves to 4.0.1 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.
+
 ### Fixed
 
 - **An empty fenced code block no longer swallows the paragraph after it.** A fence with nothing in it was never closed, so the text after it was added to the next code block, and the paragraph between them was lost. This happened at the top level and inside list items.
