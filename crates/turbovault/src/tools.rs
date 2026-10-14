@@ -808,14 +808,14 @@ pub(super) struct CompleteNoteWrite {
 
 impl CoreToolHandler {
     /// Create a new server instance (vault-agnostic - no vault required at startup)
-    pub fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         Self::with_config(ServerConfig::default())
     }
 
     /// Like [`Self::new`], with `config` as the base every vault manager is
     /// built from (a profile's [`turbovault_core::ConfigProfile::create_config`]).
     /// Its `vaults` are ignored; vaults are registered at runtime.
-    pub fn with_config(mut config: ServerConfig) -> Result<Self> {
+    pub(crate) fn with_config(mut config: ServerConfig) -> Result<Self> {
         config.vaults.clear();
         let mgr = MultiVaultManager::empty(config)?;
         Ok(Self {
@@ -834,7 +834,7 @@ impl CoreToolHandler {
     }
 
     /// Restrict which directories `add_vault` accept.
-    pub fn set_vault_root_policy(&self, policy: VaultRootPolicy) {
+    pub(crate) fn set_vault_root_policy(&self, policy: VaultRootPolicy) {
         *self
             .vault_root_policy
             .write()
@@ -842,7 +842,7 @@ impl CoreToolHandler {
     }
 
     /// The policy `add_vault` check paths against.
-    pub fn vault_root_policy(&self) -> VaultRootPolicy {
+    pub(crate) fn vault_root_policy(&self) -> VaultRootPolicy {
         self.vault_root_policy
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -852,7 +852,7 @@ impl CoreToolHandler {
     /// Whether destructive calls ask the user first, through the client's
     /// elicitation support. On by default; a client that can't ask is never
     /// asked either way.
-    pub fn set_confirm_destructive(&self, enabled: bool) {
+    pub(crate) fn set_confirm_destructive(&self, enabled: bool) {
         self.confirm_destructive
             .store(enabled, std::sync::atomic::Ordering::Release);
     }
@@ -939,7 +939,7 @@ impl CoreToolHandler {
     }
 
     /// Initialize the persistent cache (should be called after server creation)
-    pub async fn init_cache(&self) -> Result<()> {
+    pub(crate) async fn init_cache(&self) -> Result<()> {
         let cache = turbovault_core::cache::VaultCache::init().await?;
         let mut cache_lock = self.persistent_cache.write().await;
         *cache_lock = Some(cache);
@@ -947,7 +947,7 @@ impl CoreToolHandler {
     }
 
     /// Get the multi-vault manager
-    pub fn multi_vault(&self) -> Arc<MultiVaultManager> {
+    pub(crate) fn multi_vault(&self) -> Arc<MultiVaultManager> {
         self.multi_vault_mgr.clone()
     }
 
@@ -956,7 +956,7 @@ impl CoreToolHandler {
     /// initialize registered vaults at startup. Walks every registered
     /// vault, constructs its VaultManager (scans files + builds link
     /// graph), and caches it. Errors on the first failure.
-    pub async fn initialize_registered_vaults(&self) -> Result<()> {
+    pub(crate) async fn initialize_registered_vaults(&self) -> Result<()> {
         let vaults = self
             .multi_vault_mgr
             .list_vaults()
@@ -1020,7 +1020,7 @@ impl CoreToolHandler {
     /// if specified) for `wip-*` worktrees that aren't backed by an entry
     /// in `active_fanouts`. Pure read; never mutates. Used by the startup
     /// warning and the `list_orphan_fanouts` MCP tool.
-    pub async fn scan_orphan_fanouts(
+    pub(crate) async fn scan_orphan_fanouts(
         &self,
         vault_filter: Option<&str>,
     ) -> Result<Vec<OrphanFanoutEntry>> {
@@ -1075,7 +1075,7 @@ impl CoreToolHandler {
     /// entry in `active_fanouts`. Called from the SIGTERM/SIGINT handler.
     /// Logs each result, then clears the registry. Survives individual
     /// failures so a slow vault can't block shutdown.
-    pub async fn shutdown_fanouts_best_effort(&self) {
+    pub(crate) async fn shutdown_fanouts_best_effort(&self) {
         let snapshot: Vec<(String, ActiveFanoutRecord)> = {
             let guard = self.active_fanouts.read().await;
             guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
@@ -1148,7 +1148,7 @@ impl CoreToolHandler {
     /// detected. Operator decides whether to clean up (manual `git
     /// worktree remove` / `git branch -D`, or call `list_orphan_fanouts`
     /// MCP tool for inspection).
-    pub async fn log_orphan_fanouts_warnings(&self) {
+    pub(crate) async fn log_orphan_fanouts_warnings(&self) {
         match self.scan_orphan_fanouts(None).await {
             Ok(orphans) if orphans.is_empty() => {}
             Ok(orphans) => {
@@ -1176,9 +1176,13 @@ impl CoreToolHandler {
 /// owning vault's name (which the substrate alone can't know).
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct OrphanFanoutEntry {
+    /// The vault the fanout belongs to.
     pub vault_name: String,
+    /// The worktree's name in the repository.
     pub worktree_name: String,
+    /// The branch the fanout commits to.
     pub wip_branch: String,
+    /// Where the worktree is checked out.
     pub worktree_path: PathBuf,
 }
 
@@ -1833,7 +1837,7 @@ impl CoreToolHandler {
 
     /// Test-only: expose the active vault's `VaultManager` so e2e tests
     /// can read the link graph after a substrate write.
-    pub async fn get_active_vault_manager_test(&self) -> McpResult<Arc<VaultManager>> {
+    pub(crate) async fn get_active_vault_manager_test(&self) -> McpResult<Arc<VaultManager>> {
         self.get_active_vault_manager().await
     }
 
@@ -1852,7 +1856,7 @@ impl CoreToolHandler {
 
     /// turbovault-5nn test-only: resolve a commit subject through the same
     /// require_commit_message gate the mutation tools use (eager `fallback`).
-    pub async fn resolve_commit_message_test(
+    pub(crate) async fn resolve_commit_message_test(
         &self,
         commit_message: Option<String>,
         fallback: String,
@@ -1863,7 +1867,7 @@ impl CoreToolHandler {
 
     /// Test-only: check whether a `CommitLocks` registry is cached for
     /// `vault_name`. Used by turbovault-1ne cleanup tests.
-    pub async fn has_git_locks_test(&self, vault_name: &str) -> bool {
+    pub(crate) async fn has_git_locks_test(&self, vault_name: &str) -> bool {
         self.runtimes
             .read()
             .await
@@ -1873,7 +1877,7 @@ impl CoreToolHandler {
 
     /// Test-only: whether anything is still held for `vault_name`: a
     /// manager, audit state, Git locks or an engine.
-    pub async fn holds_vault_state_test(&self, vault_name: &str) -> bool {
+    pub(crate) async fn holds_vault_state_test(&self, vault_name: &str) -> bool {
         self.runtimes.read().await.contains_key(vault_name)
             || self.search_engines.ready(vault_name).is_some()
             || self.similarity_engines.ready(vault_name).is_some()
@@ -1881,7 +1885,7 @@ impl CoreToolHandler {
 
     /// Test-only: invoke the `remove_vault` MCP tool from integration
     /// tests. Used by turbovault-1ne tests.
-    pub async fn remove_vault_test(&self, name: &str) -> McpResult<serde_json::Value> {
+    pub(crate) async fn remove_vault_test(&self, name: &str) -> McpResult<serde_json::Value> {
         self.remove_vault_with_cleanup(name).await
     }
 
@@ -1922,14 +1926,14 @@ impl CoreToolHandler {
     /// Test-only: expose the lazy `CommitLocks` initializer for tests
     /// that need to drive substrate operations against the same lock
     /// registry the server uses. Used by turbovault-1ne tests.
-    pub async fn get_or_init_git_locks_test(&self, vault_name: &str) -> Arc<CommitLocks> {
+    pub(crate) async fn get_or_init_git_locks_test(&self, vault_name: &str) -> Arc<CommitLocks> {
         self.get_or_init_git_locks(vault_name).await
     }
 
     /// Test-only: install an `active_fanouts` entry so tests can
     /// observe the remove_vault refusal without driving the full
     /// `fanout` (action `begin`) MCP wire path. Used by turbovault-1ne.
-    pub async fn register_active_fanout_test(
+    pub(crate) async fn register_active_fanout_test(
         &self,
         base_vault: &str,
         fanout_id: &str,
@@ -1949,7 +1953,7 @@ impl CoreToolHandler {
 
     /// Test-only: clear the `active_fanouts` entry for `base_vault`.
     /// Used by turbovault-1ne cleanup.
-    pub async fn clear_active_fanout_test(&self, base_vault: &str) {
+    pub(crate) async fn clear_active_fanout_test(&self, base_vault: &str) {
         self.active_fanouts.write().await.remove(base_vault);
     }
 

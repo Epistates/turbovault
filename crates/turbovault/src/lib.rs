@@ -64,6 +64,8 @@
 //! - `turbovault_graph` - Graph analysis (see <https://docs.rs/turbovault-graph>)
 //! - `turbovault_batch` - Batch operations (see <https://docs.rs/turbovault-batch>)
 
+#![warn(missing_docs, unreachable_pub)]
+
 pub mod cli;
 pub mod resources;
 pub mod security;
