@@ -132,9 +132,9 @@ mcp-obsidian \
 
 **What Works:**
 - All read operations (`read_note`, `list_files`)
-- Search and discovery (`search`, `advanced_search`)
-- Link graph analysis (`get_backlinks`, `get_hub_notes`)
-- Health checks and exports (`export_health_report`)
+- Search and discovery (`search`, `search`)
+- Link graph analysis (`get_links`, `graph_report`)
+- Health checks and exports (`export`)
 
 ### Security Features
 

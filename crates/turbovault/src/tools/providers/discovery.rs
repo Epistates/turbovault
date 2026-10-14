@@ -130,54 +130,10 @@ struct SqlQueryResult {
 impl DiscoveryProvider {
     // ==================== Search (LLM Discovery) ====================
 
-    /// Search vault by keyword
+    /// Search the vault by keyword, tag, frontmatter or content resemblance.
     #[tool(
-        description = "Full-text keyword search across every note, ranked by relevance (BM25). Each result has the path, title, a snippet, tags and links. Use advanced_search to filter by tag, frontmatter or folder.",
+        description = "Find notes, ranked by relevance (BM25). Give `query` for keywords, narrow with `tags`, `frontmatter_filters` and `exclude_paths`, or give only filters to list every note that matches them. With `related_to` instead, find notes whose content resembles that note's. Each result has the path, title, a snippet, tags and links. For conditions, joins or aggregates over frontmatter use query_frontmatter_sql; for meaning rather than words, find_similar.",
         title = "Search Notes",
-        tags = ["read", "search"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = Paged<Vec<SearchHit>>,
-    )]
-    async fn search(
-        &self,
-        #[description(
-            "Words to search for. Supports tantivy query syntax: `\"exact phrase\"`, `+required`, `-excluded`, `title:word`."
-        )]
-        query: String,
-        #[description("Most results to return. Default 10, maximum 100.")] limit: Option<usize>,
-        #[description(
-            "How many top results to skip, for the next page. Default 0, at most 1000; use `meta.pagination.next_offset` from the previous call."
-        )]
-        offset: Option<usize>,
-        #[description(
-            "`detailed` (default) or `concise`. Concise leaves out each result's `preview`, `outgoing_links`, `word_count` and `char_count`, keeping the path, title, score, snippet, tags and backlink count."
-        )]
-        response_format: Option<ResponseFormat>,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let engine = self.get_search_engine(&vault_name, &manager).await?;
-        let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
-        let results = engine
-            .advanced_search(SearchQuery::new(query).limit(request.fetch()))
-            .await
-            .map_err(to_mcp_error)?;
-        let (result_data, page) = ranked_page(&request, results, response_format);
-
-        let response = StandardResponse::new(vault_name, "search", result_data)
-            .with_page(page)
-            .with_next_step("advanced_search")
-            .with_next_step("recommend_related");
-
-        response.to_json()
-    }
-
-    /// Advanced search with filters
-    #[tool(
-        description = "Keyword search narrowed by tags, frontmatter values and excluded folders, ranked by relevance. Use search for a plain keyword query, or search_by_frontmatter to match one field without a keyword.",
-        title = "Advanced Search",
         tags = ["read", "search"],
         read_only = true,
         destructive = false,
@@ -188,24 +144,28 @@ impl DiscoveryProvider {
     // Each argument is one of the tool's MCP parameters; the macro reads the
     // input schema from this signature.
     #[allow(clippy::too_many_arguments)]
-    async fn advanced_search(
+    async fn search(
         &self,
         #[description(
-            "Words to search for, in tantivy query syntax as for search. Use `*` to match every note and filter only."
+            "Words to search for, in tantivy query syntax: `\"exact phrase\"`, `+required`, `-excluded`, `title:word`. Omit (or `*`) to match every note and rank by the filters alone."
         )]
-        query: String,
+        query: Option<String>,
         #[description(
             "Only notes carrying all of these tags, without `#`, such as `[\"project\", \"active\"]`."
         )]
         tags: Option<Vec<String>>,
         #[description(
-            "Only notes whose frontmatter matches every filter. Each filter is `{key, value}` and matches when the value contains `value`."
+            "Only notes whose frontmatter matches every filter. Each filter is `{key, value}` and matches when the value contains `value`, such as `{\"key\": \"status\", \"value\": \"draft\"}`."
         )]
         frontmatter_filters: Option<Vec<FrontmatterFilter>>,
         #[description(
             "Leave out notes under these vault-relative folders or paths, such as `[\"archive/\", \"templates/\"]`."
         )]
         exclude_paths: Option<Vec<String>>,
+        #[description(
+            "Vault-relative path of a note: find notes whose content resembles it, instead of searching by keyword. Not combined with the other filters."
+        )]
+        related_to: Option<String>,
         #[description("Most results to return. Default 10, maximum 100.")] limit: Option<usize>,
         #[description(
             "How many top results to skip, for the next page. Default 0, at most 1000; use `meta.pagination.next_offset` from the previous call."
@@ -218,132 +178,54 @@ impl DiscoveryProvider {
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
         let engine = self.get_search_engine(&vault_name, &manager).await?;
-
         let request = PageRequest::ranked(offset, limit, 10, MAX_SEARCH_RESULTS);
-        let mut search_query = SearchQuery::new(query).limit(request.fetch());
 
-        if let Some(tags) = tags {
-            search_query = search_query.with_tags(tags);
-        }
-        if let Some(filters) = frontmatter_filters {
-            for f in filters {
-                search_query = search_query.with_frontmatter(f.key, f.value);
+        let results = if let Some(path) = related_to {
+            let filtered = query.is_some()
+                || tags.is_some()
+                || frontmatter_filters.is_some()
+                || exclude_paths.is_some();
+            if filtered {
+                return Err(McpError::invalid_params(
+                    "related_to finds look-alikes of one note and takes no query or filters; \
+                     search with those, or with related_to, in separate calls"
+                        .to_string(),
+                ));
             }
-        }
-        if let Some(excludes) = exclude_paths {
-            search_query = search_query.exclude(excludes);
-        }
-
-        // A page of none is known without asking tantivy.
-        let results = if request.limit == 0 {
-            Vec::new()
-        } else {
             engine
-                .advanced_search(search_query)
+                .find_related(&path, request.fetch())
                 .await
                 .map_err(to_mcp_error)?
+        } else {
+            let query = query
+                .filter(|query| !query.trim().is_empty())
+                .unwrap_or_else(|| "*".to_string());
+            let mut search_query = SearchQuery::new(query).limit(request.fetch());
+            if let Some(tags) = tags {
+                search_query = search_query.with_tags(tags);
+            }
+            for filter in frontmatter_filters.into_iter().flatten() {
+                search_query = search_query.with_frontmatter(filter.key, filter.value);
+            }
+            if let Some(excludes) = exclude_paths {
+                search_query = search_query.exclude(excludes);
+            }
+            // A page of none is known without asking tantivy.
+            if request.limit == 0 {
+                Vec::new()
+            } else {
+                engine
+                    .advanced_search(search_query)
+                    .await
+                    .map_err(to_mcp_error)?
+            }
         };
         let (result_data, page) = ranked_page(&request, results, response_format);
 
-        let response = StandardResponse::new(vault_name, "advanced_search", result_data)
+        StandardResponse::new(vault_name, "search", result_data)
             .with_page(page)
-            .with_next_step("search");
-
-        response.to_json()
-    }
-
-    /// Search by frontmatter key-value pair
-    #[tool(
-        description = "Find notes whose frontmatter field contains a value, such as `status` = `draft`. For conditions, joins or aggregates over frontmatter use query_frontmatter_sql.",
-        title = "Search by Frontmatter",
-        tags = ["read", "search"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = Paged<Vec<SearchHit>>,
-    )]
-    async fn search_by_frontmatter(
-        &self,
-        #[description("Frontmatter key to match, such as `status` or `type`.")] key: String,
-        #[description(
-            "Value to look for in that key; a note matches when its value contains this text."
-        )]
-        value: String,
-        #[description("Most notes to return. Default 50, maximum 100.")] limit: Option<usize>,
-        #[description(
-            "How many matches to skip, for the next page. Default 0, at most 1000; use `meta.pagination.next_offset` from the previous call."
-        )]
-        offset: Option<usize>,
-        #[description(
-            "`detailed` (default) or `concise`. Concise leaves out each result's `preview`, `outgoing_links`, `word_count` and `char_count`, keeping the path, title, score, snippet, tags and backlink count."
-        )]
-        response_format: Option<ResponseFormat>,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let engine = self.get_search_engine(&vault_name, &manager).await?;
-        let request = PageRequest::ranked(offset, limit, DEFAULT_PAGE_SIZE, MAX_SEARCH_RESULTS);
-
-        let results = engine
-            .advanced_search(
-                SearchQuery::new("*")
-                    .with_frontmatter(key, value)
-                    .limit(request.fetch()),
-            )
-            .await
-            .map_err(to_mcp_error)?;
-        let (result_data, page) = ranked_page(&request, results, response_format);
-
-        let response = StandardResponse::new(vault_name, "search_by_frontmatter", result_data)
-            .with_page(page)
-            .with_next_steps(&["advanced_search", "read_note"]);
-
-        response.to_json()
-    }
-
-    /// Find related notes (recommendations engine)
-    #[tool(
-        description = "Find notes whose content resembles a note's, ranked by similarity, with scores. Use it to suggest reading or linking; get_related_notes follows existing links instead.",
-        title = "Recommend Related Notes",
-        tags = ["read", "search"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = Paged<Vec<SearchHit>>,
-    )]
-    async fn recommend_related(
-        &self,
-        #[description(
-            "Vault-relative path of the note to find relatives of, including the extension, such as `projects/Plan.md`."
-        )]
-        path: String,
-        #[description("Most recommendations to return. Default 5, maximum 100.")] limit: Option<
-            usize,
-        >,
-        #[description(
-            "How many top recommendations to skip, for the next page. Default 0, at most 1000."
-        )]
-        offset: Option<usize>,
-        #[description(
-            "`detailed` (default) or `concise`. Concise leaves out each result's `preview`, `outgoing_links`, `word_count` and `char_count`, keeping the path, title, score, snippet, tags and backlink count."
-        )]
-        response_format: Option<ResponseFormat>,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let engine = self.get_search_engine(&vault_name, &manager).await?;
-        let request = PageRequest::ranked(offset, limit, 5, MAX_SEARCH_RESULTS);
-        let results = engine
-            .find_related(&path, request.fetch())
-            .await
-            .map_err(to_mcp_error)?;
-        let (result_data, page) = ranked_page(&request, results, response_format);
-
-        let response = StandardResponse::new(vault_name, "recommend_related", result_data)
-            .with_page(page)
-            .with_next_step("get_related_notes");
-
-        response.to_json()
+            .with_next_steps(&["read_note", "find_similar"])
+            .to_json()
     }
 
     // ==================== SQL Frontmatter Queries (feature = "sql") ====================

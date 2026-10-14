@@ -397,8 +397,8 @@ impl super::CoreToolHandler {
         &self,
         vault: &str,
     ) -> McpResult<Arc<turbovault_vault::VaultManager>> {
-        if let Some(manager) = self.vault_managers.read().await.get(vault) {
-            return Ok(Arc::clone(manager));
+        if let Some(manager) = self.cached_manager(vault).await {
+            return Ok(manager);
         }
         if !self
             .multi_vault_mgr
@@ -489,7 +489,7 @@ impl super::CoreToolHandler {
                     continue;
                 }
                 for vault in vaults {
-                    let manager = core.vault_managers.read().await.get(&vault).cloned();
+                    let manager = core.cached_manager(&vault).await;
                     if let Some(manager) = manager {
                         manager.ensure_fresh().await;
                     }

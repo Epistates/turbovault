@@ -42,63 +42,13 @@ struct LinkSuggestion {
     reasons: Vec<String>,
 }
 
-/// What `get_link_strength` returns. `strength` holds the whole score.
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-struct LinkStrengthPayload {
-    source: String,
-    target: String,
-    strength: LinkStrength,
-}
-
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-struct LinkStrength {
-    source: String,
-    target: String,
-    /// From 0.0 (unconnected) to 1.0.
-    strength: f64,
-    components: LinkStrengthComponents,
-    interpretation: String,
-}
-
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-struct LinkStrengthComponents {
-    direct_links: usize,
-    backlinks: usize,
-    shared_references: usize,
-}
-
-/// What `get_centrality_ranking` returns.
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-struct CentralityRanking {
-    /// How many notes were ranked, across every page.
-    total_files: usize,
-    /// This page of the ranking, most central first.
-    rankings: Vec<CentralityRank>,
-}
-
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-struct CentralityRank {
-    rank: usize,
-    file: String,
-    score: f64,
-    betweenness: f64,
-    closeness: f64,
-    eigenvector: f64,
-    interpretation: String,
-}
-
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl RelationshipProvider {
     // ==================== Relationship Operations ====================
 
     /// Suggest files to link
     #[tool(
-        description = "Suggest notes that a note could link to, ranked by how many other notes link to both, each with its reasons. Use it when filling in a note's connections; recommend_related matches on content instead.",
+        description = "Suggest notes that a note could link to, ranked by how many other notes link to both, each with its reasons. Use it when filling in a note's connections; search with `related_to` matches on content instead.",
         title = "Suggest Links",
         tags = ["read", "graph"],
         read_only = true,
@@ -136,78 +86,6 @@ impl RelationshipProvider {
         let response = StandardResponse::new(vault_name, "suggest_links", result_data)
             .with_page(page)
             .with_meta("limit", serde_json::json!(request.limit));
-
-        response.to_json()
-    }
-
-    /// Get link strength between two files
-    #[tool(
-        description = "Score how strongly two notes are connected, from 0.0 to 1.0, from links between them in each direction and notes that link to both, with the counts behind it and a plain-language reading.",
-        title = "Get Link Strength",
-        tags = ["read", "graph"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<LinkStrengthPayload>,
-    )]
-    async fn get_link_strength(
-        &self,
-        #[description(
-            "Vault-relative path of the first note, including the extension, such as `projects/Plan.md`."
-        )]
-        source: String,
-        #[description("Vault-relative path of the second note, including the extension.")]
-        target: String,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = RelationshipTools::new(manager);
-        let strength = tools
-            .get_link_strength(&source, &target)
-            .await
-            .map_err(to_mcp_error)?;
-
-        let response = StandardResponse::new(
-            vault_name,
-            "get_link_strength",
-            serde_json::json!({"source": source, "target": target, "strength": strength}),
-        )
-        .with_meta("metric", serde_json::json!("link_strength"));
-
-        response.to_json()
-    }
-
-    /// Get centrality ranking
-    #[tool(
-        description = "Rank notes by how central they are in the link graph, most central first, with betweenness, closeness and eigenvector-style scores and a label such as `Central hub`. Returns the top 50 unless asked for more; get_hub_notes is a simpler ranking by link count.",
-        title = "Get Centrality Ranking",
-        tags = ["read", "graph"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = Paged<CentralityRanking>,
-    )]
-    async fn get_centrality_ranking(
-        &self,
-        #[description("Most notes to return. Default 50, maximum 500.")] limit: Option<usize>,
-        #[description(
-            "How many top-ranked notes to skip, for the next page. Default 0; use `meta.pagination.next_offset` from the previous call."
-        )]
-        offset: Option<usize>,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = RelationshipTools::new(manager);
-        let mut result_data = tools.get_centrality_ranking().await.map_err(to_mcp_error)?;
-        let request = PageRequest::new(offset, limit, DEFAULT_PAGE_SIZE, MAX_REPORT_ITEMS);
-        let page = request.slice_field(&mut result_data, "rankings", false);
-
-        let response = StandardResponse::new(vault_name, "get_centrality_ranking", result_data)
-            .with_page(page)
-            .with_meta(
-                "metrics",
-                serde_json::json!(["betweenness", "closeness", "eigenvector"]),
-            );
 
         response.to_json()
     }

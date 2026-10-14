@@ -356,19 +356,27 @@ async fn e2e_remove_vault_cleans_up_git_backend_state() {
     // begin_fanout is what populates `git_locks` now (fanout.rs calls
     // `get_or_init_git_locks`); abandon it immediately so remove_vault isn't
     // blocked by an active fanout.
-    call(&server, "begin_fanout", serde_json::json!({})).await;
-    call(&server, "abandon_fanout", serde_json::json!({})).await;
+    call(&server, "fanout", serde_json::json!({"action": "begin"})).await;
+    call(&server, "fanout", serde_json::json!({"action": "abandon"})).await;
 
     assert!(
         server.has_git_locks_test(name).await,
         "locks entry should be live"
     );
+    // Build the rest of what the server holds for a vault: its search
+    // engine, and (with the manager) its audit log and snapshot store.
+    call(&server, "search", serde_json::json!({"query": "anything"})).await;
+    call(&server, "get_vault_context", serde_json::json!({})).await;
 
     server.remove_vault_test(name).await.unwrap();
 
     assert!(
         !server.has_git_locks_test(name).await,
         "locks entry should be dropped after remove_vault"
+    );
+    assert!(
+        !server.holds_vault_state_test(name).await,
+        "nothing (manager, audit log, snapshots, engines) should outlive remove_vault"
     );
 
     // Vault gone from the registry too.
@@ -422,7 +430,7 @@ async fn e2e_remove_vault_blocked_while_fanout_active() {
     let err = server.remove_vault_test(name).await.unwrap_err();
     let msg = format!("{}", err);
     assert!(
-        msg.contains("active fanout") && msg.contains("abandon_fanout"),
+        msg.contains("active fanout") && msg.contains("abandon"),
         "expected refuse-message mentioning fanout + abandon_fanout, got: {}",
         msg
     );
@@ -549,7 +557,7 @@ async fn e2e_fanout_scratch_worktree_is_private() {
     use std::os::unix::fs::PermissionsExt;
 
     let (_tmp, _name, server) = setup_git_vault().await;
-    let begun = call(&server, "begin_fanout", serde_json::json!({})).await;
+    let begun = call(&server, "fanout", serde_json::json!({"action": "begin"})).await;
     let worktree = std::path::PathBuf::from(
         begun["data"]["worktree_path"]
             .as_str()
@@ -566,7 +574,7 @@ async fn e2e_fanout_scratch_worktree_is_private() {
         "scratch directory name is predictable: {name}"
     );
 
-    call(&server, "abandon_fanout", serde_json::json!({})).await;
+    call(&server, "fanout", serde_json::json!({"action": "abandon"})).await;
     assert!(
         !container.exists(),
         "{} was left behind",

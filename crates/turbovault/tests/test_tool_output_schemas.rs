@@ -113,18 +113,16 @@ async fn every_tool_result_matches_its_output_schema() {
         .await;
     checked
         .call(
-            "create_vault",
-            json!({"name": "made", "path": elsewhere.path().join("made").to_string_lossy()}),
+            "add_vault",
+            json!({"create": true, "name": "made", "path": elsewhere.path().join("made").to_string_lossy()}),
         )
         .await;
     checked.call("list_vaults", json!({})).await;
-    checked
-        .call("get_vault_config", json!({"name": "main"}))
-        .await;
+    checked.call("list_vaults", json!({"name": "main"})).await;
     checked
         .call("set_active_vault", json!({"name": "main"}))
         .await;
-    checked.call("get_active_vault", json!({})).await;
+    checked.call("list_vaults", json!({})).await;
     checked.call("remove_vault", json!({"name": "made"})).await;
 
     // ---- Notes ----
@@ -246,36 +244,47 @@ async fn every_tool_result_matches_its_output_schema() {
 
     // ---- Graph ----
     for tool in [
-        "get_backlinks",
-        "get_forward_links",
+        "get_links",
         "get_related_notes",
-        "recommend_related",
-        "evaluate_note_quality",
-        "analyze_note_grounding",
-        "find_similar_notes",
+        "note_quality",
+        "analyze_grounding",
+        "find_similar",
     ] {
         checked.call(tool, json!({"path": "beta.md"})).await;
     }
+    checked
+        .call(
+            "get_links",
+            json!({"path": "beta.md", "direction": "outgoing"}),
+        )
+        .await;
+    checked
+        .call("search", json!({"related_to": "beta.md"}))
+        .await;
+    for kind in [
+        "hubs",
+        "centrality",
+        "dead_ends",
+        "isolated_clusters",
+        "cycles",
+        "broken_links",
+    ] {
+        checked.call("graph_report", json!({"kind": kind})).await;
+    }
+    checked.call("vault_health", json!({"depth": "full"})).await;
+    for guide in ["quick_ref", "syntax", "example"] {
+        checked.call("get_ofm_guide", json!({"guide": guide})).await;
+    }
+    checked.call("audit_log", json!({"summary": true})).await;
     for tool in [
-        "get_hub_notes",
-        "get_dead_end_notes",
-        "get_isolated_clusters",
-        "quick_health_check",
-        "full_health_analysis",
-        "get_broken_links",
-        "detect_cycles",
+        "vault_health",
         "explain_vault",
-        "get_centrality_ranking",
-        "vault_quality_report",
-        "find_ungrounded_notes",
+        "note_quality",
+        "analyze_grounding",
         "okf_validate",
         "find_stale_notes",
         "find_duplicates",
         "list_templates",
-        "get_ofm_syntax_guide",
-        "get_ofm_quick_ref",
-        "get_ofm_examples",
-        "audit_stats",
     ] {
         checked.call(tool, json!({})).await;
     }
@@ -287,8 +296,16 @@ async fn every_tool_result_matches_its_output_schema() {
         .await;
     checked
         .call(
-            "get_link_strength",
-            json!({"source": "alpha.md", "target": "beta.md"}),
+            "compare_notes",
+            json!({"left": "alpha.md", "right": "beta.md"}),
+        )
+        .await;
+
+    checked.call("validate_vault", json!({})).await;
+    checked
+        .call(
+            "validate_vault",
+            json!({"path": "alpha.md", "min_severity": "warning"}),
         )
         .await;
 
@@ -303,18 +320,18 @@ async fn every_tool_result_matches_its_output_schema() {
     }
     checked
         .call(
-            "advanced_search",
+            "search",
             json!({"query": "distributed", "tags": ["seed"], "response_format": "concise"}),
         )
         .await;
     checked
         .call(
-            "search_by_frontmatter",
-            json!({"key": "status", "value": "draft"}),
+            "search",
+            json!({"frontmatter_filters": [{"key": "status", "value": "draft"}]}),
         )
         .await;
     checked
-        .call("semantic_search", json!({"query": "distributed systems"}))
+        .call("find_similar", json!({"query": "distributed systems"}))
         .await;
     checked
         .call(
@@ -345,8 +362,8 @@ async fn every_tool_result_matches_its_output_schema() {
         .await;
     checked
         .call(
-            "get_metadata_value",
-            json!({"file": "alpha.md", "key": "status"}),
+            "get_notes_info",
+            json!({"paths": ["alpha.md"], "frontmatter_keys": ["status"]}),
         )
         .await;
     checked
@@ -357,8 +374,8 @@ async fn every_tool_result_matches_its_output_schema() {
         .await;
     checked
         .call(
-            "manage_tags",
-            json!({"path": "alpha.md", "operation": "list"}),
+            "get_notes_info",
+            json!({"paths": ["alpha.md"], "include_tags": true}),
         )
         .await;
     checked
@@ -370,7 +387,7 @@ async fn every_tool_result_matches_its_output_schema() {
 
     // ---- Templates ----
     checked
-        .call("get_template", json!({"template_id": "doc"}))
+        .call("list_templates", json!({"template_id": "doc"}))
         .await;
     checked
         .call(
@@ -403,13 +420,10 @@ async fn every_tool_result_matches_its_output_schema() {
         )
         .await;
     checked.call("visualize", json!({})).await;
-    for tool in [
-        "export_health_report",
-        "export_broken_links",
-        "export_vault_stats",
-        "export_analysis_report",
-    ] {
-        checked.call(tool, json!({"format": "json"})).await;
+    for report in ["health", "broken_links", "stats", "analysis"] {
+        checked
+            .call("export", json!({"report": report, "format": "json"}))
+            .await;
     }
 
     // ---- Audit ----
@@ -431,8 +445,8 @@ async fn every_tool_result_matches_its_output_schema() {
         .to_string();
     checked
         .call(
-            "diff_note_version",
-            json!({"path": "gamma.md", "operation_id": operation_id}),
+            "diff_notes",
+            json!({"left": "gamma.md", "operation_id": operation_id}),
         )
         .await;
     checked
@@ -457,10 +471,10 @@ async fn every_tool_result_matches_its_output_schema() {
         .call("set_active_vault", json!({"name": "git"}))
         .await;
     checked.call("list_orphan_fanouts", json!({})).await;
-    checked.call("abandon_fanout", json!({})).await;
-    checked.call("begin_fanout", json!({})).await;
-    checked.call("abandon_fanout", json!({})).await;
-    let begun = checked.call("begin_fanout", json!({})).await;
+    checked.call("fanout", json!({"action": "abandon"})).await;
+    checked.call("fanout", json!({"action": "begin"})).await;
+    checked.call("fanout", json!({"action": "abandon"})).await;
+    let begun = checked.call("fanout", json!({"action": "begin"})).await;
     let fanout_vault = begun["data"]["fanout_vault"].as_str().unwrap().to_string();
     checked
         .call("set_active_vault", json!({"name": fanout_vault}))
@@ -471,7 +485,7 @@ async fn every_tool_result_matches_its_output_schema() {
             json!({"path": "fan.md", "content": "# In the fanout\n"}),
         )
         .await;
-    checked.call("commit_fanout", json!({})).await;
+    checked.call("fanout", json!({"action": "commit"})).await;
 
     // Every tool was called and matched.
     let mut missing: Vec<String> = server

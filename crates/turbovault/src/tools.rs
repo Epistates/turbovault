@@ -635,7 +635,7 @@ impl<T: serde::Serialize> StandardResponse<T> {
 
     /// Add common next step pattern for read operations
     pub fn with_read_next_steps(self) -> Self {
-        self.with_next_steps(&["write_note", "get_backlinks"])
+        self.with_next_steps(&["write_note", "get_links"])
     }
 
     /// Add common next step pattern for write operations
@@ -645,12 +645,12 @@ impl<T: serde::Serialize> StandardResponse<T> {
 
     /// Add common next step pattern for search operations
     pub fn with_search_next_steps(self) -> Self {
-        self.with_next_steps(&["advanced_search", "recommend_related"])
+        self.with_next_steps(&["search", "find_similar"])
     }
 
     /// Add common next step pattern for analysis operations
     pub fn with_analysis_next_steps(self) -> Self {
-        self.with_next_steps(&["quick_health_check", "full_health_analysis"])
+        self.with_next_steps(&["vault_health", "graph_report"])
     }
 }
 
@@ -713,28 +713,23 @@ impl<'a> Stages<'a> {
 #[derive(Clone)]
 pub(super) struct CoreToolHandler {
     multi_vault_mgr: Arc<MultiVaultManager>,
-    /// Cache of vault managers by vault name to persist state across calls
-    vault_managers: Arc<RwLock<HashMap<String, Arc<VaultManager>>>>,
+    /// What this server holds for each vault in use, keyed by vault name:
+    /// its manager, audit state and Git lock registry. One entry per vault,
+    /// so removing a vault drops all of it at once (see [`Self::evict_vault`]).
+    runtimes: Arc<RwLock<HashMap<String, VaultRuntime>>>,
     /// Cache for persisting vault state across server restarts (project-aware)
     persistent_cache: Arc<RwLock<Option<turbovault_core::cache::VaultCache>>>,
-    /// Audit logs per vault (keyed by vault name)
-    audit_logs: Arc<RwLock<HashMap<String, Arc<AuditLog>>>>,
-    /// Snapshot stores per vault (keyed by vault name)
-    snapshot_stores: Arc<RwLock<HashMap<String, Arc<SnapshotStore>>>>,
-    /// Similarity engines per vault (keyed by vault name, lazy-initialized)
+    /// Similarity engines per vault (keyed by vault name, lazy-initialized).
+    /// Kept apart from [`VaultRuntime`]: the vault's change listener holds
+    /// these slots, and it must never hold the manager, or the two would
+    /// keep each other alive.
     similarity_engines: Arc<EngineSlots<SimilarityEngine>>,
-    /// Search engines per vault (keyed by vault name, lazy-initialized)
+    /// Search engines per vault, apart from [`VaultRuntime`] for the same
+    /// reason as `similarity_engines`.
     search_engines: Arc<EngineSlots<SearchEngine>>,
-    /// Shared per-vault `CommitLocks` registries for the git substrate
-    /// (keyed by vault name, lazy-initialized). `VaultRepo` itself is `!Sync`
-    /// (libgit2 raw pointers), so we cache the lock registry — which IS
-    /// `Send + Sync` — and open a fresh `VaultRepo` per call via
-    /// `open_with_locks(...)`. That keeps all in-process callers serialized
-    /// on one commit-section mutex per worktree at trivial open cost.
-    git_locks: Arc<RwLock<HashMap<String, Arc<CommitLocks>>>>,
     /// GWS.13 active fanouts, keyed by **base vault name**
     /// (the original vault, NOT the auto-registered fanout vault). At most
-    /// one active fanout per base vault — `begin_fanout` errors loudly
+    /// one active fanout per base vault: `fanout` (action `begin`) errors loudly
     /// on a second concurrent attempt.
     active_fanouts: Arc<RwLock<HashMap<String, ActiveFanoutRecord>>>,
     /// Where observed vault changes are reported.
@@ -744,7 +739,7 @@ pub(super) struct CoreToolHandler {
     /// know whether a consumer exists. `None` until installed, and no sink at
     /// all when the server is built without the plugin boundary.
     event_sink: Arc<std::sync::OnceLock<Arc<dyn VaultEventSink>>>,
-    /// Which directories `add_vault` and `create_vault` may register. Set
+    /// Which directories `add_vault` may register. Set
     /// once at startup from `--allowed-vault-roots` and the transport, and
     /// shared by every clone.
     vault_root_policy: Arc<std::sync::RwLock<VaultRootPolicy>>,
@@ -755,6 +750,40 @@ pub(super) struct CoreToolHandler {
     subscription_sweep: Arc<std::sync::atomic::AtomicBool>,
     /// Ask the user before a destructive call, when the client can ask.
     confirm_destructive: Arc<std::sync::atomic::AtomicBool>,
+}
+
+tokio::task_local! {
+    /// The vault a tool call named in its `vault` argument, for the length of
+    /// that call. Every vault-scoped tool resolves its vault through
+    /// `get_active_vault_name`, which answers with this when it's set.
+    static REQUESTED_VAULT: String;
+}
+
+/// Run `call` against `vault_name` instead of the active vault. The server's
+/// active vault is untouched, so concurrent calls naming different vaults
+/// don't disturb each other or anyone relying on the active one.
+pub(super) async fn in_requested_vault<F: std::future::Future>(
+    vault_name: String,
+    call: F,
+) -> F::Output {
+    REQUESTED_VAULT.scope(vault_name, call).await
+}
+
+/// What the server holds for one vault. Each part is filled when first
+/// needed: the Git lock registry can be wanted before the vault's manager
+/// is built (cleaning up an orphaned fanout), and the audit state attaches
+/// while the manager is built.
+#[derive(Default, Clone)]
+struct VaultRuntime {
+    manager: Option<Arc<VaultManager>>,
+    audit_log: Option<Arc<AuditLog>>,
+    snapshot_store: Option<Arc<SnapshotStore>>,
+    /// The Git substrate's commit locks. `VaultRepo` itself is `!Sync`
+    /// (libgit2 raw pointers), so the lock registry, which is `Send + Sync`,
+    /// is what's kept, and a fresh `VaultRepo` opens per call through
+    /// `open_with_locks(...)`. Every in-process caller serializes on one
+    /// commit-section mutex per worktree at trivial open cost.
+    git_locks: Option<Arc<CommitLocks>>,
 }
 
 /// One row of `ObsidianMcpServer.active_fanouts`.
@@ -791,13 +820,10 @@ impl CoreToolHandler {
         let mgr = MultiVaultManager::empty(config)?;
         Ok(Self {
             multi_vault_mgr: Arc::new(mgr),
-            vault_managers: Arc::new(RwLock::new(HashMap::new())),
+            runtimes: Arc::new(RwLock::new(HashMap::new())),
             persistent_cache: Arc::new(RwLock::new(None)),
-            audit_logs: Arc::new(RwLock::new(HashMap::new())),
-            snapshot_stores: Arc::new(RwLock::new(HashMap::new())),
             similarity_engines: Arc::default(),
             search_engines: Arc::default(),
-            git_locks: Arc::new(RwLock::new(HashMap::new())),
             active_fanouts: Arc::new(RwLock::new(HashMap::new())),
             event_sink: Arc::new(std::sync::OnceLock::new()),
             vault_root_policy: Arc::new(std::sync::RwLock::new(VaultRootPolicy::anywhere())),
@@ -807,7 +833,7 @@ impl CoreToolHandler {
         })
     }
 
-    /// Restrict which directories `add_vault` and `create_vault` accept.
+    /// Restrict which directories `add_vault` accept.
     pub fn set_vault_root_policy(&self, policy: VaultRootPolicy) {
         *self
             .vault_root_policy
@@ -815,7 +841,7 @@ impl CoreToolHandler {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = policy;
     }
 
-    /// The policy `add_vault` and `create_vault` check paths against.
+    /// The policy `add_vault` check paths against.
     pub fn vault_root_policy(&self) -> VaultRootPolicy {
         self.vault_root_policy
             .read()
@@ -939,11 +965,8 @@ impl CoreToolHandler {
         for vault_info in vaults {
             let name = vault_info.name.clone();
             // Skip if already cached (idempotent for sequential calls).
-            {
-                let cache = self.vault_managers.read().await;
-                if cache.contains_key(&name) {
-                    continue;
-                }
+            if self.cached_manager(&name).await.is_some() {
+                continue;
             }
             self.activate_vault_manager(&name)
                 .await
@@ -1183,14 +1206,10 @@ impl CoreToolHandler {
                 );
                 manager.set_audit_log(audit_log.clone(), snapshot_store.clone());
 
-                self.audit_logs
-                    .write()
-                    .await
-                    .insert(vault_name.to_string(), audit_log);
-                self.snapshot_stores
-                    .write()
-                    .await
-                    .insert(vault_name.to_string(), snapshot_store);
+                let mut runtimes = self.runtimes.write().await;
+                let runtime = runtimes.entry(vault_name.to_string()).or_default();
+                runtime.audit_log = Some(audit_log);
+                runtime.snapshot_store = Some(snapshot_store);
             }
             Err(error) => {
                 tracing::warn!(
@@ -1206,16 +1225,30 @@ impl CoreToolHandler {
     async fn get_active_vault_manager(&self) -> McpResult<Arc<VaultManager>> {
         let vault_name = self.get_active_vault_name().await?;
 
-        // Check cache first
-        {
-            let cache = self.vault_managers.read().await;
-            if let Some(manager) = cache.get(&vault_name) {
-                return Ok(manager.clone());
-            }
+        if let Some(manager) = self.cached_manager(&vault_name).await {
+            return Ok(manager);
         }
 
         // Not in cache - build, wire and publish it
         self.activate_vault_manager(&vault_name).await
+    }
+
+    /// The manager built for `vault_name`, if one has been.
+    pub(super) async fn cached_manager(&self, vault_name: &str) -> Option<Arc<VaultManager>> {
+        self.runtimes
+            .read()
+            .await
+            .get(vault_name)
+            .and_then(|runtime| runtime.manager.clone())
+    }
+
+    /// Drop everything held for `vault_name`: its manager, audit state, Git
+    /// locks, search and similarity engines, and published note resources.
+    async fn evict_vault(&self, vault_name: &str) {
+        self.runtimes.write().await.remove(vault_name);
+        self.search_engines.remove(vault_name);
+        self.similarity_engines.remove(vault_name);
+        self.resource_hub.forget(vault_name);
     }
 
     /// Finish a failed tool result for the model that reads it. A path under
@@ -1368,12 +1401,13 @@ impl CoreToolHandler {
         self.wire_manager_indexes(vault_name, &manager).await;
 
         // Publish — double-check to handle concurrent initialization races
-        let mut cache = self.vault_managers.write().await;
+        let mut runtimes = self.runtimes.write().await;
+        let runtime = runtimes.entry(vault_name.to_string()).or_default();
         // Another task may have activated between our read-check and here; first writer wins
-        if let Some(existing) = cache.get(vault_name) {
+        if let Some(existing) = &runtime.manager {
             return Ok(existing.clone());
         }
-        cache.insert(vault_name.to_string(), manager.clone());
+        runtime.manager = Some(manager.clone());
 
         Ok(manager)
     }
@@ -1509,15 +1543,15 @@ impl CoreToolHandler {
         // Ensure vault manager exists (triggers audit log creation)
         let _ = self.get_active_vault_manager().await?;
 
-        let logs = self.audit_logs.read().await;
-        let stores = self.snapshot_stores.read().await;
-
-        let audit_log = logs.get(&vault_name).cloned().ok_or_else(|| {
-            McpError::internal("Audit log not available for this vault".to_string())
-        })?;
-        let snapshot_store = stores
-            .get(&vault_name)
-            .cloned()
+        let runtimes = self.runtimes.read().await;
+        let runtime = runtimes.get(&vault_name);
+        let audit_log = runtime
+            .and_then(|runtime| runtime.audit_log.clone())
+            .ok_or_else(|| {
+                McpError::internal("Audit log not available for this vault".to_string())
+            })?;
+        let snapshot_store = runtime
+            .and_then(|runtime| runtime.snapshot_store.clone())
             .ok_or_else(|| McpError::internal("Snapshot store not available".to_string()))?;
 
         Ok(AuditTools::new(audit_log, snapshot_store))
@@ -1591,8 +1625,41 @@ impl CoreToolHandler {
             })
     }
 
-    /// Helper to get active vault name
+    /// `vault_name` if it names a registered vault; otherwise an invalid
+    /// params error listing the names there are.
+    pub(super) async fn registered_vault(&self, vault_name: &str) -> McpResult<String> {
+        if self
+            .multi_vault_mgr
+            .get_vault_config(vault_name)
+            .await
+            .is_ok()
+        {
+            return Ok(vault_name.to_string());
+        }
+        let names = self
+            .multi_vault_mgr
+            .list_vaults()
+            .await
+            .map(|vaults| {
+                vaults
+                    .into_iter()
+                    .map(|vault| vault.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        Err(McpError::invalid_params(format!(
+            "no vault named {vault_name:?}. Registered vaults: {}",
+            if names.is_empty() { "none" } else { &names }
+        )))
+    }
+
+    /// The vault this call works on: the one it named in its `vault`
+    /// argument (see [`in_requested_vault`]), or else the active vault.
     async fn get_active_vault_name(&self) -> McpResult<String> {
+        if let Ok(vault_name) = REQUESTED_VAULT.try_with(String::clone) {
+            return Ok(vault_name);
+        }
         let vault_name = self.multi_vault_mgr.get_active_vault().await;
         if vault_name.is_empty() {
             return Err(McpError::unavailable(
@@ -1797,7 +1864,19 @@ impl CoreToolHandler {
     /// Test-only: check whether a `CommitLocks` registry is cached for
     /// `vault_name`. Used by turbovault-1ne cleanup tests.
     pub async fn has_git_locks_test(&self, vault_name: &str) -> bool {
-        self.git_locks.read().await.contains_key(vault_name)
+        self.runtimes
+            .read()
+            .await
+            .get(vault_name)
+            .is_some_and(|runtime| runtime.git_locks.is_some())
+    }
+
+    /// Test-only: whether anything is still held for `vault_name`: a
+    /// manager, audit state, Git locks or an engine.
+    pub async fn holds_vault_state_test(&self, vault_name: &str) -> bool {
+        self.runtimes.read().await.contains_key(vault_name)
+            || self.search_engines.ready(vault_name).is_some()
+            || self.similarity_engines.ready(vault_name).is_some()
     }
 
     /// Test-only: invoke the `remove_vault` MCP tool from integration
@@ -1811,7 +1890,7 @@ impl CoreToolHandler {
             let fanouts = self.active_fanouts.read().await;
             if let Some(record) = fanouts.get(name) {
                 return Err(McpError::invalid_params(format!(
-                    "vault {name} has an active fanout (fanout_id={}); abandon_fanout first",
+                    "vault {name} has an active fanout (fanout_id={}); call fanout with action `abandon` first",
                     record.fanout_id
                 )));
             }
@@ -1820,7 +1899,7 @@ impl CoreToolHandler {
                 .find(|record| record.fanout_vault_name == name)
             {
                 return Err(McpError::invalid_params(format!(
-                    "vault {name} is a fanout worktree (fanout_id={}); abandon_fanout from the base vault first",
+                    "vault {name} is a fanout worktree (fanout_id={}); call fanout with action `abandon` from the base vault first",
                     record.fanout_id
                 )));
             }
@@ -1830,11 +1909,7 @@ impl CoreToolHandler {
             .remove_vault(name)
             .await
             .map_err(to_mcp_error)?;
-        self.search_engines.remove(name);
-        self.similarity_engines.remove(name);
-        self.vault_managers.write().await.remove(name);
-        self.git_locks.write().await.remove(name);
-        self.resource_hub.forget(name);
+        self.evict_vault(name).await;
 
         if let Err(error) = self.forget_vault_state(name).await {
             tracing::warn!("Failed to persist vault state after removal: {error}");
@@ -1853,7 +1928,7 @@ impl CoreToolHandler {
 
     /// Test-only: install an `active_fanouts` entry so tests can
     /// observe the remove_vault refusal without driving the full
-    /// `begin_fanout` MCP wire path. Used by turbovault-1ne.
+    /// `fanout` (action `begin`) MCP wire path. Used by turbovault-1ne.
     pub async fn register_active_fanout_test(
         &self,
         base_vault: &str,
@@ -1951,15 +2026,23 @@ impl CoreToolHandler {
     }
 
     async fn get_or_init_git_locks(&self, vault_name: &str) -> Arc<CommitLocks> {
-        if let Some(l) = self.git_locks.read().await.get(vault_name) {
-            return Arc::clone(l);
-        }
-        let fresh = Arc::new(CommitLocks::new());
-        self.git_locks
-            .write()
+        if let Some(locks) = self
+            .runtimes
+            .read()
             .await
-            .insert(vault_name.to_string(), Arc::clone(&fresh));
-        fresh
+            .get(vault_name)
+            .and_then(|runtime| runtime.git_locks.clone())
+        {
+            return locks;
+        }
+        // Checked again under the write lock: two first callers must share
+        // one registry, or they'd each serialize only with themselves.
+        let mut runtimes = self.runtimes.write().await;
+        let runtime = runtimes.entry(vault_name.to_string()).or_default();
+        runtime
+            .git_locks
+            .get_or_insert_with(|| Arc::new(CommitLocks::new()))
+            .clone()
     }
 }
 

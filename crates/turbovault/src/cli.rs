@@ -68,7 +68,7 @@ pub struct Args {
     #[arg(long, env = "TURBOVAULT_SOCKET_PATH")]
     socket_path: Option<String>,
 
-    /// Comma-separated directories `add_vault` and `create_vault` may
+    /// Comma-separated directories `add_vault` may
     /// register vaults inside. Without it, runtime registration accepts any
     /// directory on stdio and none on a network transport. The home
     /// directory, its hidden and application-data directories, and system
@@ -212,6 +212,15 @@ pub struct Args {
         action = clap::ArgAction::SetTrue
     )]
     require_read_only_tools: bool,
+
+    /// List the advanced tools as well as the core set. They are callable by
+    /// name either way; this only puts them in tools/list.
+    #[arg(
+        long,
+        env = "TURBOVAULT_SHOW_ADVANCED_TOOLS",
+        action = clap::ArgAction::SetTrue
+    )]
+    show_advanced_tools: bool,
 
     /// Comma-separated compiled-in plugins to enable, by ID (e.g.
     /// `vector_search`). None are enabled unless named here, so a binary
@@ -742,6 +751,7 @@ async fn load_tool_visibility_with_default(
         // The read-only profile is the same gate as --require-read-only-tools:
         // unannotated or mutating tools are hidden and refused, failing closed.
         require_read_only: args.require_read_only_tools || args.profile.is_read_only(),
+        show_advanced_tools: args.show_advanced_tools,
     });
 
     Ok(settings)
@@ -862,7 +872,7 @@ fn restorable(
         .map_err(|error| error.to_string())
 }
 
-/// `<base>-fanout-<8 hex>`, the name `begin_fanout` registers its scratch
+/// `<base>-fanout-<8 hex>`, the name `fanout` (action `begin`) registers its scratch
 /// worktree under.
 fn is_fanout_vault_name(name: &str) -> bool {
     name.rsplit_once("-fanout-").is_some_and(|(base, id)| {

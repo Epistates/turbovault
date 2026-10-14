@@ -121,12 +121,45 @@ const LIST_PAGE_SIZE: usize = 500;
 /// Tools whose results are notes, each answered with a `resource_link` to
 /// every note it returns after the JSON text, so a client can open, attach
 /// or subscribe to one without composing its URI.
-const RESOURCE_LINK_TOOLS: &[&str] = &[
-    "search",
-    "advanced_search",
-    "search_by_frontmatter",
-    "recommend_related",
+const RESOURCE_LINK_TOOLS: &[&str] = &["search", "find_similar"];
+
+/// Core tools that don't work inside one vault: they manage the vault
+/// registry, return reference material, or take a vault argument of their
+/// own. Every other core tool takes an optional `vault` (see
+/// [`with_vault_parameter`]).
+const UNSCOPED_TOOLS: &[&str] = &[
+    "list_vaults",
+    "add_vault",
+    "remove_vault",
+    "set_active_vault",
+    "get_ofm_guide",
+    "list_orphan_fanouts",
 ];
+
+/// What the `vault` argument every vault-scoped tool takes says to a caller.
+const VAULT_PARAMETER_DESCRIPTION: &str = "Name of a registered vault to run this call against \
+    (see list_vaults). Default: the active vault. Naming one doesn't change the active vault, \
+    so concurrent sessions can each work on their own.";
+
+/// `tool` with an optional `vault` argument naming the vault the call runs
+/// against. The dispatcher takes it back out before the tool sees its
+/// arguments and resolves the vault through it.
+fn with_vault_parameter(mut tool: Tool) -> Tool {
+    let properties = tool
+        .input_schema
+        .properties
+        .get_or_insert_with(|| serde_json::json!({}));
+    if let Some(properties) = properties.as_object_mut() {
+        properties.insert(
+            "vault".to_string(),
+            serde_json::json!({
+                "type": "string",
+                "description": VAULT_PARAMETER_DESCRIPTION,
+            }),
+        );
+    }
+    tool
+}
 
 /// `result` with a `resource_link` to each note in its `data`.
 fn with_note_links(mut result: ToolResult) -> ToolResult {
@@ -559,6 +592,8 @@ pub struct ObsidianMcpServer {
     tool_routes: Arc<HashMap<String, String>>,
     resource_routes: Arc<HashMap<String, String>>,
     prompt_routes: Arc<HashMap<String, String>>,
+    /// Core tools that take the optional `vault` argument.
+    vault_scoped: Arc<std::collections::HashSet<String>>,
     #[cfg(feature = "plugin-api")]
     hooks: HookBus,
     /// Mounted plugins, retained so the server can start and stop each
@@ -626,6 +661,7 @@ impl ObsidianMcpServer {
         let mut tool_routes = HashMap::new();
         let mut resource_routes = HashMap::new();
         let mut prompt_routes = HashMap::new();
+        let mut vault_scoped = std::collections::HashSet::new();
 
         macro_rules! mount {
             ($provider:expr, $prefix:literal) => {{
@@ -639,7 +675,13 @@ impl ObsidianMcpServer {
                             "tool {public_name:?} is owned by multiple providers"
                         ));
                     }
-                    tools.push(tighten_output_schema(tool));
+                    let tool = tighten_output_schema(tool);
+                    if UNSCOPED_TOOLS.contains(&public_name.as_str()) {
+                        tools.push(tool);
+                    } else {
+                        vault_scoped.insert(public_name);
+                        tools.push(with_vault_parameter(tool));
+                    }
                 }
 
                 for resource in provider.list_resources() {
@@ -853,6 +895,7 @@ impl ObsidianMcpServer {
             tool_routes: Arc::new(tool_routes),
             resource_routes: Arc::new(resource_routes),
             prompt_routes: Arc::new(prompt_routes),
+            vault_scoped: Arc::new(vault_scoped),
             #[cfg(feature = "plugin-api")]
             hooks,
             #[cfg(feature = "plugin-api")]
@@ -897,7 +940,7 @@ impl ObsidianMcpServer {
         self.core.init_cache().await
     }
 
-    /// Restrict which directories `add_vault` and `create_vault` accept.
+    /// Restrict which directories `add_vault` accept.
     pub fn set_vault_root_policy(&self, policy: turbovault_tools::VaultRootPolicy) {
         self.core.set_vault_root_policy(policy);
     }
@@ -909,7 +952,7 @@ impl ObsidianMcpServer {
         self.core.set_confirm_destructive(enabled);
     }
 
-    /// The policy `add_vault` and `create_vault` check paths against.
+    /// The policy `add_vault` check paths against.
     pub fn vault_root_policy(&self) -> turbovault_tools::VaultRootPolicy {
         self.core.vault_root_policy()
     }
@@ -997,6 +1040,11 @@ impl ObsidianMcpServer {
     #[doc(hidden)]
     pub async fn has_git_locks_test(&self, vault_name: &str) -> bool {
         self.core.has_git_locks_test(vault_name).await
+    }
+
+    #[doc(hidden)]
+    pub async fn holds_vault_state_test(&self, vault_name: &str) -> bool {
+        self.core.holds_vault_state_test(vault_name).await
     }
 
     #[doc(hidden)]
@@ -1312,9 +1360,31 @@ impl ObsidianMcpServer {
             user_id: ctx.user_id.clone(),
             session_id: ctx.session_id.clone(),
         };
-        let call = std::panic::AssertUnwindSafe(
-            audit_context.scope(self.composite.call_tool(routed, args, ctx)),
-        );
+        // A vault the call names in `vault` is the vault it runs against; the
+        // tool itself never sees the argument.
+        let mut args = args;
+        let requested_vault = if self.vault_scoped.contains(name) {
+            match args.as_object_mut().and_then(|args| args.remove("vault")) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(vault)) => {
+                    Some(self.core.registered_vault(&vault).await?)
+                }
+                Some(other) => {
+                    return Err(McpError::invalid_params(format!(
+                        "vault must be a vault name, not {other}"
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+        let call = self.composite.call_tool(routed, args, ctx);
+        let call: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send + '_>> =
+            match requested_vault {
+                Some(vault) => Box::pin(super::in_requested_vault(vault, call)),
+                None => Box::pin(call),
+            };
+        let call = std::panic::AssertUnwindSafe(audit_context.scope(call));
         let result = call.catch_unwind().await.unwrap_or_else(|panic| {
             let detail = panic_message(&panic);
             tracing::error!("tool {name:?} panicked: {detail}");
@@ -1584,7 +1654,7 @@ mod tests {
             .expect("select vault");
 
         let advertised = server.list_tools();
-        assert_eq!(advertised.len(), 80);
+        assert_eq!(advertised.len(), 53);
         assert!(
             advertised
                 .iter()
@@ -1835,7 +1905,7 @@ mod tests {
         ))
         .expect("serialize tool catalog");
 
-        assert_eq!(server.list_tools().len(), 79, "public tool count changed");
+        assert_eq!(server.list_tools().len(), 52, "public tool count changed");
         // The fixture is a deliberate tripwire on the public tool surface, so a
         // real change to a tool signature has to be re-blessed on purpose:
         // `UPDATE_TOOL_CATALOG=1 cargo test -p turbovault --lib`. Without this
@@ -1866,7 +1936,7 @@ mod tests {
                 String::from_utf8_lossy(&actual_bytes[start..actual_end]),
             );
         }
-        assert_eq!(server.tool_routes.len(), 79);
+        assert_eq!(server.tool_routes.len(), 52);
         assert!(
             server.server_info().description.is_none(),
             "default server must not inject plugin guidance"
@@ -2048,8 +2118,8 @@ mod tests {
         let links = structured(
             server
                 .call_tool(
-                    "get_forward_links",
-                    serde_json::json!({"path": "shared.md"}),
+                    "get_links",
+                    serde_json::json!({"path": "shared.md", "direction": "outgoing"}),
                     &ctx,
                 )
                 .await
@@ -2074,7 +2144,7 @@ mod tests {
 
         let audit = structured(
             server
-                .call_tool("audit_stats", serde_json::json!({}), &ctx)
+                .call_tool("audit_log", serde_json::json!({"summary": true}), &ctx)
                 .await
                 .expect("audit provider should share runtime vault state"),
         );

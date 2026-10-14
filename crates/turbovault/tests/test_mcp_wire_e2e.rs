@@ -213,8 +213,8 @@ async fn wire_write_note_updates_link_graph() {
 
     let fwd = call(
         &client,
-        "get_forward_links",
-        json!({ "path": "concepts/alpha.md" }),
+        "get_links",
+        json!({"direction": "outgoing", "path": "concepts/alpha.md" }),
     )
     .await;
     assert!(
@@ -222,12 +222,7 @@ async fn wire_write_note_updates_link_graph() {
         "alpha's forward links should include beta after commit: {fwd}"
     );
 
-    let back = call(
-        &client,
-        "get_backlinks",
-        json!({ "path": "concepts/beta.md" }),
-    )
-    .await;
+    let back = call(&client, "get_links", json!({ "path": "concepts/beta.md" })).await;
     assert!(
         data_mentions(&back, "alpha"),
         "beta's backlinks should include alpha after commit: {back}"
@@ -284,7 +279,7 @@ async fn wire_move_note_rewrites_links() {
         "linker should no longer reference [[old]]: {content:?}"
     );
 
-    let back = call(&client, "get_backlinks", json!({ "path": "renamed.md" })).await;
+    let back = call(&client, "get_links", json!({ "path": "renamed.md" })).await;
     assert!(
         data_mentions(&back, "linker"),
         "renamed.md's backlinks should include linker after the move commit: {back}"
@@ -346,12 +341,17 @@ async fn wire_batch_execute_atomic_multi_file() {
     )
     .await;
 
-    let fwd = call(&client, "get_forward_links", json!({ "path": "b/one.md" })).await;
+    let fwd = call(
+        &client,
+        "get_links",
+        json!({"direction": "outgoing", "path": "b/one.md" }),
+    )
+    .await;
     assert!(
         data_mentions(&fwd, "two"),
         "one.md forward links should include two after batch commit: {fwd}"
     );
-    let back = call(&client, "get_backlinks", json!({ "path": "b/two.md" })).await;
+    let back = call(&client, "get_links", json!({ "path": "b/two.md" })).await;
     assert!(
         data_mentions(&back, "one"),
         "two.md backlinks should include one after batch commit: {back}"
@@ -482,7 +482,7 @@ async fn wire_edit_note_rejects_ambiguous_divider_tv006() {
 async fn wire_fanout_begin_write_commit_lands_on_base() {
     let (vault, _cfg, client) = setup_wire_vault().await;
 
-    let begun = call(&client, "begin_fanout", json!({})).await;
+    let begun = call(&client, "fanout", json!({"action": "begin"})).await;
     let fanout_vault = begun["data"]["fanout_vault"]
         .as_str()
         .expect("begin_fanout returns data.fanout_vault")
@@ -495,7 +495,7 @@ async fn wire_fanout_begin_write_commit_lands_on_base() {
         json!({ "path": "fan.md", "content": "# In fanout\n" }),
     )
     .await;
-    call(&client, "commit_fanout", json!({})).await;
+    call(&client, "fanout", json!({"action": "commit"})).await;
 
     // Merge-back materialized fan.md into the BASE vault's working tree.
     let on_disk = std::fs::read_to_string(vault.path().join("fan.md"))
@@ -510,7 +510,7 @@ async fn wire_fanout_begin_write_commit_lands_on_base() {
 async fn wire_fanout_begin_write_abandon_discards() {
     let (vault, _cfg, client) = setup_wire_vault().await;
 
-    let begun = call(&client, "begin_fanout", json!({})).await;
+    let begun = call(&client, "fanout", json!({"action": "begin"})).await;
     let fanout_vault = begun["data"]["fanout_vault"].as_str().unwrap().to_string();
 
     call(&client, "set_active_vault", json!({ "name": fanout_vault })).await;
@@ -520,7 +520,7 @@ async fn wire_fanout_begin_write_abandon_discards() {
         json!({ "path": "ghost.md", "content": "discarded\n" }),
     )
     .await;
-    call(&client, "abandon_fanout", json!({})).await;
+    call(&client, "fanout", json!({"action": "abandon"})).await;
 
     assert!(
         !vault.path().join("ghost.md").exists(),

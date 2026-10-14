@@ -86,7 +86,7 @@ impl Deref for FanoutProvider {
     }
 }
 
-/// Response payload for `begin_fanout`.
+/// Response payload for `fanout` (action `begin`).
 #[derive(serde::Serialize, schemars::JsonSchema)]
 struct FanoutBegun {
     fanout_id: String,
@@ -122,25 +122,89 @@ struct OrphanFanouts {
     orphans: Vec<OrphanFanoutEntry>,
 }
 
+/// What `fanout` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FanoutAction {
+    Begin,
+    Commit,
+    Abandon,
+}
+
+/// What `fanout` returns, by action.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum FanoutOutcome {
+    Begun(FanoutBegun),
+    Committed(FanoutCommitted),
+    Abandoned(FanoutAbandoned),
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl FanoutProvider {
     #[tool(
-        description = "Open a private Git worktree of the active vault, registered as its own vault, so a long piece of work can be written there without touching the vault until commit_fanout merges it back (or abandon_fanout drops it). Switch to it with set_active_vault. Git-backed vaults only; for a few files at once, batch_execute is simpler.",
-        title = "Begin Fanout",
+        description = "Work in a private Git worktree of the vault, then merge it back or throw it away. `begin`: open the worktree, registered as its own vault, so a long piece of work can be written there without touching the vault; switch to it with set_active_vault or name it in `vault`. `commit`: merge the fanout's work back into its base vault, then remove the worktree and unregister it (the worktree is removed even if the merge fails). `abandon`: remove the worktree and everything written there, leaving the base vault unchanged; does nothing if no fanout is active. `commit` and `abandon` work from the base vault or the fanout itself. Git-backed vaults only; for a few files at once, batch_execute is simpler.",
+        title = "Fanout",
         tags = ["write", "git"],
         read_only = false,
-        destructive = false,
+        destructive = true,
         idempotent = false,
         open_world = false,
-        output_schema = StandardResponse<FanoutBegun>,
+        output_schema = StandardResponse<FanoutOutcome>,
     )]
-    async fn begin_fanout(
+    async fn fanout(
         &self,
+        #[description("`begin`, `commit` or `abandon`.")] action: FanoutAction,
         #[description(
-            "Checked now, but the merge uses the merge_strategy given to commit_fanout: `merge-commit` or `fast-forward`."
+            "`merge-commit` records a merge commit; `fast-forward` moves the base branch to the fanout's tip and fails if the base moved meanwhile. Used by `commit` (checked by `begin`). Default the vault's git.merge_strategy, else `merge-commit`."
         )]
         merge_strategy: Option<String>,
+        #[description(
+            "With `commit`: message for the merge commit. A message naming the fanout is used when omitted."
+        )]
+        commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
+        match action {
+            FanoutAction::Begin => self.fanout_begin(merge_strategy).await,
+            FanoutAction::Commit => self.fanout_commit(merge_strategy, commit_message).await,
+            FanoutAction::Abandon => self.fanout_abandon().await,
+        }
+    }
+
+    #[tool(
+        description = "List fanout worktrees left behind by a server session that ended before committing or abandoning them.",
+        title = "List Orphan Fanouts",
+        tags = ["read", "git"],
+        read_only = true,
+        destructive = false,
+        idempotent = true,
+        open_world = false,
+        output_schema = StandardResponse<OrphanFanouts>,
+    )]
+    async fn list_orphan_fanouts(
+        &self,
+        #[description("Only this vault's orphans, by name. Omit to check every Git-backed vault.")]
+        vault: Option<String>,
+    ) -> McpResult<serde_json::Value> {
+        let orphans = self
+            .scan_orphan_fanouts(vault.as_deref())
+            .await
+            .map_err(|error| McpError::internal(error.to_string()))?;
+        StandardResponse::new(
+            self.get_active_vault_name().await.unwrap_or_default(),
+            "list_orphan_fanouts",
+            OrphanFanouts {
+                count: orphans.len(),
+                orphans,
+            },
+        )
+        .to_json()
+    }
+}
+
+impl FanoutProvider {
+    async fn fanout_begin(&self, merge_strategy: Option<String>) -> McpResult<serde_json::Value> {
         let base_vault = self.get_active_vault_name().await?;
         let base_config = self
             .multi_vault_mgr
@@ -208,7 +272,7 @@ impl FanoutProvider {
 
         StandardResponse::new(
             &base_vault,
-            "begin_fanout",
+            "fanout",
             FanoutBegun {
                 fanout_id,
                 base_vault: base_vault.clone(),
@@ -216,33 +280,19 @@ impl FanoutProvider {
                 worktree_path: scratch_path,
             },
         )
-        .with_next_steps(&["set_active_vault", "commit_fanout", "abandon_fanout"])
+        .with_next_steps(&["set_active_vault", "fanout", "fanout"])
         .to_json()
     }
 
-    #[tool(
-        description = "Merge the active fanout's work back into its base vault, then remove the worktree and unregister it. The worktree is removed even if the merge fails. Works from the base vault or the fanout itself.",
-        title = "Commit Fanout",
-        tags = ["write", "git"],
-        read_only = false,
-        destructive = true,
-        idempotent = false,
-        open_world = false,
-        output_schema = StandardResponse<FanoutCommitted>,
-    )]
-    async fn commit_fanout(
+    async fn fanout_commit(
         &self,
-        #[description(
-            "`merge-commit` records a merge commit; `fast-forward` moves the base branch to the fanout's tip and fails if the base moved meanwhile. Default the vault's git.merge_strategy, else `merge-commit`."
-        )]
         merge_strategy: Option<String>,
-        #[description(
-            "Message for the merge commit. A message naming the fanout is used when omitted."
-        )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
         let (base_vault, record) = self.active_record().await.ok_or_else(|| {
-            McpError::invalid_params("no active fanout; call begin_fanout first".to_string())
+            McpError::invalid_params(
+                "no active fanout; call fanout with action `begin` first".to_string(),
+            )
         })?;
         let base_config = self
             .multi_vault_mgr
@@ -279,7 +329,7 @@ impl FanoutProvider {
         self.active_fanouts.write().await.remove(&base_vault);
         StandardResponse::new(
             base_vault,
-            "commit_fanout",
+            "fanout",
             FanoutCommitted {
                 fanout_id: record.fanout_id,
                 merge_commit: result.merge_commit.map(|oid| oid.to_string()),
@@ -287,25 +337,15 @@ impl FanoutProvider {
                 tip_after: result.tip_after.to_string(),
             },
         )
-        .with_next_step("quick_health_check")
+        .with_next_step("vault_health")
         .to_json()
     }
 
-    #[tool(
-        description = "Throw away the active fanout: remove its worktree and everything written there, leaving the base vault unchanged. Does nothing if no fanout is active.",
-        title = "Abandon Fanout",
-        tags = ["write", "git"],
-        read_only = false,
-        destructive = true,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<FanoutAbandoned>,
-    )]
-    async fn abandon_fanout(&self) -> McpResult<serde_json::Value> {
+    async fn fanout_abandon(&self) -> McpResult<serde_json::Value> {
         let Some((base_vault, record)) = self.active_record().await else {
             return StandardResponse::new(
                 self.get_active_vault_name().await.unwrap_or_default(),
-                "abandon_fanout",
+                "fanout",
                 FanoutAbandoned {
                     was_active: false,
                     fanout_id: None,
@@ -338,40 +378,10 @@ impl FanoutProvider {
         self.active_fanouts.write().await.remove(&base_vault);
         StandardResponse::new(
             base_vault,
-            "abandon_fanout",
+            "fanout",
             FanoutAbandoned {
                 was_active: true,
                 fanout_id: Some(record.fanout_id),
-            },
-        )
-        .to_json()
-    }
-
-    #[tool(
-        description = "List fanout worktrees left behind by a server session that ended before committing or abandoning them.",
-        title = "List Orphan Fanouts",
-        tags = ["read", "git"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<OrphanFanouts>,
-    )]
-    async fn list_orphan_fanouts(
-        &self,
-        #[description("Only this vault's orphans, by name. Omit to check every Git-backed vault.")]
-        vault: Option<String>,
-    ) -> McpResult<serde_json::Value> {
-        let orphans = self
-            .scan_orphan_fanouts(vault.as_deref())
-            .await
-            .map_err(|error| McpError::internal(error.to_string()))?;
-        StandardResponse::new(
-            self.get_active_vault_name().await.unwrap_or_default(),
-            "list_orphan_fanouts",
-            OrphanFanouts {
-                count: orphans.len(),
-                orphans,
             },
         )
         .to_json()

@@ -1,5 +1,6 @@
 //! MetadataProvider MCP capabilities.
 
+use std::collections::BTreeMap;
 use std::ops::Deref;
 
 use turbovault_tools::NoteInfo;
@@ -29,16 +30,6 @@ struct MetadataMatch {
     metadata: serde_json::Map<String, serde_json::Value>,
 }
 
-/// What `get_metadata_value` returns. `value` is `null` when the note has no
-/// such key.
-#[derive(serde::Serialize, schemars::JsonSchema)]
-#[allow(dead_code)]
-struct MetadataValue {
-    file: String,
-    key: String,
-    value: serde_json::Value,
-}
-
 /// What `update_frontmatter` returns.
 #[derive(serde::Serialize, schemars::JsonSchema)]
 #[allow(dead_code)]
@@ -49,25 +40,39 @@ struct FrontmatterUpdate {
     keys_set: Vec<String>,
 }
 
-/// What `manage_tags` returns: a note's tags for `list`, or the frontmatter
-/// tags left after `add` or `remove`.
+/// What `manage_tags` returns: the frontmatter tags left after the change.
 #[derive(serde::Serialize, schemars::JsonSchema)]
-#[serde(untagged)]
 #[allow(dead_code)]
-enum ManageTagsResult {
-    Listed {
-        path: String,
-        frontmatter_tags: Vec<String>,
-        inline_tags: Vec<String>,
-        all_tags: Vec<String>,
-    },
-    Changed {
-        path: String,
-        operation: String,
-        tags: Vec<String>,
-        /// `updated`, or `no_frontmatter` for a remove from a note without any.
-        status: String,
-    },
+struct TagsChanged {
+    path: String,
+    operation: String,
+    tags: Vec<String>,
+    /// `updated`, or `no_frontmatter` for a remove from a note without any.
+    status: String,
+}
+
+/// One note as `get_notes_info` reports it.
+#[derive(serde::Serialize, schemars::JsonSchema)]
+struct NoteDetails {
+    #[serde(flatten)]
+    info: NoteInfo,
+    /// The frontmatter values asked for with `frontmatter_keys`, each `null`
+    /// when the note has no such key. Absent unless asked for, and for a note
+    /// that doesn't exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    frontmatter: Option<BTreeMap<String, serde_json::Value>>,
+    /// The note's tags, when asked for with `include_tags`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tags: Option<NoteTags>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct NoteTags {
+    /// The frontmatter `tags` list.
+    frontmatter_tags: Vec<String>,
+    /// `#tags` written in the body.
+    inline_tags: Vec<String>,
+    all_tags: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -93,7 +98,7 @@ impl MetadataProvider {
 
     /// Query files by metadata pattern
     #[tool(
-        description = "Find notes whose frontmatter matches one simple condition, with each match's frontmatter. For several conditions, joins or sorting use query_frontmatter_sql.",
+        description = "Find notes whose frontmatter matches one simple condition, with each match's frontmatter. For several conditions, joins or sorting use query_frontmatter_sql; to find notes by keyword, tag or a field's text, use search.",
         title = "Query Metadata",
         tags = ["read", "frontmatter"],
         read_only = true,
@@ -126,41 +131,6 @@ impl MetadataProvider {
         let response = StandardResponse::new(vault_name, "query_metadata", result_data)
             .with_page(page)
             .with_meta("pattern", serde_json::json!(pattern));
-
-        response.to_json()
-    }
-
-    /// Get metadata value from a file
-    #[tool(
-        description = "Read one frontmatter value from a note. Use read_note to see all of a note's frontmatter.",
-        title = "Get Metadata Value",
-        tags = ["read", "frontmatter"],
-        read_only = true,
-        destructive = false,
-        idempotent = true,
-        open_world = false,
-        output_schema = StandardResponse<MetadataValue>,
-    )]
-    async fn get_metadata_value(
-        &self,
-        #[description(
-            "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
-        )]
-        file: String,
-        #[description(
-            "The frontmatter key. Use dots for nested keys, such as `author.name`."
-        )]
-        key: String,
-    ) -> McpResult<serde_json::Value> {
-        let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = MetadataTools::new(manager);
-        let value = tools
-            .get_metadata_value(&file, &key)
-            .await
-            .map_err(to_mcp_error)?;
-
-        let response = StandardResponse::new(vault_name, "get_metadata_value", value)
-            .with_next_step("query_metadata");
 
         response.to_json()
     }
@@ -229,16 +199,16 @@ impl MetadataProvider {
             .to_json()
     }
 
-    /// Manage tags on a note (add, remove, list)
+    /// Add or remove tags on a note
     #[tool(
-        description = "List, add or remove a note's tags. `list` returns both its frontmatter tags and inline #tags; `add` and `remove` change only the frontmatter `tags` list, creating it if needed.",
+        description = "Add or remove tags in a note's frontmatter `tags` list, creating the list if needed. Inline #tags in the body are left alone. To see a note's tags, use get_notes_info with include_tags.",
         title = "Manage Tags",
         tags = ["write", "frontmatter"],
         read_only = false,
         destructive = true,
         idempotent = true,
         open_world = false,
-        output_schema = StandardResponse<ManageTagsResult>,
+        output_schema = StandardResponse<TagsChanged>,
     )]
     async fn manage_tags(
         &self,
@@ -246,35 +216,35 @@ impl MetadataProvider {
             "Vault-relative path of the note, including the extension, such as `projects/Plan.md`."
         )]
         path: String,
-        #[description("`list`, `add` or `remove`.")] operation: String,
+        #[description("`add` or `remove`.")] operation: String,
         #[description(
-            "Tags to add or remove, without `#`, such as `[\"work\", \"project/alpha\"]`. Not used by `list`."
+            "Tags to add or remove, without `#`, such as `[\"work\", \"project/alpha\"]`."
         )]
-        tags: Option<Vec<String>>,
+        tags: Vec<String>,
         #[description(
-            "The note's `hash` from your last read_note; an add or remove is refused if the note changed since. Omit to change whatever is there now."
+            "The note's `hash` from your last read_note; the change is refused if the note changed since. Omit to change whatever is there now."
         )]
         expected_hash: Option<String>,
         #[description(
-            "Commit message for an add or remove on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived."
+            "Commit message on a Git-backed vault. Required there when the vault sets git.require_commit_message; otherwise derived."
         )]
         commit_message: Option<String>,
     ) -> McpResult<serde_json::Value> {
+        if operation != "add" && operation != "remove" {
+            return Err(McpError::invalid_params(format!(
+                "operation must be `add` or `remove`, not {operation:?}. To list a note's tags, use get_notes_info with include_tags"
+            )));
+        }
         let (vault_name, manager) = self.get_vault_pair().await?;
         let tools = MetadataTools::new(manager.clone());
 
-        // Compute first so the commit-message gate (and its fallback) is only
-        // applied when the operation actually writes — `list` and a no-op
-        // `remove` on a note without frontmatter are read-only (None), and a
-        // read must never demand a commit_message on a require-message vault.
+        // A remove from a note without frontmatter changes nothing, and must
+        // not demand a commit message on a require-message vault.
         let (maybe_content, result) = tools
-            .compute_manage_tags(&path, &operation, tags.as_deref())
+            .compute_manage_tags(&path, &operation, Some(&tags))
             .await
             .map_err(to_mcp_error)?;
 
-        // `list` is a read; only add/remove produce content to store, so only
-        // those report a change.
-        let mutated = maybe_content.is_some();
         if let Some(content) = maybe_content {
             let message = self
                 .resolve_commit_message(commit_message, || {
@@ -292,9 +262,6 @@ impl MetadataProvider {
                 )
                 .await
                 .map_err(to_mcp_error)?;
-        }
-
-        if mutated {
             self.after_write_one(
                 &vault_name,
                 VaultChange::Modified { path: path.clone() },
@@ -303,20 +270,20 @@ impl MetadataProvider {
             .await;
         }
         StandardResponse::new(vault_name, "manage_tags", result)
-            .with_next_steps(&["update_frontmatter", "query_metadata"])
+            .with_next_steps(&["update_frontmatter", "get_notes_info"])
             .to_json()
     }
 
-    /// Get lightweight metadata for multiple files without reading content
+    /// Lightweight facts about several notes, without reading their content.
     #[tool(
-        description = "Check several notes at once without reading them: whether each exists, its size, when it was modified and whether it has frontmatter.",
+        description = "Check several notes at once without reading them: whether each exists, its size, when it was modified and whether it has frontmatter. Optionally also chosen frontmatter values (`frontmatter_keys`) and the note's tags (`include_tags`). Use read_note for a note's full content and frontmatter.",
         title = "Get Notes Info",
         tags = ["read"],
         read_only = true,
         destructive = false,
         idempotent = true,
         open_world = false,
-        output_schema = StandardResponse<Vec<NoteInfo>>,
+        output_schema = StandardResponse<Vec<NoteDetails>>,
     )]
     async fn get_notes_info(
         &self,
@@ -324,10 +291,70 @@ impl MetadataProvider {
             "Vault-relative paths of the notes, including extensions, such as `[\"projects/Plan.md\", \"Inbox.md\"]`."
         )]
         paths: Vec<String>,
+        #[description(
+            "Frontmatter keys to read from each note, such as `[\"status\", \"author.name\"]` (dots for nested keys). Omit for none."
+        )]
+        frontmatter_keys: Option<Vec<String>>,
+        #[description(
+            "Also list each note's tags: its frontmatter tags and inline #tags. Default false."
+        )]
+        include_tags: Option<bool>,
     ) -> McpResult<serde_json::Value> {
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = FileTools::new(manager);
-        let results = tools.get_notes_info(&paths).await.map_err(to_mcp_error)?;
+        let infos = FileTools::new(manager.clone())
+            .get_notes_info(&paths)
+            .await
+            .map_err(to_mcp_error)?;
+        let metadata = MetadataTools::new(manager);
+        let keys = frontmatter_keys.unwrap_or_default();
+        let include_tags = include_tags.unwrap_or(false);
+
+        let mut results = Vec::with_capacity(infos.len());
+        for info in infos {
+            let (frontmatter, tags) = if info.exists {
+                let frontmatter = if keys.is_empty() {
+                    None
+                } else {
+                    let mut values = BTreeMap::new();
+                    for key in &keys {
+                        // A key the note doesn't have is `null`, so one
+                        // missing key doesn't fail a lookup across notes.
+                        let value = match metadata.get_metadata_value(&info.path, key).await {
+                            Ok(value) => value
+                                .get("value")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                            Err(error) if error.category() == ErrorCategory::NotFound => {
+                                serde_json::Value::Null
+                            }
+                            Err(error) => return Err(to_mcp_error(error)),
+                        };
+                        values.insert(key.clone(), value);
+                    }
+                    Some(values)
+                };
+                let tags = if include_tags {
+                    let (_, listed) = metadata
+                        .compute_manage_tags(&info.path, "list", None)
+                        .await
+                        .map_err(to_mcp_error)?;
+                    Some(
+                        serde_json::from_value::<NoteTags>(listed)
+                            .map_err(|error| McpError::internal(error.to_string()))?,
+                    )
+                } else {
+                    None
+                };
+                (frontmatter, tags)
+            } else {
+                (None, None)
+            };
+            results.push(NoteDetails {
+                info,
+                frontmatter,
+                tags,
+            });
+        }
 
         let count = results.len();
         StandardResponse::new(vault_name, "get_notes_info", results)

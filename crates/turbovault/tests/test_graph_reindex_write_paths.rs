@@ -101,15 +101,21 @@ fn init_git_repo(path: &std::path::Path) {
 
 /// `get_forward_links` / `get_backlinks` payload as vault-absolute path
 /// strings.
-async fn links(server: &ObsidianMcpServer, tool: &str, path: &str) -> Vec<String> {
-    call(server, tool, json!({ "path": path }))
-        .await
-        .get("data")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("{tool} returned no data array"))
-        .iter()
-        .map(|v| v.as_str().expect("link path is a string").to_string())
-        .collect()
+/// A note's links as `get_links` reports them, `direction` being
+/// `incoming` (backlinks) or `outgoing`.
+async fn links(server: &ObsidianMcpServer, direction: &str, path: &str) -> Vec<String> {
+    call(
+        server,
+        "get_links",
+        json!({ "path": path, "direction": direction }),
+    )
+    .await
+    .get("data")
+    .and_then(Value::as_array)
+    .unwrap_or_else(|| panic!("get_links ({direction}) returned no data array"))
+    .iter()
+    .map(|v| v.as_str().expect("link path is a string").to_string())
+    .collect()
 }
 
 #[track_caller]
@@ -147,12 +153,12 @@ async fn batch_created_note_is_graphed(backend: Backend) {
 
     // No write_note touch of linker.md between the batch and these reads.
     assert_contains(
-        &links(&server, "get_forward_links", "linker.md").await,
+        &links(&server, "outgoing", "linker.md").await,
         "target.md",
         format!("{backend:?}: batch-created note's outgoing edge").as_str(),
     );
     assert_contains(
-        &links(&server, "get_backlinks", "target.md").await,
+        &links(&server, "incoming", "target.md").await,
         "linker.md",
         format!("{backend:?}: inbound edge from a batch-created note").as_str(),
     );
@@ -209,12 +215,12 @@ async fn move_note_reindexes_both_endpoints(backend: Backend) {
 
     // No write_note touch of linker.md between the move and these reads.
     assert_contains(
-        &links(&server, "get_forward_links", "linker.md").await,
+        &links(&server, "outgoing", "linker.md").await,
         "renamed.md",
         format!("{backend:?}: linker's outgoing edge after the target moved").as_str(),
     );
     assert_contains(
-        &links(&server, "get_backlinks", "renamed.md").await,
+        &links(&server, "incoming", "renamed.md").await,
         "linker.md",
         format!("{backend:?}: renamed target's inbound edge").as_str(),
     );
@@ -276,7 +282,7 @@ async fn batch_created_linker_is_visible_to_a_later_move(backend: Backend) {
         "{backend:?}: linker.md still points at the old name: {on_disk:?}"
     );
     assert_contains(
-        &links(&server, "get_backlinks", "renamed.md").await,
+        &links(&server, "incoming", "renamed.md").await,
         "linker.md",
         format!("{backend:?}: batch-created linker after the move").as_str(),
     );

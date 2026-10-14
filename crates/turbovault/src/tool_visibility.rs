@@ -24,7 +24,41 @@ pub struct ToolVisibilitySettings {
     pub hidden_tags: Vec<String>,
     /// Hide tools that are not annotated read-only by TurboMCP.
     pub require_read_only: bool,
+    /// List the advanced tools ([`ADVANCED_TOOLS`]) too. Off by default: they
+    /// are left out of `tools/list` (still callable by name), so an agent
+    /// starts from the core set. An `allowed` list also lists whatever it
+    /// names.
+    pub show_advanced_tools: bool,
 }
+
+/// Tools left out of `tools/list` unless `show_advanced_tools` is set: the
+/// specialised, administrative and maintenance tools an agent rarely needs to
+/// discover. Each is still callable by name, and listed with
+/// `--show-advanced-tools`.
+pub const ADVANCED_TOOLS: &[&str] = &[
+    "remove_vault",
+    "move_file",
+    "diff_notes",
+    "compare_notes",
+    "find_duplicates",
+    "suggest_links",
+    "note_quality",
+    "find_stale_notes",
+    "analyze_grounding",
+    "okf_validate",
+    "generate_index",
+    "append_log_entry",
+    "visualize",
+    "export",
+    "audit_log",
+    "rollback_preview",
+    "rollback_note",
+    "fanout",
+    "list_orphan_fanouts",
+    "find_notes_from_template",
+    "inspect_frontmatter",
+    "query_frontmatter_sql",
+];
 
 /// CLI/env overrides merged with file-based tool visibility settings.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,6 +69,7 @@ pub struct ToolVisibilityOverrides {
     pub disabled_tags: Vec<String>,
     pub hidden_tags: Vec<String>,
     pub require_read_only: bool,
+    pub show_advanced_tools: bool,
 }
 
 /// Top-level shape of the TurboVault `--config` / `TURBOVAULT_CONFIG` YAML file.
@@ -91,6 +126,7 @@ impl ToolVisibilitySettings {
         extend_clean(&mut self.disabled_tags, overrides.disabled_tags);
         extend_clean(&mut self.hidden_tags, overrides.hidden_tags);
         self.require_read_only |= overrides.require_read_only;
+        self.show_advanced_tools |= overrides.show_advanced_tools;
     }
 
     /// Apply all visibility rules (name-based and tag-based) to a `VisibilityLayer`.
@@ -118,8 +154,17 @@ impl ToolVisibilitySettings {
     ///
     /// Tag rules are not represented in `VisibilityConfig`; use `apply_to_layer`
     /// to apply the full set of rules including tag-based ones.
-    pub fn into_visibility_config(self) -> VisibilityConfig {
+    pub fn into_visibility_config(mut self) -> VisibilityConfig {
         let mut config = VisibilityConfig::new();
+
+        // An `allowed` list says exactly what to list, advanced or not.
+        if !self.show_advanced_tools && self.allowed.is_empty() {
+            for name in ADVANCED_TOOLS {
+                if !self.hidden.iter().any(|hidden| hidden == name) {
+                    self.hidden.push((*name).to_string());
+                }
+            }
+        }
 
         if !self.allowed.is_empty() {
             config = config.with_allowed_tools(self.allowed);
@@ -224,6 +269,7 @@ tool_visibility:
             disabled_tags: vec![],
             hidden_tags: vec![],
             require_read_only: true,
+            show_advanced_tools: false,
         });
 
         let config = settings.into_visibility_config();

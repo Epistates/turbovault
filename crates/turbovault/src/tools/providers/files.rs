@@ -164,7 +164,7 @@ impl FileProvider {
                 response = response.with_count(sections_returned);
             }
             return response
-                .with_next_steps(&["edit_note", "get_backlinks"])
+                .with_next_steps(&["edit_note", "get_links"])
                 .to_json();
         }
 
@@ -341,7 +341,7 @@ impl FileProvider {
 
     /// Delete a note (confirmation-protected)
     #[tool(
-        description = "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_backlinks shows what links to it. A client that supports elicitation asks the user to confirm first.",
+        description = "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_links shows what links to it. A client that supports elicitation asks the user to confirm first.",
         title = "Delete Note",
         tags = ["write", "delete"],
         read_only = false,
@@ -457,7 +457,7 @@ impl FileProvider {
                 link_sources_updated: updated_sources,
             },
         )
-        .with_next_step("quick_health_check");
+        .with_next_step("vault_health");
         if !canvases.is_empty() {
             response = response.with_warning(format!(
                 "These canvases still point at {path} and now show it as missing: {}. Edit them with read_canvas and write_canvas.",
@@ -588,7 +588,7 @@ impl FileProvider {
                 link_sources_updated: Some(updated_sources),
             },
         )
-        .with_next_steps(&["get_backlinks", "get_forward_links"]);
+        .with_next_steps(&["get_links", "get_related_notes"]);
         if update_backlinks {
             response.to_json()
         } else {

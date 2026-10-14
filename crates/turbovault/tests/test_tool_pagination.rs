@@ -43,12 +43,7 @@ async fn hub_vault(count: usize) -> (TempDir, ObsidianMcpServer) {
 async fn backlinks_page_through_every_link_once() {
     let (temp, server) = hub_vault(7).await;
 
-    let first = call(
-        &server,
-        "get_backlinks",
-        json!({"path": "hub.md", "limit": 3}),
-    )
-    .await;
+    let first = call(&server, "get_links", json!({"path": "hub.md", "limit": 3})).await;
     let page = &first["meta"]["pagination"];
     assert_eq!(page["total"], 7);
     assert_eq!(page["returned"], 3);
@@ -68,7 +63,7 @@ async fn backlinks_page_through_every_link_once() {
     loop {
         let page = call(
             &server,
-            "get_backlinks",
+            "get_links",
             json!({"path": "hub.md", "limit": 3, "offset": offset}),
         )
         .await;
@@ -94,7 +89,7 @@ async fn backlinks_page_through_every_link_once() {
 async fn a_short_list_is_not_truncated() {
     let (_temp, server) = hub_vault(2).await;
 
-    let all = call(&server, "get_backlinks", json!({"path": "hub.md"})).await;
+    let all = call(&server, "get_links", json!({"path": "hub.md"})).await;
     let page = &all["meta"]["pagination"];
     assert_eq!(page["total"], 2);
     assert_eq!(page["truncated"], false);
@@ -106,11 +101,11 @@ async fn a_short_list_is_not_truncated() {
 async fn centrality_returns_the_top_of_the_ranking_by_default() {
     let (_temp, server) = hub_vault(60).await;
 
-    let ranking = call(&server, "get_centrality_ranking", json!({})).await;
-    assert_eq!(ranking["data"]["rankings"].as_array().unwrap().len(), 50);
-    assert_eq!(ranking["data"]["total_files"], 61);
+    let ranking = call(&server, "graph_report", json!({"kind": "centrality"})).await;
+    assert_eq!(ranking["data"]["kind"], "centrality");
+    assert_eq!(ranking["data"]["items"].as_array().unwrap().len(), 50);
     assert_eq!(ranking["meta"]["pagination"]["total"], 61);
-    assert_eq!(ranking["data"]["rankings"][0]["file"], "hub.md");
+    assert_eq!(ranking["data"]["items"][0]["file"], "hub.md");
 }
 
 #[tokio::test]

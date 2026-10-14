@@ -128,7 +128,7 @@ TurboVault exposes 44 tools including:
 - `search_by_metadata` - Query frontmatter
 
 **Graph Analysis**
-- `get_backlinks` - Show what links to this note
+- `get_links` - Show what links to this note
 - `find_hubs` - Identify hub notes
 - `analyze_vault_health` - Get health report
 

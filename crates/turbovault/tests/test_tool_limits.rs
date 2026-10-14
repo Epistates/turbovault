@@ -56,12 +56,12 @@ async fn result_limits_are_clamped() {
     let (_tmp, server) = setup().await;
     let huge = json!(u64::MAX);
     let cases: Vec<(&str, Value)> = vec![
-        ("advanced_search", json!({"query": "vaults"})),
-        ("semantic_search", json!({"query": "vaults"})),
-        ("find_similar_notes", json!({"path": "note0.md"})),
+        ("search", json!({"query": "vaults"})),
+        ("find_similar", json!({"query": "vaults"})),
+        ("find_similar", json!({"path": "note0.md"})),
         ("find_duplicates", json!({})),
         ("find_stale_notes", json!({})),
-        ("find_ungrounded_notes", json!({})),
+        ("analyze_grounding", json!({})),
         ("audit_log", json!({})),
     ];
     for (tool, base) in cases {
@@ -72,8 +72,13 @@ async fn result_limits_are_clamped() {
         }
     }
     for limit in [json!(0), huge.clone()] {
-        call(&server, "vault_quality_report", json!({"bottom_n": limit})).await;
-        call(&server, "get_hub_notes", json!({"top_n": limit})).await;
+        call(&server, "note_quality", json!({"bottom_n": limit})).await;
+        call(
+            &server,
+            "graph_report",
+            json!({"kind": "hubs", "limit": limit}),
+        )
+        .await;
     }
     for limit in [json!(0), json!(i32::MAX), json!(i32::MIN)] {
         call(
@@ -88,17 +93,12 @@ async fn result_limits_are_clamped() {
 #[tokio::test]
 async fn limits_mean_what_they_say() {
     let (_tmp, server) = setup().await;
-    let none = call(
-        &server,
-        "advanced_search",
-        json!({"query": "vaults", "limit": 0}),
-    )
-    .await;
+    let none = call(&server, "search", json!({"query": "vaults", "limit": 0})).await;
     assert_eq!(none["count"], 0, "limit 0 asks for no results: {none}");
 
     let capped = call(
         &server,
-        "advanced_search",
+        "search",
         json!({"query": "vaults", "limit": u64::MAX}),
     )
     .await;

@@ -6,7 +6,7 @@
 //!
 //! ```yaml
 //! security:
-//!   # Directories add_vault and create_vault may register vaults inside.
+//!   # Directories add_vault may register vaults inside.
 //!   allowed_vault_roots: ["~/Vaults"]
 //!   auth:
 //!     mode: jwt                        # none (default), bearer or jwt
@@ -23,8 +23,8 @@
 //!
 //! The rules they feed:
 //!
-//! - **Vault registration.** With `allowed_vault_roots` set, `add_vault` and
-//!   `create_vault` only accept directories inside those roots. Without it
+//! - **Vault registration.** With `allowed_vault_roots` set, `add_vault`
+//!   (registering or creating) only accepts directories inside those roots. Without it
 //!   they accept any directory on the stdio transport, where the caller is
 //!   the local user's own client, and none on a network transport, where the
 //!   caller could be anyone who can reach the port. A filesystem root, the
