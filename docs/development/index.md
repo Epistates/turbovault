@@ -1,212 +1,94 @@
-# Development Guide
+# Development guide
 
-Contributing to TurboVault development.
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the contribution process. [CLAUDE.md](../../CLAUDE.md) is the detailed architecture guide.
 
-## Building from Source
+## Requirements
 
-```bash
-# Clone repository
-git clone https://github.com/epistates/TurboVault.git
-cd TurboVault
+- Rust 1.90 or later to build the crates (edition 2024); 1.93.1 or later to run the test suite (`serial_test`).
+- `just` for the shortcuts below (optional; each is a cargo command).
+- Nightly Rust and `cargo-fuzz` for fuzzing.
 
-# Build debug binary (fast compile, slower runtime)
-make build
-
-# Build release binary (slow compile, optimized runtime)
-make release
-
-# Run tests
-make test
-
-# Run with cargo
-cargo run -p turbovault-server -- --vault /path/to/vault --init
-```
-
-## Development Workflow
+## Everyday commands
 
 ```bash
-# Run checks and tests (CI-like)
-make dev
-
-# Format code
-make fmt
-
-# Run linter
-make lint
-
-# Generate documentation
-make doc
-
-# Full CI pipeline
-make all
+just build                 # cargo build
+just test                  # fmt check, clippy, the whole suite
+just test-quick            # tests only
+just test-one module::name # one test
+cargo run -- --vault /path/to/vault --init
 ```
 
-## Project Requirements
-
-- **Rust**: 1.90.0 or newer
-- **Edition**: 2024
-- **MSRV Policy**: Latest stable Rust
-
-## Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              AI Agent (Claude Desktop)                   │
-└───────────────────────────┬─────────────────────────────┘
-                            │ MCP Protocol (STDIO)
-┌───────────────────────────▼─────────────────────────────┐
-│                  mcp-obsidian Binary                     │
-│                                                          │
-│  ┌────────────────────────────────────────────────┐    │
-│  │  CLI (cli.rs; thin bin/main.rs)                │    │
-│  │  - Parse args (vault path, profile)            │    │
-│  │  - Initialize observability (OTLP)             │    │
-│  │  - Create VaultManager                          │    │
-│  │  - Start MCP server (STDIO transport)          │    │
-│  └────────────────────────────────────────────────┘    │
-│                                                          │
-│  ┌────────────────────────────────────────────────┐    │
-│  │  70 MCP tools via a flat provider facade       │    │
-│  │  - Vault, files, graph, discovery, content     │    │
-│  │  - Analysis and audit providers                │    │
-│  │  - Error conversion (Error → McpError)         │    │
-│  │  - Observability (spans, metrics)              │    │
-│  └────────────────────────────────────────────────┘    │
-└───────────────────────────┬─────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-┌───────▼──────┐   ┌───────▼──────┐   ┌───────▼──────┐
-│ TurboVault- │   │ TurboVault- │   │  turbomcp    │
-│   tools      │   │   vault      │   │  (MCP SDK)   │
-│              │   │              │   │              │
-│ - FileTools  │   │ VaultManager │   │ - Protocol   │
-│ - SearchEng  │   │ - File I/O   │   │ - Transport  │
-│ - Templates  │   │ - Caching    │   │ - Macros     │
-│ - GraphTools │   │ - Validation │   │ - Observ.    │
-└──────────────┘   └──────────────┘   └──────────────┘
-        │                   │
-        └───────────────────┼───────────────────┐
-                            │                   │
-                  ┌─────────▼─────────┐ ┌───────▼──────┐
-                  │ turbovault-parser │ │ TurboVault- │
-                  │                    │ │   graph      │
-                  │ - OFM parsing      │ │              │
-                  │ - Wikilink extract │ │ - Link graph │
-                  │ - Frontmatter      │ │ - Analysis   │
-                  └────────────────────┘ └──────────────┘
-```
-
-## Crate Structure
-
-The project is organized as a Rust workspace with 8 crates:
-
-| Crate | Purpose | Lines of Code |
-|-------|---------|---------------|
-| **turbovault-core** | Core types, errors, config | ~2,000 LOC |
-| **turbovault-parser** | OFM parsing (wikilinks, frontmatter) | ~1,500 LOC |
-| **turbovault-graph** | Link graph analysis | ~1,200 LOC |
-| **turbovault-vault** | File I/O, caching, validation | ~1,800 LOC |
-| **turbovault-batch** | Validated fail-fast operation batches | ~800 LOC |
-| **turbovault-export** | JSON/CSV export formats | ~600 LOC |
-| **turbovault-tools** | MCP tools implementation | ~2,500 LOC |
-| **turbovault-server** | CLI + MCP server | ~600 LOC |
-
-**Total**: ~11,000 lines of production Rust code
-
-## Adding a New Tool
-
-1. **Implement the MCP wrapper and assign its provider**:
-
-   ```rust
-   #[tool("my_new_tool")]
-   async fn my_new_tool(&self, param: String) -> McpResult<String> {
-       let manager = self.get_manager().await?;
-       let tools = MyTools::new(manager);
-       let result = tools.my_operation(&param).await.map_err(to_mcp_error)?;
-       Ok(result)
-   }
-   ```
-
-   Put the wrapper in the focused module that owns it under
-   `crates/turbovault/src/tools/providers/`. The facade rejects duplicate
-   public names, and a golden parity test protects the complete `tools/list`
-   output.
-
-2. **Add to turbovault-tools** (if reusable logic):
-
-   ```rust
-   // crates/turbovault-tools/src/my_tools.rs
-   pub struct MyTools {
-       pub manager: Arc<VaultManager>,
-   }
-
-   impl MyTools {
-       pub async fn my_operation(&self, param: &str) -> Result<String> {
-           // Implementation
-       }
-   }
-   ```
-
-3. **Write tests**:
-
-   ```rust
-   #[tokio::test]
-   async fn test_my_new_tool() {
-       let (_temp, manager) = create_test_vault().await;
-       let server = ObsidianMcpServer::new();
-       server.initialize(manager).await;
-
-       // Test tool invocation
-       let result = server.my_new_tool("test".to_string()).await;
-       assert!(result.is_ok());
-   }
-   ```
-
-4. **Update documentation** in this README
-
-## Running Tests
+Before opening a pull request, run what CI runs:
 
 ```bash
-# All server tests
-cargo test -p turbovault-server
-
-# Specific test
-cargo test -p turbovault-server test_server_initialization
-
-# With output
-cargo test -p turbovault-server -- --nocapture
-
-# Integration tests only
-cargo test -p turbovault-server --test integration_test
+cargo fmt --all -- --check
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
+cargo test --workspace --all-features
+cargo machete
+cargo deny check && cargo audit --deny warnings
 ```
 
-## Code Quality
+CI also checks every feature on its own, builds the release feature set on Linux, macOS and Windows, keeps line coverage above 90%, and ratchets the write-safety suite's pending cells. Clippy runs on current stable, so keep yours current.
+
+## Tests
+
+- **Unit tests** sit next to the code; **integration tests** are in each crate's `tests/`.
+- **Protocol tests**: `crates/turbovault/tests/test_mcp_wire_e2e.rs` and `test_mcp_surface_wire.rs` run the real binary over stdio; `test_network_transports.rs` covers HTTP, WebSocket and TCP.
+- **Tool contract tests**: `test_tool_output_schemas.rs` calls every tool and validates its result against its `outputSchema`; `test_tool_catalog_quality.rs` requires descriptions on every parameter and complete annotations.
+- **Write safety**: `wss_matrix.rs` and `write_safety_suite.rs`; see the [write-safety suite](../write-safety-suite/README.md).
+- **Property tests**: `turbovault-parser/tests/proptest_parser.rs`, `turbovault-tools/tests/proptest_rewriter.rs`, `turbovault-vault/tests/proptest_edit.rs`. Raise the case count with `PROPTEST_CASES=4096`.
+
+Tests use real temporary directories and Git repositories, no mocks.
+
+## Snapshots
 
 ```bash
-# Format code
-cargo fmt --all
+# The tool catalog: every tool's name, description and input and output schemas
+UPDATE_TOOL_CATALOG=1 cargo test -p turbovault --lib
 
-# Run linter
-cargo clippy --all -- -D warnings
-
-# Check compilation without building
-cargo check -p turbovault-server
+# The parser's output on a fixture covering the whole syntax
+UPDATE_PARSER_SNAPSHOT=1 cargo test -p turbovault-parser --test test_contract_snapshot
 ```
 
-## Contributing
+Review the diff before committing a re-blessed snapshot.
 
-See individual crate READMEs for detailed development guides:
-- [turbovault-server](crates/turbovault-server/README.md) - Adding new tools
-- [turbovault-tools](crates/turbovault-tools/README.md) - Tool implementation patterns
-- [turbovault-parser](crates/turbovault-parser/README.md) - OFM parsing
-- [turbovault-graph](crates/turbovault-graph/README.md) - Graph algorithms
+## Fuzzing
 
-## Design Principles
+The `fuzz/` crate (outside the workspace) has five targets: `parse_note`, `parse_blocks`, `frontmatter`, `edit_blocks` and `rewrite_links`, seeded from the test fixtures.
 
-- **No mocks, no placeholders** – All file operations are real
-- **Production-ready** – Comprehensive error handling, security by design
-- **Test-driven** – Tests use real temporary filesystems (tempfile crate)
-- **Container-first** – Development via Docker (see workspace Makefile)
-- **Type-safe** – Strong types prevent string-based API errors
-- **Zero-panic libraries** – All errors are `Result<T, Error>`
+```bash
+cd fuzz
+cargo +nightly fuzz run parse_note -- -max_total_time=60
+```
+
+A scheduled workflow runs each target nightly. See [fuzz/README.md](../../fuzz/README.md).
+
+## Benchmarks
+
+```bash
+cargo bench -p turbovault --bench vault_10k        # 10,000-note vault
+cargo bench -p turbovault --bench tool_benchmarks
+cargo bench -p turbovault-git --bench vault_size   # Git writes by vault size
+```
+
+See [Building from source](building.md#benchmarking) for comparing runs.
+
+## Documentation
+
+```bash
+cargo doc --workspace --no-deps --open
+```
+
+Crates with `#![warn(missing_docs)]` in their `lib.rs` fail CI on an undocumented public item, since CI turns warnings into errors. Document every public item you add.
+
+## Adding a tool
+
+1. Add the method to the provider that owns its group in `crates/turbovault/src/tools/providers/`, with `#[tool(...)]`: a description that says when to use it rather than a sibling, a `title`, all four annotation hints (`read_only`, `destructive`, `idempotent`, `open_world`) and `#[description]` on every parameter.
+2. Put the logic in `turbovault-tools` or a domain crate, and return a typed result that derives `JsonSchema` behind the crate's `schemars` feature, so the tool advertises an `outputSchema`.
+3. Follow the conventions: `limit`/`offset` and `meta.pagination` for lists, errors that map to an `ErrorCategory`, vault-relative paths. The `vault` argument is added for you.
+4. Add fixture coverage in `test_tool_output_schemas.rs`, decide whether the tool belongs in `tool_visibility::ADVANCED_TOOLS`, and re-bless the catalog.
+
+## Writing to the vault
+
+Never write files directly. Build a `ChangePlan` and call `VaultManager::apply_changes`, which enforces `allowed_operations` and the protected-path policy and dispatches to the vault's backend. Serve derived state (search, graph, similarity) only after `ensure_fresh`.
