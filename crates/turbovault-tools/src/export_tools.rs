@@ -6,6 +6,7 @@ use turbovault_export::{
     AnalysisReportExporter, BrokenLinkRecord, BrokenLinksExporter, HealthReportExporter,
     VaultStatsExporter, VaultStatsRecord, create_health_report,
 };
+use turbovault_graph::{HealthAnalyzer, HealthCounts, HealthReport};
 use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
 
@@ -21,35 +22,25 @@ impl ExportTools {
         Self { manager }
     }
 
+    /// The vault's health counts and score, the same ones `vault_health`
+    /// reports.
+    async fn health_counts(&self) -> Result<(HealthCounts, u8)> {
+        let graph = self.manager.link_graph_flushed().await;
+        let graph = graph.read().await;
+        let counts = HealthAnalyzer::with_files(&graph, graph.all_unresolved_links()).counts()?;
+        Ok((counts, HealthReport::score(&counts)))
+    }
+
     /// Export health report
     pub async fn export_health_report(&self, format: &str) -> Result<String> {
-        let graph = self.manager.link_graph_flushed().await;
-        let graph_read = graph.read().await;
-
-        let stats = graph_read.stats();
-
-        // Calculate metrics
-        let total_notes = stats.total_files;
-        let total_links = stats.total_links;
-        let broken_links = 0; // Would need HealthAnalyzer for actual count
-        let orphaned_notes = stats.orphaned_files;
-
-        // Health score heuristic
-        let health_score = if broken_links == 0 && orphaned_notes == 0 {
-            100
-        } else if broken_links == 0 {
-            80
-        } else {
-            70
-        };
-
+        let (counts, health_score) = self.health_counts().await?;
         let report = create_health_report(
-            "default",
+            self.manager.vault_name(),
             health_score,
-            total_notes,
-            total_links,
-            broken_links,
-            orphaned_notes,
+            counts.total_notes,
+            counts.total_links,
+            counts.broken_links,
+            counts.orphaned_notes,
         );
 
         match format {
@@ -63,8 +54,20 @@ impl ExportTools {
 
     /// Export broken links
     pub async fn export_broken_links(&self, format: &str) -> Result<String> {
-        // In real implementation, would get actual broken links from HealthAnalyzer
-        let links: Vec<BrokenLinkRecord> = vec![];
+        let links: Vec<BrokenLinkRecord> = {
+            let graph = self.manager.link_graph_flushed().await;
+            let graph = graph.read().await;
+            HealthAnalyzer::with_files(&graph, graph.all_unresolved_links())
+                .broken_links()?
+                .into_iter()
+                .map(|link| BrokenLinkRecord {
+                    source_file: self.manager.relative_path(&link.source_file),
+                    target: link.target,
+                    line: link.line,
+                    suggestions: link.suggestions,
+                })
+                .collect()
+        };
 
         match format {
             "json" => BrokenLinksExporter::to_json(&links),
@@ -77,27 +80,19 @@ impl ExportTools {
 
     /// Export vault statistics
     pub async fn export_vault_stats(&self, format: &str) -> Result<String> {
-        let graph = self.manager.link_graph_flushed().await;
-        let graph_read = graph.read().await;
-        let stats = graph_read.stats();
-
-        // Calculate readability metrics by scanning all markdown files
-        let files = self.manager.scan_vault().await?;
+        // Readability over every note, from the shared note cache.
+        let notes = self.manager.notes_validated().await;
         let mut total_words = 0usize;
         let mut total_readable_chars = 0usize;
-        let mut note_count = 0usize;
-
-        for file_path in &files {
-            if !turbovault_core::is_note(file_path) {
-                continue;
-            }
-            if let Ok(vault_file) = self.manager.parse_file(file_path).await {
-                let plain_text = to_plain_text(&vault_file.content);
-                total_words += plain_text.split_whitespace().count();
-                total_readable_chars += plain_text.chars().count();
-                note_count += 1;
-            }
+        for note in &notes {
+            let plain_text = to_plain_text(&note.content);
+            total_words += plain_text.split_whitespace().count();
+            total_readable_chars += plain_text.chars().count();
         }
+        let note_count = notes.len();
+
+        let graph = self.manager.link_graph_flushed().await;
+        let stats = graph.read().await.stats();
 
         let avg_words_per_note = if note_count > 0 {
             total_words as f64 / note_count as f64
@@ -107,7 +102,7 @@ impl ExportTools {
 
         let stats_record = VaultStatsRecord {
             timestamp: chrono::Utc::now().to_rfc3339(),
-            vault_name: "default".to_string(),
+            vault_name: self.manager.vault_name().to_string(),
             total_files: stats.total_files,
             total_links: stats.total_links,
             orphaned_files: stats.orphaned_files,
@@ -128,42 +123,44 @@ impl ExportTools {
 
     /// Export full analysis report
     pub async fn export_analysis_report(&self, format: &str) -> Result<String> {
-        let graph = self.manager.link_graph_flushed().await;
-        let graph_read = graph.read().await;
-        let stats = graph_read.stats();
-
-        let total_notes = stats.total_files;
-        let total_links = stats.total_links;
-        let broken_links = 0;
-        let orphaned_notes = stats.orphaned_files;
-
-        let health_score = if broken_links == 0 && orphaned_notes == 0 {
-            100
-        } else if broken_links == 0 {
-            80
-        } else {
-            70
-        };
-
+        let (counts, health_score) = self.health_counts().await?;
+        let vault_name = self.manager.vault_name();
         let health = create_health_report(
-            "default",
+            vault_name,
             health_score,
-            total_notes,
-            total_links,
-            broken_links,
-            orphaned_notes,
+            counts.total_notes,
+            counts.total_links,
+            counts.broken_links,
+            counts.orphaned_notes,
         );
+
+        let mut recommendations = Vec::new();
+        if counts.broken_links > 0 {
+            recommendations.push(format!(
+                "Fix {} broken link(s); export_broken_links lists them with suggested targets",
+                counts.broken_links
+            ));
+        }
+        if counts.orphaned_notes > 0 {
+            recommendations.push(format!(
+                "Link {} orphaned note(s) to related notes, or archive them",
+                counts.orphaned_notes
+            ));
+        }
+        if counts.isolated_clusters > 1 {
+            recommendations.push(format!(
+                "Connect {} isolated clusters to the rest of the vault",
+                counts.isolated_clusters
+            ));
+        }
 
         let analysis_report = turbovault_export::AnalysisReport {
             timestamp: chrono::Utc::now().to_rfc3339(),
-            vault_name: "default".to_string(),
+            vault_name: vault_name.to_string(),
             health,
-            broken_links_count: broken_links,
-            orphaned_notes_count: orphaned_notes,
-            recommendations: vec![
-                "Ensure all notes are linked for better connectivity".to_string(),
-                "Review and fix broken links regularly".to_string(),
-            ],
+            broken_links_count: counts.broken_links,
+            orphaned_notes_count: counts.orphaned_notes,
+            recommendations,
         };
 
         match format {
