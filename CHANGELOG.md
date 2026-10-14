@@ -7,11 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-10-14
+
+Parser fixes and a rustls update. Every crate moves to 4.0.1 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.
+
 ### Fixed
 
 - **An empty fenced code block no longer swallows the paragraph after it.** A fence with nothing in it was never closed, so the text after it was added to the next code block, and the paragraph between them was lost. This happened at the top level and inside list items.
 - **A code block's language is the first word of its info string**, as CommonMark describes it. The whole string was kept, so rustdoc's `rust,no_run`, Docusaurus and mdBook's `python title="x"` and Pandoc's `{.python}` matched no language.
 - **A table inside a blockquote keeps its cells.** Its text went into the quote's text, so the table came back with empty cells and the quote read `qr12` for a table of `q`, `r`, `1` and `2`. The table is rebuilt inside the quote, alignments and links in cells included.
+
+### Security
+
+- **rustls 0.23.46**, for four advisories published on 2026-10-14: [RUSTSEC-2026-0346](https://rustsec.org/advisories/RUSTSEC-2026-0346) (`Debug` output of a client session exposes TLS secrets), [-0347](https://rustsec.org/advisories/RUSTSEC-2026-0347), [-0348](https://rustsec.org/advisories/RUSTSEC-2026-0348) and [-0349](https://rustsec.org/advisories/RUSTSEC-2026-0349). TurboVault reaches rustls through turbomcp's HTTP transport, the JWKS fetch for `--auth-mode jwt`, and telemetry export.
 
 ## [4.0.0] - 2026-10-13
 
