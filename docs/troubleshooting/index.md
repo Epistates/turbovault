@@ -1,196 +1,65 @@
-# Troubleshooting Guide
+# Troubleshooting
 
-Common issues and solutions for TurboVault.
+## The client shows no tools
 
-## Common Issues
+- Run the exact `command` from the client config in a terminal with `--version`. Claude Desktop doesn't use your shell's `PATH`, so give the full path.
+- Check the client's log. Claude Desktop keeps each server's stderr in `~/Library/Logs/Claude/mcp-server-turbovault.log` on macOS.
+- Only the 30 core tools are listed by default. If a tool you expect is missing, it may be advanced: add `--show-advanced-tools`, or call it by name. `--allowed-tools`, `--disabled-tools` and `--profile read-only` also narrow the list.
 
-### 1. Vault Not Found
+## "Vault path does not exist"
 
-**Error:**
-```
-Error: Failed to create vault config: Vault path does not exist: /path/to/vault
-```
+The path must exist and be a directory. `--vault` and the config file expand `~` and `$VAR`; paths an agent passes to `add_vault` expand `~` only.
 
-**Solution:**
-- Verify the path is correct: `ls -la /path/to/vault`
-- Use absolute paths (not relative or `~`)
-- Ensure vault directory exists and contains `.obsidian/` folder
-- Check file permissions
+## `add_vault` is refused
 
-### 2. Server Starts But No Tools Available
+The message names the rule that refused it:
 
-**Symptoms:**
-- Server runs without errors
-- Claude doesn't see any tools
-- MCP connection shows but no tools listed
+- **"cannot be registered as a vault"**: the path is a filesystem root, your home directory or something containing it, a hidden or application-data directory under home, or a system directory. These are never accepted at runtime; list the vault in the config file if you really mean it.
+- **"outside the directories this server allows vaults in"**: `--allowed-vault-roots` is set and the path isn't inside one of them.
+- **"registering vaults at runtime is turned off"**: you're on a network transport without `--allowed-vault-roots`. Set it, or list the vaults in the config file.
 
-**Solution:**
-- Check server was initialized with vault:
-  ```bash
-  # Look for these log lines:
-  [INFO] Server initialized with vault
-  [INFO] Vault: /path/to/vault
-  ```
-- If missing, use `--vault` flag:
-  ```bash
-  mcp-obsidian --vault /path/to/vault --init
-  ```
-- Verify vault is valid (contains `.obsidian/` and `.md` files)
+## The server won't start on a network transport
 
-### 3. Permission Denied Errors
+- **"refusing to listen ... without authentication"**: HTTP beyond loopback needs `--auth-mode bearer` or `jwt`. Inside Docker, `--host 0.0.0.0` counts as beyond loopback.
+- **"the websocket transport has no authentication, so it only listens on loopback"** (or tcp): those transports can't authenticate; use HTTP for network access.
+- **Bearer tokens refused at startup**: each token must be at least 32 characters.
 
-**Error:**
-```
-Error: Permission denied (os error 13)
-```
+`--allow-unauthenticated-network` lifts these refusals for a deployment that authenticates in a proxy in front of TurboVault.
 
-**Solution:**
-- Check vault directory permissions:
-  ```bash
-  ls -ld /path/to/vault
-  # Should show read/write for your user
-  ```
-- Fix permissions:
-  ```bash
-  chmod -R u+rw /path/to/vault
-  ```
-- For Docker: ensure volume mount is correct and user has access
+## A write is refused
 
-### 4. Claude Desktop Connection Issues
+- **A conflict**: the note changed since it was read. Read it again and retry with the new `hash`. On a Git-backed vault the same happens when a file the write would touch has changes Git hasn't committed; commit or discard them first.
+- **Permission denied on `.obsidian`, `.git` or `.turbovault`**: those folders are protected; the note tools never enter them.
+- **"allowed_operations"**: the vault is configured to refuse this kind of change (for example `allowed_operations: read`).
+- **"Git index contains staged changes"**: something staged changes in the vault's repository. Commit or unstage them.
+- **"commit ... landed, but writing it to the working tree failed"**: the change is committed, and the next write (or a restart) writes it out. Look for another Git process holding `index.lock`, or a full disk.
 
-**Problem:** Claude doesn't see the server
+## Search or the graph misses a recent edit
 
-**Solution:**
-1. Check Claude Desktop logs:
-   ```bash
-   # macOS
-   tail -f ~/Library/Logs/Claude/mcp*.log
+TurboVault checks for outside edits before serving search, graph and similarity results, at most every 500 ms (longer on very large vaults). If an edit still doesn't appear:
 
-   # Linux
-   tail -f ~/.config/Claude/logs/mcp*.log
-   ```
+- Make sure `reconcile_external_changes` isn't `false` for the vault, and that the profile isn't `minimal`.
+- Tools that preserve modification times (`rsync -t`, `cp -p`) can hide an edit that doesn't change the file's size. Touch the file, or restart the server.
+- A note over `max_file_size` (10 MiB by default) isn't indexed.
 
-2. Verify server runs standalone:
-   ```bash
-   /path/to/mcp-obsidian --vault /path/to/vault --init
-   ```
+To rebuild a vault's search index from scratch, stop the server and delete its directory under `~/.cache/turbovault/search/`.
 
-3. Check config file syntax (must be valid JSON)
+## Memory or speed
 
-4. Use absolute paths (not `~` or relative paths)
+- Startup on 50,000 notes takes about 2.5 s and 0.9 GB; most reads take a few milliseconds. See the [performance table](../api-reference/tools.md#performance).
+- `--init` scans at startup instead of on the first call.
+- The similarity engine (`find_similar`, `find_duplicates`, `compare_notes`) is built on first use and is the largest user of memory on a big vault.
 
-### 5. Search Returns No Results
-
-**Symptoms:**
-- `search()` tool returns empty array
-- You know matching content exists
-
-**Solution:**
-- Ensure vault was initialized with `--init` flag
-- Check search query syntax (use simple keywords first)
-- Verify files have content (not just frontmatter)
-- Check excluded paths (might be filtering out results)
-- Review search index build in logs:
-  ```
-  [INFO] Building search index... (1250 files)
-  [INFO] Search index ready
-  ```
-
-### 6. High Memory Usage
-
-**Symptoms:**
-- Server using excessive RAM (>500MB for <10k notes)
-- System becomes sluggish
-
-**Solution:**
-- Use `high-performance` profile (disables file watching)
-- Reduce cache TTL:
-  ```bash
-  # Shorten cache lifetime
-  mcp-obsidian --vault /path/to/vault --profile production
-  ```
-- Check for memory leak (shouldn't happen, but report if found)
-- Restart server periodically (systemd handles this)
-
-### 7. Slow Performance
-
-**Symptoms:**
-- Operations take >5 seconds
-- Search is slow (>1 second)
-
-**Solution:**
-- Use `--init` to build graph once on startup (not on-demand)
-- Profile the slow operation:
-  ```bash
-  export RUST_LOG=debug
-  # Look for slow operations in logs
-  ```
-- Check disk I/O (vault on slow HDD?)
-- Reduce vault size or split into multiple vaults
-- Disable file watching in `high-performance` profile
-
-## Debug Mode
-
-**Enable detailed logging:**
+## Logs
 
 ```bash
-export RUST_LOG=debug
-mcp-obsidian --vault /path/to/vault --init 2>&1 | tee debug.log
+RUST_LOG=debug turbovault --vault /path/to/vault 2>debug.log
 ```
 
-**Send debug logs when reporting issues:**
+Logs go to stderr. Remove personal paths before attaching a log to an issue.
 
-```bash
-# Sanitize logs (remove sensitive paths)
-sed 's|/Users/yourname/|/home/user/|g' debug.log > debug-sanitized.log
-# Attach debug-sanitized.log to issue report
-```
+## Reporting a problem
 
-## Getting Help
+Open an issue at <https://github.com/epistates/turbovault/issues> with `turbovault --version`, your OS, the transport and profile, roughly how many notes the vault has, the steps to reproduce, and the relevant log lines. Report security problems privately: see [SECURITY.md](../../SECURITY.md).
 
-1. **Check logs**: Look for ERROR or WARN messages
-2. **Search issues**: https://github.com/epistates/TurboVault/issues
-3. **Create issue**: Include:
-   - Server version (`mcp-obsidian --version`)
-   - OS and Rust version (`rustc --version`)
-   - Vault size (number of files)
-   - Minimal reproduction steps
-   - Relevant log output (sanitized)
-
-## FAQ
-
-**Q: Do I need to install Obsidian to use this?**
-
-A: No! TurboVault works with any Obsidian vault (just a folder of markdown files). Obsidian itself is optional.
-
-**Q: Does this modify my vault?**
-
-A: Only when you use write operations (create, delete, move). Individual note writes use atomic replacement and are logged when auditing is available. To expose only read-only tools, use `--require-read-only-tools`; the `--profile readonly` value currently affects logging only.
-
-**Q: Can I use this with multiple vaults?**
-
-A: Yes! Use `VaultLifecycleTools` to manage multiple vaults and switch between them. CLI support for multi-vault is coming soon.
-
-**Q: What happens if the server crashes?**
-
-A: Individual writes use atomic file replacement, which avoids partially written files. `batch_execute` is sequential and fail-fast: it stops on the first error, but earlier successful operations remain applied. Inspect the returned `success`, `failed_at`, and `changes` fields and keep normal vault backups.
-
-**Q: How do I back up my vault?**
-
-A: TurboVault doesn't manage backups. Use git, rsync, or your preferred backup tool. The server only reads/writes markdown files.
-
-**Q: Is this compatible with Obsidian Sync?**
-
-A: Yes! TurboVault just reads/writes markdown files. Obsidian Sync will sync changes like normal.
-
-**Q: Can I run this on a server?**
-
-A: Yes! See the [systemd deployment](../deployment/) guide.
-
-**Q: What's the difference between this and the Obsidian API?**
-
-A: Obsidian API is JavaScript-based and requires Obsidian to be running. TurboVault is a standalone Rust server that works directly with vault files via MCP.
-
-**Q: Does this support plugins?**
-
-A: Not yet. The current version provides core vault operations and link graph analysis. Plugin support is planned for a future release.
+See also the [FAQ](faq.md).
