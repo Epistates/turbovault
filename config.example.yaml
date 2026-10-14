@@ -1,173 +1,128 @@
 # ==============================================================================
-# turbovault Configuration Example
+# TurboVault configuration example
 # ==============================================================================
 #
-# This is a comprehensive example configuration for the turbovault server.
-# Copy this file to config.yaml and customize for your setup.
+# Copy to ~/.turbovault/config.yaml (read automatically when it exists), or
+# pass any path with --config / TURBOVAULT_CONFIG.
 #
-# Usage:
-#   turbovault --config config.yaml
+# The file has three sections, all optional:
 #
-# Precedence (turbovault-xj8):
-#   1. `--config` vaults are canonical.
-#   2. Cache-recovered vaults fill in names not present in --config.
-#   3. `--vault <path>` is shorthand for a single "default" vault and
-#      only registers if "default" is still free.
-#   4. `is_default: true` in --config sets the active vault; otherwise
-#      cache metadata's active_vault is honored.
-#   On parse error of --config, the server exits nonzero — no silent
-#   fallback to cache recovery.
+#   vaults:           the vaults to register at startup
+#   tool_visibility:  which tools clients see and may call
+#   security:         who may reach the server and which directories it serves
 #
-# NOTE: the config loader (TurboVaultConfigFile, read via --config /
-# TURBOVAULT_CONFIG) expects the KEYED shape shown below — a top-level
-# `vaults:` list plus an optional `tool_visibility:` section. This is the
-# canonical format (turbovault-xj8 unification); the older bare top-level
-# array of vault entries is no longer what the loader reads.
+# Server-wide behavior (log level, reconciliation) comes from --profile; see
+# docs/configuration/index.md. Unknown keys in `vaults` entries are ignored,
+# so a config written for an older release still loads; an unknown key in
+# `security` is refused.
+#
+# Precedence when registering vaults:
+#   1. Vaults listed here.
+#   2. Vaults restored from the cache that aren't named here.
+#   3. --vault <path>, registered as "default" only if that name is free.
+#   The active vault is the one with `is_default: true`, otherwise the one the
+#   cache last had active.
 #
 # ==============================================================================
-
-# ------------------------------------------------------------------------------
-# VAULTS
-# ------------------------------------------------------------------------------
-# Define one or more Obsidian vaults to manage
-# The first vault is the default if no vault is explicitly set as default
 
 vaults:
-  # ------------------------------------------------------------------------------
-  # Single Vault Setup (Most Common)
-  # ------------------------------------------------------------------------------
-  # For most users with one Obsidian vault
-
+  # A Git-backed vault: every write, and every batch, is one commit.
+  # Run `git init` in the vault before using this backend.
   - name: personal
-    path: /Users/yourname/Documents/ObsidianVault
+    path: ~/Documents/ObsidianVault
     is_default: true
-
-    # Recommended for Git-managed vaults: every batch becomes one atomic
-    # commit with cross-process compare-and-swap conflict detection.
-    # Run `git init` in the vault before enabling this backend.
-    write_backend: git
+    write_backend: git          # direct (default) or git
     git:
+      branch: main              # default: the repository's current branch
+      merge_strategy: merge-commit   # merge-commit (default) or fast-forward
       include_ignored: false
       require_commit_message: false
+      # author:
+      #   name: TurboVault
+      #   email: turbovault@example.com
 
-    # File watching - Monitor vault for external changes
-    watch_for_changes: true
+    # Each of the keys below overrides the server's value for this vault.
 
-    # File size limit (in bytes) - Prevent loading huge files.
-    # Enforced on reads and writes as well as directory scans.
-    # Default: 10MB (10 * 1024 * 1024 = 10485760)
+    # Largest file read, written or scanned, in bytes. Default 10 MiB.
     max_file_size: 5242880
 
-    # Allowed file extensions - what counts as a note during discovery.
-    # NOT an access-control list: attachments beside notes stay readable and
-    # writable by path, since that is a normal thing to want.
-    allowed_extensions:
-      - .md
-      - .markdown
-      - .canvas   # so backlinks, delete_note and move_note see canvases
-      - .base
+    # What counts as a note-adjacent file during discovery. Not access control:
+    # attachments stay readable and writable by path.
+    allowed_extensions: [.md, .canvas, .base]
 
-    # Excluded paths - directory names the note APIs may never traverse
-    # (matched against every path component, relative to vault root).
-    #
-    # This is access control, not just a scan filter: these directories hold
-    # code other applications execute, so reaching them through read_note or
-    # write_note would turn note editing into code execution. TurboVault's own
-    # `.turbovault/` state directory is always protected and cannot be opened
-    # up here.
-    #
-    # A plugin that genuinely needs one config file declares that exact path
-    # as a capability; see the turbovault-plugin-api docs.
-    #
-    # A vault's list is added to the server's, so it can protect more
-    # directories but never fewer.
-    excluded_paths:
-      - .obsidian      # Obsidian config folder (plugin code lives here)
-      - .trash         # Trash folder
-      - .git           # Git folder (hooks are executed on commit)
+    # Directory names the note tools may never enter, matched against every
+    # path component. Added to the server's list (.obsidian, .git, ...), so a
+    # vault can protect more directories but never fewer. TurboVault's own
+    # .turbovault/ directory is always protected.
+    excluded_paths: [.trash, private]
 
-    # Allowed operations: what TurboVault may do to this vault's notes.
-    # Options: read, write, delete, move, all (one name or a list).
-    #   write  - create or change a note
-    #   delete - remove a note
-    #   move   - rename a note (rewriting the links to it also needs write)
-    # `read` alone makes the vault read-only. Reading is always allowed.
-    # An unknown name is refused at startup rather than ignored.
-    # Default: all (if not specified)
+    # Notice edits made outside TurboVault (Obsidian, sync, git pull) before
+    # serving search, graph and similarity results. Default true.
+    reconcile_external_changes: true
+
+    # What TurboVault may do to this vault's notes: read, write, delete, move,
+    # or all (one name or a list). `read` alone makes the vault read-only.
+    # An unknown name stops startup.
     allowed_operations: all
 
-    # enable_caching, cache_ttl and template_dirs were removed in 4.0: TurboVault
-    # never read them. An old config that sets them still loads.
+  # A read-only vault on the default (direct) backend.
+  # - name: reference
+  #   path: ~/Documents/Reference
+  #   allowed_operations: read
 
-  # ------------------------------------------------------------------------------
-  # Multi-Vault Setup (Power Users)
-  # ------------------------------------------------------------------------------
-  # Uncomment and configure additional vaults as needed
+# ------------------------------------------------------------------------------
+# TOOL VISIBILITY
+# ------------------------------------------------------------------------------
+# Each key has a matching flag (--allowed-tools, --hidden-tools, ...) that is
+# merged with it.
 
-  # - name: work
-  #   path: /Users/yourname/Documents/WorkVault
-  #   is_default: false
-  #   watch_for_changes: true
-  #   max_file_size: 10485760  # 10MB for work vault
-  #   excluded_paths:
-  #     - .obsidian
-  #     - .trash
-  #     - confidential/  # Exclude sensitive folders
-
-  # - name: research
-  #   path: /Users/yourname/Documents/ResearchVault
-  #   is_default: false
-  #   watch_for_changes: false  # Disable watching for large research vault
-  #   max_file_size: 20971520   # 20MB for research papers
-  #   allowed_extensions:
-  #     - .md
-  #     - .tex  # LaTeX support
-  #   excluded_paths:
-  #     - .obsidian
-  #     - drafts/
-
-  # - name: public-readonly
-  #   path: /Users/yourname/Documents/PublicVault
-  #   is_default: false
-  #   watch_for_changes: true
-  #   allowed_operations: read  # Read-only vault
+tool_visibility:
+  # Only these tools are listed and callable. Empty means all.
+  allowed: []
+  # Left out of tools/list, still callable by name.
+  hidden: []
+  # Neither listed nor callable.
+  disabled: []
+  # Disable every tool carrying one of these tags (read, write, admin, ...).
+  disabled_tags: []
+  # List only tools annotated read-only.
+  require_read_only: false
+  # The 22 advanced tools are callable by name but not listed unless this is
+  # set (--show-advanced-tools).
+  show_advanced_tools: false
 
 # ------------------------------------------------------------------------------
 # SECURITY
 # ------------------------------------------------------------------------------
-# Who can reach the server and which directories it will serve. Each key has
-# a matching command-line flag (shown alongside) that takes precedence.
+# Each key has a matching flag (shown alongside) that takes precedence.
 
 security:
-  # Directories add_vault and create_vault may register vaults inside
-  # (--allowed-vault-roots). Without this, runtime registration accepts any
-  # directory on stdio and none on a network transport. A filesystem root,
-  # the home directory, hidden and application-data directories under home,
-  # and system directories are refused either way. Vaults listed under
-  # `vaults:` above are not restricted.
+  # Directories add_vault may register vaults inside (--allowed-vault-roots).
+  # Without this, runtime registration accepts any directory on stdio and none
+  # on a network transport. A filesystem root, the home directory, hidden and
+  # application-data directories under home, and system directories are
+  # refused either way. Vaults listed under `vaults:` aren't restricted.
   allowed_vault_roots:
     - ~/Vaults
 
   # HTTP authentication (--auth-mode). Required to listen beyond loopback.
   auth:
-    # none (default), bearer or jwt
-    mode: none
+    mode: none                  # none, bearer or jwt
     # This server's canonical URL; tokens must be issued for it
-    # (--auth-resource). Defaults to http://<host>:<port>/mcp.
+    # (--auth-resource). Default http://<host>:<port>/mcp.
     # resource: https://vault.example.com/mcp
     #
-    # bearer: shared secret tokens, one per line, each at least 32
-    # characters (--auth-token-file, or a single token in
-    # TURBOVAULT_AUTH_TOKEN).
+    # bearer: shared tokens, one per line, each at least 32 characters
+    # (--auth-token-file, or one token in TURBOVAULT_AUTH_TOKEN).
     # token_file: /etc/turbovault/tokens
     #
     # jwt: tokens from an OAuth authorization server, checked for issuer,
-    # audience, expiry and signature (--auth-issuer, --auth-jwks-uri,
-    # --auth-audience, --auth-required-scopes).
+    # audience, expiry and signature against its JWKS.
     # issuer: https://auth.example.com
     # jwks_uri: https://auth.example.com/.well-known/jwks.json
     # audience: https://vault.example.com/mcp
     # required_scopes: [vault]
+    # authorization_servers: [https://auth.example.com]
 
   # Per-client HTTP rate limit (--rate-limit, --rate-limit-window-secs).
   # Off on loopback and 600 a minute beyond it unless set; 0 turns it off.
@@ -176,268 +131,11 @@ security:
   #   window_secs: 60
 
   # Browser origins the HTTP transport accepts besides localhost
-  # (--allowed-origins), and reverse proxies whose forwarded client address
-  # headers are trusted (--trusted-proxies).
+  # (--allowed-origins), and proxies whose forwarded client address headers
+  # are trusted for rate limiting (--trusted-proxies).
   # allowed_origins: [https://app.example.com]
   # trusted_proxies: [10.0.0.0/8]
 
   # Listen beyond loopback without authentication
-  # (--allow-unauthenticated-network). Only for a deployment that
-  # authenticates in front of TurboVault.
+  # (--allow-unauthenticated-network). Only behind a proxy that authenticates.
   allow_unauthenticated_network: false
-
-# ------------------------------------------------------------------------------
-# OBSERVABILITY
-# ------------------------------------------------------------------------------
-# Logging, metrics, and tracing configuration
-
-observability:
-  # Log level: trace, debug, info, warn, error
-  # Can also use RUST_LOG environment variable
-  log_level: info
-
-  # Enable structured JSON logging (for log aggregation)
-  json_logs: false
-
-  # Enable metrics collection
-  enable_metrics: true
-
-  # Enable distributed tracing (OpenTelemetry)
-  enable_tracing: true
-
-  # OpenTelemetry exporter endpoint (optional)
-  # Uncomment and set if using OTLP collector
-  # otlp_endpoint: http://localhost:4317
-
-  # Service name for telemetry (default: turbovault)
-  service_name: turbovault
-
-  # Service version (default: from Cargo.toml)
-  # service_version: 1.0.0
-
-  # Enable security auditing (logs all file operations)
-  security_auditing: true
-
-  # Enable performance monitoring
-  performance_monitoring: true
-
-# ------------------------------------------------------------------------------
-# PROFILES
-# ------------------------------------------------------------------------------
-# Pre-configured profiles override individual settings
-# Options: development, production, readonly, high-performance, minimal
-#
-# Note: Profiles can be set via CLI with --profile flag
-# CLI profiles take precedence over this config file
-#
-# Uncomment to set default profile:
-# default_profile: production
-
-# ------------------------------------------------------------------------------
-# SEARCH CONFIGURATION (Advanced)
-# ------------------------------------------------------------------------------
-# Tantivy search engine tuning
-
-search:
-  # Enable full-text search indexing
-  enabled: true
-
-  # Index rebuild interval (in seconds)
-  # Set to 0 to disable periodic rebuilding
-  index_rebuild_interval: 3600  # 1 hour
-
-  # Maximum search results to return
-  max_results: 50
-
-  # Snippet length for search results (characters)
-  snippet_length: 200
-
-  # Enable fuzzy search (typo tolerance)
-  fuzzy_search: false
-
-  # Fuzzy search edit distance (1-2 recommended)
-  # fuzzy_distance: 1
-
-# ------------------------------------------------------------------------------
-# LINK GRAPH CONFIGURATION (Advanced)
-# ------------------------------------------------------------------------------
-# Link graph analysis and caching
-
-link_graph:
-  # Enable link graph analysis
-  enabled: true
-
-  # Cache graph in memory (faster but uses more RAM)
-  cache_graph: true
-
-  # Persist graph to disk (faster startup)
-  # persist_graph: true
-  # graph_cache_path: .turbovault/graph.cache
-
-  # Maximum hop distance for related notes
-  max_hop_distance: 3
-
-# ------------------------------------------------------------------------------
-# BATCH OPERATIONS (Advanced)
-# ------------------------------------------------------------------------------
-# Transaction and batch operation settings
-
-batch:
-  # Maximum operations per batch transaction
-  max_batch_size: 100
-
-  # Enable transaction logging
-  log_transactions: true
-
-  # Conflict detection strategy: strict, permissive
-  # strict: Fail on any conflict
-  # permissive: Retry with delay
-  conflict_strategy: strict
-
-# ------------------------------------------------------------------------------
-# PERFORMANCE TUNING (Advanced)
-# ------------------------------------------------------------------------------
-# Fine-tune performance for your vault size
-
-performance:
-  # Thread pool size for async operations
-  # Default: number of CPU cores
-  # worker_threads: 8
-
-  # File I/O buffer size (bytes)
-  io_buffer_size: 8192
-
-  # Maximum concurrent file operations
-  max_concurrent_ops: 10
-
-  # Enable lazy file loading (load on-demand vs upfront)
-  lazy_loading: false
-
-# ------------------------------------------------------------------------------
-# PLATFORM-SPECIFIC EXAMPLES
-# ------------------------------------------------------------------------------
-
-# macOS Example:
-# vaults:
-#   - name: personal
-#     path: /Users/yourname/Documents/ObsidianVault
-#     is_default: true
-
-# Linux Example:
-# vaults:
-#   - name: personal
-#     path: /home/yourname/Documents/ObsidianVault
-#     is_default: true
-
-# Windows Example (use forward slashes or escaped backslashes):
-# vaults:
-#   - name: personal
-#     path: C:/Users/yourname/Documents/ObsidianVault
-#     is_default: true
-#     # Or with escaped backslashes:
-#     # path: C:\\Users\\yourname\\Documents\\ObsidianVault
-
-# Docker Example (volume mount):
-# vaults:
-#   - name: personal
-#     path: /var/obsidian-vault
-#     is_default: true
-
-# ------------------------------------------------------------------------------
-# QUICK START CONFIGURATIONS
-# ------------------------------------------------------------------------------
-
-# MINIMAL (Just get started):
-# vaults:
-#   - name: default
-#     path: /path/to/your/vault
-#     is_default: true
-
-# DEVELOPMENT (Verbose logging, all features enabled):
-# vaults:
-#   - name: dev
-#     path: /path/to/vault
-#     is_default: true
-#     watch_for_changes: true
-# observability:
-#   log_level: debug
-#   enable_metrics: true
-#   enable_tracing: true
-
-# PRODUCTION (Optimized for performance and security):
-# vaults:
-#   - name: prod
-#     path: /path/to/vault
-#     is_default: true
-#     watch_for_changes: true
-#     max_file_size: 5242880
-# observability:
-#   log_level: info
-#   security_auditing: true
-#   performance_monitoring: true
-
-# HIGH-PERFORMANCE (Large vaults, 10k+ notes):
-# vaults:
-#   - name: large
-#     path: /path/to/vault
-#     is_default: true
-#     watch_for_changes: false  # Disable watching for performance
-# search:
-#   max_results: 20  # Limit results
-# performance:
-#   max_concurrent_ops: 20
-#   lazy_loading: true
-
-# READ-ONLY (Safe exploration):
-# vaults:
-#   - name: readonly
-#     path: /path/to/vault
-#     is_default: true
-#     allowed_operations: read
-# observability:
-#   log_level: info
-#   security_auditing: true
-
-# ==============================================================================
-# TOOL VISIBILITY
-# ==============================================================================
-# Control which MCP tools are exposed to clients.
-# All name lists accept exact tool names (case-sensitive).
-# Available tags: read, write, delete, admin, graph, search,
-#                 frontmatter, template, batch, export, audit,
-#                 health, semantic, sql
-
-# tool_visibility:
-#   # Whitelist — if set, only these tools are listed and callable.
-#   allowed:
-#     - read_note
-#     - search
-#     - write_note
-#
-#   # Hide from tools/list, still callable by exact name.
-#   hidden:
-#     - full_health_analysis
-#     - vault_quality_report
-#
-#   # Remove from tools/list and reject direct calls.
-#   disabled:
-#     - delete_note
-#     - rollback_note
-#
-#   # Disable ALL tools carrying any of these tags.
-#   disabled_tags:
-#     - delete
-#     - admin
-#
-#   # Hide all tools with these tags from tools/list (still callable by name).
-#   # NOTE: requires turbomcp hide_tags() support (pending); set for forward-compatibility.
-#   hidden_tags:
-#     - semantic
-#     - export
-#
-#   # Hide all tools not annotated read_only = true.
-#   require_read_only: false
-
-# ==============================================================================
-# END OF CONFIGURATION
-# ==============================================================================
