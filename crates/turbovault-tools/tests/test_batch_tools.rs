@@ -1018,3 +1018,35 @@ async fn test_plan_delete_wraps_case_folded_and_alias_links() {
         Some("see ~~[[doomed]]~~, ~~[[Gone]]~~ and [[other]]\n")
     );
 }
+
+/// A batch path through a symlinked folder stays in the vault: `linked/..`
+/// is the vault root, never the folder the link points into.
+#[cfg(unix)]
+#[tokio::test]
+async fn batch_paths_through_a_symlinked_folder_stay_in_the_vault() {
+    let outside = TempDir::new().unwrap();
+    std::fs::create_dir_all(outside.path().join("deep/nested")).unwrap();
+    let (temp_dir, manager) = setup_test_vault().await;
+    std::os::unix::fs::symlink(outside.path().join("deep"), temp_dir.path().join("linked"))
+        .unwrap();
+    let tools = BatchTools::new(manager.clone());
+
+    for path in ["linked/../escaped.md", "linked/nested/../../climbed.md"] {
+        let ops = vec![BatchOperation::WriteNote {
+            path: path.to_string(),
+            content: "pwned".to_string(),
+            expected_hash: None,
+        }];
+        let _ = tools.batch_execute(ops, "escape").await;
+    }
+
+    for name in ["escaped.md", "climbed.md"] {
+        assert!(!outside.path().join(name).exists(), "{name} escaped");
+        assert!(
+            !outside.path().join("deep").join(name).exists(),
+            "{name} escaped"
+        );
+    }
+    assert!(temp_dir.path().join("escaped.md").is_file());
+    assert!(temp_dir.path().join("climbed.md").is_file());
+}

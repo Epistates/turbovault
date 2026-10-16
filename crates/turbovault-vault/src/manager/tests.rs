@@ -249,6 +249,84 @@ async fn test_path_traversal_prevention() {
     assert!(result.is_err());
 }
 
+/// A plan path through a symlinked folder lands where it was checked. The
+/// check reads `linked/..` as the vault root; the OS reads it as the folder
+/// the link points into, outside the vault.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_plan_path_through_a_symlinked_folder_lands_where_it_was_checked() {
+    let outside = TempDir::new().unwrap();
+    std::fs::create_dir(outside.path().join("deep")).unwrap();
+    let temp_dir = TempDir::new().unwrap();
+    std::os::unix::fs::symlink(outside.path().join("deep"), temp_dir.path().join("linked"))
+        .unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    let plan = ChangePlan::new("escape").create("linked/../escaped.md", "pwned");
+    manager
+        .apply_changes(&plan)
+        .await
+        .unwrap()
+        .into_result()
+        .unwrap();
+
+    assert!(!outside.path().join("escaped.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(temp_dir.path().join("escaped.md")).unwrap(),
+        "pwned"
+    );
+}
+
+/// Every path a plan names is resolved before it applies, preconditions
+/// included, and applied in its resolved form.
+#[tokio::test]
+async fn apply_changes_resolves_every_path_the_plan_names() {
+    let temp_dir = TempDir::new().unwrap();
+    std::fs::create_dir(temp_dir.path().join("sub")).unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    let plan = ChangePlan::new("dots")
+        .create("./a.md", "a")
+        .create("sub/../b.md", "b");
+    let outcome = manager.apply_changes(&plan).await.unwrap();
+    assert!(outcome.error.is_none(), "{outcome:?}");
+    assert!(temp_dir.path().join("a.md").is_file());
+    assert!(temp_dir.path().join("b.md").is_file());
+
+    let outside_precondition = ChangePlan::new("peek")
+        .upsert("c.md", "c")
+        .expect_absent("../outside.md");
+    assert!(manager.apply_changes(&outside_precondition).await.is_err());
+    assert!(!temp_dir.path().join("c.md").exists());
+}
+
+/// The substrate entry point refuses a path that isn't plain, whoever built
+/// the plan.
+#[tokio::test]
+async fn the_substrate_entry_refuses_paths_that_are_not_plain() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    for path in ["../x.md", "./x.md", "a/../x.md", "/abs.md", ""] {
+        let plan = ChangePlan::new("raw").upsert(path, "x");
+        let refused = manager.apply_through_substrate(&plan).await;
+        assert!(
+            matches!(refused, Err(Error::InvalidPath { .. })),
+            "{path:?}: {refused:?}"
+        );
+    }
+    let precondition = ChangePlan::new("raw")
+        .upsert("x.md", "x")
+        .expect_absent("../x.md");
+    assert!(
+        manager
+            .apply_through_substrate(&precondition)
+            .await
+            .is_err()
+    );
+    assert!(!temp_dir.path().join("x.md").exists());
+}
+
 #[tokio::test]
 async fn test_atomic_write() {
     let temp_dir = TempDir::new().unwrap();
