@@ -9,10 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The `visualize` page no longer runs script from a note.** A note's `resource` was made a link whatever its scheme, so a `javascript:` one ran when clicked, and note names in the "Cited by" list went into the page as HTML, so a crafted file name could run script when its backlinks were shown. A vault someone shares with you could do either. Names and resources are now escaped, `resource` is a link only for `http` and `https`, and the three scripts the page loads from jsDelivr are pinned by hash.
 - **`batch_execute` asks before it deletes or replaces notes.** `delete_note` and a `move_note` that replaces a note ask the user to confirm, but a batch could do both without asking. A batch now asks once, naming the notes it deletes and the ones its moves replace.
 - **`add_vault` asks before it gives the agent a folder.** Registering or creating a vault gives the agent read and write access to it, and on stdio any folder outside the refused ones could be registered without the user knowing. `--allowed-vault-roots` still limits where vaults can go.
 
-Both ask through elicitation when the client supports it, and `--no-confirm-destructive` turns them off with the rest.
+The two new confirmations ask through elicitation when the client supports it, and `--no-confirm-destructive` turns them off with the rest.
 
 ### Fixed
 

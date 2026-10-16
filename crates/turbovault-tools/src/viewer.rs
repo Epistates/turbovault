@@ -211,9 +211,9 @@ const TEMPLATE: &str = r##"<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{NAME}} — TurboVault</title>
-<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js" integrity="sha384-IWROdLKRsN1UuJywMlWl7/blXQ8GEooN2n7dzTxfEPd7ybYIKCUJ2Ol/1Gpf3YV4" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@13.0.3/marked.min.js" integrity="sha384-YTBHtsL8yVTHcLakYNyrOfK3K+QQcXiECuaALJ+3j7Mo681Rtzadt8NR6WrZH+eQ" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a" crossorigin="anonymous"></script>
 <style>
   :root { --bg:#0f1117; --panel:#1a1d27; --fg:#e6e6e6; --muted:#8a8f9c; --accent:#5b9dff; --border:#2a2e3a; }
   * { box-sizing: border-box; }
@@ -303,8 +303,13 @@ function showDetail(id) {
   cy.nodes().removeClass('sel');
   cy.getElementById(id).addClass('sel');
   const cites = (backlinks[id] || []).map(s =>
-    `<li><a data-id="${s}">${(nodeById[s]||{}).label || s}</a></li>`).join('');
-  const resource = n.resource ? `<p class="desc"><a href="${n.resource}" target="_blank" rel="noopener">${n.resource}</a></p>` : '';
+    `<li><a data-id="${escapeHtml(s)}">${escapeHtml((nodeById[s]||{}).label || s)}</a></li>`).join('');
+  // A resource is shown as a link only when it's a web address; anything
+  // else (a javascript: URL in a shared vault) is shown as text.
+  const resource = !n.resource ? ''
+    : /^https?:\/\//i.test(n.resource)
+      ? `<p class="desc"><a href="${escapeHtml(n.resource)}" target="_blank" rel="noopener noreferrer">${escapeHtml(n.resource)}</a></p>`
+      : `<p class="desc">${escapeHtml(n.resource)}</p>`;
   document.getElementById('detail').innerHTML =
     `<h2>${escapeHtml(n.label)}</h2>`
     + `<span class="type" style="background:${colorOf(n.type)}33;color:${colorOf(n.type)}">${escapeHtml(n.type)}</span>`
@@ -315,7 +320,7 @@ function showDetail(id) {
   document.querySelectorAll('#detail a[data-id]').forEach(a =>
     a.onclick = () => { showDetail(a.dataset.id); cy.getElementById(a.dataset.id).select(); });
 }
-function escapeHtml(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+function escapeHtml(s){return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 
 cy.on('tap', 'node', e => showDetail(e.target.id()));
 
@@ -409,5 +414,21 @@ mod tests {
         // The literal closing tag must not survive inside the embedded JSON.
         assert!(!html.contains("</script> breaker"));
         assert!(html.contains("<\\/script> breaker"));
+    }
+
+    /// Every script the page loads from a CDN is pinned by hash, so a
+    /// changed file there is refused rather than run.
+    #[test]
+    fn every_cdn_script_is_pinned_by_hash() {
+        let tags: Vec<&str> = TEMPLATE
+            .split("<script src=")
+            .skip(1)
+            .map(|rest| rest.split('>').next().unwrap())
+            .collect();
+        assert_eq!(tags.len(), 3);
+        for tag in tags {
+            assert!(tag.contains("integrity=\"sha384-"), "{tag}");
+            assert!(tag.contains("crossorigin=\"anonymous\""), "{tag}");
+        }
     }
 }
