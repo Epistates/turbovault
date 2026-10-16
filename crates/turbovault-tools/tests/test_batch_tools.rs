@@ -903,6 +903,37 @@ async fn test_plan_move_rewrites_markdown_links() {
     );
 }
 
+/// A relative link names the note at that path from its own folder, so a
+/// move rewrites the links to the moved note and leaves a same-named note's
+/// links alone.
+#[tokio::test]
+async fn test_plan_move_rewrites_only_the_relative_links_that_name_the_note() {
+    let (_temp_dir, manager) = setup_vault_with_files(&[
+        ("archive/x/notes.md", "# Archived\n"),
+        ("projects/x/notes.md", "# Current\n"),
+        ("projects/y/src.md", "See [notes](../x/notes.md).\n"),
+        ("archive/y/old.md", "See [notes](../x/notes.md).\n"),
+    ])
+    .await;
+
+    let forward = manager
+        .get_forward_links(std::path::Path::new("projects/y/src.md"))
+        .await
+        .unwrap();
+    let forward: Vec<String> = forward.iter().map(|p| manager.relative_path(p)).collect();
+    assert_eq!(forward, ["projects/x/notes.md"]);
+
+    let plan = BatchTools::new(manager.clone())
+        .plan_move_with_links("projects/x/notes.md", "projects/z/notes.md", None, "move")
+        .await
+        .unwrap();
+    assert_eq!(
+        planned_content(&plan, "projects/y/src.md").as_deref(),
+        Some("See [notes](../z/notes.md).\n")
+    );
+    assert_eq!(planned_content(&plan, "archive/y/old.md"), None);
+}
+
 /// A canvas pointing at the moved note follows it in the same plan: its
 /// file node and the links in its text nodes.
 #[tokio::test]

@@ -17,6 +17,7 @@ Both ask through elicitation when the client supports it, and `--no-confirm-dest
 ### Fixed
 
 - **A note addressed in another case is the same note.** On macOS and Windows, `projects/roadmap.md` opens `Projects/Roadmap.md`, but a write through it was indexed under the name as written, so the one file became two notes in the cache, the link graph and search, with doubled backlinks and search hits, and every freshness pass reported it again. A path now takes the stored spelling of every part of it that exists, so `PROJECTS/New.md` is created as `Projects/New.md` too. On macOS the same holds for a name whose accents are written in another Unicode form. A filesystem that tells names apart by case is left alone.
+- **A relative link names the note at that path from its own note's folder.** `[notes](../x/notes.md)` in `projects/y/src.md` means `projects/x/notes.md`, but every link was resolved as if it had no source, by name and path suffix, so it could land on `archive/x/notes.md` instead. Backlinks, broken links and graph tools counted the wrong note, and a move or delete rewrote links in notes that didn't point at it. A `./` or `../` target is now resolved from its note's folder first, then by the usual rules. `LinkGraph::resolve_from` is new.
 
 ## [4.0.2] - 2026-10-16
 
