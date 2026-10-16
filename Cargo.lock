@@ -5858,6 +5858,7 @@ dependencies = [
  "turbovault-git",
  "turbovault-graph",
  "turbovault-parser",
+ "unicode-normalization",
 ]
 
 [[package]]

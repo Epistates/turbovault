@@ -32,6 +32,8 @@ rayon = { workspace = true }
 
 # File editing & diff
 similar = { workspace = true }
+# Matching a file name to its stored spelling whatever Unicode form it's in
+unicode-normalization = { workspace = true }
 
 schemars = { workspace = true, optional = true }
 
