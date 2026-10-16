@@ -4,7 +4,7 @@
 No. A vault is a folder of Markdown files; TurboVault works on the folder directly. Obsidian can stay open on it at the same time, and TurboVault picks up its edits.
 
 **Will it change my notes without asking?**
-Only through write tools, and every write that replaces a note is held to the hash from the agent's last read, so it can't overwrite an edit you made since. Deleting a note, a move that replaces one and a forced rollback ask you to confirm when your client supports it. For no writes at all, run with `--profile read-only`, or set `allowed_operations: read` on a vault.
+Only through write tools, and every write that replaces a note is held to the hash from the agent's last read, so it can't overwrite an edit you made since. Deleting a note, a move that replaces one, a forced rollback, a batch that does either, and adding a vault ask you to confirm when your client supports it. For no writes at all, run with `--profile read-only`, or set `allowed_operations: read` on a vault.
 
 **Can I undo a change?**
 Yes. Every change is in the audit trail (`audit_log`), and `rollback_note` restores the note as it was before. On a Git-backed vault every change is also a commit.

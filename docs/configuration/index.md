@@ -99,7 +99,7 @@ There's no HTTP health endpoint. Check liveness with an MCP `ping`, or a TCP con
 
 ## Confirming destructive calls
 
-`delete_note`, a `move_note` that replaces the note at its destination (`dest_expected_hash` other than `absent`), and `rollback_note` with `force` ask the user to confirm when the client supports form elicitation. Declining, cancelling or leaving the box unchecked stops the call with nothing changed. A client without elicitation is never asked. `--no-confirm-destructive` turns confirmation off.
+`delete_note`, a `move_note` that replaces the note at its destination (`dest_expected_hash` other than `absent`), `rollback_note` with `force`, a `batch_execute` that deletes or replaces notes (one question for the whole batch), and `add_vault`, which gives the agent a new folder, ask the user to confirm when the client supports form elicitation. Declining, cancelling or leaving the box unchecked stops the call with nothing changed. A client without elicitation is never asked. `--no-confirm-destructive` turns confirmation off.
 
 ## Search index
 
@@ -137,7 +137,7 @@ Each vault's search index persists under TurboVault's cache directory (`$XDG_CAC
 | `--service-name <NAME>` | `OTEL_SERVICE_NAME` | `turbovault` | Service name for traces and metrics |
 | `--metrics-port <PORT>` | `TURBOVAULT_METRICS_PORT` | | Prometheus metrics on 127.0.0.1 |
 | `--output-format <F>` | `TURBOVAULT_OUTPUT_FORMAT` | `json` | Log format on network transports |
-| `--no-confirm-destructive` | `TURBOVAULT_NO_CONFIRM_DESTRUCTIVE` | off | Never ask before destructive calls |
+| `--no-confirm-destructive` | `TURBOVAULT_NO_CONFIRM_DESTRUCTIVE` | off | Never ask before destructive calls or `add_vault` |
 | `--plugins <IDS>` | `TURBOVAULT_PLUGINS` | none | Compiled-in plugins to enable, e.g. `vector_search` |
 | `--show-advanced-tools` and the visibility flags | see [Tool visibility](#tool-visibility) | | |
 

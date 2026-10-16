@@ -153,8 +153,9 @@ pub struct Args {
     metrics_port: Option<u16>,
 
     /// Don't ask the user before delete_note, a move_note that replaces a
-    /// note, or a forced rollback_note. By default TurboVault asks through
-    /// the client when the client supports elicitation.
+    /// note, a forced rollback_note, a batch_execute that does either, or
+    /// add_vault. By default TurboVault asks through the client when the
+    /// client supports elicitation.
     #[arg(
         long,
         env = "TURBOVAULT_NO_CONFIRM_DESTRUCTIVE",

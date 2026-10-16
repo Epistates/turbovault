@@ -175,7 +175,7 @@ Search, the link graph, similarity, vault stats, note resources and the plugin c
 - Every note is a resource, `obsidian://note/{vault}/{+path}`, listed, read as markdown and subscribable. The change listener sends `notifications/resources/updated` to subscribers and `list_changed` when notes come or go; while anyone is subscribed, a 2 s sweep catches outside edits without a tool call.
 - Five workflow prompts live in `tools/core_prompts.rs`, with completion for their arguments and the note template.
 - Slow tools report progress when the client sends a progress token, and honor cancellation only before they write.
-- `delete_note`, a `move_note` that replaces a note and a forced `rollback_note` ask the user to confirm through elicitation when the client supports it. `--no-confirm-destructive` turns this off.
+- `delete_note`, a `move_note` that replaces a note, a forced `rollback_note`, a `batch_execute` that deletes or replaces notes, and `add_vault` ask the user to confirm through elicitation when the client supports it. `--no-confirm-destructive` turns this off.
 
 ### 7. Security
 - **Vault registration.** `add_vault` is checked against `VaultRootPolicy`: a filesystem root, the home directory, hidden and application-data directories under home, and system directories are always refused; `--allowed-vault-roots` limits it further. With no roots configured, runtime registration is open on stdio and closed on network transports. Tool-supplied paths expand `~` only, never `$VAR`.

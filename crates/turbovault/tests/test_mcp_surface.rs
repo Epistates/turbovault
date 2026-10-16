@@ -573,6 +573,95 @@ async fn a_replacing_move_asks_and_a_plain_one_does_not() {
 }
 
 #[tokio::test]
+async fn a_batch_asks_before_it_deletes_and_a_declined_one_changes_nothing() {
+    let (vault, server) = server_with_vault().await;
+    let session = RecordingSession::eliciting(json!({"action": "decline"}));
+    let ctx = context(&session);
+    let batch = json!({"operations": [
+        {"type": "CreateNote", "path": "New.md", "content": "# New\n"},
+        {"type": "DeleteNote", "path": "Notes.md", "on_backlinks": "force"},
+    ]});
+    let result = server.call_tool("batch_execute", batch, &ctx).await;
+    let refused = match result {
+        Ok(result) => result.is_error(),
+        Err(_) => true,
+    };
+    assert!(refused);
+    assert!(vault.path().join("Notes.md").exists());
+    assert!(!vault.path().join("New.md").exists(), "nothing applied");
+    let requests = session.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].1["message"]
+            .as_str()
+            .unwrap()
+            .contains("`Notes.md`")
+    );
+}
+
+#[tokio::test]
+async fn a_batch_that_only_creates_does_not_ask() {
+    let (vault, server) = server_with_vault().await;
+    let session = RecordingSession::eliciting(json!({"action": "decline"}));
+    let batch = json!({"operations": [
+        {"type": "CreateNote", "path": "New.md", "content": "# New\n"},
+    ]});
+    let result = server
+        .call_tool("batch_execute", batch, &context(&session))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error(),
+        "{}",
+        result.first_text().unwrap_or_default()
+    );
+    assert!(vault.path().join("New.md").exists());
+    assert!(session.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn add_vault_asks_before_it_gives_access_to_a_folder() {
+    let (_vault, server) = server_with_vault().await;
+    let other = TempDir::new().unwrap();
+    let arguments = json!({"name": "other", "path": other.path().to_string_lossy()});
+
+    let declined = RecordingSession::eliciting(json!({"action": "decline"}));
+    let result = server
+        .call_tool("add_vault", arguments.clone(), &context(&declined))
+        .await;
+    let refused = match result {
+        Ok(result) => result.is_error(),
+        Err(_) => true,
+    };
+    assert!(refused);
+    let listed = call(&server, "list_vaults", json!({})).await;
+    assert!(
+        !listed.to_string().contains("\"other\""),
+        "a declined vault isn't registered: {listed}"
+    );
+
+    let accepted =
+        RecordingSession::eliciting(json!({"action": "accept", "content": {"confirm": true}}));
+    let result = server
+        .call_tool("add_vault", arguments, &context(&accepted))
+        .await
+        .unwrap();
+    assert!(
+        !result.is_error(),
+        "{}",
+        result.first_text().unwrap_or_default()
+    );
+    let requests = accepted.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].1["message"]
+            .as_str()
+            .unwrap()
+            .contains(&*other.path().to_string_lossy())
+    );
+}
+
+#[tokio::test]
 async fn confirmation_can_be_turned_off() {
     let (vault, server) = server_with_vault().await;
     server.set_confirm_destructive(false);

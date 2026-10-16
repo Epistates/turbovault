@@ -73,7 +73,7 @@ impl VaultProvider {
     // this description is the only place a calling agent can discover the keys
     // it accepts. Spell them out here or they are undiscoverable.
     #[tool(
-        description = "Register a vault folder with the server and index it so it's ready to use. With `create: true`, create the folder first, optionally from a starter `template`. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots).",
+        description = "Register a vault folder with the server and index it so it's ready to use. With `create: true`, create the folder first, optionally from a starter `template`. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots), and asks the user to confirm when the client supports it.",
         title = "Add Vault",
         tags = ["write", "admin"],
         read_only = false,
@@ -120,6 +120,18 @@ impl VaultProvider {
             ));
         }
         let (write_backend, backend_opts) = parse_backend_selection(write_backend, backend_opts)?;
+        // Registering a folder gives the agent read and write access to it,
+        // so the user is asked, as before a delete.
+        let action = if create {
+            format!(
+                "Create the folder `{path}` and give the agent read and write access to it as the vault `{name}`?"
+            )
+        } else {
+            format!(
+                "Give the agent read and write access to the folder `{path}` as the vault `{name}`?"
+            )
+        };
+        self.confirm_destructive(ctx, action).await?;
         let mut stages = Stages::new(ctx, 2);
         stages.next("Registering the vault").await?;
         let tools = self.lifecycle_tools();

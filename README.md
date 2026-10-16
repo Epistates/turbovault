@@ -147,7 +147,7 @@ A good first call is `get_vault_context`: it returns the registered vaults, the 
 - **Notes as resources.** Every note is `obsidian://note/{vault}/{path}`: listed, read as markdown, and subscribable. Subscribers hear when a note changes, whether TurboVault or another editor changed it.
 - **Prompts.** `triage_vault`, `repair_broken_links`, `review_period`, `summarize_note` and `ground_draft`, with completion for their arguments.
 - **Progress and cancellation.** Slow tools report progress, and a cancelled call stops before it writes anything.
-- **Confirmation.** `delete_note`, a `move_note` that replaces a note and a forced `rollback_note` ask the user to confirm when the client supports elicitation. `--no-confirm-destructive` turns this off.
+- **Confirmation.** `delete_note`, a `move_note` that replaces a note, a forced `rollback_note`, a `batch_execute` that deletes or replaces notes, and `add_vault` ask the user to confirm when the client supports elicitation. `--no-confirm-destructive` turns this off.
 
 ## Writes and Git
 
