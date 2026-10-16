@@ -2612,3 +2612,68 @@ async fn dropping_manager_aborts_reindex_tasks_no_leak() {
     }
     assert!(gone, "manager leaked: a background task holds a strong ref");
 }
+
+/// On a filesystem that finds a name whatever its case (macOS, Windows), a
+/// note addressed in another case is the same note: it's written in place,
+/// and the cache and the graph hold it once, under its stored name.
+#[tokio::test]
+async fn a_note_addressed_in_another_case_is_one_note() {
+    let temp_dir = TempDir::new().unwrap();
+    std::fs::create_dir(temp_dir.path().join("Projects")).unwrap();
+    std::fs::write(temp_dir.path().join("Projects/Roadmap.md"), "# Roadmap\n").unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+    if !paths::filesystem_folds_names(temp_dir.path()) {
+        // Here `projects/roadmap.md` is a different file, rightly.
+        return;
+    }
+
+    let addressed = manager
+        .resolve_path(Path::new("projects/roadmap.md"))
+        .unwrap();
+    assert_eq!(manager.relative_path(&addressed), "Projects/Roadmap.md");
+    let new_note = manager.resolve_path(Path::new("PROJECTS/New.md")).unwrap();
+    assert_eq!(manager.relative_path(&new_note), "Projects/New.md");
+
+    manager
+        .write_file(
+            Path::new("projects/roadmap.md"),
+            "# Roadmap\n\nShipped.\n",
+            Precondition::Blind,
+            "update",
+        )
+        .await
+        .unwrap();
+    manager.reconcile_now().await;
+    manager.reconcile_now().await;
+
+    let cached: Vec<String> = manager
+        .all_cached_vault_files()
+        .await
+        .iter()
+        .map(|file| manager.relative_path(&file.path))
+        .collect();
+    assert_eq!(cached, ["Projects/Roadmap.md"]);
+    assert_eq!(manager.get_stats().await.unwrap().total_files, 1);
+    assert_eq!(
+        std::fs::read_to_string(temp_dir.path().join("Projects/Roadmap.md")).unwrap(),
+        "# Roadmap\n\nShipped.\n"
+    );
+}
+
+/// On macOS a name is found whichever Unicode form its accents are in, so
+/// a note stored decomposed and addressed composed is the same note.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn a_note_addressed_in_another_unicode_form_is_one_note() {
+    use unicode_normalization::UnicodeNormalization;
+    let temp_dir = TempDir::new().unwrap();
+    let stored: String = "Café.md".nfd().collect();
+    std::fs::write(temp_dir.path().join(&stored), "# Café\n").unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+
+    let composed: String = "café.md".nfc().collect();
+    let addressed = manager.resolve_path(Path::new(&composed)).unwrap();
+    assert_eq!(manager.relative_path(&addressed), stored);
+}

@@ -175,6 +175,9 @@ pub struct VaultManager {
     /// locations against, and what paths that reach the manager already
     /// resolved start with. Worked out once, by the first use that succeeds.
     real_root: OnceLock<PathBuf>,
+    /// Whether the vault's filesystem finds a name whatever its case, worked
+    /// out once (see `on_disk_spelling`).
+    folds_names: OnceLock<bool>,
     /// The protected directory names, folded the way `protected_component`
     /// compares them, once rather than on every path component.
     protected_names: Vec<String>,
@@ -312,6 +315,7 @@ impl VaultManager {
 
         Ok(Self {
             real_root: OnceLock::new(),
+            folds_names: OnceLock::new(),
             protected_names,
             config,
             vault_path,

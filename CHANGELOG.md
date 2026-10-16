@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Both ask through elicitation when the client supports it, and `--no-confirm-destructive` turns them off with the rest.
 
+### Fixed
+
+- **A note addressed in another case is the same note.** On macOS and Windows, `projects/roadmap.md` opens `Projects/Roadmap.md`, but a write through it was indexed under the name as written, so the one file became two notes in the cache, the link graph and search, with doubled backlinks and search hits, and every freshness pass reported it again. A path now takes the stored spelling of every part of it that exists, so `PROJECTS/New.md` is created as `Projects/New.md` too. On macOS the same holds for a name whose accents are written in another Unicode form. A filesystem that tells names apart by case is left alone.
+
 ## [4.0.2] - 2026-10-16
 
 A security fix. Every crate moves to 4.0.2 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.
