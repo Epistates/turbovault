@@ -27,7 +27,7 @@ impl BatchProvider {
 
     /// Execute a validated batch of file operations.
     #[tool(
-        description = "Run several note operations (create, write, edit, delete, move, frontmatter and tag changes) in one call. With write_backend=git, the batch is one atomic commit: every operation applies or none do. On a plain-folder vault they apply in order, and one that fails leaves the earlier ones applied; the result says which.",
+        description = "Run several note operations (create, write, edit, delete, move, frontmatter and tag changes) in one call. With write_backend=git, the batch is one atomic commit: every operation applies or none do. On a plain-folder vault they apply in order, and one that fails leaves the earlier ones applied; the result says which. A batch that deletes or replaces notes asks the user to confirm first when the client supports it.",
         title = "Batch Execute",
         tags = ["write", "batch"],
         read_only = false,
@@ -57,6 +57,12 @@ impl BatchProvider {
             return Err(McpError::invalid_params(
                 "Batch operations list cannot be empty".to_string(),
             ));
+        }
+
+        // A batch asks before it deletes or replaces a note, as delete_note
+        // and move_note do on their own.
+        if let Some(action) = destructive_action(&operations, &manager, &vault_name) {
+            self.confirm_destructive(ctx, action).await?;
         }
 
         let op_count = operations.len();
@@ -117,4 +123,69 @@ impl BatchProvider {
 
         response.to_json()
     }
+}
+
+/// The question to ask before a batch that deletes notes or moves one onto a
+/// note that's there, naming them; `None` when it does neither. A move
+/// replaces a note on the same terms as move_note: its destination guard
+/// allows it and something is at the destination.
+fn destructive_action(
+    operations: &[BatchOperation],
+    manager: &VaultManager,
+    vault_name: &str,
+) -> Option<String> {
+    let mut deleted = Vec::new();
+    let mut replaced = Vec::new();
+    for operation in operations {
+        match operation {
+            BatchOperation::DeleteNote { path, .. } => deleted.push(path.as_str()),
+            BatchOperation::MoveNote {
+                to,
+                dest_expected_hash,
+                ..
+            } if dest_expected_hash
+                .as_deref()
+                .is_some_and(|token| token != "absent")
+                && manager
+                    .resolve_path(Path::new(to))
+                    .is_ok_and(|resolved| resolved.exists()) =>
+            {
+                replaced.push(to.as_str())
+            }
+            _ => {}
+        }
+    }
+
+    let mut parts = Vec::new();
+    if !deleted.is_empty() {
+        parts.push(format!("delete {}", name_paths(&deleted)));
+    }
+    if !replaced.is_empty() {
+        parts.push(format!(
+            "replace {} by moving notes onto them",
+            name_paths(&replaced)
+        ));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Run a batch that will {} in the vault `{vault_name}`?",
+        parts.join(" and ")
+    ))
+}
+
+/// Up to ten paths in backticks, then how many more there are.
+fn name_paths(paths: &[&str]) -> String {
+    const SHOWN: usize = 10;
+    let mut named = paths
+        .iter()
+        .take(SHOWN)
+        .map(|path| format!("`{path}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > SHOWN {
+        named.push_str(&format!(" and {} more", paths.len() - SHOWN));
+    }
+    named
 }

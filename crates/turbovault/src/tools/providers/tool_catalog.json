@@ -3299,7 +3299,7 @@
       "readOnlyHint": false,
       "title": "Add Vault"
     },
-    "description": "Register a vault folder with the server and index it so it's ready to use. With `create: true`, create the folder first, optionally from a starter `template`. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots).",
+    "description": "Register a vault folder with the server and index it so it's ready to use. With `create: true`, create the folder first, optionally from a starter `template`. Optional write_backend selects the write path: 'direct' (default) or 'git'. Optional backend_opts holds that backend's settings; 'direct' has none, 'git' accepts branch, author {name, email}, merge_strategy ('merge-commit' or 'fast-forward'), include_ignored, require_commit_message. Passing backend_opts with write_backend 'direct' is an error. The server may only allow vaults inside certain folders (allowed_vault_roots), and asks the user to confirm when the client supports it.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
@@ -4065,7 +4065,7 @@
       "readOnlyHint": false,
       "title": "Batch Execute"
     },
-    "description": "Run several note operations (create, write, edit, delete, move, frontmatter and tag changes) in one call. With write_backend=git, the batch is one atomic commit: every operation applies or none do. On a plain-folder vault they apply in order, and one that fails leaves the earlier ones applied; the result says which.",
+    "description": "Run several note operations (create, write, edit, delete, move, frontmatter and tag changes) in one call. With write_backend=git, the batch is one atomic commit: every operation applies or none do. On a plain-folder vault they apply in order, and one that fails leaves the earlier ones applied; the result says which. A batch that deletes or replaces notes asks the user to confirm first when the client supports it.",
     "inputSchema": {
       "$defs": {
         "BatchOperation": {

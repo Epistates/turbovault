@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`batch_execute` asks before it deletes or replaces notes.** `delete_note` and a `move_note` that replaces a note ask the user to confirm, but a batch could do both without asking. A batch now asks once, naming the notes it deletes and the ones its moves replace.
+- **`add_vault` asks before it gives the agent a folder.** Registering or creating a vault gives the agent read and write access to it, and on stdio any folder outside the refused ones could be registered without the user knowing. `--allowed-vault-roots` still limits where vaults can go.
+
+Both ask through elicitation when the client supports it, and `--no-confirm-destructive` turns them off with the rest.
+
 ## [4.0.2] - 2026-10-16
 
 A security fix. Every crate moves to 4.0.2 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.

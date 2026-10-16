@@ -51,7 +51,7 @@ To work with several vaults, drop `--vault` and pass `--config` instead, or let 
 ## What to expect
 
 - The agent sees the 30 core tools. Add `--show-advanced-tools` to the arguments to list the other 22; they're callable by name either way.
-- Deleting a note, a move that replaces a note, and a forced rollback ask you to confirm when the client supports elicitation.
+- Deleting a note, a move that replaces a note, a forced rollback, a batch that does either, and adding a vault ask you to confirm when the client supports elicitation.
 - Notes are also available as resources (`obsidian://note/{vault}/{path}`), and the server offers five prompts, such as `triage_vault` and `review_period`.
 
 ## Troubleshooting

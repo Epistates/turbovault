@@ -69,7 +69,7 @@ Every note is a resource:
 
 - `vault_health` (at `depth: full`), `explain_vault`, `note_quality` (whole vault), `find_duplicates`, `export`, `batch_execute` and `add_vault` report progress by stage when the request carries a progress token.
 - A cancelled call stops at the start of a stage that hasn't written anything; a call either did nothing or finished.
-- `delete_note`, a `move_note` that replaces a note and `rollback_note` with `force` ask the user to confirm through elicitation when the client supports it, unless the server runs with `--no-confirm-destructive`.
+- `delete_note`, a `move_note` that replaces a note, `rollback_note` with `force`, a `batch_execute` that deletes or replaces notes, and `add_vault` ask the user to confirm through elicitation when the client supports it, unless the server runs with `--no-confirm-destructive`.
 
 ## Example workflows
 
