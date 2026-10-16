@@ -16,10 +16,34 @@ use tempfile::TempDir;
 use turbomcp::{McpHandler, RequestContext};
 use turbovault::ObsidianMcpServer;
 
-/// Long enough to clear `RECONCILE_MIN_INTERVAL` (500ms), which is the bound
-/// the gate promises. Tests wait it out rather than reaching past it, so what
-/// they cover is the guarantee an agent actually gets.
+/// Long enough to clear `RECONCILE_MIN_INTERVAL` (500ms), so a quiet test
+/// gives the freshness gate a chance to look.
 const PAST_THE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// How long an outside edit may take to show. The gate looks at most every
+/// `RECONCILE_MIN_INTERVAL` or 20 times its last pass, whichever is longer,
+/// so on a slow machine it can be well past 500ms. Tests wait for the edit to
+/// show, up to this, rather than reaching past the gate, so what they cover is
+/// the guarantee an agent actually gets.
+const FRESHNESS_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Wait until `shows` is true or [`FRESHNESS_BOUND`] passes. The assertions
+/// after it say what was expected.
+async fn settle<F, Fut>(mut shows: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + FRESHNESS_BOUND;
+    while !shows().await && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn total_notes(server: &ObsidianMcpServer) -> serde_json::Value {
+    let context = call(server, "get_vault_context", json!({})).await;
+    context["data"]["current_stats"]["total_notes"].clone()
+}
 
 fn ctx() -> RequestContext {
     RequestContext::new()
@@ -109,7 +133,7 @@ async fn every_view_agrees_after_an_external_edit() {
         "# A\n\nreplacementtoken and a link to [[b]]\n",
     )
     .unwrap();
-    tokio::time::sleep(PAST_THE_DEBOUNCE).await;
+    settle(|| async { search(&server, "replacementtoken").await == 1 }).await;
 
     // read_note goes to disk, so it was never the problem. It is the reference
     // the other views have to match.
@@ -155,7 +179,7 @@ async fn a_note_created_externally_becomes_searchable() {
         "# Appeared\n\nbrandnewtoken\n",
     )
     .unwrap();
-    tokio::time::sleep(PAST_THE_DEBOUNCE).await;
+    settle(|| async { search(&server, "brandnewtoken").await == 1 }).await;
 
     assert_eq!(
         search(&server, "brandnewtoken").await,
@@ -181,7 +205,7 @@ async fn a_note_deleted_externally_leaves_the_index() {
     let (temp, server) = vault_with_warm_indexes().await;
 
     std::fs::remove_file(temp.path().join("a.md")).unwrap();
-    tokio::time::sleep(PAST_THE_DEBOUNCE).await;
+    settle(|| async { total_notes(&server).await == 0 }).await;
 
     assert_eq!(
         search(&server, "originaltoken").await,
