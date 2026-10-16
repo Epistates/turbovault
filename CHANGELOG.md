@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-10-16
+
+A security fix. Every crate moves to 4.0.2 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.
+
+### Security
+
+- **`batch_execute` can no longer write outside the vault through a symlinked folder** ([GHSA-vqx4-9ppx-hpcr](https://github.com/Epistates/turbovault/security/advisories/GHSA-vqx4-9ppx-hpcr), affects 2.0.0 to 4.0.1). `VaultManager::apply_changes` checked each path in a plan, then applied the plan with the paths as written. The check reads `..` lexically, and the OS reads it after following a symlink in front of it, so with `linked` a symlink to a folder outside the vault, `linked/../x.md` was written next to that folder. A plan is now applied with the paths that were checked, its precondition paths are checked too, and every write refuses a path that isn't a plain vault-relative one. The single-note tools were not affected.
+- `SECURITY.md` lists 4.x as the supported version.
+
 ## [4.0.1] - 2026-10-14
 
 Parser fixes and a rustls update. Every crate moves to 4.0.1 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.

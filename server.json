@@ -3,7 +3,7 @@
   "name": "io.github.epistates/turbovault",
   "title": "TurboVault",
   "description": "Obsidian vaults for AI agents: read, write, search, link graph, and safe atomic edits",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "websiteUrl": "https://github.com/Epistates/turbovault",
   "repository": {
     "url": "https://github.com/Epistates/turbovault",
@@ -13,7 +13,7 @@
     {
       "registryType": "cargo",
       "identifier": "turbovault",
-      "version": "4.0.1",
+      "version": "4.0.2",
       "transport": {
         "type": "stdio"
       },
@@ -43,7 +43,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "ghcr.io/epistates/turbovault:4.0.1",
+      "identifier": "ghcr.io/epistates/turbovault:4.0.2",
       "transport": {
         "type": "stdio"
       },

@@ -7,7 +7,7 @@ Older releases are not patched; upgrade to the latest release to pick up a fix.
 
 | Version | Supported |
 |---|---|
-| 3.x (latest minor) | Yes |
+| 4.x (latest minor) | Yes |
 | Older | No |
 
 ## Reporting a vulnerability

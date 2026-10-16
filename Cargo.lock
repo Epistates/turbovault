@@ -5630,7 +5630,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5672,7 +5672,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-audit"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5689,7 +5689,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-batch"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "schemars 1.2.3",
  "serde",
@@ -5699,7 +5699,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-core"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "chrono",
  "schemars 1.2.3",
@@ -5720,7 +5720,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-export"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "chrono",
  "serde",
@@ -5730,7 +5730,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-git"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "criterion",
  "git2",
@@ -5742,7 +5742,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-graph"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "petgraph",
  "serde",
@@ -5753,7 +5753,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-parser"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "percent-encoding",
  "proptest",
@@ -5796,7 +5796,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-sql"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "gluesql",
  "serde_json",
@@ -5809,7 +5809,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-tools"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "chrono",
  "git2",
@@ -5840,7 +5840,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "4.0.1"
+version = "4.0.2"
 dependencies = [
  "futures",
  "git2",
