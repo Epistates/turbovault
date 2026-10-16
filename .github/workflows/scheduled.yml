@@ -78,10 +78,13 @@ jobs:
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
 
+      # The prebuilt cargo-fuzz is a musl binary and defaults to building for
+      # the target it was built for, which the sanitizers can't use and the
+      # runner doesn't have; name the glibc target.
       - name: Fuzz for five minutes
         run: |
           mkdir -p "fuzz/corpus/${{ matrix.target }}"
-          cargo +nightly fuzz run -O "${{ matrix.target }}" \
+          cargo +nightly fuzz run -O --target x86_64-unknown-linux-gnu "${{ matrix.target }}" \
             "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.seeds }}" \
             -- -max_total_time=300 -max_len=65536 -rss_limit_mb=4096
 
