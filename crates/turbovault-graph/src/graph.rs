@@ -4,7 +4,7 @@ use petgraph::prelude::*;
 use petgraph::unionfind::UnionFind;
 use petgraph::visit::{EdgeRef, IntoEdgeReferences, NodeIndexable};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use turbovault_core::prelude::*;
 
 /// Node index type for graph
@@ -208,7 +208,10 @@ impl LinkGraph {
         let stale: Vec<_> = self
             .graph
             .edges_directed(idx, Incoming)
-            .filter(|edge| self.resolve_link(&edge.weight().target) != Some(idx))
+            .filter(|edge| {
+                self.resolve_link_from(&self.graph[edge.source()], &edge.weight().target)
+                    != Some(idx)
+            })
             .map(|edge| edge.id())
             .collect();
         for edge in stale {
@@ -224,7 +227,7 @@ impl LinkGraph {
     /// graph self-loop, which would distort cycles and centrality), or a
     /// broken link.
     fn link_from(&mut self, source: NodeIndex, mut link: Link) {
-        match self.resolve_link(&link.target) {
+        match self.resolve_link_from(&self.graph[source], &link.target) {
             Some(target) if target == source => {}
             Some(target) => {
                 link.is_valid = true;
@@ -246,7 +249,7 @@ impl LinkGraph {
                 continue;
             };
             for mut link in self.take_unresolved(&source_path) {
-                if let Some(target_idx) = self.resolve_link(&link.target) {
+                if let Some(target_idx) = self.resolve_link_from(&source_path, &link.target) {
                     // Resolved same-document links are valid but do not become
                     // graph self-loops, matching update_links().
                     if target_idx != source_idx {
@@ -350,6 +353,52 @@ impl LinkGraph {
     /// re-deriving the rules and disagreeing with them on case or aliases.
     pub fn resolve(&self, target: &str) -> Option<&PathBuf> {
         self.resolve_link(target).map(|idx| &self.graph[idx])
+    }
+
+    /// [`Self::resolve`] for a link written in the note at `source`, which a
+    /// relative target (`./x.md`, `../x/notes.md`) is resolved against: the
+    /// note at that path when there is one, then the usual rules.
+    pub fn resolve_from(&self, source: &Path, target: &str) -> Option<&PathBuf> {
+        self.resolve_link_from(source, target)
+            .map(|idx| &self.graph[idx])
+    }
+
+    /// [`Self::resolve_link`], trying a relative target against the folder
+    /// of the note it's written in first. `..` in `../x/notes.md` names a
+    /// folder, so without its source the target is only `x/notes.md`, which
+    /// could be any of several notes.
+    fn resolve_link_from(&self, source: &Path, target: &str) -> Option<NodeIndex> {
+        self.resolve_relative(source, target)
+            .or_else(|| self.resolve_link(target))
+    }
+
+    /// The note a `./` or `../` target names from `source`'s folder, matched
+    /// case-insensitively and with or without `.md`, as the other rules are.
+    fn resolve_relative(&self, source: &Path, target: &str) -> Option<NodeIndex> {
+        let path = target.split('#').next().unwrap_or("").trim();
+        let relative = ["./", "../", ".\\", "..\\"]
+            .iter()
+            .any(|prefix| path.starts_with(prefix));
+        if !relative {
+            return None;
+        }
+        let mut resolved = source.parent()?.to_path_buf();
+        for part in path.split(['/', '\\']) {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if !resolved.pop() {
+                        return None;
+                    }
+                }
+                part => resolved.push(part),
+            }
+        }
+        // The full-length suffix of a path names only that path.
+        let key = path_suffixes(&resolved).into_iter().next_back()?;
+        self.path_suffix_index
+            .get(&key)
+            .and_then(|candidates| self.preferred(candidates))
     }
 
     /// Resolve a link target to a node index.

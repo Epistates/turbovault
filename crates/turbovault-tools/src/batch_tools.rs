@@ -617,7 +617,9 @@ impl BatchTools {
         for full_src in &backlink_paths {
             let rel_str = self.rel_backlink_path(full_src)?;
             let src_content = self.read_file(&rel_str).await?;
-            let links = self.links_resolving_to(&src_content, &from_full).await;
+            let links = self
+                .links_resolving_to(full_src, &src_content, &from_full)
+                .await;
             let rewritten = rewrite_links_from(&rel_str, &src_content, &links, from, to);
             if rewritten == src_content {
                 continue;
@@ -689,7 +691,9 @@ impl BatchTools {
         for full_src in &backlink_paths {
             let rel_str = self.rel_backlink_path(full_src)?;
             let src_content = self.read_file(&rel_str).await?;
-            let links = self.links_resolving_to(&src_content, &target_full).await;
+            let links = self
+                .links_resolving_to(full_src, &src_content, &target_full)
+                .await;
             let rewritten = wrap_links_as_stale(&src_content, &links);
             if rewritten == src_content {
                 continue;
@@ -715,13 +719,15 @@ impl BatchTools {
         Ok((plan, updated))
     }
 
-    /// The links in `content` (wikilinks, embeds and internal Markdown links)
-    /// that the link graph resolves to `target` (an absolute vault path).
+    /// The links in `content`, the note at `source` (wikilinks, embeds and
+    /// internal Markdown links), that the link graph resolves to `target`
+    /// (an absolute vault path), relative ones from `source`'s folder.
     /// `content` is parsed as read, not
     /// taken from the graph's copy, so every span is a span of the text about
     /// to be rewritten even if the file changed since it was last indexed.
     async fn links_resolving_to(
         &self,
+        source: &std::path::Path,
         content: &str,
         target: &std::path::Path,
     ) -> Vec<turbovault_core::Link> {
@@ -730,7 +736,11 @@ impl BatchTools {
         let graph = lg.read().await;
         links
             .into_iter()
-            .filter(|link| graph.resolve(&link.target).is_some_and(|p| p == target))
+            .filter(|link| {
+                graph
+                    .resolve_from(source, &link.target)
+                    .is_some_and(|p| p == target)
+            })
             .collect()
     }
 
