@@ -11,6 +11,7 @@ impl VaultManager {
     /// concurrent freshness sweep cannot catch this write half-applied and
     /// republish it as somebody else's ([`WriteClaim`]).
     pub(super) async fn apply_through_substrate(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
+        ensure_plain_relative_paths(plan)?;
         self.check_allowed_operations(plan)?;
         let outcome = {
             let _claim = WriteClaim::new(&self.write_claims, plan.touched_paths());
@@ -215,9 +216,10 @@ impl VaultManager {
 
     /// Apply an arbitrary multi-change [`ChangePlan`] — the R3 multi-change
     /// entry point the four single-op mutators above are thin builders over.
-    /// Every path the plan touches is resolved through the same traversal
-    /// guard (`resolve_path`) the single-op mutators run before ever
-    /// building a plan, so this entry point can't become a chokepoint
+    /// Every path the plan names, preconditions included, is resolved through
+    /// the same traversal guard (`resolve_path`) the single-op mutators run
+    /// before ever building a plan, and the plan is applied with each path in
+    /// its resolved form, so this entry point can't become a chokepoint
     /// bypass for callers (batch, rollback, …) that build their own plans.
     /// Delegates to the substrate and runs the same post-apply link-
     /// graph/cache sync (R7) as the single-op mutators.
@@ -233,11 +235,52 @@ impl VaultManager {
     /// nothing written.
     #[instrument(skip(self, plan), fields(changes = plan.changes.len()), name = "vault_apply_changes")]
     pub async fn apply_changes(&self, plan: &ChangePlan) -> Result<ApplyOutcome> {
-        for touched in plan.touched_paths() {
-            self.resolve_path(Path::new(&touched))?;
+        match self.resolved_plan(plan)? {
+            Some(resolved) => self.apply_through_substrate(&resolved).await,
+            None => self.apply_through_substrate(plan).await,
+        }
+    }
+
+    /// `plan` with every path as `resolve_path` resolved it, or `None` when
+    /// every path already is.
+    ///
+    /// Checking a path is not enough: the substrates write it joined to the
+    /// root as written. `resolve_path` reads `..` lexically, but the OS reads
+    /// it after following any symlink before it, so `linked/../x.md`, with
+    /// `linked` a symlink to a folder outside the vault, passes the check as
+    /// `x.md` and lands next to that folder. Writing the resolved path means
+    /// the path that was checked is the one written.
+    fn resolved_plan(&self, plan: &ChangePlan) -> Result<Option<ChangePlan>> {
+        let resolve = |path: &str| -> Result<String> {
+            Ok(self.relative_path(&self.resolve_path(Path::new(path))?))
+        };
+
+        let touched = plan.touched_paths();
+        let named = touched
+            .iter()
+            .chain(plan.preconditions.iter().map(|(path, _)| path));
+        let mut unresolved = false;
+        for path in named {
+            unresolved |= resolve(path)? != *path;
+        }
+        if !unresolved {
+            return Ok(None);
         }
 
-        self.apply_through_substrate(plan).await
+        let mut resolved = plan.clone();
+        for change in &mut resolved.changes {
+            match change {
+                Change::Upsert { path, .. } | Change::Remove { path } => *path = resolve(path)?,
+                Change::Rename { from, to } => {
+                    *from = resolve(from)?;
+                    *to = resolve(to)?;
+                }
+            }
+        }
+        for (path, _) in &mut resolved.preconditions {
+            *path = resolve(path)?;
+        }
+        Ok(Some(resolved))
     }
 
     /// Edit file using SEARCH/REPLACE blocks (LLM-optimized)
@@ -427,4 +470,28 @@ impl VaultManager {
 
         self.apply_one(&plan).await
     }
+}
+
+/// Refuse a plan naming any path but a plain vault-relative one: no root, no
+/// drive, no `.` or `..`. The substrates join each path to the vault root, so
+/// only a plain one is sure to land where it was checked. Every mutator
+/// resolves its paths before building a plan; this is the backstop for one
+/// that doesn't.
+fn ensure_plain_relative_paths(plan: &ChangePlan) -> Result<()> {
+    let touched = plan.touched_paths();
+    let named = touched
+        .iter()
+        .chain(plan.preconditions.iter().map(|(path, _)| path));
+    for path in named {
+        let plain = !path.is_empty()
+            && Path::new(path)
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)));
+        if !plain {
+            return Err(Error::invalid_path(format!(
+                "{path} is not a plain vault-relative path"
+            )));
+        }
+    }
+    Ok(())
 }
