@@ -47,6 +47,23 @@ fn serve(transport: turbomcp::Transport) -> Stopped {
     stopped
 }
 
+/// Start a server on a free port, choosing another when something takes the
+/// port between `free_port` and the server's bind, which Windows readily
+/// does with a port just let go. A failed bind is reported almost at once,
+/// so a server still up a moment later has its port.
+async fn start_on_free_port(start: impl Fn(u16) -> Stopped) -> (String, Stopped) {
+    for _ in 0..5 {
+        let port = free_port();
+        let stopped = start(port);
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        match stopped.get() {
+            Some(why) if why.contains("bind") => continue,
+            _ => return (format!("127.0.0.1:{port}"), stopped),
+        }
+    }
+    panic!("no free port could be bound in 5 tries");
+}
+
 /// Retry `connect` until the server is accepting, for up to 30 seconds of
 /// wall clock. Counted in time rather than attempts: a refused connection
 /// fails in microseconds on Unix but takes about two seconds on Windows. Each
@@ -95,8 +112,9 @@ where
 #[cfg(feature = "http")]
 #[tokio::test]
 async fn http_serves_an_mcp_session() {
-    let addr = format!("127.0.0.1:{}", free_port());
-    let stopped = serve(turbomcp::Transport::http(&addr));
+    let (addr, stopped) =
+        start_on_free_port(|port| serve(turbomcp::Transport::http(format!("127.0.0.1:{port}"))))
+            .await;
 
     let url = format!("http://{addr}");
     let client = connect_when_ready(&stopped, || {
@@ -114,8 +132,9 @@ async fn http_serves_an_mcp_session() {
 #[cfg(feature = "tcp")]
 #[tokio::test]
 async fn tcp_serves_an_mcp_session() {
-    let addr = format!("127.0.0.1:{}", free_port());
-    let stopped = serve(turbomcp::Transport::tcp(&addr));
+    let (addr, stopped) =
+        start_on_free_port(|port| serve(turbomcp::Transport::tcp(format!("127.0.0.1:{port}"))))
+            .await;
 
     let client = connect_when_ready(&stopped, || {
         let addr = addr.clone();
@@ -136,8 +155,10 @@ async fn websocket_serves_an_mcp_session() {
         WebSocketBidirectionalConfig, WebSocketBidirectionalTransport,
     };
 
-    let addr = format!("127.0.0.1:{}", free_port());
-    let stopped = serve(turbomcp::Transport::websocket(&addr));
+    let (addr, stopped) = start_on_free_port(|port| {
+        serve(turbomcp::Transport::websocket(format!("127.0.0.1:{port}")))
+    })
+    .await;
 
     let url = format!("ws://{addr}/ws");
     let client = connect_when_ready(&stopped, || {
@@ -206,20 +227,27 @@ async fn http_bearer_auth_refuses_requests_without_the_token() {
         },
         ..SecuritySettings::default()
     };
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
-    let config = turbovault::security::http_server_config(&settings, "127.0.0.1", port).unwrap();
-
-    let server = ObsidianMcpServer::new().expect("server");
-    let serve_addr = addr.clone();
-    tokio::spawn(async move {
-        let _ = server
-            .builder()
-            .with_config(config)
-            .transport(turbomcp::Transport::http(&serve_addr))
-            .serve()
-            .await;
-    });
+    let (addr, _stopped) = start_on_free_port(|port| {
+        let config =
+            turbovault::security::http_server_config(&settings, "127.0.0.1", port).unwrap();
+        let stopped: Stopped = Arc::default();
+        let record = stopped.clone();
+        let server = ObsidianMcpServer::new().expect("server");
+        tokio::spawn(async move {
+            let outcome = server
+                .builder()
+                .with_config(config)
+                .transport(turbomcp::Transport::http(format!("127.0.0.1:{port}")))
+                .serve()
+                .await;
+            let _ = record.set(match outcome {
+                Ok(()) => "serve() returned".to_string(),
+                Err(error) => format!("serve() failed: {error}"),
+            });
+        });
+        stopped
+    })
+    .await;
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let refused = loop {
