@@ -137,7 +137,7 @@ libtest-mimic = "0.8"
 # Validates every tool result against the outputSchema the tool advertises,
 # so a schema cannot drift from what the tool returns. No remote $refs, so
 # no network features.
-jsonschema = { version = "0.58", default-features = false }
+jsonschema = { version = "0.59", default-features = false }
 
 [[test]]
 name = "wss_matrix"
