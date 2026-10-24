@@ -107,7 +107,7 @@ turbomcp-transport = "3.6.0"
 gluesql = { version = "0.20", default-features = false, features = ["gluesql_memory_storage"] }
 
 # Search and Matching (Tier 1d: Replace hand-rolled implementations)
-tantivy = "0.26"           # Full-text search engine (Apache Lucene-inspired, production-grade)
+tantivy = "0.27"           # Full-text search engine (Apache Lucene-inspired, production-grade)
 
 # File Editing & Diff (World-class fuzzy matching for LLM-generated edits)
 similar = { version = "3.2", features = ["inline"] }  # mitsuhiko's diff lib (used by insta)
