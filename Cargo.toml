@@ -17,7 +17,7 @@ members = [
 ]
 # cargo-fuzz targets: their own workspace, built with nightly (see fuzz/).
 exclude = ["fuzz"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "4.0.2"
@@ -48,7 +48,7 @@ unimplemented = "warn"
 print_stdout = "warn"
 
 [workspace.dependencies]
-tokio = { version = "1.53", features = ["io-util", "macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
+tokio = { version = "1.54", features = ["io-util", "macros", "rt-multi-thread", "signal", "sync", "time", "fs"] }
 futures = "0.3"
 async-trait = "0.1"
 
@@ -72,7 +72,7 @@ rayon = "1.12"               # Parallel parsing and indexing (already in the tre
 
 # Parsing utilities
 regex = "1"
-winnow = "1.0.4"
+winnow = "1.0.5"
 
 # Error handling
 thiserror = "2.0"
@@ -80,7 +80,7 @@ anyhow = "1.0"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.28", features = ["v4", "serde"] }
+uuid = { version = "1.29", features = ["v4", "serde"] }
 
 # Command line
 clap = { version = "4.6", features = ["derive", "env"] }
@@ -107,13 +107,13 @@ turbomcp-transport = "3.6.0"
 gluesql = { version = "0.20", default-features = false, features = ["gluesql_memory_storage"] }
 
 # Search and Matching (Tier 1d: Replace hand-rolled implementations)
-tantivy = "0.26"           # Full-text search engine (Apache Lucene-inspired, production-grade)
+tantivy = "0.27"           # Full-text search engine (Apache Lucene-inspired, production-grade)
 
 # File Editing & Diff (World-class fuzzy matching for LLM-generated edits)
 similar = { version = "3.2", features = ["inline"] }  # mitsuhiko's diff lib (used by insta)
 strsim = "0.11"           # Levenshtein distance for fuzzy matching (if similar insufficient)
 sha2 = "0.11"             # SHA-256 hashing for content validation
-unicode-normalization = "0.1.25"  # Unicode NFC normalization
+unicode-normalization = "0.1.26"  # Unicode NFC normalization
 
 # Path handling & Security
 shellexpand = "3.1"       # Shell-like expansions (tilde, env vars) - battle-tested
@@ -125,7 +125,7 @@ git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS 
 # Vector search (optional, feature-gated Tier 1 stack: pure Rust, CPU-only, no
 # bundled C libraries, no network access at runtime unless a caller points
 # `from_pretrained` at a Hugging Face repo id instead of a local path).
-model2vec-rs = { version = "0.3", default-features = false, features = ["local-only", "fancy-regex"] }
+model2vec-rs = { version = "0.4", default-features = false, features = ["local-only", "fancy-regex"] }
 hnsw_rs = "0.3"           # Pure-Rust HNSW ANN index (jean-pierreBoth/hnswlib-rs)
 bm25 = "2.3"              # Pure-Rust BM25 scorer/search engine (Michael-JB/bm25)
 

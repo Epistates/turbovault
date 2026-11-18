@@ -9,7 +9,7 @@
 # that is not listed here fails the job. Keep this list in step with the
 # `[advisories] ignore` list in deny.toml, which carries the reasons:
 #
-#   RUSTSEC-2026-0253  lru via tantivy (keyed by usize, no panicking Drop)
+#   RUSTSEC-2026-0543  chrono unmaintained; ours and via gluesql, oauth2, turbomcp 3
 #   RUSTSEC-2023-0126  im OrdSet aliasing via gluesql (gluesql uses only HashSet)
 #   RUSTSEC-2026-0248  im unmaintained via gluesql
 #   RUSTSEC-2026-0251  sized-chunks unmaintained via im via gluesql
@@ -21,7 +21,7 @@
 
 [advisories]
 ignore = [
-    "RUSTSEC-2026-0253",
+    "RUSTSEC-2026-0543",
     "RUSTSEC-2023-0126",
     "RUSTSEC-2026-0248",
     "RUSTSEC-2026-0251",
