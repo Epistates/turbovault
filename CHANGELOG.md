@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-18
+
+Security fixes in `visualize`, `batch_execute`, `add_vault` and search, two fixes to how notes and relative links are resolved, and a dependency refresh. It adds one public function, `LinkGraph::resolve_from`. Every crate moves to 4.1.0 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.
+
 ### Security
 
 - **The `visualize` page no longer runs script from a note.** A note's `resource` was made a link whatever its scheme, so a `javascript:` one ran when clicked, and note names in the "Cited by" list went into the page as HTML, so a crafted file name could run script when its backlinks were shown. A vault someone shares with you could do either. Names and resources are now escaped, `resource` is a link only for `http` and `https`, and the three scripts the page loads from jsDelivr are pinned by hash.
