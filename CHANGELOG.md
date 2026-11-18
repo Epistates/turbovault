@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `visualize` page no longer runs script from a note.** A note's `resource` was made a link whatever its scheme, so a `javascript:` one ran when clicked, and note names in the "Cited by" list went into the page as HTML, so a crafted file name could run script when its backlinks were shown. A vault someone shares with you could do either. Names and resources are now escaped, `resource` is a link only for `http` and `https`, and the three scripts the page loads from jsDelivr are pinned by hash.
 - **`batch_execute` asks before it deletes or replaces notes.** `delete_note` and a `move_note` that replaces a note ask the user to confirm, but a batch could do both without asking. A batch now asks once, naming the notes it deletes and the ones its moves replace.
 - **`add_vault` asks before it gives the agent a folder.** Registering or creating a vault gives the agent read and write access to it, and on stdio any folder outside the refused ones could be registered without the user knowing. `--allowed-vault-roots` still limits where vaults can go.
+- **Search runs on `tantivy` 0.27.** Its query parser no longer takes exponential time on deeply nested queries, and no longer panics or loops on malformed input, which an agent's `search` call could send. It also fixes unsound unsafe code in the doc store and string columns, an out-of-bounds write on a corrupt index, and moves to `lru` 0.18.5, so the RUSTSEC-2026-0253 ignore is gone. The index on disk is a cache: one written by 0.26 is rebuilt on first use if 0.27 can't open it. `tokio` is required at 1.54 or later (RUSTSEC-2026-0386).
 
 The two new confirmations ask through elicitation when the client supports it, and `--no-confirm-destructive` turns them off with the rest.
 
@@ -19,6 +20,10 @@ The two new confirmations ask through elicitation when the client supports it, a
 
 - **A note addressed in another case is the same note.** On macOS and Windows, `projects/roadmap.md` opens `Projects/Roadmap.md`, but a write through it was indexed under the name as written, so the one file became two notes in the cache, the link graph and search, with doubled backlinks and search hits, and every freshness pass reported it again. A path now takes the stored spelling of every part of it that exists, so `PROJECTS/New.md` is created as `Projects/New.md` too. On macOS the same holds for a name whose accents are written in another Unicode form. A filesystem that tells names apart by case is left alone.
 - **A relative link names the note at that path from its own note's folder.** `[notes](../x/notes.md)` in `projects/y/src.md` means `projects/x/notes.md`, but every link was resolved as if it had no source, by name and path suffix, so it could land on `archive/x/notes.md` instead. Backlinks, broken links and graph tools counted the wrong note, and a move or delete rewrote links in notes that didn't point at it. A `./` or `../` target is now resolved from its note's folder first, then by the usual rules. `LinkGraph::resolve_from` is new.
+
+### Changed
+
+- **Dependencies refreshed.** `tantivy` 0.27, `model2vec-rs` 0.4 (the vector plugin), `jsonschema` 0.61 (tests), `uuid` 1.29, and every package in the lockfile at its latest compatible version. The workspace resolves with Cargo's resolver 3, so `cargo update` keeps to versions the 1.90 MSRV builds. `chrono` is now flagged unmaintained (RUSTSEC-2026-0543); it is ignored with the reason, since `gluesql`, `oauth2` and `turbomcp` 3 link it as well as our own crates. The Docker image builds on Rust 1.99.1, and every GitHub Action is at its latest release a week old or more.
 
 ## [4.0.2] - 2026-10-16
 
