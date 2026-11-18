@@ -94,56 +94,83 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
 
   # ── Publish Crates ───────────────────────────────────────────────────
-  # Runs only on a `v*` tag, and only when CARGO_REGISTRY_TOKEN is present, so
-  # a fork or a repo without the secret builds a release without publishing.
-  # Waits on the builds too, so a tag whose binaries fail to build or to
-  # start never reaches crates.io half-released.
+  # Runs on a `v*` tag of Epistates/turbovault, after the builds, so a tag
+  # whose binaries fail to build or to start never reaches crates.io
+  # half-released.
+  #
+  # Authenticates with crates.io Trusted Publishing: GitHub's OIDC token is
+  # exchanged for a publish token that lasts 30 minutes and is revoked when
+  # the job ends. No secret is stored. Each crate's crates.io settings must
+  # trust this repository, `release.yml` and the `release` environment (see
+  # docs/development/releasing.md). A crate that doesn't fails the exchange or
+  # its upload, and the job fails with it: nothing here skips publishing.
   publish:
     name: Publish Crates
     runs-on: ubuntu-latest
     needs: [verify, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'Epistates/turbovault'
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
           toolchain: stable
-      - name: Publish crates to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Cargo resolves the publish order from the dependency graph and waits
+      # on the index between crates, so neither is scripted here. What it will
+      # NOT do is tolerate a member whose version is already up: that aborts
+      # the whole run before anything uploads. Two ways in. A crate versioned
+      # outside the workspace (`turbovault-plugin-api`) stays put across a
+      # release it did not change in, and a retry after a partial run finds
+      # the crates that already landed.
+      #
+      # A dry run reports exactly those as warnings rather than failing, so it
+      # is the pre-flight: read the names it names, exclude them, publish the
+      # rest. Nothing here is a hand-maintained list. It runs before the token
+      # exchange, so the token's 30 minutes all go to publishing.
+      - name: Find the crates to publish
+        id: plan
+        shell: bash
         run: |
-          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
-            echo "CARGO_REGISTRY_TOKEN not set; skipping publish step."
-            exit 0
-          fi
           set -euo pipefail
-          # Cargo resolves the publish order from the dependency graph and waits
-          # on the index between crates, so neither is scripted here. What it
-          # will NOT do is tolerate a member whose version is already up: that
-          # aborts the whole run before anything uploads. Two ways in. A crate
-          # versioned outside the workspace (`turbovault-plugin-api`) stays put
-          # across a release it did not change in, and a retry after a partial
-          # run finds the crates that already landed.
-          #
-          # A dry run reports exactly those as warnings rather than failing, so
-          # it is the pre-flight: read the names it names, exclude them, publish
-          # the rest. Nothing here is a hand-maintained list.
           mapfile -t ALREADY < <(
             cargo publish --workspace --locked --dry-run 2>&1 \
               | sed -n 's/^warning: crate \([^@]*\)@.* already exists on crates.io index$/\1/p' \
               | sort -u
           )
           TOTAL="$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')"
-          if [ "${#ALREADY[@]}" -eq "${TOTAL}" ]; then
-            echo "All ${TOTAL} crates are already on crates.io at this version; nothing to publish."
-            exit 0
-          fi
-          EXCLUDES=()
+          EXCLUDES=""
           for crate in "${ALREADY[@]}"; do
             echo "Already published, skipping: ${crate}"
-            EXCLUDES+=(--exclude "${crate}")
+            EXCLUDES+=" --exclude ${crate}"
           done
-          cargo publish --workspace --locked "${EXCLUDES[@]}"
+          if [ "${#ALREADY[@]}" -eq "${TOTAL}" ]; then
+            echo "All ${TOTAL} crates are already on crates.io at this version; nothing to publish."
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "excludes=${EXCLUDES}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate with crates.io
+        id: auth
+        if: steps.plan.outputs.pending == 'true'
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+
+      - name: Publish crates to crates.io
+        if: steps.plan.outputs.pending == 'true'
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          EXCLUDES: ${{ steps.plan.outputs.excludes }}
+        run: |
+          set -euo pipefail
+          # EXCLUDES is a list of flags, so it is split on purpose.
+          # shellcheck disable=SC2086
+          cargo publish --workspace --locked ${EXCLUDES}
 
   # ── Build Prebuilt Binaries ───────────────────────────────────────────
   build:

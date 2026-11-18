@@ -30,9 +30,13 @@ cargo semver-checks --workspace --baseline-rev "$(git describe --tags --abbrev=0
    push the tag. The release workflow verifies, builds the seven binaries,
    smoke-tests the ones the runners can execute, publishes the multi-arch
    image to `ghcr.io/epistates/turbovault`, attaches the SBOM and checksums, and
-   signs provenance attestations for the archives and the image.
-4. **Publish the crates** (`cargo publish --workspace --locked` with the same
-   exclusions) if the workflow's publish job has no `CARGO_REGISTRY_TOKEN`.
+   signs provenance attestations for the archives and the image. Once the
+   builds pass, its publish job puts every crate whose version isn't on
+   crates.io yet there, through Trusted Publishing (below).
+4. **Check crates.io.** Every crate should show the new version. If the
+   publish job failed, read why: a crate missing its trusted publisher fails
+   the token exchange or its upload. Fix the cause and re-run the job; it
+   skips the crates that already landed.
 5. **Publish to the MCP Registry** once the crate and image are live, with
    [mcp-publisher](https://github.com/modelcontextprotocol/registry):
 
@@ -44,3 +48,33 @@ cargo semver-checks --workspace --baseline-rev "$(git describe --tags --abbrev=0
    The registry checks ownership against the `mcp-name:` line in
    `crates/turbovault/README.md` (as rendered on crates.io) and the
    `io.modelcontextprotocol.server.name` label on the image.
+
+## Trusted Publishing
+
+The publish job holds no crates.io token. It asks GitHub for an OIDC token,
+and `rust-lang/crates-io-auth-action` exchanges that for a crates.io publish
+token that lasts 30 minutes and is revoked when the job ends. crates.io issues
+it only if the crate trusts this exact repository, workflow file and GitHub
+environment.
+
+Each crate is configured on its own, and only an owner of the crate can do it.
+For every published crate in the workspace (`cargo metadata --no-deps
+--format-version 1 | jq -r '.packages[].name'`), open
+`https://crates.io/crates/<name>/settings`, choose **Trusted Publishing**, then
+**Add**, then **GitHub**, and enter:
+
+| Field | Value |
+|---|---|
+| Repository owner | `Epistates` |
+| Repository name | `turbovault` |
+| Workflow filename | `release.yml` |
+| Environment | `release` |
+
+The job runs in the `release` environment, which GitHub creates the first time
+the job runs. Restricting that environment to `v*` tags in the repository's
+environment settings means no other ref can ever obtain the token.
+
+A crate has to exist on crates.io before it can trust a publisher, so a new
+workspace crate's first version is published by an owner with
+`cargo publish -p <name>`, and its trusted publisher added afterwards. Until
+it is, the release's publish job fails.
