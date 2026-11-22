@@ -63,8 +63,13 @@ cargo bench -p turbovault --bench vault_10k -- --save-baseline after
 python3 scripts/bench_compare.py target/criterion before after
 ```
 
-The scheduled workflow runs `vault_10k` nightly and fails when a benchmark is
-more than 25% slower than the last good night.
+Save both runs on the same machine; times from two machines aren't comparable.
+A side saved more than once (`before-1`, `before-2`, ...) is judged by its
+fastest run, which helps on a machine that is doing other work.
+
+The scheduled workflow builds `vault_10k` for the latest release and for the
+current commit every night, runs the two in turn on one runner, and fails when
+a benchmark is more than 25% slower than the release.
 
 ## Code Quality
 

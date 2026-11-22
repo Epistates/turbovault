@@ -97,17 +97,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # The 10,000-note benchmarks (crates/turbovault/benches/vault_10k.rs),
-  # compared with the last good night. The cache holds the baseline and is
-  # only saved when the job passes, so a regression stays red night after
-  # night until it is fixed or a passing run accepts the new numbers.
-  # Shared runners are noisy; the threshold is set for real regressions, not
-  # a few percent of drift.
+  # The 10,000-note benchmarks (crates/turbovault/benches/vault_10k.rs), this
+  # commit against the latest release, both built and measured in this job.
+  # Hosted runners have differed by up to 1.8x from one night to the next, so
+  # a number kept from another night says more about the machine than the
+  # code. The two sides take turns three times and each is judged by its
+  # fastest run, which leaves a busy spell on the runner out of the result. A
+  # regression stays red until it is fixed or a release ships with it.
   bench:
     name: Benchmarks (10k notes)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
@@ -117,20 +120,49 @@ jobs:
         with:
           key: bench
 
-      - name: Restore the last good baseline
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: bench-history
-          key: bench-history-${{ github.run_id }}
-          restore-keys: bench-history-
+      # Only the manifests, the lockfile and the crates reach the benchmark
+      # binary. When none of them has changed since the release there is
+      # nothing to measure, and the remaining steps are skipped.
+      - name: Check out the latest release
+        id: reference
+        run: |
+          TAG="$(git describe --tags --abbrev=0 --match 'v*' HEAD)"
+          if git diff --quiet "${TAG}" HEAD -- Cargo.toml Cargo.lock crates; then
+            echo "No change to Cargo.toml, Cargo.lock or crates/ since ${TAG}: nothing to compare." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git worktree add --detach "${RUNNER_TEMP}/reference" "${TAG}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Run the benchmarks
+      # Each checkout builds into its own target directory. In a shared one
+      # the two overwrite each other's `turbovault` binary, and every turn
+      # starts with a three-minute rebuild.
+      - name: Build both
+        if: steps.reference.outputs.tag
+        run: |
+          cargo bench -p turbovault --bench vault_10k --locked --no-run
+          cd "${RUNNER_TEMP}/reference"
+          cargo bench -p turbovault --bench vault_10k --locked --no-run
+
+      - name: Run the benchmarks, the release and this commit in turn
+        if: steps.reference.outputs.tag
         env:
-          CRITERION_HOME: ${{ github.workspace }}/bench-history
-        run: cargo bench -p turbovault --bench vault_10k --locked -- --save-baseline candidate
+          CRITERION_HOME: ${{ runner.temp }}/criterion
+        run: |
+          for ROUND in 1 2 3; do
+            (cd "${RUNNER_TEMP}/reference" && cargo bench -p turbovault --bench vault_10k --locked -- --save-baseline "reference-${ROUND}")
+            cargo bench -p turbovault --bench vault_10k --locked -- --save-baseline "candidate-${ROUND}"
+          done
 
-      - name: Compare with the last good night
+      - name: Compare with the latest release
+        if: steps.reference.outputs.tag
+        env:
+          TAG: ${{ steps.reference.outputs.tag }}
         run: |
           set -o pipefail
-          python3 scripts/bench_compare.py bench-history nightly candidate --threshold 25 --promote \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## vault_10k against ${TAG}"
+            echo
+            python3 scripts/bench_compare.py "${RUNNER_TEMP}/criterion" reference candidate --threshold 25
+          } | tee -a "$GITHUB_STEP_SUMMARY"
