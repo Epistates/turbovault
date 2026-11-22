@@ -12,8 +12,9 @@
 //! TV_BENCH_NOTES=2000 cargo bench -p turbovault --bench vault_10k
 //! ```
 //!
-//! The scheduled workflow compares each night's numbers against the previous
-//! night's with scripts/bench_compare.py.
+//! The scheduled workflow runs these every night for the latest release and
+//! for the current commit on one runner, and compares the two with
+//! scripts/bench_compare.py.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;

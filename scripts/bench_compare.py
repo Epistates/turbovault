@@ -1,28 +1,47 @@
 #!/usr/bin/env python3
 """Compare two saved criterion baselines and fail on a regression.
 
-Usage: bench_compare.py <criterion-dir> <baseline> <candidate> [--threshold PCT] [--promote]
+Usage: bench_compare.py <criterion-dir> <baseline> <candidate> [--threshold PCT]
 
 Walks <criterion-dir> (normally target/criterion) for every benchmark that
 has both baselines saved (`cargo bench -- --save-baseline <name>`), prints a
 Markdown table of their mean times, and exits 1 if any candidate is more than
 --threshold percent (default 25) slower than the baseline. A benchmark with no
-baseline yet is listed as new and never fails.
+baseline is listed as new and never fails.
 
---promote then copies the candidate over the baseline, so the next run
-compares against this one. Stdlib only.
+Both sides must be measured on the same machine: the times are compared as
+they are, and two machines differ by more than any threshold worth setting.
+
+Either side may be saved more than once, as <name>-1, <name>-2 and so on; the
+fastest run of each side is the one compared. Other load on a machine only
+ever makes a run slower, so the fastest of a few runs is the closest to what
+the code costs, and alternating the two sides spreads a busy spell over both.
+A second table then lists every run, so the spread between runs of the same
+code can be read next to the change. Stdlib only.
 """
 
 import argparse
 import json
 import os
-import shutil
+import re
 import sys
 
 
 def mean_ns(path):
     with open(os.path.join(path, "estimates.json")) as f:
         return json.load(f)["mean"]["point_estimate"]
+
+
+def runs_ns(bench_dir, name):
+    """The mean time of every saved run of `name` (`name` itself or
+    `name-<n>`) for the benchmark in `bench_dir`, in the order of their names."""
+    runs = re.compile(rf"{re.escape(name)}(-\d+)?")
+    return [
+        mean_ns(os.path.join(bench_dir, entry))
+        for entry in sorted(os.listdir(bench_dir))
+        if runs.fullmatch(entry)
+        and os.path.isfile(os.path.join(bench_dir, entry, "estimates.json"))
+    ]
 
 
 def human(ns):
@@ -40,22 +59,23 @@ def main():
     ap.add_argument("candidate")
     ap.add_argument("--threshold", type=float, default=25.0,
                     help="percent slowdown that counts as a regression (default 25)")
-    ap.add_argument("--promote", action="store_true",
-                    help="copy the candidate baseline over the baseline afterwards")
     args = ap.parse_args()
 
-    rows, regressions, compared = [], [], []
-    for root, dirs, _ in os.walk(args.criterion_dir):
-        if args.candidate not in dirs or "report" in root.split(os.sep):
+    rows, runs, regressions = [], [], []
+    for root, _, _ in os.walk(args.criterion_dir):
+        if "report" in root.split(os.sep):
+            continue
+        new_runs = runs_ns(root, args.candidate)
+        if not new_runs:
             continue
         name = os.path.relpath(root, args.criterion_dir)
-        new = mean_ns(os.path.join(root, args.candidate))
-        base_dir = os.path.join(root, args.baseline)
-        if not os.path.isdir(base_dir):
+        base_runs = runs_ns(root, args.baseline)
+        runs.append((name, base_runs, new_runs))
+        new = min(new_runs)
+        if not base_runs:
             rows.append((name, "new", human(new), ""))
-            compared.append(root)
             continue
-        base = mean_ns(base_dir)
+        base = min(base_runs)
         change = (new - base) / base * 100
         mark = ""
         if change > args.threshold:
@@ -64,7 +84,6 @@ def main():
         elif change < -args.threshold:
             mark = "faster"
         rows.append((name, human(base), human(new), f"{change:+.1f}% {mark}".strip()))
-        compared.append(root)
 
     if not rows:
         sys.exit(f"no benchmarks with a saved '{args.candidate}' baseline under {args.criterion_dir}")
@@ -76,12 +95,11 @@ def main():
     if regressions:
         print(f"\n{len(regressions)} benchmark(s) more than {args.threshold:.0f}% slower: "
               + ", ".join(sorted(regressions)))
-
-    if args.promote:
-        for root in compared:
-            target = os.path.join(root, args.baseline)
-            shutil.rmtree(target, ignore_errors=True)
-            shutil.copytree(os.path.join(root, args.candidate), target)
+    if any(len(base) > 1 or len(new) > 1 for _, base, new in runs):
+        print(f"\n| Every run | {args.baseline} | {args.candidate} |")
+        print("|---|---|---|")
+        for name, base, new in sorted(runs):
+            print(f"| {name} | {', '.join(map(human, base))} | {', '.join(map(human, new))} |")
 
     sys.exit(1 if regressions else 0)
 
