@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`url` 2.5.9**, for [RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592): `Url::origin()` overflowed the stack on a URL with deeply nested `blob:` prefixes. TurboVault's server never takes that path. `url` comes in through turbomcp, `reqwest` and `oauth2`, and the only calls are in turbomcp's HTTP client, which the server doesn't run.
+
+### Changed
+
+- **`--auth-mode jwt` is stricter about the tokens it accepts.** The lockfile moves to turbomcp 3.7.1, which validates tokens with `jsonwebtoken` 12: a token whose `crit` header names an extension the server doesn't understand is refused, and so is one whose `sub`, `iss` or `aud` has the wrong JSON type. Tokens from a standard OAuth authorization server are unaffected.
+- **Dependencies refreshed.** Every package in both lockfiles is at its latest compatible version. The turbomcp requirement stays at 3.6.0. The Docker image builds on Rust 1.100.0, and `taiki-e/install-action` is at 2.90.5, its latest release a week old or more.
+
 ## [4.1.0] - 2026-11-18
 
 Security fixes in `visualize`, `batch_execute`, `add_vault` and search, two fixes to how notes and relative links are resolved, and a dependency refresh. It adds one public function, `LinkGraph::resolve_from`. Every crate moves to 4.1.0 with the workspace; turbovault-vector, turbovault-plugin-api and turbovault-plugin-vector are unchanged.

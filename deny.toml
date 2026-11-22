@@ -23,10 +23,10 @@ yanked = "deny"
 ignore = [
     # chrono 0.4 is unmaintained (informational; no fixed release). Our own
     # crates use it for timestamps, and gluesql-core 0.20, oauth2 5, schemars'
-    # `chrono` impls and turbomcp 3.6 link it too, so dropping our use alone
+    # `chrono` impls and turbomcp 3 link it too, so dropping our use alone
     # would not remove it. Moving our crates to `jiff` or `time` is its own
     # change.
-    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; used directly and via gluesql-core, oauth2, schemars and turbomcp 3.6" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; used directly and via gluesql-core, oauth2, schemars and turbomcp 3" },
     # im 15.1.0, sized-chunks 0.6.5 and bitmaps 2.1.0 via gluesql-core 0.20.0
     # (the `sql` feature, which the release binaries enable). gluesql 0.20.0 is
     # its latest release.
