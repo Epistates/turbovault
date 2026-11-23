@@ -1079,7 +1079,7 @@ impl McpHandler for ObsidianMcpServer {
     fn server_info(&self) -> ServerInfo {
         let info = ServerInfo::new("obsidian-vault", env!("CARGO_PKG_VERSION"))
             .with_title("TurboVault")
-            .with_website_url(env!("CARGO_PKG_HOMEPAGE"));
+            .with_website_url(env!("CARGO_PKG_REPOSITORY"));
         #[cfg(feature = "plugin-api")]
         if !self.plugins.is_empty() {
             let namespaces = self

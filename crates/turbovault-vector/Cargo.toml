@@ -9,7 +9,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 publish = true
 description = "Optional hybrid (dense + lexical) semantic search engine for TurboVault, pure-Rust and CPU-only"
 documentation = "https://docs.rs/turbovault-vector"
