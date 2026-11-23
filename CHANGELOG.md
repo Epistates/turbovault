@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`url` 2.5.9**, for [RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592): `Url::origin()` overflowed the stack on a URL with deeply nested `blob:` prefixes. TurboVault's server never takes that path. `url` comes in through turbomcp, `reqwest` and `oauth2`, and the only calls are in turbomcp's HTTP client, which the server doesn't run.
 
+### Fixed
+
+- **A note the Markdown parser fails on no longer keeps a vault from opening.** If the parser panicked on one note, the first scan failed with `vault parse task failed` and the vault stayed closed until that note was removed. The note is now skipped: the vault opens, every other note is served, and a warning in the log names the one left out. This changes what such a vault does. It used to fail to open; it now opens without that note in search, links, the graph or the tools that list notes, while `read_note` still returns it. The same holds for a note that starts failing while the server runs, whether it was written through TurboVault or edited outside it. Before, such a note made each freshness pass discard every other change it had found.
+
 ### Changed
 
 - **`--auth-mode jwt` is stricter about the tokens it accepts.** The lockfile moves to turbomcp 3.7.1, which validates tokens with `jsonwebtoken` 12: a token whose `crit` header names an extension the server doesn't understand is refused, and so is one whose `sub`, `iss` or `aud` has the wrong JSON type. Tokens from a standard OAuth authorization server are unaffected.

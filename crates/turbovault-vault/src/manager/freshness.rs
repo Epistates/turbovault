@@ -245,9 +245,23 @@ impl VaultManager {
                 changed.push((path, edited));
             }
         }
-        // Whatever the scan found that the cache had never heard of was created
-        // underneath us. This is the case a per-entry mtime check structurally
-        // cannot see, because it can only re-check entries it already holds.
+        // What is left is on disk and not in the cache. A note the index
+        // already tried and had to skip is one of those on every pass; at
+        // the revision that failed there is nothing new to try, and one
+        // that is gone had nothing in the index to remove.
+        {
+            let mut skipped = self.skipped();
+            skipped.retain(|path, _| on_disk.contains_key(path));
+            on_disk.retain(|path, found| {
+                !skipped
+                    .get(path)
+                    .is_some_and(|skipped| skipped.settled_at(*found))
+            });
+        }
+        // Whatever else the scan found that the cache had never heard of was
+        // created underneath us. This is the case a per-entry mtime check
+        // structurally cannot see, because it can only re-check entries it
+        // already holds.
         changed.extend(on_disk.into_keys().map(|path| (path, true)));
 
         let changed = self.without_claimed_paths(
@@ -289,10 +303,16 @@ impl VaultManager {
                 None
             }
             Ok(_) => Some(true),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+            Err(e) if e.error.kind() == std::io::ErrorKind::NotFound => Some(false),
+            // No longer text, so no longer the bytes we parsed.
+            Err(e) if e.error.kind() == std::io::ErrorKind::InvalidData => Some(true),
             // Left racy, so the next pass looks again.
             Err(e) => {
-                tracing::debug!("freshness sweep: re-reading {}: {e}", path.display());
+                tracing::debug!(
+                    "freshness sweep: re-reading {}: {}",
+                    path.display(),
+                    e.error
+                );
                 None
             }
         }

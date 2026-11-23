@@ -2677,3 +2677,319 @@ async fn a_note_addressed_in_another_unicode_form_is_one_note() {
     let addressed = manager.resolve_path(Path::new(&composed)).unwrap();
     assert_eq!(manager.relative_path(&addressed), stored);
 }
+
+/// Three linked notes, one of which the parser panics on.
+fn vault_with_a_note_the_parser_panics_on(dir: &Path) {
+    std::fs::write(dir.join("a.md"), "# A\n\nsee [[b]] and [[bad]]\n").unwrap();
+    std::fs::write(dir.join("b.md"), "# B\n\nsee [[a]]\n").unwrap();
+    std::fs::write(
+        dir.join("bad.md"),
+        format!("# Bad\n\n{PARSER_PANIC_MARKER}\n\nsee [[a]]\n"),
+    )
+    .unwrap();
+}
+
+/// Put `path`'s mtime a minute back, so that a read of it is past its mtime
+/// tick and its fingerprint alone can vouch for it.
+fn backdate(path: &Path) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+}
+
+/// The vault-relative paths of the notes in the cache, sorted.
+async fn cached_paths(manager: &VaultManager) -> Vec<String> {
+    let mut paths: Vec<String> = manager
+        .cached_notes()
+        .await
+        .iter()
+        .map(|note| manager.relative_path(&note.path))
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// The vault-relative paths of the notes that link to `note`.
+async fn backlinks_of(manager: &VaultManager, note: &str) -> Vec<String> {
+    manager
+        .get_backlinks(Path::new(note))
+        .await
+        .unwrap()
+        .iter()
+        .map(|path| manager.relative_path(path))
+        .collect()
+}
+
+/// The notes the manager reports as skipped: vault-relative path and reason.
+async fn skipped_notes(manager: &VaultManager) -> Vec<(String, String)> {
+    manager
+        .skipped_notes()
+        .await
+        .into_iter()
+        .map(|note| (manager.relative_path(&note.path), note.reason))
+        .collect()
+}
+
+const PARSER_PANIC_REASON: &str = "the Markdown parser failed on this note: test parser panic";
+
+/// A note the parser panics on costs that note and nothing else: the vault
+/// opens, serves every other note, and says which one it left out.
+#[tokio::test]
+async fn a_note_the_parser_panics_on_does_not_keep_the_vault_from_opening() {
+    let temp_dir = TempDir::new().unwrap();
+    vault_with_a_note_the_parser_panics_on(temp_dir.path());
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    manager.initialize().await.unwrap();
+
+    assert_eq!(cached_paths(&manager).await, ["a.md", "b.md"]);
+    assert_eq!(backlinks_of(&manager, "a.md").await, ["b.md"]);
+    assert_eq!(
+        skipped_notes(&manager).await,
+        [("bad.md".to_string(), PARSER_PANIC_REASON.to_string())]
+    );
+    // The file is still there to read and repair.
+    let content = manager.read_file(Path::new("bad.md")).await.unwrap();
+    assert!(content.contains(PARSER_PANIC_MARKER));
+}
+
+/// Asked for by itself, a note the parser panics on is a parse error.
+#[tokio::test]
+async fn parsing_a_note_the_parser_panics_on_is_a_parse_error() {
+    let temp_dir = TempDir::new().unwrap();
+    vault_with_a_note_the_parser_panics_on(temp_dir.path());
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    let error = manager.parse_file(Path::new("bad.md")).await.unwrap_err();
+
+    assert!(matches!(error, Error::ParseError { .. }), "{error:?}");
+    assert_eq!(
+        error.to_string(),
+        format!("Parse error: {PARSER_PANIC_REASON}")
+    );
+    assert!(manager.parse_file(Path::new("a.md")).await.is_ok());
+}
+
+/// A sync parses every changed note in one task. A panic on one of them
+/// used to end that task, and every other change the pass had found was
+/// dropped with it, on that pass and each one after.
+#[tokio::test]
+async fn a_sync_keeps_its_other_notes_when_the_parser_panics_on_one() {
+    let temp_dir = TempDir::new().unwrap();
+    std::fs::write(temp_dir.path().join("a.md"), "# A\n").unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+
+    std::fs::write(temp_dir.path().join("a.md"), "# A\n\nsee [[new]]\n").unwrap();
+    std::fs::write(temp_dir.path().join("new.md"), "# New\n").unwrap();
+    std::fs::write(
+        temp_dir.path().join("bad.md"),
+        format!("{PARSER_PANIC_MARKER}\n"),
+    )
+    .unwrap();
+    manager.reconcile_now().await;
+
+    assert_eq!(cached_paths(&manager).await, ["a.md", "new.md"]);
+    assert_eq!(backlinks_of(&manager, "new.md").await, ["a.md"]);
+    assert_eq!(
+        skipped_notes(&manager).await,
+        [("bad.md".to_string(), PARSER_PANIC_REASON.to_string())]
+    );
+}
+
+/// A skipped note is on disk and not in the cache, which is what a newly
+/// created note looks like. Left at that, every sweep would parse it and
+/// announce it again. It is tried once per revision: when the file changes,
+/// and not before.
+#[tokio::test]
+async fn reconcile_settles_a_note_the_parser_panics_on() {
+    let temp_dir = TempDir::new().unwrap();
+    std::fs::write(temp_dir.path().join("good.md"), "# Good\n").unwrap();
+    let bad = temp_dir.path().join("bad.md");
+    std::fs::write(&bad, format!("{PARSER_PANIC_MARKER}\n")).unwrap();
+    backdate(&bad);
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+    let captured = capture_changes(&manager);
+
+    for _ in 0..3 {
+        manager.reconcile_now().await;
+    }
+    assert!(
+        captured.lock().unwrap().is_empty(),
+        "an unchanged skipped note must not be reported: {:?}",
+        captured.lock().unwrap()
+    );
+    assert_eq!(skipped_notes(&manager).await.len(), 1);
+
+    // Repaired, it is indexed, announced once, and no longer skipped.
+    std::fs::write(&bad, "# Repaired\n\nsee [[good]]\n").unwrap();
+    for _ in 0..3 {
+        manager.reconcile_now().await;
+    }
+    assert_eq!(*captured.lock().unwrap(), [("bad.md".to_string(), true)]);
+    assert_eq!(cached_paths(&manager).await, ["bad.md", "good.md"]);
+    assert!(skipped_notes(&manager).await.is_empty());
+}
+
+/// A note the index holds, edited into something the parser panics on,
+/// leaves the index: what it held was parsed from text that is gone.
+#[tokio::test]
+async fn a_cached_note_the_parser_starts_panicking_on_leaves_the_index() {
+    let temp_dir = TempDir::new().unwrap();
+    let a = temp_dir.path().join("a.md");
+    std::fs::write(&a, "# A\n\nsee [[b]]\n").unwrap();
+    std::fs::write(temp_dir.path().join("b.md"), "# B\n").unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+    assert_eq!(backlinks_of(&manager, "b.md").await, ["a.md"]);
+    let captured = capture_changes(&manager);
+
+    std::fs::write(&a, format!("{PARSER_PANIC_MARKER}\n\nsee [[b]]\n")).unwrap();
+    backdate(&a);
+    for _ in 0..3 {
+        manager.reconcile_now().await;
+    }
+
+    assert_eq!(*captured.lock().unwrap(), [("a.md".to_string(), true)]);
+    assert_eq!(cached_paths(&manager).await, ["b.md"]);
+    assert!(backlinks_of(&manager, "b.md").await.is_empty());
+    assert_eq!(
+        skipped_notes(&manager).await,
+        [("a.md".to_string(), PARSER_PANIC_REASON.to_string())]
+    );
+}
+
+/// A write lands whether or not the parser can read what was written; the
+/// note is then skipped like any other the parser panics on.
+#[tokio::test]
+async fn a_write_the_parser_panics_on_lands_and_is_skipped() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+    manager
+        .write_file(Path::new("note.md"), "# Note\n", Precondition::Blind, "add")
+        .await
+        .unwrap();
+    assert_eq!(cached_paths(&manager).await, ["note.md"]);
+
+    let content = format!("# Note\n\n{PARSER_PANIC_MARKER}\n");
+    manager
+        .write_file(Path::new("note.md"), &content, Precondition::Blind, "edit")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        manager.read_file(Path::new("note.md")).await.unwrap(),
+        content
+    );
+    assert!(cached_paths(&manager).await.is_empty());
+    assert_eq!(
+        skipped_notes(&manager).await,
+        [("note.md".to_string(), PARSER_PANIC_REASON.to_string())]
+    );
+}
+
+/// A note whose bytes aren't UTF-8 is skipped and reported the same way,
+/// and tried again only when the file changes.
+#[tokio::test]
+async fn a_note_that_is_not_text_is_skipped_and_settles() {
+    let temp_dir = TempDir::new().unwrap();
+    std::fs::write(temp_dir.path().join("good.md"), "# Good\n").unwrap();
+    let binary = temp_dir.path().join("binary.md");
+    std::fs::write(&binary, b"# Not text \xff\xfe\n").unwrap();
+    backdate(&binary);
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+    let captured = capture_changes(&manager);
+
+    for _ in 0..3 {
+        manager.reconcile_now().await;
+    }
+    assert!(
+        captured.lock().unwrap().is_empty(),
+        "an unchanged skipped note must not be reported: {:?}",
+        captured.lock().unwrap()
+    );
+    assert_eq!(cached_paths(&manager).await, ["good.md"]);
+    let skipped = skipped_notes(&manager).await;
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert_eq!(skipped[0].0, "binary.md");
+    assert!(
+        skipped[0]
+            .1
+            .starts_with("this note is not valid UTF-8 text: "),
+        "{}",
+        skipped[0].1
+    );
+
+    std::fs::write(&binary, "# Text now\n").unwrap();
+    manager.reconcile_now().await;
+    assert_eq!(cached_paths(&manager).await, ["binary.md", "good.md"]);
+    assert!(skipped_notes(&manager).await.is_empty());
+}
+
+/// A cached note overwritten with bytes that aren't text, at the same size
+/// and inside the same mtime tick, is caught by the content check.
+#[tokio::test]
+async fn reconcile_sees_a_note_stop_being_text_within_the_mtime_tick() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    let path = temp_dir.path().join("note.md");
+    let tick = SystemTime::now();
+    write_keeping_mtime(&path, "abcd\n", tick);
+    manager.initialize().await.unwrap();
+    assert_eq!(cached_paths(&manager).await, ["note.md"]);
+
+    std::fs::write(&path, b"ab\xff\xfe\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(tick)
+        .unwrap();
+    manager.reconcile_now().await;
+
+    assert!(cached_paths(&manager).await.is_empty());
+    assert_eq!(skipped_notes(&manager).await.len(), 1);
+}
+
+/// A skipped note that is deleted is forgotten, with nothing to announce:
+/// the index never held it.
+#[tokio::test]
+async fn a_skipped_note_that_is_deleted_is_forgotten() {
+    let temp_dir = TempDir::new().unwrap();
+    let bad = temp_dir.path().join("bad.md");
+    std::fs::write(&bad, format!("{PARSER_PANIC_MARKER}\n")).unwrap();
+    backdate(&bad);
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+    assert_eq!(skipped_notes(&manager).await.len(), 1);
+    let captured = capture_changes(&manager);
+
+    std::fs::remove_file(&bad).unwrap();
+    manager.reconcile_now().await;
+
+    assert!(skipped_notes(&manager).await.is_empty());
+    assert!(captured.lock().unwrap().is_empty());
+}
+
+/// Initializing again starts from the vault as it is, skipped notes included.
+#[tokio::test]
+async fn initialize_again_forgets_a_note_that_was_repaired() {
+    let temp_dir = TempDir::new().unwrap();
+    let bad = temp_dir.path().join("bad.md");
+    std::fs::write(&bad, format!("{PARSER_PANIC_MARKER}\n")).unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+    manager.initialize().await.unwrap();
+    assert_eq!(skipped_notes(&manager).await.len(), 1);
+
+    std::fs::write(&bad, "# Repaired\n").unwrap();
+    manager.initialize().await.unwrap();
+
+    assert_eq!(cached_paths(&manager).await, ["bad.md"]);
+    assert!(skipped_notes(&manager).await.is_empty());
+}

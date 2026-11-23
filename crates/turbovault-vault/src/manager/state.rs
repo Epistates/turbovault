@@ -118,6 +118,35 @@ pub(super) struct CacheEntry {
     pub(super) observed: Option<Observed>,
 }
 
+/// A note the scan finds that the index doesn't hold, and why.
+///
+/// The cache and this record between them account for every note a walk can
+/// find. A note that is on disk, missing from the cache and recorded nowhere
+/// looks newly created to every sweep, which would parse it and publish it
+/// again on every pass. Remembering which revision failed lets the sweep
+/// leave the note alone until its file changes.
+#[derive(Debug, Clone)]
+pub(super) struct Skipped {
+    /// Why the note couldn't be indexed.
+    pub(super) reason: String,
+    /// The revision that failed. `None` when the file changed while it was
+    /// read, so the next sweep tries again.
+    pub(super) observed: Option<Observed>,
+}
+
+impl Skipped {
+    /// Whether `found`, what a scan has just seen, is the revision that
+    /// failed, so there is nothing new to try.
+    ///
+    /// A racy observation can't vouch for the bytes (see [`Observed::racy`]).
+    /// The cache settles those by content hash; here the note is simply
+    /// tried again, which stops with the first read past its mtime tick.
+    pub(super) fn settled_at(&self, found: FileFingerprint) -> bool {
+        self.observed
+            .is_some_and(|observed| !observed.racy && observed.fingerprint == found)
+    }
+}
+
 /// Never reconcile more often than this, however cheap the sweep turns out to
 /// be. Agent tool calls arrive a model round-trip apart and human edits are
 /// seconds apart, so a bound in this range is imperceptible while still
@@ -158,6 +187,9 @@ pub(super) enum IndexUpdate {
     Upsert(Arc<VaultFile>, Option<Observed>),
     /// Gone, or out of the scan's reach: drop it.
     Remove,
+    /// There, but nothing the index can hold: drop what it held of the
+    /// note and record why.
+    Exclude(Skipped),
     /// Leave the index as it is.
     Skip,
 }

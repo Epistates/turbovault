@@ -84,7 +84,7 @@ pub mod reindex;
 pub mod substrate;
 
 pub use edit::{EditEngine, EditResult, SearchReplaceBlock, compute_hash};
-pub use manager::{ChangeListener, ScannedNote, VaultManager};
+pub use manager::{ChangeListener, ScannedNote, SkippedNote, VaultManager};
 pub use reindex::{
     CommitOrigin, PendingCommit, ReindexQueue, apply_commit_diff, watch_ref_changes,
 };
