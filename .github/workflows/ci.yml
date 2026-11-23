@@ -250,13 +250,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 1.90.0
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # 1.95.0
         with:
-          toolchain: "1.90.0"
-      # The crates build on 1.90; the test suite needs a newer toolchain
-      # (serial_test 4 wants 1.93.1), so this checks the libraries and
-      # binaries, every feature on, against the lockfile users get.
-      - run: cargo check --workspace --all-features --locked
+          toolchain: "1.95.0"
+      # Every crate and every target, tests included, every feature on,
+      # against the lockfile users get.
+      - run: cargo check --workspace --all-features --all-targets --locked
 
   # What the next release's version bump has to be, against the latest
   # release tag (the API that was released; crates.io can lag it, since

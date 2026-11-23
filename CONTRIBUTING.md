@@ -6,8 +6,7 @@ shape before you write it.
 
 ## Setup
 
-You need Rust (the crates build on 1.90; the test suite needs 1.93.1 or newer,
-since `serial_test` 4 does), plus `cmake` and a C compiler for the vendored
+You need Rust 1.95 or newer, plus `cmake` and a C compiler for the vendored
 libgit2. [just](https://github.com/casey/just) runs the common recipes.
 
 ```sh

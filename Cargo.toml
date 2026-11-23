@@ -22,7 +22,7 @@ resolver = "3"
 [workspace.package]
 version = "4.1.0"
 edition = "2024"
-rust-version = "1.90.0"
+rust-version = "1.95.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
 license = "MIT"
 repository = "https://github.com/epistates/turbovault"

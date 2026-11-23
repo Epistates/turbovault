@@ -267,7 +267,7 @@ Measured on synthetic vaults, release build, over MCP stdio:
 
 ## Troubleshooting
 
-- **Build issues**: Rust 1.90+ builds the crates; the test suite needs 1.93.1+ (`serial_test`). `cargo clean` if things look strange.
+- **Build issues**: building and testing need Rust 1.95+. `cargo clean` if things look strange.
 - **Test failures**: `--nocapture` for output; temp directories must be writable.
 - **Runtime issues**: logs go to stderr on stdio; vault paths must exist; `add_vault` refusals name the policy that refused them.
 - Do not include authorship info in commit messages.

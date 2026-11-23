@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`--auth-mode jwt` is stricter about the tokens it accepts.** The lockfile moves to turbomcp 3.7.1, which validates tokens with `jsonwebtoken` 12: a token whose `crit` header names an extension the server doesn't understand is refused, and so is one whose `sub`, `iss` or `aud` has the wrong JSON type. Tokens from a standard OAuth authorization server are unaffected.
+- **Rust 1.95 is the minimum, up from 1.90.** `generator` 0.8.12, which is in the lockfile through turbomcp's metrics exporter, declares it, and Cargo keeps a lockfile to versions the declared minimum can build. Building and testing now need the same toolchain; the test suite's separate 1.93.1 floor is gone.
 - **Dependencies refreshed.** Every package in both lockfiles is at its latest version, apart from `generic-array` and `matchit`, which the crates that depend on them pin to an exact version. `model2vec-rs` 0.5 (the vector plugin, in `turbovault-vector` 0.1.3) takes an embedding's token limit from the model's `config.json` and uses 512 when the model sets none, which is what 0.4 always used. `jsonschema` 0.63 (tests). The turbomcp requirement stays at 3.6.0. The Docker image builds on Rust 1.100.0.
 
 ## [4.1.0] - 2026-11-18

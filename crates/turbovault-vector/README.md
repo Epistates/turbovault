@@ -55,8 +55,8 @@ ask for it.
 None of the three crates above pull in a C toolchain dependency (`hnsw_rs`
 and `bm25` are dependency trees of entirely pure-Rust crates; `model2vec-rs`
 with the feature selection above drops its own optional C-touching pieces).
-The workspace MSRV (1.90.0) comfortably covers all three (`model2vec-rs`
-states 1.88; the others state no floor and build cleanly under 1.90 at the
+The workspace MSRV (1.95.0) comfortably covers all three (`model2vec-rs`
+states 1.88; the others state no floor and build cleanly under 1.95 at the
 versions pinned in the workspace `Cargo.toml`).
 
 ## Incremental indexing

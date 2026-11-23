@@ -4,7 +4,7 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the contribution process. [CLAU
 
 ## Requirements
 
-- Rust 1.90 or later to build the crates (edition 2024); 1.93.1 or later to run the test suite (`serial_test`).
+- Rust 1.95 or later (edition 2024), to build the crates and to run the test suite.
 - `just` for the shortcuts below (optional; each is a cargo command).
 - Nightly Rust and `cargo-fuzz` for fuzzing.
 

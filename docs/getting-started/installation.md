@@ -39,7 +39,7 @@ cargo install turbovault --features release    # what the prebuilt binaries have
 | `vector-search` | The `vector_search` plugin (enable it at runtime with `--plugins vector_search`) |
 | `release` | `full`, `sql` and `vector-search` |
 
-Building needs Rust 1.90 or later.
+Building needs Rust 1.95 or later.
 
 ## Docker
 

@@ -4,7 +4,7 @@ Complete guide to building TurboVault from source.
 
 ## Prerequisites
 
-- Rust 1.90.0 or later
+- Rust 1.95.0 or later
 - Git
 - Approximately 1 GB free disk space
 

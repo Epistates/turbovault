@@ -3,7 +3,7 @@
 [![Crates.io](https://img.shields.io/crates/v/turbovault.svg)](https://crates.io/crates/turbovault)
 [![Docs.rs](https://docs.rs/turbovault/badge.svg)](https://docs.rs/turbovault)
 [![License](https://img.shields.io/crates/l/turbovault.svg)](https://github.com/epistates/turbovault/blob/main/LICENSE)
-[![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg)](https://www.rust-lang.org/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Epistates/turbovault)
 
 - MCP Registry name: `mcp-name: io.github.epistates/turbovault`
@@ -220,7 +220,7 @@ cargo build --release          # ./target/release/turbovault
 cargo test --workspace --all-features
 ```
 
-Rust 1.90 builds the crates; the test suite needs 1.93.1 or later. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [development guide](docs/development/index.md).
+Building and testing need Rust 1.95 or later. See [CONTRIBUTING.md](CONTRIBUTING.md) and the [development guide](docs/development/index.md).
 
 ## Migrating from 3.x
 
