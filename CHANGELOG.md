@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`--auth-mode jwt` is stricter about the tokens it accepts.** The lockfile moves to turbomcp 3.7.1, which validates tokens with `jsonwebtoken` 12: a token whose `crit` header names an extension the server doesn't understand is refused, and so is one whose `sub`, `iss` or `aud` has the wrong JSON type. Tokens from a standard OAuth authorization server are unaffected.
-- **Dependencies refreshed.** Every package in both lockfiles is at its latest compatible version. The turbomcp requirement stays at 3.6.0. The Docker image builds on Rust 1.100.0, and `taiki-e/install-action` is at 2.90.5, its latest release a week old or more.
+- **Dependencies refreshed.** `model2vec-rs` 0.5 for the vector plugin, in `turbovault-vector` 0.1.3: it takes an embedding's token limit from the model's `config.json` and uses 512 when the model sets none, which is what 0.4 always used. `jsonschema` 0.63 (tests). Every other package in both lockfiles is at its latest compatible version. The turbomcp requirement stays at 3.6.0. The Docker image builds on Rust 1.100.0.
 
 ## [4.1.0] - 2026-11-18
 

@@ -46,11 +46,7 @@ impl Model2VecEmbedder {
             .map_err(|error| {
                 VectorError::Embedding(format!("failed to load model at {model_path:?}: {error}"))
             })?;
-        // model2vec-rs exposes no direct dimensions() accessor; the mean-pool
-        // always produces a fixed-width vector regardless of token count, so
-        // probing with an empty string is a cheap and always-valid way to
-        // learn it (see model2vec_rs::model::StaticModel::pool_ids).
-        let dims = model.encode_single("").len();
+        let dims = model.dim();
         if dims == 0 {
             return Err(VectorError::Embedding(format!(
                 "model at {model_path:?} produced a zero-length embedding"
