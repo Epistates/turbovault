@@ -46,7 +46,7 @@ To rebuild a vault's search index from scratch, stop the server and delete its d
 
 ## A note is missing from search and the graph
 
-A note is left out of the index when its file isn't valid UTF-8, or when the Markdown parser fails on it. The vault still opens and every other note is served. The skipped note doesn't appear in search, links, the graph or the tools that list notes, though `read_note` still returns a UTF-8 one.
+A note is left out of the index when its file isn't valid UTF-8, or when the Markdown parser fails on it. The vault still opens and every other note is served. The skipped note doesn't appear in search, links, the graph or anything else built from parsed notes. Its file is still in the vault, and `read_note` still returns it if it's UTF-8.
 
 - `validate_vault` without a `path` lists each skipped note as an `index` error, with the reason.
 - `vault_health` warns that its counts leave them out, and names them.
