@@ -130,15 +130,24 @@ jobs:
       # A dry run reports exactly those as warnings rather than failing, so it
       # is the pre-flight: read the names it names, exclude them, publish the
       # rest. Nothing here is a hand-maintained list. It runs before the token
-      # exchange, so the token's 30 minutes all go to publishing.
+      # exchange, so the token's 30 minutes all go to publishing. A dry run
+      # that fails for any other reason stops the job here, with its output.
       - name: Find the crates to publish
         id: plan
         shell: bash
         run: |
           set -euo pipefail
+          LOG="${RUNNER_TEMP}/publish-dry-run.log"
+          if ! cargo publish --workspace --locked --dry-run > "${LOG}" 2>&1; then
+            cat "${LOG}"
+            echo "::error::The publish dry run failed (output above), so nothing was published."
+            exit 1
+          fi
+          echo "::group::Publish dry run"
+          cat "${LOG}"
+          echo "::endgroup::"
           mapfile -t ALREADY < <(
-            cargo publish --workspace --locked --dry-run 2>&1 \
-              | sed -n 's/^warning: crate \([^@]*\)@.* already exists on crates.io index$/\1/p' \
+            sed -n 's/^warning: crate \([^@]*\)@.* already exists on crates.io index$/\1/p' "${LOG}" \
               | sort -u
           )
           TOTAL="$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')"
