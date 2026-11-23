@@ -51,7 +51,7 @@ Coming from 3.x, [the 4.0 migration guide](../migration/4.0.md) maps every old t
 - `get_periodic_note`: Find or create the daily, weekly, monthly, quarterly or yearly note, using the vault's Daily notes or Periodic Notes settings
 
 ## Quality & Open Knowledge Format (8)
-- `validate_vault`: Problems Obsidian would trip on (pre-1.9 `tags`/`aliases`, bad frontmatter, broken links), by note and severity, for one note or the vault
+- `validate_vault`: Problems Obsidian would trip on (pre-1.9 `tags`/`aliases`, bad frontmatter, broken links), by note and severity, for one note or the vault; a vault-wide check also lists notes that couldn't be indexed
 - `note_quality` *(advanced)*: Quality score for one note, or the vault-wide report
 - `find_stale_notes` *(advanced)*: Notes not modified within a threshold of days
 - `analyze_grounding` *(advanced)*: A note's claims and citations for an external judge, or the vault's uncited notes

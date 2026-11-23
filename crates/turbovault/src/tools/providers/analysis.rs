@@ -758,7 +758,7 @@ impl AnalysisProvider {
     // ─── VALIDATION ──────────────────────────────────────────────────
 
     #[tool(
-        description = "Check notes for problems Obsidian would trip on: frontmatter that doesn't parse, `tags`, `aliases` and `cssclasses` written the pre-1.9 way (a string, or the singular keys, which Obsidian 1.9 and later ignore), broken links and malformed content. Each issue has its severity, note, line and a suggested fix. With `path`, one note; without it, the whole vault. Run it after upgrading from an older Obsidian.",
+        description = "Check notes for problems Obsidian would trip on: frontmatter that doesn't parse, `tags`, `aliases` and `cssclasses` written the pre-1.9 way (a string, or the singular keys, which Obsidian 1.9 and later ignore), broken links and malformed content. Each issue has its severity, note, line and a suggested fix. With `path`, one note; without it, the whole vault, including any note that couldn't be indexed (not UTF-8, or one the Markdown parser fails on), which search and the graph leave out. Run it after upgrading from an older Obsidian.",
         title = "Validate Vault",
         tags = ["read", "health"],
         read_only = true,

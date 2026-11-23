@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use turbovault_core::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Result, Severity,
-    ValidationReport, Validator,
+    ValidationIssue, ValidationReport, Validator,
 };
 use turbovault_vault::VaultManager;
 
@@ -115,9 +115,9 @@ impl ValidationTools {
     pub async fn validate_vault(&self) -> Result<ValidationReportInfo> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
         let files = self.manager.notes_validated().await;
+        let mut combined_report = self.skipped_notes_report().await;
 
         let validator = CompositeValidator::default_rules();
-        let mut combined_report = ValidationReport::new();
 
         for vault_file in &files {
             let report = validator.validate(vault_file);
@@ -131,9 +131,13 @@ impl ValidationTools {
     pub async fn validate_vault_quick(&self, max_issues: usize) -> Result<ValidationReportInfo> {
         // Cache-first: parsed notes validated against disk mtime, no re-scan.
         let files = self.manager.notes_validated().await;
+        let skipped = self.skipped_notes_report().await;
 
         let validator = CompositeValidator::default_rules();
         let mut combined_report = ValidationReport::new();
+        for issue in skipped.issues.into_iter().take(max_issues) {
+            combined_report.add_issue(issue);
+        }
 
         for vault_file in &files {
             // Stop if we've hit the max issues
@@ -148,6 +152,31 @@ impl ValidationTools {
         }
 
         Ok(self.convert_report(combined_report))
+    }
+
+    /// One error for each note the vault holds but couldn't index.
+    ///
+    /// The validators only see notes the index holds, so without this a note
+    /// that was left out of it would be the one problem a vault-wide check
+    /// never mentions.
+    async fn skipped_notes_report(&self) -> ValidationReport {
+        let mut report = ValidationReport::new();
+        for skipped in self.manager.skipped_notes().await {
+            let mut issue = ValidationIssue::new(
+                Severity::Error,
+                "index",
+                format!(
+                    "This note is not indexed, so search, links and the other tools leave it out: {}",
+                    skipped.reason
+                ),
+            )
+            .with_suggestion(
+                "Edit the note so it reads as UTF-8 Markdown; it is indexed again as soon as it changes",
+            );
+            issue.path = Some(skipped.path);
+            report.add_issue(issue);
+        }
+        report
     }
 
     /// Convert ValidationReport to serializable format

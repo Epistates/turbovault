@@ -44,6 +44,16 @@ TurboVault checks for outside edits before serving search, graph and similarity 
 
 To rebuild a vault's search index from scratch, stop the server and delete its directory under `~/.cache/turbovault/search/`.
 
+## A note is missing from search and the graph
+
+A note is left out of the index when its file isn't valid UTF-8, or when the Markdown parser fails on it. The vault still opens and every other note is served. The skipped note doesn't appear in search, links, the graph or the tools that list notes, though `read_note` still returns a UTF-8 one.
+
+- `validate_vault` without a `path` lists each skipped note as an `index` error, with the reason.
+- `vault_health` warns that its counts leave them out, and names them.
+- The log has a `Skipping <path>: <reason>` line for each.
+
+Re-save a note that isn't UTF-8 in that encoding. A note is tried again as soon as its file changes. If the reason is that the Markdown parser failed, that is a bug in the parser: please [report it](#reporting-a-problem) with the part of the note that triggers it.
+
 ## Memory or speed
 
 - Startup on 50,000 notes takes about 2.5 s and 0.9 GB; most reads take a few milliseconds. See the [performance table](../api-reference/tools.md#performance).
