@@ -103,7 +103,7 @@ pub use precondition::Precondition;
 pub use profiles::ConfigProfile;
 pub use utils::{
     PathValidator, ResolvedPath, bytes_to_lower_hex, compute_hash, compute_hash_bytes, is_note,
-    path_to_slash, to_json_string,
+    panic_message, path_to_slash, to_json_string,
 };
 pub use validation::{
     CompositeValidator, ContentValidator, FrontmatterValidator, LinkValidator, Severity,
