@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 publish = true
 description = "Production-grade MCP server for Obsidian vault management - Transform your vault into an intelligent knowledge system for AI agents"
 documentation = "https://docs.rs/turbovault"

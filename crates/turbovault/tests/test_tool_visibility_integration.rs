@@ -27,6 +27,15 @@ fn server_advertises_package_version() {
 }
 
 #[test]
+fn server_advertises_its_website() {
+    let server = make_server();
+    assert_eq!(
+        server.server_info().website_url.as_deref(),
+        Some("https://github.com/epistates/turbovault")
+    );
+}
+
+#[test]
 fn mutating_tool_descriptions_match_current_safety_contract() {
     let server = make_server();
     let tools = server.list_tools();
