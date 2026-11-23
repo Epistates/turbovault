@@ -125,7 +125,7 @@ git2 = "0.21"             # in-memory index, blob/tree/commit plumbing, ref CAS 
 # Vector search (optional, feature-gated Tier 1 stack: pure Rust, CPU-only, no
 # bundled C libraries, no network access at runtime unless a caller points
 # `from_pretrained` at a Hugging Face repo id instead of a local path).
-model2vec-rs = { version = "0.4", default-features = false, features = ["local-only", "fancy-regex"] }
+model2vec-rs = { version = "0.5", default-features = false, features = ["local-only", "fancy-regex"] }
 hnsw_rs = "0.3"           # Pure-Rust HNSW ANN index (jean-pierreBoth/hnswlib-rs)
 bm25 = "2.3"              # Pure-Rust BM25 scorer/search engine (Michael-JB/bm25)
 
@@ -151,7 +151,7 @@ turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-ap
 # plugin are still settling. They are published only because turbovault's
 # default-off `vector-search` feature depends on them, and crates.io requires
 # every dependency of a published crate to be published, optional ones included.
-turbovault-vector = { version = "0.1.2", path = "crates/turbovault-vector" }
+turbovault-vector = { version = "0.1.3", path = "crates/turbovault-vector" }
 turbovault-plugin-vector = { version = "0.1.0", path = "crates/plugins/turbovault-plugin-vector" }
 turbovault = { version = "4.1.0", path = "crates/turbovault" }
 

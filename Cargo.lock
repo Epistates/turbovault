@@ -2418,9 +2418,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.61.2"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e37f27df77c7887edbc5f5a59ecd8e5ec4a669319266ec1b61068667a603183"
+checksum = "f4d2afab27172a0073112ce84a64ec7fd06f3b8bdad37d46e86c53c933ed232b"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2446,18 +2446,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.61.2"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e41151614b6c927e21982be8bef5a26741ae5a0ae6a781eedee2aa930a980e6"
+checksum = "19532291f4c1f5a5726be72105a0d73620b714ef12256e9748cc863cf122dc1c"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.61.2"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1515b9a91134ef67d7bac95c2d76fbc7e383c4c55ee544204ceec8088f881fef"
+checksum = "d455c96d26f5c8527d7824f3f9ac810fec24d1448a3f7a254a006ea542e3dcf9"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2815,9 +2815,9 @@ dependencies = [
 
 [[package]]
 name = "model2vec-rs"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51020c65a18a206a4158aa354db49de672da7b1feab5b8213896bd54d03acb17"
+checksum = "5bc5d349da0f38c0289eb1a0bf97732b82855d7ce2d35001c18dad52df933e1d"
 dependencies = [
  "anyhow",
  "half",
@@ -3784,9 +3784,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.61.2"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a028057ef852c58a42d75e09da87b5e733f4030f4c7411728955e4f87203a577"
+checksum = "1225f3e462cea1e4a8e169dd539f9d8a7592780b5b261d0e07e5cbb9efb28e4e"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -5877,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vector"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "bm25",
