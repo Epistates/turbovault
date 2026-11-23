@@ -13,8 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use turbovault_core::prelude::*;
-use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
+
+use crate::plain_text::note_text;
 
 /// Quality evaluation tools
 #[derive(Clone)]
@@ -258,7 +259,7 @@ struct LinkFacts {
 /// Score an already-parsed note. `rel_path` is the vault-relative path the
 /// result reports; `facts` carries what the link graph says about it.
 fn score_note(vault_file: &VaultFile, rel_path: &str, facts: LinkFacts, now: f64) -> QualityScore {
-    let plain_content = to_plain_text(&vault_file.content);
+    let plain_content = note_text(vault_file);
 
     let readability = compute_readability(&plain_content);
     let structure = compute_structure(vault_file);

@@ -7,8 +7,9 @@ use turbovault_export::{
     VaultStatsExporter, VaultStatsRecord, create_health_report,
 };
 use turbovault_graph::{HealthAnalyzer, HealthCounts, HealthReport};
-use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
+
+use crate::plain_text::note_text;
 
 /// Export tools for vault analysis and reporting
 pub struct ExportTools {
@@ -85,7 +86,7 @@ impl ExportTools {
         let mut total_words = 0usize;
         let mut total_readable_chars = 0usize;
         for note in &notes {
-            let plain_text = to_plain_text(&note.content);
+            let plain_text = note_text(note);
             total_words += plain_text.split_whitespace().count();
             total_readable_chars += plain_text.chars().count();
         }

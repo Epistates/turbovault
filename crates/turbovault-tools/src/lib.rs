@@ -176,6 +176,7 @@ pub mod moment_format;
 pub mod okf_tools;
 pub mod output_formatter;
 pub mod periodic;
+mod plain_text;
 pub mod quality_tools;
 pub mod relationship_tools;
 mod search_directory;

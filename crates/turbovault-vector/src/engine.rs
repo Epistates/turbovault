@@ -28,6 +28,31 @@ use crate::store::{ChunkRecord, NoteRecord};
 /// Characters of chunk text kept in a [`SearchHit::preview`].
 const PREVIEW_CHARS: usize = 200;
 
+/// The note at `path` as plain text, or its Markdown as written when
+/// rendering that panics.
+///
+/// A caller feeds the engine every note in turn, so a note that trips a bug
+/// in the Markdown parser would otherwise fail every pass that reaches it,
+/// and every search that starts with one. Its raw text still holds every
+/// word in it, so the note is chunked and embedded as it stands, and a
+/// warning names it.
+///
+/// The closure borrows only the note's text and returns a new `String`, so a
+/// panic leaves nothing half-updated behind it.
+fn plain_text(path: &str, content: &str) -> String {
+    std::panic::catch_unwind(|| {
+        #[cfg(test)]
+        tests::panic_on_marker(content);
+        turbovault_parser::to_plain_text(content)
+    })
+    .unwrap_or_else(|_| {
+        tracing::warn!(
+            "Rendering {path} as plain text failed, so its Markdown is indexed as written"
+        );
+        content.to_string()
+    })
+}
+
 /// One hybrid search hit: the best-matching chunk from one note.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SearchHit {
@@ -189,7 +214,7 @@ impl IndexEngine {
     /// already stored (the common case on a reconcile pass: most notes
     /// listed as "maybe changed" by size/mtime are not).
     pub async fn update_note(&self, path: &str, content: &str) -> Result<bool> {
-        let plain = turbovault_parser::to_plain_text(content);
+        let plain = plain_text(path, content);
         let file_hash = content_hash(plain.as_bytes());
 
         let mut state = self.state.lock().await;
@@ -493,6 +518,40 @@ mod tests {
 
     fn three_sentences() -> String {
         format!("{S1} {S2} {S3}")
+    }
+
+    /// A note holding this text makes its rendering panic, in these tests
+    /// only. It stands in for a bug in the Markdown parser, which has no
+    /// input that is both known to panic it and safe to keep in the
+    /// repository.
+    const RENDER_PANIC_MARKER: &str = "<!-- test: rendering this note panics -->";
+
+    pub(super) fn panic_on_marker(content: &str) {
+        if content.contains(RENDER_PANIC_MARKER) {
+            panic!("test render panic");
+        }
+    }
+
+    /// A note whose rendering panics is indexed by its Markdown as written,
+    /// and the notes fed after it are indexed as usual.
+    #[tokio::test]
+    async fn a_note_whose_rendering_panics_is_indexed_as_written() {
+        let engine = IndexEngine::new(Arc::new(DeterministicEmbedder::new(16)), config());
+
+        let odd = format!("{RENDER_PANIC_MARKER} lighthouse");
+        assert!(engine.update_note("odd.md", &odd).await.unwrap());
+        assert!(engine.update_note("plain.md", S1).await.unwrap());
+
+        assert_eq!(engine.stats().await.indexed_notes, 2);
+        // A word of the note, and one only its unrendered Markdown holds.
+        for word in ["lighthouse", "panics"] {
+            let hits = engine.search(word, 5, true).await.unwrap();
+            assert_eq!(
+                hits.first().map(|hit| hit.path.as_str()),
+                Some("odd.md"),
+                "{word}"
+            );
+        }
     }
 
     #[tokio::test]
