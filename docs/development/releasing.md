@@ -27,16 +27,19 @@ cargo semver-checks --workspace --baseline-rev "$(git describe --tags --abbrev=0
    `cargo publish --workspace --locked --dry-run`, excluding any independently
    versioned crate whose version is already on crates.io.
 3. **Merge, then tag the merge commit:** `git tag -a vX.Y.Z <sha> -m vX.Y.Z` and
-   push the tag. The release workflow verifies, builds the seven binaries,
-   smoke-tests the ones the runners can execute, publishes the multi-arch
-   image to `ghcr.io/epistates/turbovault`, attaches the SBOM and checksums, and
-   signs provenance attestations for the archives and the image. Once the
-   builds pass, its publish job puts every crate whose version isn't on
-   crates.io yet there, through Trusted Publishing (below).
+   push the tag. The release workflow verifies, builds the seven binaries and
+   smoke-tests the ones the runners can execute. Once the builds pass, its
+   publish job puts every crate whose version isn't on crates.io yet there,
+   through Trusted Publishing (below). Only after that does it tag the
+   multi-arch image at `ghcr.io/epistates/turbovault` and create the GitHub
+   Release with the archives, the SBOM and checksums, and provenance
+   attestations for the archives and the image.
 4. **Check crates.io.** Every crate should show the new version. If the
    publish job failed, read why: a crate missing its trusted publisher fails
-   the token exchange or its upload. Fix the cause and re-run the job; it
-   skips the crates that already landed.
+   the token exchange or its upload. Neither the image tags nor the GitHub
+   Release exist yet. Fix the cause and re-run the failed jobs; the publish
+   job skips the crates that already landed, and the image and the release
+   follow.
 5. **Publish to the MCP Registry** once the crate and image are live, with
    [mcp-publisher](https://github.com/modelcontextprotocol/registry):
 
