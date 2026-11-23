@@ -157,6 +157,28 @@ fn relative_paths(manager: &VaultManager, paths: Vec<String>) -> Vec<String> {
     paths
 }
 
+/// How many skipped notes a warning names before it only counts the rest.
+const SKIPPED_NOTES_NAMED: usize = 5;
+
+/// What to tell the caller when the vault holds notes its index doesn't, so
+/// counts that leave them out aren't read as the whole vault. `skipped` is
+/// their vault-relative paths; `None` when every note is indexed.
+fn skipped_notes_warning(skipped: &[String]) -> Option<String> {
+    let (subject, verb) = match skipped.len() {
+        0 => return None,
+        1 => ("1 note".to_string(), "is"),
+        count => (format!("{count} notes"), "are"),
+    };
+    let mut named: Vec<String> = skipped.iter().take(SKIPPED_NOTES_NAMED).cloned().collect();
+    if skipped.len() > named.len() {
+        named.push(format!("{} more", skipped.len() - named.len()));
+    }
+    Some(format!(
+        "{subject} couldn't be indexed and {verb} left out of these counts: {}. validate_vault says why.",
+        named.join(", ")
+    ))
+}
+
 #[turbomcp::server(name = "obsidian-vault", version = env!("CARGO_PKG_VERSION"))]
 impl GraphProvider {
     // ==================== Links ====================
@@ -430,7 +452,7 @@ impl GraphProvider {
     ) -> McpResult<serde_json::Value> {
         let depth = depth.unwrap_or_default();
         let (vault_name, manager) = self.get_vault_pair().await?;
-        let tools = GraphTools::new(manager);
+        let tools = GraphTools::new(Arc::clone(&manager));
         let health = match depth {
             HealthDepth::Quick => tools.quick_health_check().await.map_err(to_mcp_error)?,
             HealthDepth::Full => {
@@ -455,6 +477,17 @@ impl GraphProvider {
         }
         if health.orphaned_notes_count > 0 {
             response = response.with_next_step("suggest_links");
+        }
+        let skipped: Vec<String> = manager
+            .skipped_notes()
+            .await
+            .iter()
+            .map(|note| manager.relative_path(&note.path))
+            .collect();
+        if let Some(warning) = skipped_notes_warning(&skipped) {
+            response = response
+                .with_warning(warning)
+                .with_next_step("validate_vault");
         }
         response.to_json()
     }
@@ -591,5 +624,37 @@ impl GraphProvider {
         let response = response.with_next_steps(&["graph_report", "search"]);
 
         response.to_json()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skipped_notes_warning;
+
+    fn paths(count: usize) -> Vec<String> {
+        (1..=count).map(|n| format!("n{n}.md")).collect()
+    }
+
+    #[test]
+    fn no_skipped_notes_is_no_warning() {
+        assert_eq!(skipped_notes_warning(&[]), None);
+    }
+
+    #[test]
+    fn a_skipped_note_is_named() {
+        assert_eq!(
+            skipped_notes_warning(&paths(1)).unwrap(),
+            "1 note couldn't be indexed and is left out of these counts: n1.md. \
+             validate_vault says why."
+        );
+    }
+
+    #[test]
+    fn many_skipped_notes_are_named_up_to_a_point_then_counted() {
+        assert_eq!(
+            skipped_notes_warning(&paths(7)).unwrap(),
+            "7 notes couldn't be indexed and are left out of these counts: \
+             n1.md, n2.md, n3.md, n4.md, n5.md, 2 more. validate_vault says why."
+        );
     }
 }

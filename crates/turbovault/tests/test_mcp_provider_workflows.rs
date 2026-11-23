@@ -2130,3 +2130,57 @@ async fn read_note_rejects_contradictory_slice_selectors() {
         );
     }
 }
+
+/// A note the index can't take in costs the vault that note and nothing
+/// else: the vault opens, every other note is served, and the health and
+/// validation tools name the one that was left out.
+#[tokio::test]
+async fn a_note_that_cannot_be_indexed_is_reported_and_costs_nothing_else() {
+    let temp = TempDir::new().expect("temporary vault");
+    std::fs::write(temp.path().join("alpha.md"), ALPHA).expect("write alpha");
+    std::fs::write(temp.path().join("beta.md"), BETA).expect("write beta");
+    std::fs::write(temp.path().join("binary.md"), b"# Not text \xff\xfe\n")
+        .expect("write a note that is not UTF-8");
+    let server = ObsidianMcpServer::new().expect("provider composition");
+    let added = call(
+        &server,
+        "add_vault",
+        json!({"name": "skipped", "path": temp.path().to_string_lossy()}),
+    )
+    .await;
+    assert_eq!(added["success"], true);
+
+    let search = call(&server, "search", json!({"query": "distributed systems"})).await;
+    assert_eq!(search["count"], 2);
+    let alpha = call(&server, "read_note", json!({"path": "alpha.md"})).await;
+    assert_eq!(alpha["data"]["content"], ALPHA);
+
+    let health = call(&server, "vault_health", json!({})).await;
+    assert_eq!(health["data"]["total_notes"], 2);
+    assert_eq!(
+        health["warnings"],
+        json!([
+            "1 note couldn't be indexed and is left out of these counts: binary.md. \
+             validate_vault says why."
+        ])
+    );
+    assert!(
+        health["next_steps"]
+            .as_array()
+            .expect("next steps")
+            .contains(&json!("validate_vault"))
+    );
+
+    let validation = call(&server, "validate_vault", json!({"min_severity": "error"})).await;
+    assert_eq!(validation["data"]["passed"], false);
+    let issues = validation["data"]["issues"].as_array().expect("issues");
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert_eq!(issues[0]["category"], "index");
+    assert_eq!(issues[0]["path"], "binary.md");
+    assert!(
+        issues[0]["message"]
+            .as_str()
+            .expect("message")
+            .contains("UTF-8")
+    );
+}

@@ -187,3 +187,38 @@ async fn missing_note_returns_an_error() {
             .is_err()
     );
 }
+
+/// A note the index couldn't take in is the one problem the validators never
+/// see, since they only look at indexed notes. A vault-wide check names it.
+#[tokio::test]
+async fn vault_validation_names_a_note_the_index_skipped() {
+    let (temp, manager) = setup_vault(&[("good.md", "# Good\n\nSome text for the note.\n")]).await;
+    tokio::fs::write(temp.path().join("binary.md"), b"# Not text \xff\xfe\n")
+        .await
+        .expect("write a note that is not UTF-8");
+    manager.reconcile_now().await;
+    let tools = ValidationTools::new(manager);
+
+    let report = tools.validate_vault().await.expect("validate vault");
+
+    assert!(!report.passed);
+    let skipped: Vec<_> = report
+        .issues
+        .iter()
+        .filter(|issue| issue.category == "index")
+        .collect();
+    assert_eq!(skipped.len(), 1, "{:?}", report.issues);
+    assert_eq!(skipped[0].severity, "error");
+    assert_eq!(skipped[0].path.as_deref(), Some("binary.md"));
+    assert!(
+        skipped[0].message.contains("UTF-8"),
+        "{}",
+        skipped[0].message
+    );
+    assert!(skipped[0].suggestion.is_some());
+
+    // The capped variant reports it first, ahead of anything in a note.
+    let capped = tools.validate_vault_quick(1).await.expect("validate vault");
+    assert_eq!(capped.total_issues, 1);
+    assert_eq!(capped.issues[0].category, "index");
+}
