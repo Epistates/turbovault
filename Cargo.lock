@@ -5877,7 +5877,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vector"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "async-trait",
  "bm25",
@@ -5889,6 +5889,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tracing",
  "turbovault-parser",
 ]
 

@@ -25,9 +25,9 @@ use tantivy::schema::*;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, doc};
 use tracing::instrument;
 use turbovault_core::prelude::*;
-use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
 
+use crate::plain_text::note_text;
 use crate::search_directory::CacheDirectory;
 
 /// Search result metadata for LLM consumption
@@ -213,7 +213,7 @@ impl NoteDocument {
         Self {
             title,
             // Plain text, so markdown syntax and URLs are not indexed as words.
-            content: to_plain_text(&vault_file.content),
+            content: note_text(vault_file),
             tags,
             checksum: vault_file.metadata.checksum.clone(),
             rel_path,
@@ -515,7 +515,7 @@ impl SearchEngine {
         let vault_file = self.note(path).await?;
 
         // Extract key terms from plain text content (excludes URLs, markdown syntax)
-        let plain_content = to_plain_text(&vault_file.content);
+        let plain_content = note_text(&vault_file);
         let keywords = extract_keywords(&plain_content);
 
         // Search for similar notes using tantivy query
@@ -769,7 +769,7 @@ impl SearchQuery {
             }
 
             // Extract plain text for preview, snippet, and metrics
-            let plain_content = to_plain_text(&vault_file.content);
+            let plain_content = note_text(&vault_file);
 
             // Generate preview from plain text (first line, up to 200 chars)
             let preview = plain_content
@@ -1072,6 +1072,26 @@ mod tests {
         let manager = Arc::new(VaultManager::new(cfg).unwrap());
         let engine = SearchEngine::new(manager).await.unwrap();
         (tmp, engine)
+    }
+
+    /// A note whose rendering panics is indexed by its Markdown as written,
+    /// and costs the index no other note.
+    #[tokio::test]
+    async fn a_note_whose_rendering_panics_is_still_searchable() {
+        let odd = format!(
+            "# Odd\n\n{}\n\nlighthouse keeper\n",
+            crate::plain_text::RENDER_PANIC_MARKER
+        );
+        let (_tmp, engine) =
+            engine_over(&[("plain.md", "# Plain\n\nharbor master\n"), ("odd.md", &odd)]).await;
+
+        let found = engine.search("harbor").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, "plain.md");
+        let found = engine.search("lighthouse").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, "odd.md");
+        assert!(found[0].snippet.contains("lighthouse"));
     }
 
     /// Tantivy allows one writer per index. Two change reports applied at

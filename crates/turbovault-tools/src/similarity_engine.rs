@@ -27,10 +27,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, RwLockReadGuard};
 use turbovault_core::prelude::*;
-use turbovault_parser::to_plain_text;
 use turbovault_vault::VaultManager;
 
 use crate::duplicate_tools::compute_simhash;
+use crate::plain_text::note_text;
 use crate::search_engine::is_stopword;
 
 /// Similarity search result
@@ -119,7 +119,7 @@ struct Tokenized {
 }
 
 fn tokenize_note(rel_path: PathBuf, file: &VaultFile) -> Tokenized {
-    let plain = to_plain_text(&file.content);
+    let plain = note_text(file);
     let title = file
         .headings
         .first()
@@ -797,7 +797,7 @@ mod tests {
             .cached_notes()
             .await
             .iter()
-            .map(|f| (manager.relative_path(&f.path), to_plain_text(&f.content)))
+            .map(|f| (manager.relative_path(&f.path), note_text(f)))
             .collect();
         out.sort();
         out
@@ -825,6 +825,39 @@ mod tests {
         a.sort();
         b.sort();
         assert_eq!(a, b, "{what}: result set");
+    }
+
+    /// A note whose rendering panics is compared by its Markdown as
+    /// written, and costs the engine no other note.
+    #[tokio::test]
+    async fn a_note_whose_rendering_panics_is_still_compared() {
+        let notes = [
+            (
+                "plain.md".to_string(),
+                "# Plain\n\nharbor master pilots ships\n".to_string(),
+            ),
+            (
+                "odd.md".to_string(),
+                format!(
+                    "# Odd\n\n{}\n\nharbor master pilots boats\n",
+                    crate::plain_text::RENDER_PANIC_MARKER
+                ),
+            ),
+            (
+                "other.md".to_string(),
+                "# Other\n\ngarden tomato watering\n".to_string(),
+            ),
+        ];
+        let (_temp, manager) = vault_with(&notes).await;
+
+        let engine = SimilarityEngine::new(manager).await.unwrap();
+
+        assert_eq!(engine.document_count(), 3);
+        let similar = engine.find_similar_notes("plain.md", 5);
+        assert_eq!(
+            similar.first().map(|found| found.path.as_str()),
+            Some("odd.md")
+        );
     }
 
     #[tokio::test]
