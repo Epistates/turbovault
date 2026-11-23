@@ -166,7 +166,7 @@ impl ValidationTools {
                 Severity::Error,
                 "index",
                 format!(
-                    "This note is not indexed, so search, links and the other tools leave it out: {}",
+                    "This note is not indexed, so search, links and the graph leave it out: {}",
                     skipped.reason
                 ),
             )

@@ -491,9 +491,9 @@ impl VaultManager {
     ///
     /// A note is skipped when its bytes aren't UTF-8 or the Markdown parser
     /// fails on it. The note cache, the link graph and everything built from
-    /// them (search, similarity, the tools that list notes) leave it out;
-    /// the file itself can still be read and written. It is tried again
-    /// whenever the file changes.
+    /// them (search, similarity, the graph tools) leave it out. The file is
+    /// still in the vault: a scan lists it, and it can be read and written.
+    /// It is tried again whenever the file changes.
     pub async fn skipped_notes(&self) -> Vec<SkippedNote> {
         self.ensure_fresh().await;
         let mut notes: Vec<SkippedNote> = self
