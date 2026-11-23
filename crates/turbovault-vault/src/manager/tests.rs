@@ -1575,11 +1575,11 @@ async fn reconcile_settles_a_note_that_grew_past_the_size_limit() {
     assert!(manager.all_cached_vault_files().await.is_empty());
 
     manager.reconcile_now().await;
+    let changes = captured.lock().unwrap().clone();
     assert_eq!(
-        captured.lock().unwrap().len(),
+        changes.len(),
         1,
-        "a second pass must find nothing new: {:?}",
-        captured.lock().unwrap()
+        "a second pass must find nothing new: {changes:?}"
     );
 }
 
@@ -1663,10 +1663,10 @@ async fn reconcile_is_silent_when_nothing_moved() {
     }));
 
     manager.reconcile_now().await;
+    let changes = captured.lock().unwrap().clone();
     assert!(
-        captured.lock().unwrap().is_empty(),
-        "an unchanged vault must produce no change events: {:?}",
-        captured.lock().unwrap()
+        changes.is_empty(),
+        "an unchanged vault must produce no change events: {changes:?}"
     );
 
     // And a write this process makes is announced once, by the write path,
@@ -1683,11 +1683,11 @@ async fn reconcile_is_silent_when_nothing_moved() {
     assert_eq!(captured.lock().unwrap().len(), 1);
 
     manager.reconcile_now().await;
+    let changes = captured.lock().unwrap().clone();
     assert_eq!(
-        captured.lock().unwrap().len(),
+        changes.len(),
         1,
-        "the sweep must not re-announce this process's own write: {:?}",
-        captured.lock().unwrap()
+        "the sweep must not re-announce this process's own write: {changes:?}"
     );
 }
 
@@ -1723,10 +1723,10 @@ async fn reconcile_does_not_republish_files_it_does_not_model() {
     for _ in 0..3 {
         manager.reconcile_now().await;
     }
+    let changes = captured.lock().unwrap().clone();
     assert!(
-        captured.lock().unwrap().is_empty(),
-        "a file the cache does not model must not be reported: {:?}",
-        captured.lock().unwrap()
+        changes.is_empty(),
+        "a file the cache does not model must not be reported: {changes:?}"
     );
 
     // Changed, still not modelled, still silent.
@@ -1734,10 +1734,10 @@ async fn reconcile_does_not_republish_files_it_does_not_model() {
     for _ in 0..3 {
         manager.reconcile_now().await;
     }
+    let changes = captured.lock().unwrap().clone();
     assert!(
-        captured.lock().unwrap().is_empty(),
-        "changing it must not start an event storm either: {:?}",
-        captured.lock().unwrap()
+        changes.is_empty(),
+        "changing it must not start an event storm either: {changes:?}"
     );
 
     // And the note beside it is still reported, exactly once.
@@ -2818,10 +2818,10 @@ async fn reconcile_settles_a_note_the_parser_panics_on() {
     for _ in 0..3 {
         manager.reconcile_now().await;
     }
+    let changes = captured.lock().unwrap().clone();
     assert!(
-        captured.lock().unwrap().is_empty(),
-        "an unchanged skipped note must not be reported: {:?}",
-        captured.lock().unwrap()
+        changes.is_empty(),
+        "an unchanged skipped note must not be reported: {changes:?}"
     );
     assert_eq!(skipped_notes(&manager).await.len(), 1);
 
@@ -2909,10 +2909,10 @@ async fn a_note_that_is_not_text_is_skipped_and_settles() {
     for _ in 0..3 {
         manager.reconcile_now().await;
     }
+    let changes = captured.lock().unwrap().clone();
     assert!(
-        captured.lock().unwrap().is_empty(),
-        "an unchanged skipped note must not be reported: {:?}",
-        captured.lock().unwrap()
+        changes.is_empty(),
+        "an unchanged skipped note must not be reported: {changes:?}"
     );
     assert_eq!(cached_paths(&manager).await, ["good.md"]);
     let skipped = skipped_notes(&manager).await;
