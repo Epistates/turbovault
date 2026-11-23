@@ -173,64 +173,189 @@ impl ScanSpec {
 ///
 /// `expected` is a fingerprint the caller already holds, from the scan that
 /// found the file, and passing it saves the leading stat.
+///
+/// A file that was read but isn't UTF-8 fails with `InvalidData` and keeps
+/// the observation of the bytes that weren't text, so the caller can tell
+/// that revision apart from the next one.
 pub(super) async fn read_note_with_fingerprint(
     path: &Path,
     expected: Option<FileFingerprint>,
-) -> std::io::Result<NoteRead> {
+) -> NoteReadResult {
     let before = match expected {
         Some(fingerprint) => Some(fingerprint),
         None => FileFingerprint::observe(path).await,
     };
-    let content = tokio::fs::read_to_string(path).await?;
+    let bytes = tokio::fs::read(path).await?;
     let (after, times) = match FileFingerprint::observe_with_times(path).await {
         Some((fingerprint, times)) => (Some(fingerprint), times),
         None => (None, FileTimes::default()),
     };
     let read_at = SystemTime::now();
-    let observed = if before == after { after } else { None };
-    Ok(NoteRead {
-        content,
-        observed: observed.map(|fingerprint| Observed::at(fingerprint, read_at)),
-        times,
-    })
+    let observed = if before == after { after } else { None }
+        .map(|fingerprint| Observed::at(fingerprint, read_at));
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(NoteRead {
+            content,
+            observed,
+            times,
+        }),
+        Err(not_text) => Err(NoteReadError {
+            error: std::io::Error::new(std::io::ErrorKind::InvalidData, not_text.utf8_error()),
+            observed,
+        }),
+    }
+}
+
+/// What [`read_note_with_fingerprint`] returns.
+pub(super) type NoteReadResult = std::result::Result<NoteRead, NoteReadError>;
+
+/// Why [`read_note_with_fingerprint`] has no text to hand back.
+#[derive(Debug)]
+pub(super) struct NoteReadError {
+    pub(super) error: std::io::Error,
+    /// What was observed of the bytes that aren't text, when that is why the
+    /// read failed. `None` for every other failure, and when the file
+    /// changed during the read.
+    pub(super) observed: Option<Observed>,
+}
+
+impl From<std::io::Error> for NoteReadError {
+    fn from(error: std::io::Error) -> Self {
+        Self {
+            error,
+            observed: None,
+        }
+    }
 }
 
 /// Parse what [`read_note_with_fingerprint`] read from `path`, with the
 /// file's own created and modified times, which the parser can't know.
-pub(super) fn parse_note(parser: &Parser, path: &Path, read: &NoteRead) -> Result<VaultFile> {
-    let mut file = parser.parse_file(path, &read.content)?;
+///
+/// This is the one place the vault runs the Markdown parser, and it contains
+/// a panic in it: the error says why the note can't be parsed, whether the
+/// parser returned that or panicked. Notes are parsed in bulk (the first
+/// scan, every sync after a write, a pull or an outside edit), so a panic
+/// let through here ends the task parsing all of them, and one note the
+/// parser has a bug for would keep the whole vault from opening.
+///
+/// The parser is handed shared borrows of the vault root and the note's text
+/// and builds its result from nothing else, so a panic leaves no state
+/// behind it for anyone to see half-updated. That is why the closure is
+/// `UnwindSafe` as it stands, with nothing asserted. A stack overflow or an
+/// allocation failure aborts the process and can't be caught here or
+/// anywhere; the guards against those are the parser's depth limits and
+/// `max_file_size`.
+pub(super) fn parse_note(
+    parser: &Parser,
+    path: &Path,
+    read: &NoteRead,
+) -> std::result::Result<VaultFile, String> {
+    let content = read.content.as_str();
+    let parsed = std::panic::catch_unwind(|| {
+        #[cfg(test)]
+        panic_on_marker(content);
+        parser.parse_file(path, content)
+    });
+    let mut file = match parsed {
+        Ok(Ok(file)) => file,
+        Ok(Err(Error::ParseError { reason })) => return Err(reason),
+        Ok(Err(error)) => return Err(error.to_string()),
+        Err(panic) => {
+            return Err(format!(
+                "the Markdown parser failed on this note: {}",
+                turbovault_core::panic_message(panic.as_ref())
+            ));
+        }
+    };
     read.times.stamp(&mut file);
     Ok(file)
+}
+
+/// A note holding this text makes its parse panic, in this crate's tests
+/// only. It stands in for a bug in the Markdown parser, which has no input
+/// that is both known to panic it and safe to keep in the repository.
+#[cfg(test)]
+pub(super) const PARSER_PANIC_MARKER: &str = "<!-- test: the parser panics on this note -->";
+
+#[cfg(test)]
+fn panic_on_marker(content: &str) {
+    if content.contains(PARSER_PANIC_MARKER) {
+        panic!("test parser panic");
+    }
 }
 
 /// A parsed note and what its read observed, ready for the index.
 pub(super) type ParsedNote = (PathBuf, VaultFile, Option<Observed>);
 
-/// Parse a chunk of initialization's reads, in parallel and in order,
-/// dropping (with a warning) any note that couldn't be read or parsed.
+/// Why a note that was found has nothing to put in the index.
+pub(super) enum NotIndexed {
+    /// On disk, but nothing the index can hold: its bytes aren't text, or
+    /// the parser fails on them.
+    Skipped(Skipped),
+    /// Not read this time: gone since it was found, or a failure to open it
+    /// that may not be there on the next pass.
+    Unread,
+}
+
+/// Parse one note's read for the index: the note and what its read observed,
+/// or why the index can't hold it, with a warning that names the note.
+pub(super) fn index_read(
+    parser: &Parser,
+    path: &Path,
+    read: NoteReadResult,
+) -> std::result::Result<(VaultFile, Option<Observed>), NotIndexed> {
+    let skipped = match read {
+        Ok(read) => match parse_note(parser, path, &read) {
+            Ok(vault_file) => return Ok((vault_file, read.observed)),
+            Err(reason) => Skipped {
+                reason,
+                observed: read.observed,
+            },
+        },
+        Err(NoteReadError { error, observed })
+            if error.kind() == std::io::ErrorKind::InvalidData =>
+        {
+            Skipped {
+                reason: format!("this note is not valid UTF-8 text: {error}"),
+                observed,
+            }
+        }
+        Err(NoteReadError { error, .. }) => {
+            // A note that vanished between being found and being read is
+            // the vault changing underneath us, and the next pass sees that.
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("Failed to read {}: {}", path.display(), error);
+            }
+            return Err(NotIndexed::Unread);
+        }
+    };
+    tracing::warn!("Skipping {}: {}", path.display(), skipped.reason);
+    Err(NotIndexed::Skipped(skipped))
+}
+
+/// Parse a chunk of initialization's reads, in parallel and in order: the
+/// notes that parsed, and the ones the index has to leave out.
 pub(super) fn parse_reads(
     parser: &Parser,
-    reads: Vec<(PathBuf, std::io::Result<NoteRead>)>,
-) -> Vec<ParsedNote> {
-    reads
+    reads: Vec<(PathBuf, NoteReadResult)>,
+) -> (Vec<ParsedNote>, Vec<(PathBuf, Skipped)>) {
+    let indexed: Vec<_> = reads
         .into_par_iter()
-        .filter_map(|(file_path, read)| {
-            let read = match read {
-                Ok(read) => read,
-                Err(e) => {
-                    tracing::warn!("Failed to read file {}: {}", file_path.display(), e);
-                    return None;
-                }
-            };
-            match parse_note(parser, &file_path, &read) {
-                Ok(vault_file) => Some((file_path, vault_file, read.observed)),
-                Err(e) => {
-                    tracing::warn!("Failed to parse {}: {}", file_path.display(), e);
-                    None
-                }
-            }
+        .map(|(file_path, read)| {
+            let indexed = index_read(parser, &file_path, read);
+            (file_path, indexed)
         })
-        .collect()
+        .collect();
+    let mut parsed = Vec::with_capacity(indexed.len());
+    let mut skipped = Vec::new();
+    for (file_path, indexed) in indexed {
+        match indexed {
+            Ok((vault_file, observed)) => parsed.push((file_path, vault_file, observed)),
+            Err(NotIndexed::Skipped(note)) => skipped.push((file_path, note)),
+            Err(NotIndexed::Unread) => {}
+        }
+    }
+    (parsed, skipped)
 }
 
 /// The note cache and link graph for a vault, from its parsed notes.
@@ -314,16 +439,19 @@ impl VaultManager {
             .buffered(INITIAL_READ_CONCURRENCY);
         let parser = Arc::new(Parser::new(self.vault_path.clone()));
         let mut parsed = Vec::new();
+        let mut skipped = HashMap::new();
         loop {
             let chunk: Vec<_> = reads.by_ref().take(INITIAL_PARSE_CHUNK).collect().await;
             if chunk.is_empty() {
                 break;
             }
             let parser = Arc::clone(&parser);
-            let notes = tokio::task::spawn_blocking(move || parse_reads(&parser, chunk))
-                .await
-                .map_err(|e| Error::other(format!("vault parse task failed: {e}")))?;
+            let (notes, left_out) =
+                tokio::task::spawn_blocking(move || parse_reads(&parser, chunk))
+                    .await
+                    .map_err(|e| Error::other(format!("vault parse task failed: {e}")))?;
             parsed.extend(notes);
+            skipped.extend(left_out);
         }
 
         // Linking builds the cache and graph off to the side, on the blocking
@@ -337,12 +465,47 @@ impl VaultManager {
             graph.node_count(),
             graph.edge_count()
         );
+        if !skipped.is_empty() {
+            tracing::warn!(
+                "{} note(s) could not be indexed and were skipped; validate_vault lists them",
+                skipped.len()
+            );
+        }
         let mut cache_guard = self.file_cache.write().await;
         let mut graph_guard = self.link_graph.write().await;
         *cache_guard = cache;
         *graph_guard = graph;
+        *self.skipped() = skipped;
 
         Ok(())
+    }
+
+    /// The notes the scan finds that the index doesn't hold. Held only for a
+    /// map operation, never across an await.
+    pub(super) fn skipped(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Skipped>> {
+        self.skipped.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The notes that are in the vault but not in its index, with the reason
+    /// for each, ordered by path, after the freshness gate.
+    ///
+    /// A note is skipped when its bytes aren't UTF-8 or the Markdown parser
+    /// fails on it. The note cache, the link graph and everything built from
+    /// them (search, similarity, the tools that list notes) leave it out;
+    /// the file itself can still be read and written. It is tried again
+    /// whenever the file changes.
+    pub async fn skipped_notes(&self) -> Vec<SkippedNote> {
+        self.ensure_fresh().await;
+        let mut notes: Vec<SkippedNote> = self
+            .skipped()
+            .iter()
+            .map(|(path, skipped)| SkippedNote {
+                path: path.clone(),
+                reason: skipped.reason.clone(),
+            })
+            .collect();
+        notes.sort_by(|a, b| a.path.cmp(&b.path));
+        notes
     }
 
     /// Scan for markdown files in vault
@@ -387,9 +550,9 @@ impl VaultManager {
         cache.insert(path, CacheEntry { file, observed });
     }
 
-    /// [`parse_note`] with this manager's parser.
+    /// [`parse_note`] with this manager's parser, as a parse error.
     pub(super) fn parse_read(&self, path: &Path, read: &NoteRead) -> Result<VaultFile> {
-        parse_note(&self.parser, path, read)
+        parse_note(&self.parser, path, read).map_err(Error::parse_error)
     }
 
     /// Bring the link graph + note cache into agreement with a substrate
@@ -418,26 +581,25 @@ impl VaultManager {
         // or a sync that changes thousands of notes would otherwise wait on
         // each read in turn. `buffered` keeps them in the order reported.
         let spec = Arc::clone(&self.scan_spec);
-        let observed: Vec<(PathBuf, bool, Option<std::io::Result<NoteRead>>)> =
-            futures::stream::iter(notes)
-                .map(|(full_path, present)| {
-                    let spec = Arc::clone(&spec);
-                    async move {
-                        let path = full_path.clone();
-                        let in_scope = tokio::task::spawn_blocking(move || spec.admits(&path))
-                            .await
-                            .unwrap_or(false);
-                        let read = if present && in_scope {
-                            Some(read_note_with_fingerprint(&full_path, None).await)
-                        } else {
-                            None
-                        };
-                        (full_path, in_scope, read)
-                    }
-                })
-                .buffered(INITIAL_READ_CONCURRENCY)
-                .collect()
-                .await;
+        let observed: Vec<(PathBuf, bool, Option<NoteReadResult>)> = futures::stream::iter(notes)
+            .map(|(full_path, present)| {
+                let spec = Arc::clone(&spec);
+                async move {
+                    let path = full_path.clone();
+                    let in_scope = tokio::task::spawn_blocking(move || spec.admits(&path))
+                        .await
+                        .unwrap_or(false);
+                    let read = if present && in_scope {
+                        Some(read_note_with_fingerprint(&full_path, None).await)
+                    } else {
+                        None
+                    };
+                    (full_path, in_scope, read)
+                }
+            })
+            .buffered(INITIAL_READ_CONCURRENCY)
+            .collect()
+            .await;
 
         // Parsing is CPU work; it runs on the blocking pool, notes in
         // parallel, and comes back in the same order.
@@ -447,27 +609,15 @@ impl VaultManager {
                 .into_par_iter()
                 .map(|(full_path, in_scope, read)| {
                     let update = match read {
-                        Some(Ok(read)) => match parse_note(&parser, &full_path, &read) {
-                            Ok(vault_file) => {
-                                IndexUpdate::Upsert(Arc::new(vault_file), read.observed)
+                        Some(read) => match index_read(&parser, &full_path, read) {
+                            Ok((vault_file, observed)) => {
+                                IndexUpdate::Upsert(Arc::new(vault_file), observed)
                             }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to parse {} after apply (graph not updated): {}",
-                                    full_path.display(),
-                                    e
-                                );
-                                IndexUpdate::Skip
-                            }
+                            // Whatever the index held of this note was
+                            // parsed from bytes that are no longer there.
+                            Err(NotIndexed::Skipped(skipped)) => IndexUpdate::Exclude(skipped),
+                            Err(NotIndexed::Unread) => IndexUpdate::Skip,
                         },
-                        Some(Err(e)) => {
-                            tracing::warn!(
-                                "Failed to re-read {} after apply: {}",
-                                full_path.display(),
-                                e
-                            );
-                            IndexUpdate::Skip
-                        }
                         // Re-check disk state before evicting: `sync_index`
                         // runs after `substrate.apply()` has already released
                         // its write-lock, so a concurrent blind write that
@@ -495,7 +645,10 @@ impl VaultManager {
                 .collect::<Vec<_>>()
         })
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("index sync task failed, derived state unchanged: {e}");
+            Vec::new()
+        });
 
         // Applied in the order reported, a chunk per hold of the graph and of
         // the cache, so readers wait on a bounded slice of a large batch.
@@ -525,25 +678,42 @@ impl VaultManager {
                                 );
                             }
                         }
-                        IndexUpdate::Remove => {
+                        IndexUpdate::Remove | IndexUpdate::Exclude(_) => {
                             let _ = graph.remove_file(full_path);
                         }
                         IndexUpdate::Skip => {}
                     }
                 }
             }
-            let mut cache = self.file_cache.write().await;
-            for (full_path, update) in chunk {
-                match update {
-                    IndexUpdate::Upsert(file, observed) => {
-                        cache.insert(full_path, CacheEntry { file, observed });
+            let mut excluded = Vec::new();
+            let mut settled = Vec::new();
+            {
+                let mut cache = self.file_cache.write().await;
+                for (full_path, update) in chunk {
+                    match update {
+                        IndexUpdate::Upsert(file, observed) => {
+                            cache.insert(full_path.clone(), CacheEntry { file, observed });
+                            settled.push(full_path);
+                        }
+                        IndexUpdate::Remove => {
+                            cache.remove(&full_path);
+                            settled.push(full_path);
+                        }
+                        IndexUpdate::Exclude(skipped) => {
+                            cache.remove(&full_path);
+                            excluded.push((full_path, skipped));
+                        }
+                        IndexUpdate::Skip => {}
                     }
-                    IndexUpdate::Remove => {
-                        cache.remove(&full_path);
-                    }
-                    IndexUpdate::Skip => {}
                 }
             }
+            // A note is in the cache or among the skipped, never both, and
+            // one that is gone is in neither.
+            let mut skipped = self.skipped();
+            for full_path in settled {
+                skipped.remove(&full_path);
+            }
+            skipped.extend(excluded);
         }
     }
 
@@ -571,9 +741,8 @@ impl VaultManager {
         let full_path = self.resolve_path(path)?;
         let read = read_note_with_fingerprint(&full_path, None)
             .await
-            .map_err(|e| Error::io_at(self.relative_path(&full_path), e))?;
+            .map_err(|e| Error::io_at(self.relative_path(&full_path), e.error))?;
         self.parse_read(&full_path, &read)
-            .map_err(|e| Error::parse_error(e.to_string()))
     }
 
     /// Synchronize one note's on-disk state into the parsed cache and link graph.
@@ -588,9 +757,7 @@ impl VaultManager {
         }
         match read_note_with_fingerprint(&full_path, None).await {
             Ok(read) => {
-                let vault_file = self
-                    .parse_read(&full_path, &read)
-                    .map_err(|error| Error::parse_error(error.to_string()))?;
+                let vault_file = self.parse_read(&full_path, &read)?;
                 {
                     let mut graph = self.link_graph.write().await;
                     graph.add_file(&vault_file)?;
@@ -600,7 +767,7 @@ impl VaultManager {
                     .await;
                 Ok(())
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(error) if error.error.kind() == std::io::ErrorKind::NotFound => {
                 {
                     let mut graph = self.link_graph.write().await;
                     let _ = graph.remove_file(&full_path);
@@ -608,7 +775,7 @@ impl VaultManager {
                 self.file_cache.write().await.remove(&full_path);
                 Ok(())
             }
-            Err(error) => Err(Error::io(error)),
+            Err(error) => Err(Error::io(error.error)),
         }
     }
 

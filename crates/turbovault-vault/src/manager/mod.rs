@@ -121,6 +121,17 @@ impl ScannedNote {
     }
 }
 
+/// A note that is in the vault but not in its index, and why. See
+/// [`VaultManager::skipped_notes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SkippedNote {
+    /// Absolute path of the note.
+    pub path: PathBuf,
+    /// Why it couldn't be indexed, as a phrase about the note.
+    pub reason: String,
+}
+
 mod freshness;
 mod paths;
 mod scan;
@@ -137,6 +148,10 @@ pub struct VaultManager {
     parser: Parser,
     link_graph: Arc<RwLock<LinkGraph>>,
     file_cache: Arc<RwLock<HashMap<PathBuf, CacheEntry>>>,
+    /// The notes the scan finds that `file_cache` doesn't hold, keyed the
+    /// same way. See [`Skipped`]. std `Mutex`: the critical sections are map
+    /// operations, with no `await`.
+    skipped: StdMutex<HashMap<PathBuf, Skipped>>,
     audit_log: Option<Arc<AuditLog>>,
     snapshot_store: Option<Arc<SnapshotStore>>,
     /// write-substrate-layering M3a: the write dispatch chokepoint (design
@@ -322,6 +337,7 @@ impl VaultManager {
             parser,
             link_graph: Arc::new(RwLock::new(LinkGraph::new())),
             file_cache: Arc::new(RwLock::new(HashMap::new())),
+            skipped: StdMutex::new(HashMap::new()),
             audit_log: None,
             snapshot_store: None,
             substrate,
