@@ -395,7 +395,7 @@ async fn guarded<T>(
     match tokio::time::timeout(PLUGIN_CALL_BUDGET, call.catch_unwind()).await {
         Ok(Ok(result)) => result,
         Ok(Err(panic)) => {
-            let detail = panic_message(&panic);
+            let detail = turbovault_core::panic_message(panic.as_ref());
             tracing::error!("plugin {plugin_id:?} panicked handling {subject}: {detail}");
             Err(PluginError::internal(format!(
                 "plugin {plugin_id:?} panicked while handling {subject}: {detail}"
@@ -452,17 +452,6 @@ fn plugin_prompt_error(name: &str, error: PluginError) -> McpError {
     match error.code {
         PluginErrorCode::NotFound => McpError::prompt_not_found(name),
         _ => plugin_error(error),
-    }
-}
-
-/// Best-effort human-readable text from a caught panic payload.
-fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(message) = payload.downcast_ref::<&str>() {
-        (*message).to_string()
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.clone()
-    } else {
-        "panic payload was not a string".to_string()
     }
 }
 
@@ -1386,7 +1375,7 @@ impl ObsidianMcpServer {
             };
         let call = std::panic::AssertUnwindSafe(audit_context.scope(call));
         let result = call.catch_unwind().await.unwrap_or_else(|panic| {
-            let detail = panic_message(&panic);
+            let detail = turbovault_core::panic_message(panic.as_ref());
             tracing::error!("tool {name:?} panicked: {detail}");
             Err(McpError::internal(format!(
                 "tool {name:?} failed with an internal error: {detail}"

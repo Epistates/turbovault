@@ -102,6 +102,28 @@ pub fn bytes_to_lower_hex(bytes: impl AsRef<[u8]>) -> String {
     out
 }
 
+/// What a caught panic said, for a log line or an error message.
+///
+/// The payload [`std::panic::catch_unwind`] hands back is whatever `panic!`
+/// was given: a `&str` for a literal message, a `String` for a formatted one.
+/// Anything else has no text to report.
+///
+/// ```
+/// use turbovault_core::panic_message;
+///
+/// let panic = std::panic::catch_unwind(|| panic!("out of range: {}", 7)).unwrap_err();
+/// assert_eq!(panic_message(panic.as_ref()), "out of range: 7");
+/// ```
+pub fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic payload was not a string".to_string()
+    }
+}
+
 /// Generic JSON serialization with consistent error handling
 /// Works with any type that implements Serialize (including slices)
 pub fn to_json_string<T: serde::Serialize + ?Sized>(data: &T, context: &str) -> Result<String> {
@@ -212,6 +234,19 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+
+    #[test]
+    fn panic_message_reads_literal_and_formatted_messages() {
+        let literal = std::panic::catch_unwind(|| panic!("literal")).unwrap_err();
+        assert_eq!(panic_message(literal.as_ref()), "literal");
+        let formatted = std::panic::catch_unwind(|| panic!("note {}", 3)).unwrap_err();
+        assert_eq!(panic_message(formatted.as_ref()), "note 3");
+        let other = std::panic::catch_unwind(|| std::panic::panic_any(3u8)).unwrap_err();
+        assert_eq!(
+            panic_message(other.as_ref()),
+            "panic payload was not a string"
+        );
+    }
 
     #[derive(Serialize, Deserialize)]
     struct TestData {
