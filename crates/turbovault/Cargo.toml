@@ -20,6 +20,7 @@ include = [
   "Cargo.toml",
   "build.rs",
   "README.md",
+  "LICENSE",
 ]
 
 [features]
