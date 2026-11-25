@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-11-29
+
+A vault with a note the Markdown parser fails on now opens without that note and reports it, `--auth-mode jwt` is stricter about tokens, the Docker image moves to Debian 13, and dependencies are refreshed. It adds `VaultManager::skipped_notes`, `SkippedNote` and `turbovault_core::panic_message`. Every crate moves to 4.2.0 with the workspace, and turbovault-vector to 0.1.3; turbovault-plugin-api and turbovault-plugin-vector are unchanged.
+
 ### Security
 
 - **`url` 2.5.9**, for [RUSTSEC-2026-0592](https://rustsec.org/advisories/RUSTSEC-2026-0592): `Url::origin()` overflowed the stack on a URL with deeply nested `blob:` prefixes. TurboVault's server never takes that path: the only calls to `Url::origin()` are in turbomcp's HTTP client, which the server doesn't run.
