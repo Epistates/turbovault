@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.2.0] - 2026-11-29
 
-A vault with a note the Markdown parser fails on now opens without that note and reports it, `--auth-mode jwt` is stricter about tokens, the Docker image moves to Debian 13, and dependencies are refreshed. It adds `VaultManager::skipped_notes`, `SkippedNote` and `turbovault_core::panic_message`. Every crate moves to 4.2.0 with the workspace, and turbovault-vector to 0.1.3; turbovault-plugin-api and turbovault-plugin-vector are unchanged.
+A vault with a note the Markdown parser fails on now opens without that note and reports it, `--auth-mode jwt` is stricter about tokens, the Docker image moves to Debian 13, and dependencies are refreshed. It adds `VaultManager::skipped_notes`, `SkippedNote` and `turbovault_core::panic_message`. Every crate moves to 4.2.0 with the workspace, turbovault-vector and turbovault-plugin-vector move to 0.2.0, and turbovault-plugin-api is unchanged.
 
 ### Security
 
@@ -19,7 +19,7 @@ A vault with a note the Markdown parser fails on now opens without that note and
 
 - **A note the Markdown parser fails on no longer keeps a vault from opening.** If the parser panicked on one note, the first scan failed with `vault parse task failed` and the vault stayed closed until that note was removed. The note is now skipped: the vault opens, every other note is served, and a warning in the log names the one left out. This changes what such a vault does. It used to fail to open; it now opens with that note left out of search, links, the graph and everything else built from parsed notes. The file is still in the vault, and `read_note` still returns it. The same holds for a note that starts failing while the server runs, whether it was written through TurboVault or edited outside it. Before, such a note made each freshness pass discard every other change it had found.
 - **Skipped notes are reported.** `validate_vault` lists each one as an `index` error with the reason, and `vault_health` warns that its counts leave them out and names them. A note that isn't valid UTF-8 is skipped and reported the same way; it used to be dropped with only a log line and read again on every freshness pass. A skipped note is tried again when its file changes. `VaultManager::skipped_notes`, its `SkippedNote` type and `turbovault_core::panic_message` are new.
-- **Search, similarity, note quality and the stats export no longer fail on a note they can't render as plain text.** They index that note by its Markdown as written, and a warning names it. The vector plugin does the same, in `turbovault-vector` 0.1.3.
+- **Search, similarity, note quality and the stats export no longer fail on a note they can't render as plain text.** They index that note by its Markdown as written, and a warning names it. The vector plugin does the same, in `turbovault-vector` 0.2.0.
 
 4.1.0 also updates pulldown-cmark past a panic on malformed Markdown; upgrade from 4.0.x.
 
@@ -27,7 +27,8 @@ A vault with a note the Markdown parser fails on now opens without that note and
 
 - **`--auth-mode jwt` is stricter about the tokens it accepts.** This release is built with turbomcp 3.7.1, which validates tokens with `jsonwebtoken` 12: a token whose `crit` header names an extension the server doesn't understand is refused, and so is one whose `sub`, `iss` or `aud` has the wrong JSON type. Tokens from a standard OAuth authorization server are unaffected.
 - **The Docker image is based on Debian 13 (trixie).** Debian 12 left regular security support in June 2026. The image has glibc 2.41 and OpenSSL 3.5 in place of 2.36 and 3.0, and is built with Rust 1.100.0. If you build on it, packages come from trixie and `adduser` is no longer preinstalled (`useradd` is). If you copy the binary out of it, the image it goes into needs glibc 2.38 or later, which Debian 12 doesn't have. The release archives are built separately and are unaffected.
-- **Dependencies refreshed.** `model2vec-rs` 0.5 for the vector plugin, in `turbovault-vector` 0.1.3: it takes an embedding's token limit from the model's `config.json` and uses 512 when the model sets none, which is what 0.4 always used. Every other package in the lockfile is at its latest compatible version. The turbomcp requirement stays at 3.6.0.
+- **`turbovault-vector` and `turbovault-plugin-vector` move to 0.2.0.** With `model2vec-rs` 0.5, `Model2VecEmbedder` is no longer `UnwindSafe` or `RefUnwindSafe`, so code that relied on either, for example by holding one across `std::panic::catch_unwind`, no longer compiles. `turbovault-plugin-vector` moves with it because its API names turbovault-vector's types. Nothing else in either API changed.
+- **Dependencies refreshed.** `model2vec-rs` 0.5 for the vector plugin, in `turbovault-vector` 0.2.0: it takes an embedding's token limit from the model's `config.json` and uses 512 when the model sets none, which is what 0.4 always used. Every other package in the lockfile is at its latest compatible version. The turbomcp requirement stays at 3.6.0.
 - **Every crate's package carries the license text.** Each crate published to crates.io now includes the MIT `LICENSE` file, which the license asks every copy to include.
 
 ## [4.1.0] - 2026-11-18
