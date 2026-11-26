@@ -290,8 +290,8 @@ impl Op<WireWorld> for MoveDest {
 // values come from the CSV's `backend` column; `just wss-audit` enforces them.
 const SRC_CASES: &[Case] = &[
     // ExpectExists (in-place default, dirty-gated) — the source is the removed
-    // target; NoFile-on-absent must precede the precondition check.
-    Case::pending(P::Exists, S::Absent, O::NoFile),
+    // target; NoFile-on-absent precedes the precondition check (missing-target rule).
+    Case::new(P::Exists, S::Absent, O::NoFile),
     Case::new(P::Exists, S::CleanCommitted, O::Ok),
     Case::new(P::Exists, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Exists, S::CommittedUnstaged, O::ConcurrencyError),
@@ -323,7 +323,7 @@ const SRC_CASES: &[Case] = &[
     Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
     Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ExpectBlob(WRONG) → refuse everywhere; NoFile on absent
-    Case::pending(P::Wrong, S::Absent, O::NoFile),
+    Case::new(P::Wrong, S::Absent, O::NoFile),
     Case::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
     Case::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),

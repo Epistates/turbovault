@@ -2993,3 +2993,72 @@ async fn initialize_again_forgets_a_note_that_was_repaired() {
     assert_eq!(cached_paths(&manager).await, ["bad.md"]);
     assert!(skipped_notes(&manager).await.is_empty());
 }
+
+// -------------------------------------------------------------------------
+// The missing-target rule: an op that acts on an existing note answers
+// not-found when the note is absent, whatever guard the caller attached.
+// -------------------------------------------------------------------------
+
+/// A delete that asks for the note to exist, on a note that isn't there, is a
+/// not-found. It is not a changed-underneath refusal, and it does not succeed.
+#[tokio::test]
+async fn test_delete_file_on_a_missing_note_is_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    let err = manager
+        .delete_file(Path::new("ghost.md"), Precondition::ExpectExists, "test")
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, Error::FileNotFound { .. }),
+        "delete of a missing note must be FileNotFound, got {err:?}"
+    );
+}
+
+/// Blind asks nothing of the target, so a delete whose reply was lost can be
+/// retried: the note is already gone and the retry says so by succeeding.
+#[tokio::test]
+async fn test_blind_delete_of_a_missing_note_succeeds() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    manager
+        .delete_file(Path::new("ghost.md"), Precondition::Blind, "test")
+        .await
+        .expect("a blind delete of a note that is already gone succeeds");
+}
+
+/// A move needs its source, so a missing one is a not-found whichever guard
+/// the caller attached, and nothing is created at the destination.
+#[tokio::test]
+async fn test_move_file_with_a_missing_source_is_not_found_under_any_guard() {
+    for guard in [
+        Precondition::ExpectExists,
+        Precondition::ExpectBlob("0".repeat(40)),
+    ] {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+        let err = manager
+            .move_file(
+                Path::new("ghost.md"),
+                Path::new("moved.md"),
+                guard.clone(),
+                Precondition::ExpectAbsent,
+                "test",
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::FileNotFound { .. }),
+            "move of a missing source under {guard:?} must be FileNotFound, got {err:?}"
+        );
+        assert!(
+            !temp_dir.path().join("moved.md").exists(),
+            "a refused move must not create the destination"
+        );
+    }
+}

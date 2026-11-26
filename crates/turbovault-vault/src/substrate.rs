@@ -957,15 +957,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expect_exists_on_missing_path_errors() {
+    async fn expect_exists_on_missing_path_is_not_found() {
         let tmp = TempDir::new().unwrap();
         let sub = direct(&tmp);
         let plan = ChangePlan::new("del")
             .remove("ghost.md")
             .with_precondition("ghost.md", Precondition::ExpectExists);
 
+        // A path that is not there is a not-found, not a changed-underneath
+        // refusal: the answer a caller can act on differs.
         let err = sub.apply(&plan).await.unwrap_err();
-        assert!(matches!(err, Error::ConcurrencyError { .. }));
+        assert!(matches!(err, Error::FileNotFound { .. }), "got {err:?}");
     }
 
     #[tokio::test]
