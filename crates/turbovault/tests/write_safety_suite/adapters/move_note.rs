@@ -93,7 +93,11 @@ async fn move_batch(
     };
     let mut plan = BatchTools::new(mgr.clone()).plan(&[op]).await?;
     plan.message = MSG.to_string();
-    mgr.apply_changes(&plan).await.map(|_| ())
+    // Re-raise a best-effort apply's error, as production's batch does.
+    mgr.apply_changes(&plan)
+        .await
+        .and_then(|outcome| outcome.into_result())
+        .map(|_| ())
 }
 
 /// The wire move: drive the real `move_note` MCP handler in-process, encoding

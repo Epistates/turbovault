@@ -291,7 +291,13 @@ impl BatchWorld {
         match BatchTools::new(mgr.clone()).plan(&[op]).await {
             Ok(mut plan) => {
                 plan.message = MSG.to_string();
-                mgr.apply_changes(&plan).await.map(|_| ())
+                // A best-effort direct apply that stopped mid-plan comes back as
+                // `Ok` carrying its error; re-raise it as production's batch
+                // does, or a refusal would read as a success.
+                mgr.apply_changes(&plan)
+                    .await
+                    .and_then(|outcome| outcome.into_result())
+                    .map(|_| ())
             }
             Err(e) => Err(e),
         }
