@@ -652,13 +652,17 @@ fn run_plan(
 }
 
 /// Translate a substrate error into the core error space. Ports
-/// `git_file_tools::git_err_to_core` verbatim: "changed underneath us"
-/// conflicts pass through as `ConcurrencyError`; everything else becomes a
-/// `ConfigError` describing the substrate failure.
+/// `git_file_tools::git_err_to_core`: "changed underneath us" conflicts pass
+/// through as `ConcurrencyError` and a path that is not there as
+/// `FileNotFound`, so a caller can tell the two apart; everything else becomes
+/// a `ConfigError` describing the substrate failure.
 fn git_err_to_core(e: turbovault_git::Error) -> Error {
     match e {
         turbovault_git::Error::Core(turbovault_core::Error::ConcurrencyError { reason }) => {
             Error::ConcurrencyError { reason }
+        }
+        turbovault_git::Error::Core(turbovault_core::Error::FileNotFound { path }) => {
+            Error::FileNotFound { path }
         }
         other => Error::other(format!("git substrate error: {}", other)),
     }
@@ -672,6 +676,20 @@ mod tests {
 
     fn direct(tmp: &TempDir) -> DirectSubstrate {
         DirectSubstrate::new(tmp.path().to_path_buf())
+    }
+
+    #[test]
+    fn git_not_found_and_concurrency_keep_their_kind_through_the_core_mapping() {
+        let not_found = turbovault_git::Error::Core(Error::file_not_found("ghost.md"));
+        assert!(matches!(
+            git_err_to_core(not_found),
+            Error::FileNotFound { .. }
+        ));
+        let stale = turbovault_git::Error::Core(Error::concurrency_error("stale"));
+        assert!(matches!(
+            git_err_to_core(stale),
+            Error::ConcurrencyError { .. }
+        ));
     }
 
     // -------- DirectSubstrate::apply — Upsert/Remove/Rename --------

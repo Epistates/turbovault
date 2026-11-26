@@ -55,6 +55,9 @@ fn mutating_tool_descriptions_match_current_safety_contract() {
 #[tokio::test]
 async fn batch_response_reports_partial_failure_contract() {
     let temp = tempfile::TempDir::new().expect("temp vault");
+    // A regular FILE, so nothing can be created under it: the write below fails
+    // in the apply loop, past the precondition gate.
+    std::fs::write(temp.path().join("blocker.md"), "# Blocker").expect("blocker file");
     let server = make_server();
     let config = turbovault_core::VaultConfig::builder("test", temp.path())
         .build()
@@ -71,7 +74,7 @@ async fn batch_response_reports_partial_failure_contract() {
             serde_json::json!({
                 "operations": [
                     {"type": "CreateNote", "path": "created.md", "content": "# Created"},
-                    {"type": "DeleteNote", "path": "missing.md"}
+                    {"type": "WriteNote", "path": "blocker.md/child.md", "content": "# Never lands"}
                 ]
             }),
             &ctx(),
@@ -85,8 +88,8 @@ async fn batch_response_reports_partial_failure_contract() {
     assert_eq!(response["success"], false);
     assert_eq!(response["data"]["success"], false);
     // TV-016: the direct batch is best-effort, and the wire reports the
-    // partial it leaves — the CreateNote landed, the DeleteNote of a missing
-    // path is the operation that stopped the batch.
+    // partial it leaves — the CreateNote landed, the WriteNote under a regular
+    // file is the operation that stopped the batch.
     assert_eq!(response["data"]["executed"], 1);
     assert_eq!(response["data"]["failed_at"], 1);
     assert_eq!(response["meta"]["execution_mode"], "sequential_direct");
@@ -96,7 +99,7 @@ async fn batch_response_reports_partial_failure_contract() {
             .unwrap_or_default()
             .contains("not rolled back")
     );
-    // The earlier CreateNote landed before the DeleteNote of a missing path
+    // The earlier CreateNote landed before the WriteNote under a regular file
     // aborted the sequential DirectSubstrate apply — direct is not yet atomic
     // (the "not rolled back" warning is accurate; true atomicity is M5.2).
     assert!(temp.path().join("created.md").exists());
