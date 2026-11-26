@@ -20,18 +20,14 @@ exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]
-version = "4.1.0"
+version = "4.2.0"
 edition = "2024"
 rust-version = "1.90.0"
 authors = ["Epistates, Inc <nick@epistates.com>"]
 license = "MIT"
 repository = "https://github.com/epistates/turbovault"
-homepage = "https://github.com/epistates/turbovault"
-readme = "README.md"
 keywords = ["mcp", "obsidian", "vault", "llm", "agent"]
 categories = ["text-processing", "development-tools"]
-description = "LLM-optimized Obsidian vault MCP server with advanced editing, search, and graph analysis"
-publish = true
 
 [workspace.lints.rust]
 # No shipped crate uses `unsafe`. `deny` rather than `forbid` so the one test
@@ -64,7 +60,6 @@ percent-encoding = "2.3"     # Markdown link destinations (`My%20Note.md`)
 
 # Observability & Diagnostics
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 
 # Data structures & algorithms
 petgraph = "0.8"             # 2.1M+ downloads, ecosystem standard for graphs
@@ -133,16 +128,16 @@ bm25 = "2.3"              # Pure-Rust BM25 scorer/search engine (Michael-JB/bm25
 # sonic-rs = "0.3"         # Fastest JSON parser, deferred optimization
 
 # Workspace crates
-turbovault-core = { version = "4.1.0", path = "crates/turbovault-core" }
-turbovault-parser = { version = "4.1.0", path = "crates/turbovault-parser" }
-turbovault-graph = { version = "4.1.0", path = "crates/turbovault-graph" }
-turbovault-vault = { version = "4.1.0", path = "crates/turbovault-vault" }
-turbovault-batch = { version = "4.1.0", path = "crates/turbovault-batch" }
-turbovault-export = { version = "4.1.0", path = "crates/turbovault-export" }
-turbovault-audit = { version = "4.1.0", path = "crates/turbovault-audit" }
-turbovault-git = { version = "4.1.0", path = "crates/turbovault-git" }
-turbovault-sql = { version = "4.1.0", path = "crates/turbovault-sql" }
-turbovault-tools = { version = "4.1.0", path = "crates/turbovault-tools" }
+turbovault-core = { version = "4.2.0", path = "crates/turbovault-core" }
+turbovault-parser = { version = "4.2.0", path = "crates/turbovault-parser" }
+turbovault-graph = { version = "4.2.0", path = "crates/turbovault-graph" }
+turbovault-vault = { version = "4.2.0", path = "crates/turbovault-vault" }
+turbovault-batch = { version = "4.2.0", path = "crates/turbovault-batch" }
+turbovault-export = { version = "4.2.0", path = "crates/turbovault-export" }
+turbovault-audit = { version = "4.2.0", path = "crates/turbovault-audit" }
+turbovault-git = { version = "4.2.0", path = "crates/turbovault-git" }
+turbovault-sql = { version = "4.2.0", path = "crates/turbovault-sql" }
+turbovault-tools = { version = "4.2.0", path = "crates/turbovault-tools" }
 # Versioned independently of the workspace: the plugin contract has no external
 # implementors yet and needs room to change without dragging every other crate
 # to a new major. Promote it to the workspace version once it is stable.
@@ -151,9 +146,8 @@ turbovault-plugin-api = { version = "0.1.0", path = "crates/turbovault-plugin-ap
 # plugin are still settling. They are published only because turbovault's
 # default-off `vector-search` feature depends on them, and crates.io requires
 # every dependency of a published crate to be published, optional ones included.
-turbovault-vector = { version = "0.1.3", path = "crates/turbovault-vector" }
-turbovault-plugin-vector = { version = "0.1.0", path = "crates/plugins/turbovault-plugin-vector" }
-turbovault = { version = "4.1.0", path = "crates/turbovault" }
+turbovault-vector = { version = "0.2.0", path = "crates/turbovault-vector" }
+turbovault-plugin-vector = { version = "0.2.0", path = "crates/plugins/turbovault-plugin-vector" }
 
 [profile.release]
 opt-level = 3

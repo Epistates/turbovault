@@ -7,7 +7,7 @@
 # same toolchain and runtime. Dependabot proposes digest updates.
 
 # Stage 1: Builder
-FROM rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea AS builder
+FROM rust:1.100.0-trixie@sha256:223cc32ddca8f3ee90c436dbc94b6b5f052ea7f9653c5201e9612f08ad7d21b8 AS builder
 
 # libgit2 is vendored and built from source: it needs cmake and a C compiler.
 RUN apt-get update \
@@ -26,7 +26,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/turbovault /usr/local/bin/turbovault
 
 # Stage 2: Runtime
-FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
+FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

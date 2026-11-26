@@ -9,7 +9,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 publish = true
 description = "Stable plugin contract and curated vault facade for TurboVault"
 documentation = "https://docs.rs/turbovault-plugin-api"

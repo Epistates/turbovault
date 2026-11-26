@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-audit"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1636,7 +1636,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-batch"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "schemars",
  "serde",
@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-core"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1664,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-export"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -1685,7 +1685,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-git"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "git2",
  "thiserror",
@@ -1695,7 +1695,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-graph"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "petgraph",
  "serde",
@@ -1705,7 +1705,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-parser"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "percent-encoding",
  "pulldown-cmark",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-tools"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "chrono",
  "rayon",
@@ -1744,7 +1744,7 @@ dependencies = [
 
 [[package]]
 name = "turbovault-vault"
-version = "4.1.0"
+version = "4.2.0"
 dependencies = [
  "futures",
  "rayon",
