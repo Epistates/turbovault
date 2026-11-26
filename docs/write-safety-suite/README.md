@@ -34,10 +34,15 @@ axes; content-correctness is a plain functional test's job, never a WSS cell.
 Everything else is out of scope — see [Scope boundary](#scope-boundary) below.
 The universal rule the whole matrix encodes:
 
-> The precondition is evaluated against the **working tree**. A dirty tree
-> (staged, unstaged, or an untracked conflict) is **refused** unless the caller
-> proved it read the current bytes (`ExpectBlob(WORKDIR)`) or explicitly opted
-> out (`Blind`).
+> The precondition is evaluated against the **working tree**. On the git backend a
+> path with uncommitted changes (staged, unstaged, or an untracked conflict) is
+> **refused**, whatever the precondition: proof of the current bytes
+> (`ExpectBlob(WORKDIR)`) does not license writing over a dirty tree, and neither
+> does `Blind` while the force switch stays off. This is the strict default ratified
+> in [`dirty-tree-policy.md`](./dirty-tree-policy.md), and the matrix asserts it. The
+> switch that turns `Blind` into a working force hatch (`allow_blind`) is future
+> work; its cells join the matrix when it is built. The direct backend is git-blind
+> and has no dirty gate.
 
 ## Model — four axes, cleanly separated
 
