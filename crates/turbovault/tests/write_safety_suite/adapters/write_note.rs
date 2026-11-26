@@ -147,22 +147,24 @@ impl Op<WireWorld> for WriteNote {
 /// (token undefined for the state) and SKIP duplicates (WORKDIR == HEAD/INDEX)
 /// are omitted.
 ///
-/// `pending` = a cell current code gets wrong (the nbl.8 burndown); its reason is
-/// the trial-name-derived nbl.8 tag (`--include-ignored` is the source of truth).
-/// The `e---u`/Untracked cells split the git arm (pending burndown) from the
-/// direct arm (already correct → active): a single shared `pending` flag can't be
-/// right for both backends.
+/// On git every dirty state refuses, whatever the precondition: even proof of the
+/// current bytes (`Index`/`Workdir`) does not license writing over uncommitted work,
+/// and `Blind`, the force hatch, is off by default (`dirty-tree-policy.md`). The
+/// `e---u`/Untracked cells split the two backends with DIFFERENT `expected`, straight
+/// from the CSV's `backend` column: on git it is a dirty untracked tree (refuse), on
+/// direct it is merely a present file (direct is git-blind), and `just wss-audit`
+/// checks both arms.
 const CASES: &[Case] = &[
-    // ── Blind (no precondition) → OK in every state (git dirty states pending) ─
+    // ── Blind (no precondition) → OK on clean/absent; git dirty states refuse ──
     Case::new(P::Blind, S::Absent, O::Ok),
     Case::new(P::Blind, S::CleanCommitted, O::Ok),
-    Case::pending(P::Blind, S::CommittedStaged, O::Ok),
-    Case::pending(P::Blind, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::NewStaged, O::Ok),
-    Case::pending(P::Blind, S::IntentToAdd, O::Ok),
-    Case::pending(P::Blind, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Blind, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Blind, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectAbsent (create-only) → OK on absent, else refuse ───────────────
     Case::new(P::Absent, S::Absent, O::Ok),
@@ -181,16 +183,16 @@ const CASES: &[Case] = &[
     Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
     Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(INDEX) — defined iff staged ───────────────────────────────
-    Case::pending(P::Index, S::CommittedStaged, O::Ok),
+    Case::new(P::Index, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::pending(P::Index, S::NewStaged, O::Ok),
+    Case::new(P::Index, S::NewStaged, O::ConcurrencyError),
     Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(WORKDIR) — proving the on-disk bytes; SKIP where ==HEAD/INDEX ─
-    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
-    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Workdir, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Workdir, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectBlob(WRONG) → refuse in every state ────────────────────────────
     Case::new(P::Wrong, S::Absent, O::ConcurrencyError),
