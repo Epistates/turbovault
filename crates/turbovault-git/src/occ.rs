@@ -78,10 +78,11 @@ impl VaultRepo {
                     }
                 }
                 Precondition::ExpectExists => {
+                    // Not there is a not-found, not a changed-underneath
+                    // refusal (the missing-target rule, see
+                    // docs/write-safety-suite/README.md).
                     if found.is_none() {
-                        return Err(Error::concurrency(format!(
-                            "precondition failed for {path}: expected present, found absent"
-                        )));
+                        return Err(Error::Core(turbovault_core::Error::file_not_found(path)));
                     }
                 }
                 Precondition::Blind => {}
@@ -242,17 +243,19 @@ mod tests {
     // -------- write-substrate-layering M2: ExpectExists / Blind / malformed hex --------
 
     #[test]
-    fn expect_exists_passes_when_present_fails_when_absent() {
+    fn expect_exists_passes_when_present_and_is_not_found_when_absent() {
         let (_tmp, vr) = open_unborn();
         let t = vr.build_tree(None, &[upsert("a.md", "alpha")]).unwrap();
         vr.check_preconditions(Some(t), &[("a.md".to_string(), Precondition::ExpectExists)])
             .expect("present path satisfies ExpectExists");
+        // A path that is not there is a not-found, not a changed-underneath
+        // refusal: the answer a caller can act on differs.
         assert!(matches!(
             vr.check_preconditions(
                 Some(t),
                 &[("missing.md".to_string(), Precondition::ExpectExists)]
             ),
-            Err(Error::Core(turbovault_core::Error::ConcurrencyError { .. }))
+            Err(Error::Core(turbovault_core::Error::FileNotFound { .. }))
         ));
     }
 

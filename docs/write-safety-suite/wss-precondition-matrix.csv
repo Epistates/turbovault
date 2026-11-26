@@ -10,11 +10,12 @@ git,edit_note,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A
 git,edit_note,Index,N/A,N/A,ConcurrencyError,N/A,ConcurrencyError,ConcurrencyError,N/A,ConcurrencyError,N/A
 git,edit_note,Workdir,N/A,SKIP:Head,SKIP:Index,ConcurrencyError,ConcurrencyError,SKIP:Index,ConcurrencyError,ConcurrencyError,ConcurrencyError
 git,edit_note,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
-git,delete_note,Exists,Ok,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,delete_note,Blind,NoFile,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,delete_note,Exists,NoFile,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
 git,delete_note,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
 git,delete_note,Index,N/A,N/A,ConcurrencyError,N/A,ConcurrencyError,ConcurrencyError,N/A,ConcurrencyError,N/A
 git,delete_note,Workdir,N/A,SKIP:Head,SKIP:Index,ConcurrencyError,ConcurrencyError,SKIP:Index,ConcurrencyError,ConcurrencyError,ConcurrencyError
-git,delete_note,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+git,delete_note,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
 git,update_frontmatter,Exists,NoFile,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
 git,update_frontmatter,Head,N/A,Ok,ConcurrencyError,ConcurrencyError,ConcurrencyError,N/A,N/A,N/A,N/A
 git,update_frontmatter,Index,N/A,N/A,ConcurrencyError,N/A,ConcurrencyError,ConcurrencyError,N/A,ConcurrencyError,N/A
@@ -45,9 +46,10 @@ direct,write_note,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,Concu
 direct,edit_note,Exists,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
 direct,edit_note,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
 direct,edit_note,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
-direct,delete_note,Exists,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,delete_note,Blind,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
+direct,delete_note,Exists,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
 direct,delete_note,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
-direct,delete_note,Wrong,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
+direct,delete_note,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
 direct,update_frontmatter,Exists,NoFile,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
 direct,update_frontmatter,Workdir,N/A,Ok,Ok,Ok,Ok,Ok,Ok,Ok,Ok
 direct,update_frontmatter,Wrong,NoFile,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError,ConcurrencyError
@@ -75,7 +77,7 @@ direct has NO dirty gate (it cannot see git dirtiness). Its only refusals are a 
 OUTCOME CODES (harness::Outcome),,,,,,,,,,,
 Ok,write/edit/delete succeeds and materializes,,,,,,,,,,
 ConcurrencyError,refused with no disk change (the unified DIRTY_ERR + CAS_FAIL),,,,,,,,,,
-NoFile,in-place op on an absent target (FileNotFound),,,,,,,,,,
+NoFile,in-place op on an absent target (FileNotFound); see MISSING-TARGET RULE,,,,,,,,,,
 OpError,op-specific refusal (e.g. edit SEARCH-not-found) with no disk change,,,,,,,,,,
 N/A,token undefined for this state; cell not constructible,,,,,,,,,,
 SKIP:X,duplicate of precondition X for this state (token resolves equal),,,,,,,,,,
@@ -90,6 +92,7 @@ Workdir,ExpectBlob(WORKDIR_OID); defined iff exists,,,,,,,,,,
 Wrong,ExpectBlob(bogus oid); never matches the working tree,,,,,,,,,,
 ,,,,,,,,,,,
 RULE,"git backend, strict default (dirty-tree-policy.md): a path with uncommitted changes (staged, unstaged or untracked) is refused with ConcurrencyError whatever the precondition. Proof of the current bytes (Workdir/Index) does not license writing over a dirty tree; only explicit force does. Blind is that force hatch, switched off by default, so Blind is refused on a dirty tree too. The switch that turns it on (allow_blind) is future work; its cells join this matrix when it lands.",,,,,,,,,
+MISSING-TARGET RULE,"An op that acts on an existing note (edit_note, update_frontmatter, manage_tags, delete_note, and the source of move_note) answers NoFile when that note is absent, before any precondition is consulted, Blind included. Asking for a note to exist (Exists), to hold a given version (Head/Index/Workdir/Wrong), or asking nothing of it (Blind), when there is no note, is a not-found: the answer does not depend on which guard the caller attached, and it is the same on both backends and every layer. NoFile on a repeated delete means the note is already gone; that is how a retry whose reply was lost is told, with no exception for it. Ops that create or replace (write_note, create_from_template, the move destination) are outside the rule: an absent path is their normal case.",,,,,,,,,
 ,,,,,,,,,,,
 COLUMN HEADER NOTATION  ·  [e]xists [t]racked [c]ommitted [s]taged [u]nstaged,,,,,,,,,,,
 e,exists     — file is present in the working tree,,,,,,,,,,

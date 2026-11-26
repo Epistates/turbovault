@@ -205,6 +205,11 @@ a:
 async fn test_batch_tools_partial_failure_rollback() {
     let (_temp_dir, manager) = setup_minimal_vault().await;
     let tools = BatchTools::new(manager.clone());
+    // A regular FILE, so nothing can be created under it: the write below fails
+    // in the apply loop, past the precondition gate.
+    tokio::fs::write(manager.vault_path().join("blocker.md"), "Blocker")
+        .await
+        .unwrap();
 
     let ops = vec![
         BatchOperation::WriteNote {
@@ -217,10 +222,10 @@ async fn test_batch_tools_partial_failure_rollback() {
             content: "Content 2".to_string(),
             expected_hash: None,
         },
-        BatchOperation::DeleteNote {
-            path: "nonexistent_file_for_failure.md".to_string(),
+        BatchOperation::WriteNote {
+            path: "blocker.md/child.md".to_string(),
+            content: "Never lands".to_string(),
             expected_hash: None,
-            on_backlinks: None,
         },
         BatchOperation::WriteNote {
             path: "file3.md".to_string(),
@@ -234,14 +239,14 @@ async fn test_batch_tools_partial_failure_rollback() {
     assert!(result.is_ok());
     let batch_result = result.unwrap();
     assert!(!batch_result.success);
-    // TV-016: operations 0 and 1 landed before the delete of a nonexistent
-    // file failed, and the report says so.
+    // TV-016: operations 0 and 1 landed before the write under a regular file
+    // failed, and the report says so.
     assert_eq!(batch_result.executed, 2);
     assert_eq!(batch_result.failed_at, Some(2));
 
     // Note: the direct backend's apply loop is sequential with no rollback
     // (only the precondition GATE is atomic) — operations 0 and 1 already
-    // landed on disk before the delete of a nonexistent file failed mid-loop.
+    // landed on disk before the write under a regular file failed mid-loop.
     let vault_path = manager.vault_path();
     assert!(vault_path.join("file1.md").exists()); // Written before failure
     assert!(vault_path.join("file2.md").exists()); // Written before failure

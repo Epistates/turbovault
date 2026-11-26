@@ -298,11 +298,12 @@ impl DirectSubstrate {
                     "File already exists at '{path}'; expected it to be absent."
                 ))),
             },
+            // The path is not there, which is a not-found rather than a
+            // changed-underneath refusal (the missing-target rule, see
+            // docs/write-safety-suite/README.md).
             Precondition::ExpectExists => match before {
                 Some(_) => Ok(()),
-                None => Err(Error::concurrency_error(format!(
-                    "File does not exist at '{path}'."
-                ))),
+                None => Err(Error::file_not_found(path)),
             },
             Precondition::ExpectBlob(expected) => match before {
                 Some(bytes) => {
@@ -651,13 +652,17 @@ fn run_plan(
 }
 
 /// Translate a substrate error into the core error space. Ports
-/// `git_file_tools::git_err_to_core` verbatim: "changed underneath us"
-/// conflicts pass through as `ConcurrencyError`; everything else becomes a
-/// `ConfigError` describing the substrate failure.
+/// `git_file_tools::git_err_to_core`: "changed underneath us" conflicts pass
+/// through as `ConcurrencyError` and a path that is not there as
+/// `FileNotFound`, so a caller can tell the two apart; everything else becomes
+/// a `ConfigError` describing the substrate failure.
 fn git_err_to_core(e: turbovault_git::Error) -> Error {
     match e {
         turbovault_git::Error::Core(turbovault_core::Error::ConcurrencyError { reason }) => {
             Error::ConcurrencyError { reason }
+        }
+        turbovault_git::Error::Core(turbovault_core::Error::FileNotFound { path }) => {
+            Error::FileNotFound { path }
         }
         other => Error::other(format!("git substrate error: {}", other)),
     }
@@ -671,6 +676,20 @@ mod tests {
 
     fn direct(tmp: &TempDir) -> DirectSubstrate {
         DirectSubstrate::new(tmp.path().to_path_buf())
+    }
+
+    #[test]
+    fn git_not_found_and_concurrency_keep_their_kind_through_the_core_mapping() {
+        let not_found = turbovault_git::Error::Core(Error::file_not_found("ghost.md"));
+        assert!(matches!(
+            git_err_to_core(not_found),
+            Error::FileNotFound { .. }
+        ));
+        let stale = turbovault_git::Error::Core(Error::concurrency_error("stale"));
+        assert!(matches!(
+            git_err_to_core(stale),
+            Error::ConcurrencyError { .. }
+        ));
     }
 
     // -------- DirectSubstrate::apply — Upsert/Remove/Rename --------
@@ -957,15 +976,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expect_exists_on_missing_path_errors() {
+    async fn expect_exists_on_missing_path_is_not_found() {
         let tmp = TempDir::new().unwrap();
         let sub = direct(&tmp);
         let plan = ChangePlan::new("del")
             .remove("ghost.md")
             .with_precondition("ghost.md", Precondition::ExpectExists);
 
+        // A path that is not there is a not-found, not a changed-underneath
+        // refusal: the answer a caller can act on differs.
         let err = sub.apply(&plan).await.unwrap_err();
-        assert!(matches!(err, Error::ConcurrencyError { .. }));
+        assert!(matches!(err, Error::FileNotFound { .. }), "got {err:?}");
     }
 
     #[tokio::test]
