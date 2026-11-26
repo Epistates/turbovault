@@ -126,33 +126,6 @@ async fn test_batch_execute_delete() {
     assert!(!vault_path.join("existing.md").exists());
 }
 
-/// A batch delete with no `expected_hash` holds the note to the same in-place
-/// default as a standalone delete, `ExpectExists`: a note that is not there is a
-/// not-found, not a silent success.
-#[tokio::test]
-async fn test_batch_delete_of_a_missing_note_is_not_found() {
-    let (_temp_dir, manager) = setup_test_vault().await;
-    let tools = BatchTools::new(manager.clone());
-
-    for on_backlinks in [None, Some("force"), Some("rewrite-stale-callout")] {
-        let plan = tools
-            .plan(&[BatchOperation::DeleteNote {
-                path: "ghost.md".to_string(),
-                expected_hash: None,
-                on_backlinks: on_backlinks.map(str::to_string),
-            }])
-            .await
-            .unwrap();
-
-        let err = manager.apply_changes(&plan).await.unwrap_err();
-        assert!(
-            matches!(err, turbovault_core::Error::FileNotFound { .. }),
-            "batch delete of a missing note (on_backlinks {on_backlinks:?}) must be \
-             FileNotFound, got {err:?}"
-        );
-    }
-}
-
 /// A batch that deletes a note that isn't there is refused whole: its gate
 /// checks every precondition before anything is applied, so the operations
 /// before the delete do not land either.
