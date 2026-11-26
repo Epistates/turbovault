@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [4.2.0] - 2026-11-29
 
-A vault with a note the Markdown parser fails on now opens without that note and reports it, `--auth-mode jwt` is stricter about tokens, the Docker image moves to Debian 13, and dependencies are refreshed. It adds `VaultManager::skipped_notes`, `SkippedNote` and `turbovault_core::panic_message`. Every crate moves to 4.2.0 with the workspace, turbovault-vector and turbovault-plugin-vector move to 0.2.0, and turbovault-plugin-api is unchanged.
+A vault with a note the Markdown parser fails on now opens without that note and reports it, deleting, moving or appending to a note that isn't there answers "not found", `--auth-mode jwt` is stricter about tokens, the Docker image moves to Debian 13, and dependencies are refreshed. It adds `VaultManager::skipped_notes`, `VaultManager::ensure_exists`, `SkippedNote` and `turbovault_core::panic_message`. Every crate moves to 4.2.0 with the workspace, turbovault-vector and turbovault-plugin-vector move to 0.2.0, and turbovault-plugin-api is unchanged.
 
 ### Security
 
