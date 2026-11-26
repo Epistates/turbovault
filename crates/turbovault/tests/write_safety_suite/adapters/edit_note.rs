@@ -116,8 +116,8 @@ impl Op<WireWorld> for EditNote {
 /// is the 2nd operation there). In-place op → precondition axis
 /// {Exists, Head, Index, Workdir, Wrong} (no Blind/Absent). N/A cells (token
 /// undefined for the state) and SKIP duplicates (WORKDIR == HEAD/INDEX) are
-/// omitted. `pending` = a cell current code gets wrong (the nbl.8 burndown), with
-/// a trial-name-derived reason; `--include-ignored` is the source of truth. The
+/// omitted. On git every dirty state refuses, even with proof of the current bytes
+/// (`Index`/`Workdir`): the strict dirty-tree default, `dirty-tree-policy.md`. The
 /// `e---u`/Untracked cell splits the two backends with DIFFERENT `expected`: on git
 /// it is a dirty untracked tree (refuse), on direct it is merely a present file, so
 /// `ExpectExists` is satisfied and the write proceeds. Both values come from the
@@ -144,16 +144,16 @@ const CASES: &[Case] = &[
     Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
     Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(INDEX) — defined iff staged ───────────────────────────────
-    Case::pending(P::Index, S::CommittedStaged, O::Ok),
+    Case::new(P::Index, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::pending(P::Index, S::NewStaged, O::Ok),
+    Case::new(P::Index, S::NewStaged, O::ConcurrencyError),
     Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(WORKDIR) — proving on-disk bytes; SKIP where == HEAD/INDEX ─
-    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
-    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Workdir, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Workdir, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectBlob(WRONG) → refuse everywhere; NoFile on absent (in-place) ────
     Case::new(P::Wrong, S::Absent, O::NoFile),

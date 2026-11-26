@@ -341,7 +341,7 @@ impl FileProvider {
 
     /// Delete a note (confirmation-protected)
     #[tool(
-        description = "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_links shows what links to it. A client that supports elicitation asks the user to confirm first.",
+        description = "Delete a note. On a Git-backed vault it refuses when other notes link to it, unless on_backlinks is `rewrite-stale-callout` (strike those links through in the same commit) or force is true (leave them broken). On a plain-folder vault force defaults to true. get_links shows what links to it. A client that supports elicitation asks the user to confirm first. A note that is not there answers not found, so if a retried delete answers not found, the note is already gone.",
         title = "Delete Note",
         tags = ["write", "delete"],
         read_only = false,

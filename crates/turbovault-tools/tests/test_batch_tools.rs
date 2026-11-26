@@ -126,6 +126,104 @@ async fn test_batch_execute_delete() {
     assert!(!vault_path.join("existing.md").exists());
 }
 
+/// A batch that deletes a note that isn't there is refused whole: its gate
+/// checks every precondition before anything is applied, so the operations
+/// before the delete do not land either.
+#[tokio::test]
+async fn test_batch_execute_refuses_the_whole_batch_for_a_missing_delete() {
+    let (_temp_dir, manager) = setup_test_vault().await;
+    let tools = BatchTools::new(manager.clone());
+
+    let ops = vec![
+        BatchOperation::WriteNote {
+            path: "first.md".to_string(),
+            content: "# First".to_string(),
+            expected_hash: None,
+        },
+        BatchOperation::DeleteNote {
+            path: "ghost.md".to_string(),
+            expected_hash: None,
+            on_backlinks: None,
+        },
+    ];
+
+    let result = tools.batch_execute(ops, "test batch").await.unwrap();
+
+    assert!(!result.success);
+    assert_eq!(result.executed, 0, "nothing was applied");
+    assert!(!manager.vault_path().join("first.md").exists());
+}
+
+/// Every in-place batch operation answers a note that isn't there the same way:
+/// not found, before the plan is built. Deletes are held to it whatever their
+/// `on_backlinks` mode or `expected_hash`.
+#[tokio::test]
+async fn test_in_place_batch_ops_on_a_missing_note_are_not_found() {
+    let (_temp_dir, manager) = setup_test_vault().await;
+    let tools = BatchTools::new(manager.clone());
+
+    let mut ops: Vec<BatchOperation> = Vec::new();
+    for on_backlinks in [None, Some("force"), Some("rewrite-stale-callout")] {
+        for expected_hash in [None, Some("0".repeat(64))] {
+            ops.push(BatchOperation::DeleteNote {
+                path: "ghost.md".to_string(),
+                expected_hash,
+                on_backlinks: on_backlinks.map(str::to_string),
+            });
+        }
+    }
+    for update_backlinks in [Some(true), Some(false)] {
+        ops.push(BatchOperation::MoveNote {
+            from: "ghost.md".to_string(),
+            to: "moved.md".to_string(),
+            expected_hash: Some("0".repeat(64)),
+            dest_expected_hash: None,
+            update_backlinks,
+        });
+    }
+    ops.push(BatchOperation::EditNote {
+        path: "ghost.md".to_string(),
+        edits: "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE".to_string(),
+        expected_hash: None,
+    });
+    ops.push(BatchOperation::UpdateFrontmatter {
+        path: "ghost.md".to_string(),
+        frontmatter: HashMap::from([("k".to_string(), serde_json::json!("v"))]),
+        merge: None,
+        expected_hash: None,
+    });
+    ops.push(BatchOperation::ManageTags {
+        path: "ghost.md".to_string(),
+        operation: "add".to_string(),
+        tags: vec!["t".to_string()],
+        expected_hash: None,
+    });
+
+    for op in ops {
+        let err = tools.plan(std::slice::from_ref(&op)).await.unwrap_err();
+        assert!(
+            matches!(err, turbovault_core::Error::FileNotFound { .. }),
+            "{op:?} on a missing note must be FileNotFound, got {err:?}"
+        );
+    }
+}
+
+/// The standalone link-aware delete is held to the same rule.
+#[tokio::test]
+async fn test_delete_with_stale_links_of_a_missing_note_is_not_found() {
+    let (_temp_dir, manager) = setup_test_vault().await;
+
+    let err = BatchTools::new(manager)
+        .delete_file_with_link_rewrite_to_stale("ghost.md", None, "delete")
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, turbovault_core::Error::FileNotFound { .. }),
+        "got {err:?}"
+    );
+}
+
 #[tokio::test]
 async fn test_batch_execute_move() {
     let (_temp_dir, manager) = setup_test_vault().await;
@@ -186,6 +284,12 @@ async fn test_batch_execute_mixed_operations() {
 async fn test_batch_execute_rollback_on_error() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = BatchTools::new(manager.clone());
+    // A regular FILE, so nothing can be created under it: the write below fails
+    // in the apply loop, past the precondition gate, as a missing note's delete
+    // no longer does.
+    tokio::fs::write(manager.vault_path().join("blocker.md"), "# Blocker\n")
+        .await
+        .unwrap();
 
     let ops = vec![
         BatchOperation::WriteNote {
@@ -193,10 +297,10 @@ async fn test_batch_execute_rollback_on_error() {
             content: "# Success 1".to_string(),
             expected_hash: None,
         },
-        BatchOperation::DeleteNote {
-            path: "nonexistent.md".to_string(), // This will fail,
+        BatchOperation::WriteNote {
+            path: "blocker.md/child.md".to_string(), // This will fail
+            content: "# Never lands".to_string(),
             expected_hash: None,
-            on_backlinks: None,
         },
         BatchOperation::WriteNote {
             path: "success2.md".to_string(),
@@ -218,7 +322,7 @@ async fn test_batch_execute_rollback_on_error() {
 
     // Note: the direct backend's apply loop is sequential with no rollback
     // (only the precondition GATE is atomic) — operation 0 (success1.md) was
-    // written before the delete of a nonexistent file failed mid-loop.
+    // written before the write under a regular file failed mid-loop.
     let vault_path = manager.vault_path();
     assert!(vault_path.join("success1.md").exists()); // Written before failure
     assert!(!vault_path.join("success2.md").exists()); // Not executed after failure
@@ -259,6 +363,10 @@ async fn test_batch_execute_creates_directories() {
 async fn test_batch_execute_atomic_guarantees() {
     let (_temp_dir, manager) = setup_test_vault().await;
     let tools = BatchTools::new(manager.clone());
+    // A regular FILE, so the second batch's write fails in the apply loop.
+    tokio::fs::write(manager.vault_path().join("blocker.md"), "# Blocker\n")
+        .await
+        .unwrap();
 
     // First batch should succeed
     let ops1 = vec![
@@ -284,10 +392,10 @@ async fn test_batch_execute_atomic_guarantees() {
             content: "# Atomic 3".to_string(),
             expected_hash: None,
         },
-        BatchOperation::DeleteNote {
-            path: "nonexistent_for_atomic_test.md".to_string(),
+        BatchOperation::WriteNote {
+            path: "blocker.md/child.md".to_string(),
+            content: "# Never lands".to_string(),
             expected_hash: None,
-            on_backlinks: None,
         },
     ];
 
@@ -502,11 +610,14 @@ async fn test_plan_delete_with_stale_links_rewrites_backlink_and_carries_precond
     );
     assert_eq!(
         plan.preconditions,
-        vec![(
-            "linker.md".to_string(),
-            Precondition::ExpectBlob(turbovault_vault::compute_hash("see [[doomed]] here\n"))
-        )],
-        "doomed.md carries no precondition — expected_hash was None"
+        vec![
+            ("doomed.md".to_string(), Precondition::ExpectExists),
+            (
+                "linker.md".to_string(),
+                Precondition::ExpectBlob(turbovault_vault::compute_hash("see [[doomed]] here\n"))
+            ),
+        ],
+        "with no expected_hash, doomed.md is held to the in-place default: it must exist"
     );
 }
 
@@ -560,11 +671,11 @@ async fn test_plan_rejects_intra_batch_same_path_collision() {
 /// semantic the write-safety matrix can ever redefine.
 ///
 /// It replaces the ticket's original failing op — a `DeleteNote` of an ABSENT
-/// file — which the ratified spec says must SUCCEED:
-/// `docs/write-safety-suite/wss-precondition-matrix.csv`, row
-/// `delete_note,Exists`, all-absent (`-----`) column, is `Ok`. Once the
-/// direct backend catches up to that cell the old batch stops failing and the
-/// old test goes red for a FIX rather than a regression.
+/// file. The write-safety spec now answers that with `NoFile`
+/// (`docs/write-safety-suite/wss-precondition-matrix.csv`, row
+/// `delete_note,Exists`, all-absent (`-----`) column), and a batch delete holds
+/// its note to `ExpectExists`, so it is refused at the precondition gate with
+/// nothing written and can no longer leave the partial this test pins.
 #[tokio::test]
 async fn test_batch_partial_failure_reports_the_op_that_landed() {
     let (temp_dir, manager) = setup_vault_with_files(&[

@@ -5,8 +5,10 @@
 //! `invoke` passes the [`Precondition`] straight to the tools-layer surface, which
 //! takes one since the qae.9.1 cutover. No fixture is needed: the built-in
 //! `research` template is always registered by `TemplateEngine::default_templates`.
-//! Every `ExpectAbsent` cell here is ACTIVE — a strict create already refuses an
-//! existing target on both backends; only the `Blind`-on-dirty-git rows are pending.
+//! Every cell here is ACTIVE. A strict create refuses an existing target on both
+//! backends, and on git a `Blind` create over a dirty path is refused too: the strict
+//! dirty-tree default (`dirty-tree-policy.md`) lets only the force switch, not yet
+//! built, waive the dirty gate.
 
 use std::collections::HashMap;
 
@@ -98,22 +100,24 @@ impl Op<WireWorld> for CreateFromTemplate {
 }
 
 /// The **full** `create_from_template` matrix (Blind + Absent rows of the CSV).
-/// Blind (force) overwrites/creates unconditionally → Ok everywhere. Absent is a
-/// strict create → Ok on an absent target, else refuse. `pending` = a cell current
-/// code gets wrong (the nbl.8 burndown), with a trial-name-derived reason;
-/// `--include-ignored` is the source of truth. The `e---u`/Untracked cells split
-/// the git arm (burndown) from the direct arm (already correct → active).
+/// Blind (force) overwrites/creates unconditionally on a clean or absent target, and
+/// always on direct. On git a dirty path is refused whatever the precondition: Blind
+/// is the force hatch, and the strict default keeps it off until the `allow_blind`
+/// switch exists. Absent is a strict create → Ok on an absent target, else refuse.
+/// The `e---u`/Untracked cells split the two backends with DIFFERENT `expected`,
+/// straight from the CSV's `backend` column: on git it is a dirty untracked tree
+/// (refuse), on direct it is merely a present file (direct is git-blind).
 const CASES: &[Case] = &[
-    // ── Blind (force overwrite/create) → OK in every state (git dirty pending) ─
+    // ── Blind (force overwrite/create) → OK on clean/absent; git dirty refuses ─
     Case::new(P::Blind, S::Absent, O::Ok),
     Case::new(P::Blind, S::CleanCommitted, O::Ok),
-    Case::pending(P::Blind, S::CommittedStaged, O::Ok),
-    Case::pending(P::Blind, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::NewStaged, O::Ok),
-    Case::pending(P::Blind, S::IntentToAdd, O::Ok),
-    Case::pending(P::Blind, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Blind, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Blind, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectAbsent (strict create) → OK on absent, else refuse ─────────────
     Case::new(P::Absent, S::Absent, O::Ok),

@@ -414,6 +414,10 @@ impl BatchTools {
         expected_hash: Option<&str>,
         on_backlinks: Option<&str>,
     ) -> Result<ChangePlan> {
+        // Not found before anything else, whatever `on_backlinks` or hash.
+        self.manager
+            .ensure_exists(std::path::Path::new(path))
+            .await?;
         Ok(match on_backlinks.unwrap_or("refuse") {
             // Bare delete — leave inbound links dangling (pre-0g4.7 behavior).
             "force" => remove_expecting(plan, path, expected_hash),
@@ -675,6 +679,10 @@ impl BatchTools {
     ) -> Result<(ChangePlan, Vec<String>)> {
         use crate::wikilink_rewriter::wrap_links_as_stale;
 
+        // Not found before anything else, whatever the hash.
+        self.manager
+            .ensure_exists(std::path::Path::new(path))
+            .await?;
         let target_full = self.manager.vault_path().join(path);
         let backlink_paths = {
             let lg = self.manager.link_graph_flushed().await;
@@ -702,10 +710,9 @@ impl BatchTools {
             link_updates.push((rel_str, rewritten, src_hash));
         }
 
-        let mut plan = plan;
-        if let Some(token) = expected_target {
-            plan = plan.expect_blob(path, token.to_string());
-        }
+        // The note is held to the token the caller read, else to the in-place
+        // default: it must be there.
+        let mut plan = plan.with_precondition(path, in_place_guard(expected_target));
         for (rel_path, rewritten, hash) in &link_updates {
             plan = plan
                 .upsert(rel_path.clone(), rewritten.clone().into_bytes())
@@ -816,14 +823,23 @@ fn upsert_expecting(
     p
 }
 
-/// Fold `remove(path)` plus an optional `expect_blob` precondition into
-/// `plan` — the shared tail of the bare-delete branches.
+/// Fold `remove(path)` plus its precondition into `plan` — the shared tail of
+/// the bare-delete branches. A token pins the note to that version; with none,
+/// the delete takes the in-place default every standalone delete takes, that
+/// the note exists, so deleting a note that is not there is a not-found in a
+/// batch as it is on its own.
 fn remove_expecting(plan: ChangePlan, path: &str, expected_hash: Option<&str>) -> ChangePlan {
-    let mut p = plan.remove(path);
-    if let Some(token) = expected_hash {
-        p = p.expect_blob(path, token.to_string());
+    plan.remove(path)
+        .with_precondition(path, in_place_guard(expected_hash))
+}
+
+/// What a batch delete holds its note to: the version the caller read, else
+/// that the note exists.
+fn in_place_guard(expected_hash: Option<&str>) -> turbovault_core::Precondition {
+    match expected_hash {
+        Some(token) => turbovault_core::Precondition::ExpectBlob(token.to_string()),
+        None => turbovault_core::Precondition::ExpectExists,
     }
-    p
 }
 
 /// Decode a batch move's `dest_expected_hash` sentinel-or-oid string

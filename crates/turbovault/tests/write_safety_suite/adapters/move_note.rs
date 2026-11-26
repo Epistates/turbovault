@@ -93,7 +93,11 @@ async fn move_batch(
     };
     let mut plan = BatchTools::new(mgr.clone()).plan(&[op]).await?;
     plan.message = MSG.to_string();
-    mgr.apply_changes(&plan).await.map(|_| ())
+    // Re-raise a best-effort apply's error, as production's batch does.
+    mgr.apply_changes(&plan)
+        .await
+        .and_then(|outcome| outcome.into_result())
+        .map(|_| ())
 }
 
 /// The wire move: drive the real `move_note` MCP handler in-process, encoding
@@ -282,16 +286,15 @@ impl Op<WireWorld> for MoveDest {
 
 // ── SOURCE sweep — destination held absent (`to = ExpectAbsent`) ─────────────
 // Same shape as delete/edit's in-place rows: the source must exist and match.
-// The desired outcome is layer-invariant; `pending` marks a cell the current
-// code gets wrong (the nbl.8 / 9n6 burndown), shared across all worlds. The
+// The desired outcome is layer-invariant, shared across all worlds. The
 // `e---u`/Untracked cells split the two backends via `.on()` with DIFFERENT
 // `expected`: on git it is a dirty untracked tree (refuse), on direct it is merely
 // a present source, so `ExpectExists` is satisfied and the move proceeds. Both
 // values come from the CSV's `backend` column; `just wss-audit` enforces them.
 const SRC_CASES: &[Case] = &[
     // ExpectExists (in-place default, dirty-gated) — the source is the removed
-    // target; NoFile-on-absent must precede the precondition check.
-    Case::pending(P::Exists, S::Absent, O::NoFile),
+    // target; NoFile-on-absent precedes the precondition check (missing-target rule).
+    Case::new(P::Exists, S::Absent, O::NoFile),
     Case::new(P::Exists, S::CleanCommitted, O::Ok),
     Case::new(P::Exists, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Exists, S::CommittedUnstaged, O::ConcurrencyError),
@@ -311,19 +314,19 @@ const SRC_CASES: &[Case] = &[
     Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
     Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
     // ExpectBlob(INDEX) — defined iff staged
-    Case::pending(P::Index, S::CommittedStaged, O::Ok),
+    Case::new(P::Index, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::pending(P::Index, S::NewStaged, O::Ok),
+    Case::new(P::Index, S::NewStaged, O::ConcurrencyError),
     Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
     // ExpectBlob(WORKDIR) — SKIP where == HEAD/INDEX
-    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
-    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Workdir, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Workdir, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ExpectBlob(WRONG) → refuse everywhere; NoFile on absent
-    Case::pending(P::Wrong, S::Absent, O::NoFile),
+    Case::new(P::Wrong, S::Absent, O::NoFile),
     Case::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
     Case::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
@@ -337,21 +340,19 @@ const SRC_CASES: &[Case] = &[
 
 // ── DEST sweep — source held clean present (`from = ExpectExists`) ───────────
 // The destination is the write target; `ExpectAbsent` on it is the clobber
-// guard. Today's `move_file` doesn't honor an arbitrary dest precondition (it
-// hardcodes `expect_absent(to)`), so cells whose desired outcome diverges from
-// that are `pending` on the dual-path move burndown (turbovault-9n6) — shared
-// across all worlds; a world that can't meet an active cell FAILS it.
+// guard, and every destination precondition is honored. The cells are shared
+// across all worlds; a world that can't meet one FAILS it.
 const DEST_CASES: &[Case] = &[
     // Blind → overwrite the destination unconditionally.
     Case::new(P::Blind, S::Absent, O::Ok),
     Case::new(P::Blind, S::CleanCommitted, O::Ok),
-    Case::pending(P::Blind, S::CommittedStaged, O::Ok),
-    Case::pending(P::Blind, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::NewStaged, O::Ok),
-    Case::pending(P::Blind, S::IntentToAdd, O::Ok),
-    Case::pending(P::Blind, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Blind, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Blind, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Blind, S::Untracked, O::Ok).on(Backend::Direct),
     // ExpectAbsent (clobber protection) → OK on absent dest, else refuse.
     Case::new(P::Absent, S::Absent, O::Ok),
@@ -370,16 +371,16 @@ const DEST_CASES: &[Case] = &[
     Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
     Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
     // ExpectBlob(INDEX) on the dest — defined iff dest staged
-    Case::pending(P::Index, S::CommittedStaged, O::Ok),
+    Case::new(P::Index, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::pending(P::Index, S::NewStaged, O::Ok),
+    Case::new(P::Index, S::NewStaged, O::ConcurrencyError),
     Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
     // ExpectBlob(WORKDIR) on the dest — SKIP where == HEAD/INDEX
-    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
-    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Workdir, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Workdir, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
     // ExpectBlob(WRONG) on the dest → refuse everywhere (incl. absent)
     Case::new(P::Wrong, S::Absent, O::ConcurrencyError),

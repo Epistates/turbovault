@@ -34,10 +34,15 @@ axes; content-correctness is a plain functional test's job, never a WSS cell.
 Everything else is out of scope — see [Scope boundary](#scope-boundary) below.
 The universal rule the whole matrix encodes:
 
-> The precondition is evaluated against the **working tree**. A dirty tree
-> (staged, unstaged, or an untracked conflict) is **refused** unless the caller
-> proved it read the current bytes (`ExpectBlob(WORKDIR)`) or explicitly opted
-> out (`Blind`).
+> The precondition is evaluated against the **working tree**. On the git backend a
+> path with uncommitted changes (staged, unstaged, or an untracked conflict) is
+> **refused**, whatever the precondition: proof of the current bytes
+> (`ExpectBlob(WORKDIR)`) does not license writing over a dirty tree, and neither
+> does `Blind` while the force switch stays off. This is the strict default ratified
+> in [`dirty-tree-policy.md`](./dirty-tree-policy.md), and the matrix asserts it. The
+> switch that turns `Blind` into a working force hatch (`allow_blind`) is future
+> work; its cells join the matrix when it is built. The direct backend is git-blind
+> and has no dirty gate.
 
 ## Model — four axes, cleanly separated
 
@@ -65,10 +70,10 @@ so flipping a cell from pending to active is a mechanical `pending → new`.
   through the batch translation path (`BatchTools::plan` + `apply_changes`).
   Proves *batch-of-one == standalone*: routing an op through the batch layer must
   not change its per-op clobber-safety. It runs the op's **same shared `Case`
-  table**; where batch genuinely diverges from standalone (e.g. git batch
-  delete-of-absent short-circuits to an idempotent `Ok` while the standalone
-  delete still refuses), the shared cell simply diverges — a failure or an
-  un-pend candidate — instead of being blessed in a per-world table.
+  table**; where batch genuinely diverges from standalone (a batch that
+  short-circuits where the standalone op refuses, say), the shared cell simply
+  diverges — a failure or an un-pend candidate — instead of being blessed in a
+  per-world table.
 - **`WireWorld`** — an **in-process** `ObsidianMcpServer` driven through its real
   `call_tool` dispatch: the `#[tool]` handler, JSON param (de)serialization, and the
   `ConcurrencyError → McpError` mapping, with no child process. It verifies the
@@ -101,6 +106,30 @@ All "changed underneath us" failures — CAS mismatch, dirty-tree refusal — un
 to a **single** `ConcurrencyError`; they differ only by setup, not by kind. A
 refusal must leave the working tree byte-for-byte intact (the no-clobber
 invariant these tests exist to protect).
+
+### The missing-target rule
+
+**An op that acts on an existing note answers `NoFile` when the note is absent,
+before any precondition is consulted, `Blind` included.** That covers
+`edit_note`, `update_frontmatter`, `manage_tags`, `delete_note` and the source of
+`move_note`, on both backends and at every layer.
+
+Why: asking for a note to exist (`ExpectExists`), to hold a version the caller
+read (`ExpectBlob`), or asking nothing of it (`Blind`), when there is no note, is
+a *not found*. It is not a *changed underneath us* refusal, and a caller can act
+on the difference: a not-found says re-check the path, a concurrency refusal says
+re-read and retry. The answer must not depend on which guard the caller happened
+to attach, or on which layer carried it. A check that succeeds when the thing it
+checks for is missing contradicts itself, so `delete_note` with the default
+`ExpectExists` on a missing note is `NoFile`, the same as a move or an edit.
+
+There is no retry exception. A delete whose reply was lost, sent again, finds
+the note gone and is told `NoFile`: the note is already gone, which is the state
+the caller wanted. The `delete_note` tool description says so to agents.
+
+What the rule leaves out: ops that create or replace (`write_note`,
+`create_from_template`, the destination of a move), because an absent path is
+their normal case.
 
 ## Running & reading it
 

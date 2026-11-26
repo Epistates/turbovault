@@ -798,3 +798,28 @@ async fn test_concurrent_writes() {
         assert!(result.is_ok());
     }
 }
+
+/// Appending and prepending are in-place, so their default guard is
+/// `ExpectExists`; on a note that isn't there that is a not-found, the same
+/// answer every in-place write gives.
+#[tokio::test]
+async fn test_append_and_prepend_to_a_missing_note_are_not_found() {
+    let (temp_dir, manager) = setup_test_vault().await;
+    let tools = FileTools::new(manager);
+
+    for mode in [
+        turbovault_tools::WriteMode::Append,
+        turbovault_tools::WriteMode::Prepend,
+    ] {
+        let err = tools
+            .write_file_with_mode("ghost.md", "text", mode, Precondition::ExpectExists, "test")
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, turbovault_core::Error::FileNotFound { .. }),
+            "got {err:?}"
+        );
+        assert!(!temp_dir.path().join("ghost.md").exists());
+    }
+}

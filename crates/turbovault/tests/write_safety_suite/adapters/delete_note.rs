@@ -72,14 +72,11 @@ impl Op<ManagerWorld> for DeleteNote {
 
 // Batch-layer invoker (qae.9.3): the delete as a ONE-op `DeleteNote` batch
 // (`on_backlinks: None` = the "refuse-if-inbound-links" default — a no-op here,
-// `note.md` has no linkers). `blob_token` carries `ExpectBlob`, else a bare
-// remove. Shares the standalone `CASES` — the required behavior is
-// layer-invariant. Where batch genuinely diverges from standalone (git batch
-// delete-of-absent folds to an identity plan → idempotent Ok, while the
-// standalone op still refuses), the shared cell simply DIVERGES: it is `pending`
-// (the required idempotent-Ok isn't universally implemented), and the batch arm
-// passing it early shows up as an un-pend candidate, not a blessed separate
-// outcome. We never fork a per-world table to enshrine that divergence.
+// `note.md` has no linkers). `blob_token` carries `ExpectBlob`; with no token the
+// batch op defaults to `ExpectExists`, the same in-place default as the standalone
+// delete. Shares the standalone `CASES` — the required behavior is layer-invariant,
+// and a batch that diverges from it FAILS the shared cell rather than being blessed
+// in a separate table.
 impl Op<BatchWorld> for DeleteNote {
     async fn invoke(&self, w: &BatchWorld, rel: &str, pc: Precondition) -> Observed {
         let op = BatchOperation::DeleteNote {
@@ -110,21 +107,31 @@ impl Op<WireWorld> for DeleteNote {
 }
 
 /// The **full** `delete_note` matrix. In-place op → precondition axis
-/// {Exists, Head, Index, Workdir, Wrong}. Two cells diverge from the other
-/// in-place ops (edit/frontmatter/tags): `Exists`+absent is an **idempotent OK**
-/// (the goal, absence, already holds — ratified) and `Wrong`+absent is a
-/// `ConcurrencyError` (the caller asserted a blob that isn't there), *not*
-/// `NoFile`. Head/Index/Workdir rows are identical to the other in-place ops.
-/// `pending` = a cell current code gets wrong (the nbl.8 burndown), with a
-/// trial-name-derived reason; `--include-ignored` is the source of truth. The
-/// `e---u`/Untracked cells split the two backends with DIFFERENT `expected`: on git
+/// {Blind, Exists, Head, Index, Workdir, Wrong}. On an absent note every
+/// precondition, `Blind` included, answers `NoFile`: the missing-target rule in the
+/// README. A delete retried after a lost reply is told the same, which means the
+/// note is already gone. Head/Index/Workdir rows are identical to the other
+/// in-place ops. On git every dirty state refuses, even with proof of the current
+/// bytes (`Index`/`Workdir`): the strict dirty-tree default, `dirty-tree-policy.md`.
+/// The `e---u`/Untracked cells split the two backends with DIFFERENT `expected`: on git
 /// it is a dirty untracked tree (refuse), on direct it is merely a present file, so
 /// `ExpectExists` is satisfied and the delete proceeds. Both values come from the
 /// CSV's `backend` column and `just wss-audit` enforces them.
 const CASES: &[Case] = &[
+    // ── Blind (no precondition) — still NoFile on a note that is not there ───
+    Case::new(P::Blind, S::Absent, O::NoFile),
+    Case::new(P::Blind, S::CleanCommitted, O::Ok),
+    Case::new(P::Blind, S::CommittedStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Blind, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Blind, S::Untracked, O::ConcurrencyError).on(Backend::Git),
+    Case::new(P::Blind, S::Untracked, O::Ok).on(Backend::Direct),
     // ── ExpectExists (in-place default, dirty-gated) ─────────────────────────
-    // delete-of-absent should be an idempotent OK, but current code refuses it.
-    Case::pending(P::Exists, S::Absent, O::Ok),
+    // The missing-target rule (README): a note that is not there is `NoFile`.
+    Case::new(P::Exists, S::Absent, O::NoFile),
     Case::new(P::Exists, S::CleanCommitted, O::Ok),
     Case::new(P::Exists, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Exists, S::CommittedUnstaged, O::ConcurrencyError),
@@ -144,19 +151,19 @@ const CASES: &[Case] = &[
     Case::new(P::Head, S::CommittedUnstaged, O::ConcurrencyError),
     Case::new(P::Head, S::CommittedStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(INDEX) — defined iff staged ───────────────────────────────
-    Case::pending(P::Index, S::CommittedStaged, O::Ok),
+    Case::new(P::Index, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Index, S::CommittedStagedUnstaged, O::ConcurrencyError),
-    Case::pending(P::Index, S::NewStaged, O::Ok),
+    Case::new(P::Index, S::NewStaged, O::ConcurrencyError),
     Case::new(P::Index, S::NewStagedUnstaged, O::ConcurrencyError),
     // ── ExpectBlob(WORKDIR) — proving on-disk bytes; SKIP where == HEAD/INDEX ─
-    Case::pending(P::Workdir, S::CommittedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::CommittedStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::IntentToAdd, O::Ok),
-    Case::pending(P::Workdir, S::NewStagedUnstaged, O::Ok),
-    Case::pending(P::Workdir, S::Untracked, O::Ok).on(Backend::Git),
+    Case::new(P::Workdir, S::CommittedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::CommittedStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::IntentToAdd, O::ConcurrencyError),
+    Case::new(P::Workdir, S::NewStagedUnstaged, O::ConcurrencyError),
+    Case::new(P::Workdir, S::Untracked, O::ConcurrencyError).on(Backend::Git),
     Case::new(P::Workdir, S::Untracked, O::Ok).on(Backend::Direct),
-    // ── ExpectBlob(WRONG) → refuse everywhere, incl. absent ──────────────────
-    Case::new(P::Wrong, S::Absent, O::ConcurrencyError),
+    // ── ExpectBlob(WRONG) → refuse everywhere; NoFile on absent ──────────────
+    Case::new(P::Wrong, S::Absent, O::NoFile),
     Case::new(P::Wrong, S::CleanCommitted, O::ConcurrencyError),
     Case::new(P::Wrong, S::CommittedStaged, O::ConcurrencyError),
     Case::new(P::Wrong, S::CommittedUnstaged, O::ConcurrencyError),
