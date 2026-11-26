@@ -2999,22 +2999,30 @@ async fn initialize_again_forgets_a_note_that_was_repaired() {
 // not-found when the note is absent, whatever guard the caller attached.
 // -------------------------------------------------------------------------
 
-/// A delete that asks for the note to exist, on a note that isn't there, is a
-/// not-found. It is not a changed-underneath refusal, and it does not succeed.
+/// A delete of a note that isn't there is a not-found, whichever guard the
+/// caller attached, `Blind` included. It is not a changed-underneath refusal,
+/// and it does not succeed: a delete sent again after a lost reply is told the
+/// note is already gone.
 #[tokio::test]
-async fn test_delete_file_on_a_missing_note_is_not_found() {
-    let temp_dir = TempDir::new().unwrap();
-    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+async fn test_delete_file_on_a_missing_note_is_not_found_under_any_guard() {
+    for guard in [
+        Precondition::ExpectExists,
+        Precondition::ExpectBlob("0".repeat(40)),
+        Precondition::Blind,
+    ] {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
 
-    let err = manager
-        .delete_file(Path::new("ghost.md"), Precondition::ExpectExists, "test")
-        .await
-        .unwrap_err();
+        let err = manager
+            .delete_file(Path::new("ghost.md"), guard.clone(), "test")
+            .await
+            .unwrap_err();
 
-    assert!(
-        matches!(err, Error::FileNotFound { .. }),
-        "delete of a missing note must be FileNotFound, got {err:?}"
-    );
+        assert!(
+            matches!(err, Error::FileNotFound { .. }),
+            "delete of a missing note under {guard:?} must be FileNotFound, got {err:?}"
+        );
+    }
 }
 
 /// A move needs its source, so a missing one is a not-found whichever guard
@@ -3024,6 +3032,7 @@ async fn test_move_file_with_a_missing_source_is_not_found_under_any_guard() {
     for guard in [
         Precondition::ExpectExists,
         Precondition::ExpectBlob("0".repeat(40)),
+        Precondition::Blind,
     ] {
         let temp_dir = TempDir::new().unwrap();
         let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
@@ -3048,4 +3057,25 @@ async fn test_move_file_with_a_missing_source_is_not_found_under_any_guard() {
             "a refused move must not create the destination"
         );
     }
+}
+
+/// Every in-place mutator the manager has answers a missing note the same way
+/// under `Blind`, which asks nothing of the note: it is not found.
+#[tokio::test]
+async fn test_blind_edit_of_a_missing_note_is_not_found() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
+
+    let err = manager
+        .edit_file(
+            Path::new("ghost.md"),
+            "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE",
+            Precondition::Blind,
+            false,
+            "test",
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, Error::FileNotFound { .. }), "got {err:?}");
 }

@@ -980,3 +980,42 @@ async fn test_concurrent_metadata_reads() {
         assert!(result.is_ok());
     }
 }
+
+/// `update_frontmatter` and `manage_tags` act on an existing note, so under
+/// any guard, `Blind` included, a note that isn't there is not found.
+#[tokio::test]
+async fn test_frontmatter_and_tag_edits_of_a_missing_note_are_not_found_under_any_guard() {
+    let (_temp_dir, manager) = setup_test_vault_with_metadata().await;
+    let tools = MetadataTools::new(manager);
+
+    for guard in [
+        Precondition::Blind,
+        Precondition::ExpectExists,
+        Precondition::ExpectBlob("0".repeat(40)),
+    ] {
+        let err = tools
+            .update_frontmatter(
+                "ghost.md",
+                serde_json::Map::new(),
+                true,
+                guard.clone(),
+                "test",
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, turbovault_core::Error::FileNotFound { .. }),
+            "update_frontmatter under {guard:?}: {err:?}"
+        );
+
+        let tags = ["t".to_string()];
+        let err = tools
+            .manage_tags("ghost.md", "add", Some(&tags), guard.clone(), "test")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, turbovault_core::Error::FileNotFound { .. }),
+            "manage_tags under {guard:?}: {err:?}"
+        );
+    }
+}

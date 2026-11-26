@@ -181,6 +181,60 @@ async fn test_batch_execute_refuses_the_whole_batch_for_a_missing_delete() {
     assert!(!manager.vault_path().join("first.md").exists());
 }
 
+/// Every in-place batch operation answers a note that isn't there the same way:
+/// not found, before the plan is built. Deletes are held to it whatever their
+/// `on_backlinks` mode or `expected_hash`.
+#[tokio::test]
+async fn test_in_place_batch_ops_on_a_missing_note_are_not_found() {
+    let (_temp_dir, manager) = setup_test_vault().await;
+    let tools = BatchTools::new(manager.clone());
+
+    let mut ops: Vec<BatchOperation> = Vec::new();
+    for on_backlinks in [None, Some("force"), Some("rewrite-stale-callout")] {
+        for expected_hash in [None, Some("0".repeat(64))] {
+            ops.push(BatchOperation::DeleteNote {
+                path: "ghost.md".to_string(),
+                expected_hash,
+                on_backlinks: on_backlinks.map(str::to_string),
+            });
+        }
+    }
+    for update_backlinks in [Some(true), Some(false)] {
+        ops.push(BatchOperation::MoveNote {
+            from: "ghost.md".to_string(),
+            to: "moved.md".to_string(),
+            expected_hash: Some("0".repeat(64)),
+            dest_expected_hash: None,
+            update_backlinks,
+        });
+    }
+    ops.push(BatchOperation::EditNote {
+        path: "ghost.md".to_string(),
+        edits: "<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE".to_string(),
+        expected_hash: None,
+    });
+    ops.push(BatchOperation::UpdateFrontmatter {
+        path: "ghost.md".to_string(),
+        frontmatter: HashMap::from([("k".to_string(), serde_json::json!("v"))]),
+        merge: None,
+        expected_hash: None,
+    });
+    ops.push(BatchOperation::ManageTags {
+        path: "ghost.md".to_string(),
+        operation: "add".to_string(),
+        tags: vec!["t".to_string()],
+        expected_hash: None,
+    });
+
+    for op in ops {
+        let err = tools.plan(std::slice::from_ref(&op)).await.unwrap_err();
+        assert!(
+            matches!(err, turbovault_core::Error::FileNotFound { .. }),
+            "{op:?} on a missing note must be FileNotFound, got {err:?}"
+        );
+    }
+}
+
 /// The standalone link-aware delete is held to the same rule.
 #[tokio::test]
 async fn test_delete_with_stale_links_of_a_missing_note_is_not_found() {
