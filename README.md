@@ -75,7 +75,7 @@ A good first call is `get_vault_context`: it returns the registered vaults, the 
 - `read_note`: Note content (whole, or by lines and sections) with the hash for conflict detection
 - `write_note`: Create, overwrite, append or prepend (auto-creates directories)
 - `edit_note`: Surgical edits via SEARCH/REPLACE blocks
-- `delete_note`: Delete a note, refusing while other notes link to it (or striking their links through)
+- `delete_note`: Delete a note, refusing while other notes link to it (or striking their links through); a note that is not there answers not found, so a retried delete that answers not found means it is already gone
 - `move_note`: Rename or relocate a note; Git-backed vaults atomically rewrite incoming wikilinks, Markdown links and canvas references
 - `get_notes_info`: Existence, size, modified time, chosen frontmatter values and tags for several notes at once
 - `move_file` *(advanced)*: Move or rename any file, such as an image or PDF

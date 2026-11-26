@@ -414,6 +414,10 @@ impl BatchTools {
         expected_hash: Option<&str>,
         on_backlinks: Option<&str>,
     ) -> Result<ChangePlan> {
+        // Not found before anything else, whatever `on_backlinks` or hash.
+        self.manager
+            .ensure_exists(std::path::Path::new(path))
+            .await?;
         Ok(match on_backlinks.unwrap_or("refuse") {
             // Bare delete — leave inbound links dangling (pre-0g4.7 behavior).
             "force" => remove_expecting(plan, path, expected_hash),
@@ -675,6 +679,10 @@ impl BatchTools {
     ) -> Result<(ChangePlan, Vec<String>)> {
         use crate::wikilink_rewriter::wrap_links_as_stale;
 
+        // Not found before anything else, whatever the hash.
+        self.manager
+            .ensure_exists(std::path::Path::new(path))
+            .await?;
         let target_full = self.manager.vault_path().join(path);
         let backlink_paths = {
             let lg = self.manager.link_graph_flushed().await;

@@ -378,6 +378,23 @@ impl VaultManager {
         Ok(edit_result)
     }
 
+    /// Refuse with [`Error::FileNotFound`] when `path` is not in the vault.
+    ///
+    /// The missing-target rule (`docs/write-safety-suite/README.md`): an op that
+    /// acts on an existing note answers not-found when the note is missing,
+    /// before any precondition is consulted and whichever one the caller
+    /// attached, `Blind` included. Left to a substrate's precondition gate, a
+    /// guard would report the same absence as a changed-underneath refusal, or
+    /// `Blind` would not look at all. A note that vanishes after this check is
+    /// still caught by the gate.
+    pub async fn ensure_exists(&self, path: &Path) -> Result<()> {
+        let vault_path = self.resolve_path(path)?;
+        tokio::fs::metadata(&vault_path)
+            .await
+            .map(|_| ())
+            .map_err(|e| Error::io_at(self.relative_path(&vault_path), e))
+    }
+
     /// Delete file from vault with audit trail, graph cleanup, and an
     /// explicit [`Precondition`] guard.
     ///
@@ -397,6 +414,9 @@ impl VaultManager {
     ) -> Result<()> {
         let vault_path = self.resolve_path(path)?;
         let rel_path = self.relative_path(&vault_path);
+
+        // A delete of a note that isn't there is not found, `Blind` included.
+        self.ensure_exists(path).await?;
 
         let plan = ChangePlan::new(message)
             .remove(rel_path.clone())
@@ -429,14 +449,8 @@ impl VaultManager {
         let rel_from = self.relative_path(&from_path);
         let rel_to = self.relative_path(&to_path);
 
-        // A move has nothing to do without its source, so a missing one is
-        // "not found" whatever precondition the caller attached, the same
-        // answer `edit_file` gives. Left to the substrate, a source guard
-        // would report it as a changed-underneath refusal instead. A source
-        // that vanishes after this check is still caught by that guard.
-        tokio::fs::metadata(&from_path)
-            .await
-            .map_err(|e| Error::io_at(rel_from.clone(), e))?;
+        // A move has nothing to do without its source.
+        self.ensure_exists(from).await?;
 
         let plan = ChangePlan::new(message)
             .with_change(Change::Rename {
