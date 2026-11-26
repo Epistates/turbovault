@@ -105,27 +105,26 @@ invariant these tests exist to protect).
 ### The missing-target rule
 
 **An op that acts on an existing note answers `NoFile` when the note is absent,
-before any precondition is consulted.** That covers `edit_note`,
-`update_frontmatter`, `manage_tags`, `delete_note` and the source of `move_note`,
-on both backends and at every layer.
+before any precondition is consulted, `Blind` included.** That covers
+`edit_note`, `update_frontmatter`, `manage_tags`, `delete_note` and the source of
+`move_note`, on both backends and at every layer.
 
-Why: asking for a note to exist (`ExpectExists`), or to hold a version the caller
-read (`ExpectBlob`), when there is no note is a *not found*. It is not a
-*changed underneath us* refusal, and a caller can act on the difference: a
-not-found says re-check the path, a concurrency refusal says re-read and retry.
-The answer must not depend on which guard the caller happened to attach, or on
-which layer carried it. A check that succeeds when the thing it checks for is
-missing contradicts itself, so `delete_note` with the default `ExpectExists` on a
-missing note is `NoFile`, the same as a move or an edit.
+Why: asking for a note to exist (`ExpectExists`), to hold a version the caller
+read (`ExpectBlob`), or asking nothing of it (`Blind`), when there is no note, is
+a *not found*. It is not a *changed underneath us* refusal, and a caller can act
+on the difference: a not-found says re-check the path, a concurrency refusal says
+re-read and retry. The answer must not depend on which guard the caller happened
+to attach, or on which layer carried it. A check that succeeds when the thing it
+checks for is missing contradicts itself, so `delete_note` with the default
+`ExpectExists` on a missing note is `NoFile`, the same as a move or an edit.
+
+There is no retry exception. A delete whose reply was lost, sent again, finds
+the note gone and is told `NoFile`: the note is already gone, which is the state
+the caller wanted. The `delete_note` tool description says so to agents.
 
 What the rule leaves out: ops that create or replace (`write_note`,
 `create_from_template`, the destination of a move), because an absent path is
-their normal case, and `Blind`, which asks nothing of the target. A caller who
-asked for the note to exist is told, truthfully, that it is not there.
-
-One cell does not follow the rule yet: `delete_note` with `Wrong` on an absent
-path is `ConcurrencyError`, where the rule says `NoFile`. It is recorded as a
-deviation in the CSV and awaits a decision.
+their normal case.
 
 ## Running & reading it
 
