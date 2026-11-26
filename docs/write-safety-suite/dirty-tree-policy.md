@@ -1,6 +1,10 @@
 # Dirty-tree write policy
 
-**Status:** ratified default (2026-08-14); implementation not started.
+**Status:** ratified default (2026-08-14). The strict default is implemented and the
+matrix asserts it: on the git backend every dirty state refuses with
+`ConcurrencyError`, whatever the precondition, and `just wss-audit` checks it against
+the CSV. The force switch (`allow_blind`, `DirtyPolicy`, and the cells that exercise
+them under each setting) is not built; it is future work.
 **Scope:** the git write backend only. Direct has no index and no HEAD, so "dirty"
 is not a state it can be in — its only guard is the sha256 CAS, already expressed
 by `ExpectBlob`.
@@ -8,9 +12,10 @@ by `ExpectBlob`.
 ## Summary
 
 When an agent writes to a vault path that has uncommitted changes, TurboVault must
-decide what happens to those changes. Today the answer is implicit in the code and
-under-specified in the matrix: the write-safety suite asserts that such a write
-returns `Ok`, but asserts *nothing* about what became of the human's work.
+decide what happens to those changes. The code already refuses such a write. Until
+the strict default was written into the matrix, the write-safety suite said the
+opposite: it expected `Ok` for a proof-carrying or `Blind` write to a dirty path,
+and asserted *nothing* about what became of the human's work.
 
 The ratified answer is **strict**: a write to a dirty path is refused. `Blind` is
 the explicit force escape hatch, and is **disabled by default**. Both the policy
@@ -44,8 +49,9 @@ be replaced by the specified tree."* Every write therefore rewrites the whole
 index. This is why refusal (1) has to be repo-wide: without it, a write would
 silently discard a staged change to an unrelated path.
 
-### Why the matrix cannot currently settle the question
+### Why the matrix could not settle the question as it stood
 
+This section records the matrix as it was before the strict default was written in.
 `Outcome::Ok` asserts that the op succeeded and that the new bytes landed. It does
 not assert what happened to content that was already there. So the CSV saying
 `Blind × etc-u → Ok` is true under "the displaced edit was destroyed", "it was
