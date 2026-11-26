@@ -298,11 +298,12 @@ impl DirectSubstrate {
                     "File already exists at '{path}'; expected it to be absent."
                 ))),
             },
+            // The path is not there, which is a not-found rather than a
+            // changed-underneath refusal (the missing-target rule, see
+            // docs/write-safety-suite/README.md).
             Precondition::ExpectExists => match before {
                 Some(_) => Ok(()),
-                None => Err(Error::concurrency_error(format!(
-                    "File does not exist at '{path}'."
-                ))),
+                None => Err(Error::file_not_found(path)),
             },
             Precondition::ExpectBlob(expected) => match before {
                 Some(bytes) => {

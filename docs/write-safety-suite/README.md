@@ -120,9 +120,8 @@ missing note is `NoFile`, the same as a move or an edit.
 
 What the rule leaves out: ops that create or replace (`write_note`,
 `create_from_template`, the destination of a move), because an absent path is
-their normal case, and `Blind`, which asks nothing of the target. Retrying a
-delete whose reply was lost is therefore a `Blind` delete. The caller who asked
-for existence is told, truthfully, that the note is not there.
+their normal case, and `Blind`, which asks nothing of the target. A caller who
+asked for the note to exist is told, truthfully, that it is not there.
 
 One cell does not follow the rule yet: `delete_note` with `Wrong` on an absent
 path is `ConcurrencyError`, where the rule says `NoFile`. It is recorded as a

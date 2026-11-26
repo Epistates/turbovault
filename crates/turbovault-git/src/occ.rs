@@ -78,10 +78,11 @@ impl VaultRepo {
                     }
                 }
                 Precondition::ExpectExists => {
+                    // Not there is a not-found, not a changed-underneath
+                    // refusal (the missing-target rule, see
+                    // docs/write-safety-suite/README.md).
                     if found.is_none() {
-                        return Err(Error::concurrency(format!(
-                            "precondition failed for {path}: expected present, found absent"
-                        )));
+                        return Err(Error::Core(turbovault_core::Error::file_not_found(path)));
                     }
                 }
                 Precondition::Blind => {}

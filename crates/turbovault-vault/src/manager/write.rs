@@ -429,6 +429,15 @@ impl VaultManager {
         let rel_from = self.relative_path(&from_path);
         let rel_to = self.relative_path(&to_path);
 
+        // A move has nothing to do without its source, so a missing one is
+        // "not found" whatever precondition the caller attached, the same
+        // answer `edit_file` gives. Left to the substrate, a source guard
+        // would report it as a changed-underneath refusal instead. A source
+        // that vanishes after this check is still caught by that guard.
+        tokio::fs::metadata(&from_path)
+            .await
+            .map_err(|e| Error::io_at(rel_from.clone(), e))?;
+
         let plan = ChangePlan::new(message)
             .with_change(Change::Rename {
                 from: rel_from.clone(),

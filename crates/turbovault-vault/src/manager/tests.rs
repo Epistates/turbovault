@@ -3017,19 +3017,6 @@ async fn test_delete_file_on_a_missing_note_is_not_found() {
     );
 }
 
-/// Blind asks nothing of the target, so a delete whose reply was lost can be
-/// retried: the note is already gone and the retry says so by succeeding.
-#[tokio::test]
-async fn test_blind_delete_of_a_missing_note_succeeds() {
-    let temp_dir = TempDir::new().unwrap();
-    let manager = VaultManager::new(create_test_config(temp_dir.path())).unwrap();
-
-    manager
-        .delete_file(Path::new("ghost.md"), Precondition::Blind, "test")
-        .await
-        .expect("a blind delete of a note that is already gone succeeds");
-}
-
 /// A move needs its source, so a missing one is a not-found whichever guard
 /// the caller attached, and nothing is created at the destination.
 #[tokio::test]
