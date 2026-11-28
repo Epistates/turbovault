@@ -130,9 +130,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.104"
+version = "1.0.105"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+checksum = "2cb931c189b85683d69a5cfad41d4d418671e1ac413dd209f3f2fc31e3cfd902"
 
 [[package]]
 name = "arc-swap"
@@ -671,9 +671,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.9"
+version = "4.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "844c5c0b65be192cb68d570cca1b21a6444431d24e39c084dc0336177015337c"
+checksum = "50066ca966813ca8957ee15361752f19424a8ff620dbe9c8993d9f99d99b04b3"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -681,9 +681,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.6.7"
+version = "4.6.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d"
+checksum = "a0ed97c96ef4efb3cc84e09fa388df4463e7cc3224ec38d7b1d9e45749333590"
 dependencies = [
  "anstream",
  "anstyle",
@@ -2418,9 +2418,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.63.0"
+version = "0.63.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4d2afab27172a0073112ce84a64ec7fd06f3b8bdad37d46e86c53c933ed232b"
+checksum = "f048e101172edb2c5f0351d7e3bc3796ac89b7f150e64b0cbd20dd82215b2160"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2446,18 +2446,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.63.0"
+version = "0.63.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19532291f4c1f5a5726be72105a0d73620b714ef12256e9748cc863cf122dc1c"
+checksum = "ba1527289dfcb1400df61b5c591218e8e30031376671f611faecb5b9a1ff4987"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.63.0"
+version = "0.63.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d455c96d26f5c8527d7824f3f9ac810fec24d1448a3f7a254a006ea542e3dcf9"
+checksum = "a95285ab129d630f01cf2f1345c28662116340fac1a35eb0795e5dbbf0ef990d"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2815,9 +2815,9 @@ dependencies = [
 
 [[package]]
 name = "model2vec-rs"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bc5d349da0f38c0289eb1a0bf97732b82855d7ce2d35001c18dad52df933e1d"
+checksum = "38960779ee134c9011df6201b4da7e8223aecff2b76b2cf47f40abaee933027d"
 dependencies = [
  "anyhow",
  "half",
@@ -2825,7 +2825,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokenizers",
- "unicode-normalization",
+ "unicode-normalization-alignments",
  "unicode_categories",
 ]
 
@@ -3784,9 +3784,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.63.0"
+version = "0.63.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1225f3e462cea1e4a8e169dd539f9d8a7592780b5b261d0e07e5cbb9efb28e4e"
+checksum = "858eb92e3a3c1d120695a04d5c6e8861915ee4394b8f77c90adbf686d6ddbf6e"
 dependencies = [
  "ahash",
  "fluent-uri",
