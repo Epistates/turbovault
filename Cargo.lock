@@ -1654,9 +1654,9 @@ dependencies = [
 
 [[package]]
 name = "gluesql"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0da4d3abee173083ef2ba6d84f81c2d5df3c5ab1b8ff067834439b1201ae3b36"
+checksum = "521a36501b500eee7ff430ab7120b840595415021dcdc765a4f8ca847734816d"
 dependencies = [
  "gluesql-core",
  "gluesql-macros",
@@ -1665,9 +1665,9 @@ dependencies = [
 
 [[package]]
 name = "gluesql-core"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7156a8881f2d54bfbc0c49b8091c179d59e88c940075b4cf8011c70fdda5087d"
+checksum = "7181bbbbbd34522ff701761284b027bf1942370c409126c425692feab7c4b686"
 dependencies = [
  "bigdecimal",
  "cfg-if",
@@ -1691,9 +1691,9 @@ dependencies = [
 
 [[package]]
 name = "gluesql-macros"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c7d7efa74042e5c18b922027351616dc94856419d99005ab09aef63dc3875e9"
+checksum = "8479c3df9de39a5ab5226e27c25925142165f18882607733ebef93c64aa59ee8"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1703,9 +1703,9 @@ dependencies = [
 
 [[package]]
 name = "gluesql_memory_storage"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6882603ba8d6292e8b64cd42ad2b246cd144ecf880de4bc48173c59c3b22813b"
+checksum = "2787ab7de2d846a28b894a8c345c6ca2483b2b3059a95d8955b896f372f01603"
 dependencies = [
  "gluesql-core",
  "serde",
@@ -4576,7 +4576,6 @@ checksum = "9a875d8cd437cc8a97e9aeaeea352ec9a19aea99c23e9effb17757291de80b08"
 dependencies = [
  "bigdecimal",
  "log",
- "serde",
 ]
 
 [[package]]

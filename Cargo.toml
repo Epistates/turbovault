@@ -104,7 +104,7 @@ turbomcp-client = "3.6.0"
 turbomcp-transport = "3.6.0"
 
 # SQL query engine (optional, for frontmatter SQL queries)
-gluesql = { version = "0.20", default-features = false, features = ["gluesql_memory_storage"] }
+gluesql = { version = "0.21", default-features = false, features = ["gluesql_memory_storage"] }
 
 # Search and Matching (Tier 1d: Replace hand-rolled implementations)
 tantivy = "0.27"           # Full-text search engine (Apache Lucene-inspired, production-grade)
